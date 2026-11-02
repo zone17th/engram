@@ -81,17 +81,29 @@ export interface PendingNearBuffer {
   readonly generation: number | null;
 }
 
+export interface SemanticLegOutcome {
+  readonly gen: number;
+  readonly kind: 'failed' | 'aborted';
+}
+
 export interface SuggestMergeState {
   readonly queryGen: number;
   readonly pendingQn: string;
   readonly pendingScope: SearchScope;
   readonly pendingLimit: number;
+  /** Per-generation hint indicating whether `queryGen` issued a `semantic=1` request (`pending` near zone). */
+  readonly expectSemantic: boolean;
   readonly isBusy: boolean;
   readonly dropdownOpen: boolean;
   readonly snapshot: SuggestSnapshot | null;
   /** Buffered semantic leg that arrived with `lexical_partial` before any complete snapshot for `queryGen` (RV-T9-FE1-4). */
   readonly pendingNear: PendingNearBuffer | null;
-  /** Durable semantic toggle flag so late `semantic=1` responses after toggle-off never re-show `near` (RV-T9-FE1-5). */
+  /** Recorded semantic leg failure/abort that arrived before any complete snapshot for `queryGen` (RV-T9-FE2-1). */
+  readonly semanticLegOutcome: SemanticLegOutcome | null;
+  /**
+   * Durable user semantic toggle flag (`Me.settings.semantic_suggest`), changed only by
+   * `toggle_semantic_off`, `toggle_semantic_on_pending`, or `sync_semantic_enabled` (RV-T9-FE1-5, RV-T9-FE2-2).
+   */
   readonly semanticEnabled: boolean;
   /** Local tag-cache rows in `#` mode (kept when gate closes in `#` mode per 2.24 item 10). */
   readonly localTagRows: readonly SuggestTag[];
@@ -125,10 +137,12 @@ export function createInitialMergeState(): SuggestMergeState {
     pendingQn: '',
     pendingScope: 'all',
     pendingLimit: 8,
+    expectSemantic: false,
     isBusy: false,
     dropdownOpen: false,
     snapshot: null,
     pendingNear: null,
+    semanticLegOutcome: null,
     semanticEnabled: true,
     localTagRows: [],
     activeKey: null,
@@ -268,6 +282,10 @@ export type SuggestMergeAction =
       readonly type: 'toggle_semantic_on_pending';
     }
   | {
+      readonly type: 'sync_semantic_enabled';
+      readonly enabled: boolean;
+    }
+  | {
       readonly type: 'set_active_key';
       readonly activeKey: SuggestActiveKey | null;
     }
@@ -286,6 +304,8 @@ export type SuggestMergeAction =
 /**
  * Starts a new query generation (`queryGen + 1`), keeping existing rows visible with `isBusy = true`
  * until the first complete lexical response for the new `queryGen` arrives (plan mục 2.8 rule 1).
+ * Note: `expectSemantic` is a per-generation hint (only chooses `'pending'` when `semanticEnabled` is true)
+ * and never mutates the durable `semanticEnabled` user setting (RV-T9-FE2-2).
  */
 export function startNewQueryGen(
   state: SuggestMergeState,
@@ -303,8 +323,9 @@ export function startNewQueryGen(
     pendingQn: params.qn,
     pendingScope: params.scope,
     pendingLimit: params.limit,
+    expectSemantic: state.semanticEnabled && Boolean(params.expectSemantic),
     pendingNear: null,
-    semanticEnabled: params.expectSemantic !== undefined ? params.expectSemantic : state.semanticEnabled,
+    semanticLegOutcome: null,
     isBusy: true,
     activeClearedFromNear: false,
   };
@@ -422,13 +443,17 @@ function mergePrimarySnapshotResponse(
       state.pendingNear !== null && state.pendingNear.gen === params.gen
         ? state.pendingNear
         : null;
+    const recordedOutcome =
+      state.semanticLegOutcome !== null && state.semanticLegOutcome.gen === params.gen
+        ? state.semanticLegOutcome
+        : null;
 
     let near: readonly SuggestNearRow[] = [];
     let nearState: NearZoneState;
     let generation: number | null = params.generation;
 
-    // RV-T9-FE1-5: if toggle-off disabled semantic for this query/state, never show `near`
-    // and keep `nearState = 'off'` even if a `semantic=1` response defines the snapshot.
+    // RV-T9-FE1-5 & RV-T9-FE2-2: if the durable user setting `semanticEnabled` is false,
+    // never show `near` and keep `nearState = 'off'` even if a `semantic=1` response arrives.
     if (!state.semanticEnabled) {
       near = [];
       nearState = 'off';
@@ -445,15 +470,18 @@ function mergePrimarySnapshotResponse(
         expectSemanticResponse: false,
       });
       generation = buffered.generation ?? params.generation;
+    } else if (recordedOutcome) {
+      // RV-T9-FE2-1: consume a semantic-leg failure or abort that arrived before the complete lexical snapshot.
+      nearState = recordedOutcome.kind === 'aborted' ? 'idle' : 'degraded';
     } else {
-      const expectSemantic = Boolean(params.expectSemantic);
+      const expectSemantic =
+        params.expectSemantic !== undefined ? params.expectSemantic : state.expectSemantic;
       nearState = deriveNearStateFromResponse({
         semantic: false,
         semanticReason: params.semanticReason,
         expectSemanticResponse: expectSemantic,
       });
     }
-
     const activeKey = resolveActiveKeyAfterSnapshotReplace({
       prevActiveKey: state.activeKey,
       scope: params.scope,
@@ -479,6 +507,7 @@ function mergePrimarySnapshotResponse(
     return {
       ...state,
       pendingNear: null,
+      semanticLegOutcome: null,
       isBusy: false,
       dropdownOpen: true,
       snapshot: nextSnapshot,
@@ -506,6 +535,7 @@ function mergePrimarySnapshotResponse(
     return {
       ...state,
       pendingNear: null,
+      semanticLegOutcome: null,
       isBusy: false,
       snapshot: {
         ...currentSnapshot,
@@ -536,6 +566,7 @@ function mergePrimarySnapshotResponse(
   return {
     ...state,
     pendingNear: null,
+    semanticLegOutcome: null,
     isBusy: false,
     snapshot: {
       ...currentSnapshot,
@@ -694,9 +725,12 @@ export function applySearchCursorPageResponse(
 }
 
 /**
- * Handles a failed, rate-limited, or aborted `semantic=1` leg for `gen` (RV-T9-FE1-4):
- * transitions `nearState` out of `'pending'` (`'idle'` on abort, `'degraded'` on failure/429)
- * and clears any `pendingNear` buffer for `gen` so the UI never stays stuck on "Đang tìm gần nghĩa…".
+ * Handles a failed, rate-limited, or aborted `semantic=1` leg for `gen` (RV-T9-FE1-4, RV-T9-FE2-1):
+ * - When a complete server snapshot for `gen` already exists in `'pending'`, transitions `nearState`
+ *   to `'idle'` (abort) or `'degraded'` (failure/429).
+ * - When no complete server snapshot for `gen` exists yet, records `semanticLegOutcome` for `gen`
+ *   so the later complete lexical response consumes it and never stays stuck at `'pending'`.
+ * - Ignores stale `gen !== state.queryGen`.
  */
 export function applySemanticLegFailed(
   state: SuggestMergeState,
@@ -709,28 +743,39 @@ export function applySemanticLegFailed(
 
   const nextPendingNear =
     state.pendingNear && state.pendingNear.gen === targetGen ? null : state.pendingNear;
+  const outcomeKind: SemanticLegOutcome['kind'] = params.aborted ? 'aborted' : 'failed';
 
-  if (!state.snapshot || state.snapshot.gen !== targetGen) {
-    if (nextPendingNear === state.pendingNear) return state;
+  const hasCompleteServerSnapshotForGen =
+    state.snapshot !== null &&
+    state.snapshot.gen === targetGen &&
+    state.snapshot.source !== 'tag-cache';
+
+  if (!hasCompleteServerSnapshotForGen) {
     return {
       ...state,
       pendingNear: nextPendingNear,
+      semanticLegOutcome: {
+        gen: targetGen,
+        kind: outcomeKind,
+      },
     };
   }
 
-  if (state.snapshot.nearState !== 'pending') {
+  if (state.snapshot!.nearState !== 'pending') {
     return {
       ...state,
       pendingNear: nextPendingNear,
+      semanticLegOutcome: null,
     };
   }
 
-  const nextNearState: NearZoneState = params.aborted ? 'idle' : 'degraded';
+  const nextNearState: NearZoneState = outcomeKind === 'aborted' ? 'idle' : 'degraded';
   return {
     ...state,
     pendingNear: nextPendingNear,
+    semanticLegOutcome: null,
     snapshot: {
-      ...state.snapshot,
+      ...state.snapshot!,
       nearState: nextNearState,
     },
     activeClearedFromNear: false,
@@ -738,9 +783,9 @@ export function applySemanticLegFailed(
 }
 
 /**
- * Handles toggling `≈` OFF (plan mục 2.8 rule 4, RV-T9-FE1-5):
- * - Durably sets `semanticEnabled = false` and clears `pendingNear` (even when `snapshot === null`)
- *   so any in-flight `semantic=1` response arriving later cannot re-show `near`.
+ * Handles toggling `≈` OFF (plan mục 2.8 rule 4, RV-T9-FE1-5, RV-T9-FE2-2):
+ * - Durably sets `semanticEnabled = false` and clears `pendingNear` / `semanticLegOutcome` (even when `snapshot === null`)
+ *   so any in-flight `semantic=1` response or subsequent `start_query(expectSemantic: true)` cannot re-show `near`.
  * - Removes only the `near` zone (`near = []`, `nearState = 'off'`), keeping `lexical` untouched.
  * - If `activeKey` was inside `near`, resets `activeKey = null` and sets `activeClearedFromNear = true`.
  */
@@ -748,7 +793,9 @@ export function applyToggleSemanticOff(state: SuggestMergeState): SuggestMergeSt
   if (!state.snapshot) {
     return {
       ...state,
+      expectSemantic: false,
       pendingNear: null,
+      semanticLegOutcome: null,
       semanticEnabled: false,
       activeClearedFromNear: false,
     };
@@ -760,7 +807,9 @@ export function applyToggleSemanticOff(state: SuggestMergeState): SuggestMergeSt
 
   return {
     ...state,
+    expectSemantic: false,
     pendingNear: null,
+    semanticLegOutcome: null,
     semanticEnabled: false,
     snapshot: {
       ...state.snapshot,
@@ -775,8 +824,48 @@ export function applyToggleSemanticOff(state: SuggestMergeState): SuggestMergeSt
 /**
  * Marks `semanticEnabled = true` and `nearState = 'pending'` when toggling `≈` ON
  * for a clean query that re-issues `semantic=1`.
+ * Note: Task 17 must only dispatch this when re-issuing `semantic=1` on a clean draft
+ * (for an unclean draft, use `sync_semantic_enabled` after the settings PATCH succeeds).
  */
 export function applyToggleSemanticOnPending(state: SuggestMergeState): SuggestMergeState {
+  if (!state.snapshot) {
+    return {
+      ...state,
+      expectSemantic: true,
+      semanticLegOutcome: null,
+      semanticEnabled: true,
+      activeClearedFromNear: false,
+    };
+  }
+  return {
+    ...state,
+    expectSemantic: true,
+    semanticLegOutcome: null,
+    semanticEnabled: true,
+    snapshot: {
+      ...state.snapshot,
+      nearState: 'pending',
+    },
+    activeClearedFromNear: false,
+  };
+}
+
+/**
+ * Synchronizes the durable `semanticEnabled` flag from `Me.settings.semantic_suggest` (RV-T9-FE2-2).
+ * When `enabled` is `false`, delegates to `applyToggleSemanticOff` so any visible `near` rows are cleared.
+ * When `enabled` is `true`, updates `semanticEnabled = true` and moves a snapshot's `'off'` state back to `'idle'`
+ * without forcing `'pending'` when no `semantic=1` request is in flight.
+ */
+export function applySyncSemanticEnabled(
+  state: SuggestMergeState,
+  enabled: boolean,
+): SuggestMergeState {
+  if (!enabled) {
+    return applyToggleSemanticOff(state);
+  }
+  if (state.semanticEnabled) {
+    return state;
+  }
   if (!state.snapshot) {
     return {
       ...state,
@@ -787,10 +876,13 @@ export function applyToggleSemanticOnPending(state: SuggestMergeState): SuggestM
   return {
     ...state,
     semanticEnabled: true,
-    snapshot: {
-      ...state.snapshot,
-      nearState: 'pending',
-    },
+    snapshot:
+      state.snapshot.nearState === 'off'
+        ? {
+            ...state.snapshot,
+            nearState: 'idle',
+          }
+        : state.snapshot,
     activeClearedFromNear: false,
   };
 }
@@ -831,7 +923,9 @@ export function applyGateClose(
     return {
       ...state,
       queryGen: nextGen,
+      expectSemantic: false,
       pendingNear: null,
+      semanticLegOutcome: null,
       isBusy: false,
       dropdownOpen: keptLocal.length > 0,
       snapshot: localSnapshot,
@@ -843,7 +937,9 @@ export function applyGateClose(
   return {
     ...state,
     queryGen: nextGen,
+    expectSemantic: false,
     pendingNear: null,
+    semanticLegOutcome: null,
     isBusy: false,
     dropdownOpen: false,
     snapshot: null,
@@ -923,6 +1019,8 @@ export function suggestMergeReducer(
       return applyToggleSemanticOff(state);
     case 'toggle_semantic_on_pending':
       return applyToggleSemanticOnPending(state);
+    case 'sync_semantic_enabled':
+      return applySyncSemanticEnabled(state, action.enabled);
     case 'set_active_key':
       return { ...state, activeKey: action.activeKey, activeClearedFromNear: false };
     case 'move_active':
@@ -933,6 +1031,7 @@ export function suggestMergeReducer(
       return {
         ...createInitialMergeState(),
         queryGen: state.queryGen + 1,
+        semanticEnabled: state.semanticEnabled,
       };
   }
 }

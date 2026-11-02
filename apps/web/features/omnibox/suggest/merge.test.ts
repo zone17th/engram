@@ -7,6 +7,7 @@ import {
   applySearchFirstPageResponse,
   applySemanticLegFailed,
   applySuggestResponse,
+  applySyncSemanticEnabled,
   applyToggleSemanticOff,
   createInitialMergeState,
   getRowKey,
@@ -760,6 +761,137 @@ describe('features/omnibox/suggest/merge', () => {
       qn: 'router',
       response: makeSuggestResponse({ items: [makeItem('i-late-reset', 'late after reset')] }),
     });
+    expect(state.snapshot).toBeNull();
+  });
+
+  it('semantic leg failure or abort before complete lexical snapshot resolves nearState without sticking at pending (RV-T9-FE2-1)', () => {
+    const item1 = makeItem('i1', 'wifi');
+
+    // 1. start_query(expectSemantic) -> semantic_leg_failed(gen) -> complete lexical => 'degraded'
+    let state = createInitialMergeState();
+    state = startNewQueryGen(state, { qn: 'wifi', scope: 'all', limit: 8, expectSemantic: true });
+    const gen1 = state.queryGen;
+
+    state = applySemanticLegFailed(state, { gen: gen1 });
+    expect(state.snapshot).toBeNull();
+    expect(state.semanticLegOutcome).toEqual({ gen: gen1, kind: 'failed' });
+
+    state = applySuggestResponse(state, {
+      gen: gen1,
+      qn: 'wifi',
+      expectSemantic: true,
+      response: makeSuggestResponse({
+        items: [item1],
+        semantic: false,
+        semantic_reason: 'request_lexical',
+      }),
+    });
+    expect(state.semanticLegOutcome).toBeNull();
+    expect(state.snapshot!.lexical).toEqual([item1]);
+    expect(state.snapshot!.nearState).toBe('degraded');
+
+    // 2. start_query(expectSemantic) -> semantic_leg_failed(gen, aborted: true) -> complete lexical => 'idle'
+    state = startNewQueryGen(state, { qn: 'wifi2', scope: 'all', limit: 8, expectSemantic: true });
+    const gen2 = state.queryGen;
+
+    state = suggestMergeReducer(state, { type: 'semantic_leg_failed', gen: gen2, aborted: true });
+    expect(state.semanticLegOutcome).toEqual({ gen: gen2, kind: 'aborted' });
+
+    state = applySuggestResponse(state, {
+      gen: gen2,
+      qn: 'wifi2',
+      expectSemantic: true,
+      response: makeSuggestResponse({
+        items: [item1],
+        semantic: false,
+        semantic_reason: 'request_lexical',
+      }),
+    });
+    expect(state.semanticLegOutcome).toBeNull();
+    expect(state.snapshot!.nearState).toBe('idle');
+
+    // 3. Stale-gen failure is ignored, and startNewQueryGen / close_gate / reset clear semanticLegOutcome
+    state = startNewQueryGen(state, { qn: 'wifi3', scope: 'all', limit: 8, expectSemantic: true });
+    const gen3 = state.queryGen;
+    state = applySemanticLegFailed(state, { gen: gen1 });
+    expect(state.semanticLegOutcome).toBeNull();
+
+    state = applySemanticLegFailed(state, { gen: gen3 });
+    expect(state.semanticLegOutcome).toEqual({ gen: gen3, kind: 'failed' });
+
+    state = startNewQueryGen(state, { qn: 'wifi4', scope: 'all', limit: 8, expectSemantic: true });
+    expect(state.semanticLegOutcome).toBeNull();
+
+    state = applySemanticLegFailed(state, { gen: state.queryGen });
+    expect(state.semanticLegOutcome).not.toBeNull();
+    state = applyGateClose(state);
+    expect(state.semanticLegOutcome).toBeNull();
+
+    state = startNewQueryGen(state, { qn: 'wifi5', scope: 'all', limit: 8, expectSemantic: true });
+    state = applySemanticLegFailed(state, { gen: state.queryGen });
+    expect(state.semanticLegOutcome).not.toBeNull();
+    state = suggestMergeReducer(state, { type: 'reset' });
+    expect(state.semanticLegOutcome).toBeNull();
+  });
+
+  it('keeps durable semanticEnabled separate from per-gen expectSemantic hint (RV-T9-FE2-2)', () => {
+    const item1 = makeItem('i1', 'ab item');
+    const near1 = makeItem('n1', 'near item', 'semantic');
+
+    // 1. With semanticEnabled=true, start_query(expectSemantic: false) + short_query response => 'idle', NOT 'off'
+    let state = createInitialMergeState();
+    expect(state.semanticEnabled).toBe(true);
+    state = startNewQueryGen(state, { qn: 'ab', scope: 'all', limit: 8, expectSemantic: false });
+    expect(state.semanticEnabled).toBe(true);
+    expect(state.expectSemantic).toBe(false);
+
+    state = applySuggestResponse(state, {
+      gen: state.queryGen,
+      qn: 'ab',
+      expectSemantic: false,
+      response: makeSuggestResponse({
+        items: [item1],
+        semantic: false,
+        semantic_reason: 'short_query',
+      }),
+    });
+    expect(state.snapshot!.nearState).toBe('idle');
+
+    // 2. After toggle_semantic_off, a later start_query(expectSemantic: true) does NOT re-enable near
+    state = applyToggleSemanticOff(state);
+    expect(state.semanticEnabled).toBe(false);
+    expect(state.snapshot!.nearState).toBe('off');
+
+    state = startNewQueryGen(state, { qn: 'wifi', scope: 'all', limit: 8, expectSemantic: true });
+    expect(state.semanticEnabled).toBe(false);
+    expect(state.expectSemantic).toBe(false);
+
+    state = applySuggestResponse(state, {
+      gen: state.queryGen,
+      qn: 'wifi',
+      expectSemantic: true,
+      response: makeSuggestResponse({
+        items: [item1],
+        semantic: true,
+        semantic_reason: null,
+        near: [near1],
+      }),
+    });
+    expect(state.snapshot!.near).toEqual([]);
+    expect(state.snapshot!.nearState).toBe('off');
+
+    // 3. Explicit sync from Me.settings.semantic_suggest (`sync_semantic_enabled`) updates durable flag
+    state = applySyncSemanticEnabled(state, true);
+    expect(state.semanticEnabled).toBe(true);
+    expect(state.snapshot!.nearState).toBe('idle');
+
+    state = suggestMergeReducer(state, { type: 'sync_semantic_enabled', enabled: false });
+    expect(state.semanticEnabled).toBe(false);
+    expect(state.snapshot!.nearState).toBe('off');
+
+    // 4. `reset` clears snapshot and per-gen buffers while preserving the durable `semanticEnabled` setting
+    state = suggestMergeReducer(state, { type: 'reset' });
+    expect(state.semanticEnabled).toBe(false);
     expect(state.snapshot).toBeNull();
   });
 });

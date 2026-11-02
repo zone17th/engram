@@ -95,7 +95,7 @@ function getGraphemeSegmenterOrNull(): Intl.Segmenter | null {
  * Counts extended grapheme clusters in `text` using `Intl.Segmenter`.
  * Fails closed when `Intl.Segmenter` is unavailable in the environment (RV-T9-FE1-8):
  * returns `(stopAfter ?? COMPOSITION_COMMIT_MAX_GRAPHEMES) + 1` for non-empty text so any
- * inserted text is treated as tainted rather_than throwing inside DOM event handlers.
+ * inserted text is treated as tainted rather than throwing inside DOM event handlers.
  */
 export function countGraphemes(text: string, stopAfter?: number): number {
   if (text === '') return 0;
