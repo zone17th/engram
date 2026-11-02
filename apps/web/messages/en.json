@@ -1,6 +1,7 @@
 {
   "brand": { "name": "engram", "tagline": "Type one word you still remember." },
   "nav": { "how": "How it works", "privacy": "Privacy", "recovery": "Recovery", "openApp": "Open engram", "signIn": "Sign in", "signUp": "Create account" },
+  "localeSwitch": { "label": "Language", "en": "EN", "vi": "VI" },
   "landing": {
     "heroTitle": "Type one word you still remember.",
     "heroTitleSecond": "See the thing you forgot.",
