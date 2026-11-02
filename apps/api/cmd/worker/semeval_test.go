@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -226,44 +227,49 @@ func TestSemevalThresholdRule(t *testing.T) {
 		return specs, fp
 	}
 
-	// Case (a): 10 related (8 at cos 0.80, 2 at cos 0.50), 20 unrelated (19 at cos 0.20,
-	// 1 at cos 0.54, 1 replaced -> let's use 20 unrelated: 18 at 0.20, 1 at 0.45, 1 at 0.54).
-	// At t <= 0.45: 2 unrelated >= t -> FPR = 2/20 = 0.10 > 0.05.
-	// At t = 0.46: only 1 unrelated (0.54) >= 0.46 -> FPR = 1/20 = 0.05 <= 0.05!
+	// All fixture cosines are placed strictly inside 0.01 grid cells (e.g. 0.455
+	// in (0.45, 0.46), never on a grid point 0.30..0.90) so float32 unit-vector
+	// quantization cannot shift any pair across a grid boundary.
+	//
+	// Case (a): 10 related (8 at cos 0.805, 2 at cos 0.505), 20 unrelated (18 at
+	// cos 0.205, 1 at cos 0.455, 1 at cos 0.545).
+	// At t <= 0.45: 2 unrelated (0.455, 0.545) >= t -> FPR = 2/20 = 0.10 > 0.05.
+	// At t = 0.46: only 1 unrelated (0.545) >= 0.46 -> FPR = 1/20 = 0.05 <= 0.05.
 	// Smallest t with FPR <= 5% is t = 0.46.
-	// At t = 0.46: all 10 related (8 at 0.80, 2 at 0.50) have cos >= 0.46 -> TP = 10, recall = 1.0, precision = 10/11.
-	relA := []float64{0.80, 0.80, 0.80, 0.80, 0.80, 0.80, 0.80, 0.80, 0.50, 0.50}
+	// At t = 0.46: all 10 related (8 at 0.805, 2 at 0.505) have cos >= 0.46 ->
+	// TP = 10, recall = 1.0, precision = 10/11.
+	relA := []float64{0.805, 0.805, 0.805, 0.805, 0.805, 0.805, 0.805, 0.805, 0.505, 0.505}
 	unrelA := make([]float64, 20)
 	for i := range 18 {
-		unrelA[i] = 0.20
+		unrelA[i] = 0.205
 	}
-	unrelA[18] = 0.45
-	unrelA[19] = 0.54
+	unrelA[18] = 0.455
+	unrelA[19] = 0.545
 
 	// Case (b): recall at selected t < 0.60 -> decision_required.
-	// 10 related: 5 at cos 0.80, 5 at cos 0.35.
-	// 20 unrelated: 19 at cos 0.20, 1 at cos 0.55.
-	// Smallest t with FPR <= 5% is t = 0.30 (since only 1/20 unrelated has cos >= 0.30 -> FPR = 0.05).
-	// Wait: at t = 0.56, if 2 unrelated are at 0.55 and 18 at 0.20, then smallest t with FPR <= 5% is 0.56.
-	// At t = 0.56, only 5/10 related have cos >= 0.56 -> recall = 0.50 < 0.60 -> decision_required!
-	relB := []float64{0.80, 0.80, 0.80, 0.80, 0.80, 0.40, 0.40, 0.40, 0.40, 0.40}
+	// 10 related: 5 at cos 0.805, 5 at cos 0.405.
+	// 20 unrelated: 18 at cos 0.205, 2 at cos 0.555.
+	// At t <= 0.55: 2 unrelated (0.555) >= t -> FPR = 2/20 = 0.10 > 0.05.
+	// Smallest t with FPR <= 5% is t = 0.56 (0 unrelated >= 0.56 -> FPR = 0.00).
+	// At t = 0.56, only 5/10 related (0.805) have cos >= 0.56 -> recall = 0.50 < 0.60 -> decision_required.
+	relB := []float64{0.805, 0.805, 0.805, 0.805, 0.805, 0.405, 0.405, 0.405, 0.405, 0.405}
 	unrelB := make([]float64, 20)
 	for i := range 18 {
-		unrelB[i] = 0.20
+		unrelB[i] = 0.205
 	}
-	unrelB[18] = 0.55
-	unrelB[19] = 0.55
+	unrelB[18] = 0.555
+	unrelB[19] = 0.555
 
 	// Case (c): no grid t in 0.30..0.90 satisfies FPR <= 5% -> decision_required.
-	// 10 related at 0.95; 20 unrelated where 2 have cos 0.95 (FPR = 2/20 = 0.10 > 0.05 across entire grid).
-	relC := []float64{0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95}
+	// 10 related at 0.955; 20 unrelated where 18 are at 0.105 and 2 have cos 0.955
+	// (FPR = 2/20 = 0.10 > 0.05 across entire grid).
+	relC := []float64{0.955, 0.955, 0.955, 0.955, 0.955, 0.955, 0.955, 0.955, 0.955, 0.955}
 	unrelC := make([]float64, 20)
 	for i := range 18 {
-		unrelC[i] = 0.10
+		unrelC[i] = 0.105
 	}
-	unrelC[18] = 0.95
-	unrelC[19] = 0.95
-
+	unrelC[18] = 0.955
+	unrelC[19] = 0.955
 	cases := []struct {
 		name          string
 		relatedCos    []float64
@@ -488,11 +494,10 @@ func TestSemevalEndToEndTEIAndPrivacy(t *testing.T) {
 		return time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
 	}
 
-	var stdout1, stderr1 bytes.Buffer
+	var stdout1, stdout2 bytes.Buffer
 	if err := semevalExecute(context.Background(), client, &stdout1, pairsPath, outPath1, fixedClock); err != nil {
 		t.Fatalf("first semevalExecute failed: %v", err)
 	}
-
 	// Inspect recorded server calls to verify plan 2.14 input formatting and prefixes.
 	calls := srv.Calls()
 	if len(calls) != 1+len(specs) {
@@ -525,14 +530,8 @@ func TestSemevalEndToEndTEIAndPrivacy(t *testing.T) {
 		}
 	}
 
-	// Second run via dispatch/semevalRun to verify determinism and CLI wiring.
-	env2 := Env{
-		Cfg:    cfg,
-		Logger: logger,
-		Stdout: &bytes.Buffer{},
-		Stderr: &stderr1,
-	}
-	if err := semevalExecute(context.Background(), client, env2.Stdout, pairsPath, outPath2, fixedClock); err != nil {
+	// Second helper run with the same fixed clock to verify deterministic report bytes.
+	if err := semevalExecute(context.Background(), client, &stdout2, pairsPath, outPath2, fixedClock); err != nil {
 		t.Fatalf("second semevalExecute failed: %v", err)
 	}
 
@@ -601,9 +600,9 @@ func TestSemevalEndToEndTEIAndPrivacy(t *testing.T) {
 		}
 	}
 
-	// Privacy assertion: stdout, stderr, and slog buffer must never contain any
-	// query, target, hint, or the server URL.
-	combinedOutput := stdout1.String() + "\n" + stderr1.String() + "\n" + logBuf.String() + "\n" + string(raw1)
+	// Privacy assertion: stdout from both runs, slog buffer, and report must never
+	// contain any query, target, hint, or the server URL.
+	combinedOutput := stdout1.String() + "\n" + stdout2.String() + "\n" + logBuf.String() + "\n" + string(raw1) + "\n" + string(raw2)
 	sensitiveStrings := []string{
 		"VCB Ngân Hàng",
 		"vcb ngân hàng",
@@ -623,6 +622,227 @@ func TestSemevalEndToEndTEIAndPrivacy(t *testing.T) {
 			t.Errorf("privacy violation: output/log/report leaked sensitive token %q", secret)
 		}
 	}
+}
+
+func TestSemevalDispatchConfiguredTEIAndPrivacy(t *testing.T) {
+	t.Parallel()
+
+	const (
+		queryPrefix = "query: "
+		docPrefix   = "passage: "
+		dims        = 16
+	)
+
+	specs := []semevalTestPairSpec{
+		{
+			id:         "p001",
+			query:      "  VCB Ngân Hàng Dispatch  ",
+			target:     "  Ngân hàng Vietcombank Dispatch ",
+			targetKind: "item",
+			hint:       " Tài khoản thanh toán chính Dispatch ",
+			label:      "related",
+			lang:       "vi",
+			category:   "abbrev",
+		},
+		{
+			id:         "p002",
+			query:      "thẻ tín dụng quốc tế dispatch",
+			target:     "tai-chinh-ca-nhan-dispatch",
+			targetKind: "tag",
+			hint:       "",
+			label:      "related",
+			lang:       "vi",
+			category:   "tag",
+		},
+		{
+			id:         "p003",
+			query:      "mật khẩu wifi khách dispatch",
+			target:     "Router Phòng Khách Dispatch",
+			targetKind: "item",
+			hint:       "",
+			label:      "related",
+			lang:       "vi",
+			category:   "diacritics",
+		},
+		{
+			id:         "p004",
+			query:      "công thức nấu phở bò dispatch",
+			target:     "Hoá đơn tiền điện EVN Dispatch",
+			targetKind: "item",
+			hint:       "Thanh toán hàng tháng Dispatch",
+			label:      "unrelated",
+			lang:       "vi",
+			category:   "noise",
+		},
+	}
+
+	sensitiveTokens := []string{
+		"VCB Ngân Hàng Dispatch",
+		"vcb ngân hàng dispatch",
+		"Ngân hàng Vietcombank Dispatch",
+		"Tài khoản thanh toán chính Dispatch",
+		"thẻ tín dụng quốc tế dispatch",
+		"tai-chinh-ca-nhan-dispatch",
+		"mật khẩu wifi khách dispatch",
+		"Router Phòng Khách Dispatch",
+		"công thức nấu phở bò dispatch",
+		"Hoá đơn tiền điện EVN Dispatch",
+		"Thanh toán hàng tháng Dispatch",
+	}
+
+	t.Run("success_writes_report_with_tei_identity_and_preserves_privacy", func(t *testing.T) {
+		t.Parallel()
+		srv := embedtest.NewServer(embedtest.Options{
+			Dims:        dims,
+			ModelID:     "BAAI/bge-m3",
+			ModelSHA:    "teisha-dispatch-ok",
+			QueryPrefix: queryPrefix,
+		})
+		defer srv.Close()
+
+		srv.SetAliases(map[string]string{
+			"vcb ngân hàng dispatch":        docPrefix + "Ngân hàng Vietcombank Dispatch — Tài khoản thanh toán chính Dispatch",
+			"thẻ tín dụng quốc tế dispatch": docPrefix + "tai-chinh-ca-nhan-dispatch",
+			"mật khẩu wifi khách dispatch":  docPrefix + "Router Phòng Khách Dispatch",
+		})
+
+		dir := t.TempDir()
+		pairsPath, pairsRaw := semevalWriteTempPairsFile(t, dir, specs)
+		outPath := filepath.Join(dir, "dispatch-report.json")
+
+		var stdout, stderr, logBuf bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		cfg := &config.Config{
+			Env:                    "development",
+			EmbeddingProvider:      embedding.ProviderTEI,
+			TEIURL:                 embedding.NewEndpoint(srv.URL()),
+			TEIInputPrefixQuery:    queryPrefix,
+			TEIInputPrefixDocument: docPrefix,
+			EmbeddingDimensions:    dims,
+		}
+		env := Env{
+			Cfg:    cfg,
+			Logger: logger,
+			Stdout: &stdout,
+			Stderr: &stderr,
+		}
+
+		wantClient, err := embedding.NewClientFromConfig(
+			context.Background(),
+			cfg.EmbeddingPrimary(),
+			embedding.RolePrimary,
+			embedding.ClientDeps{},
+		)
+		if err != nil {
+			t.Fatalf("NewClientFromConfig reference: %v", err)
+		}
+
+		code := defaultRegistry.dispatch(
+			context.Background(),
+			env,
+			[]string{"semeval", "--pairs", pairsPath, "--out", outPath},
+			func(ctx context.Context, env Env) error {
+				t.Fatal("runWorker must not be called")
+				return nil
+			},
+		)
+		if code != 0 {
+			t.Fatalf("dispatch exit code = %d, want 0 (stderr=%q)", code, stderr.String())
+		}
+		if stderr.Len() != 0 {
+			t.Errorf("expected empty stderr on success, got %q", stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "decision=ok") {
+			t.Errorf("expected stdout to contain decision=ok, got %q", stdout.String())
+		}
+
+		reportRaw, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatalf("read dispatched report: %v", err)
+		}
+		rep := semevalDecodeStrictReport(t, reportRaw)
+		if rep.Provider != wantClient.Identity.Provider ||
+			rep.Model != wantClient.Identity.Model ||
+			rep.ModelVersion != wantClient.Identity.ModelVersion ||
+			rep.Dims != wantClient.Identity.Dims {
+			t.Errorf("report identity (%s, %s, %s, %d) != tei client identity (%s, %s, %s, %d)",
+				rep.Provider, rep.Model, rep.ModelVersion, rep.Dims,
+				wantClient.Identity.Provider, wantClient.Identity.Model, wantClient.Identity.ModelVersion, wantClient.Identity.Dims)
+		}
+		wantSHA := sha256.Sum256(pairsRaw)
+		if rep.PairsSHA256 != hex.EncodeToString(wantSHA[:]) {
+			t.Errorf("pairs_sha256 = %q, want %x", rep.PairsSHA256, wantSHA)
+		}
+
+		combined := stdout.String() + "\n" + stderr.String() + "\n" + logBuf.String() + "\n" + string(reportRaw)
+		for _, secret := range append(append([]string(nil), sensitiveTokens...), srv.URL()) {
+			if secret != "" && strings.Contains(combined, secret) {
+				t.Errorf("privacy violation: dispatch success leaked %q", secret)
+			}
+		}
+	})
+
+	t.Run("provider_5xx_via_dispatch_exits_1_without_report_or_leak", func(t *testing.T) {
+		t.Parallel()
+		srv := embedtest.NewServer(embedtest.Options{
+			Dims:        dims,
+			ModelID:     "BAAI/bge-m3",
+			ModelSHA:    "teisha-dispatch-5xx",
+			QueryPrefix: queryPrefix,
+		})
+		defer srv.Close()
+		srv.Set5xx(503)
+
+		dir := t.TempDir()
+		pairsPath, _ := semevalWriteTempPairsFile(t, dir, specs)
+		outPath := filepath.Join(dir, "dispatch-5xx-report.json")
+
+		var stdout, stderr, logBuf bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		cfg := &config.Config{
+			Env:                    "development",
+			EmbeddingProvider:      embedding.ProviderTEI,
+			TEIURL:                 embedding.NewEndpoint(srv.URL()),
+			TEIInputPrefixQuery:    queryPrefix,
+			TEIInputPrefixDocument: docPrefix,
+			EmbeddingDimensions:    dims,
+		}
+		env := Env{
+			Cfg:    cfg,
+			Logger: logger,
+			Stdout: &stdout,
+			Stderr: &stderr,
+		}
+
+		code := defaultRegistry.dispatch(
+			context.Background(),
+			env,
+			[]string{"semeval", "--pairs", pairsPath, "--out", outPath},
+			func(ctx context.Context, env Env) error {
+				t.Fatal("runWorker must not be called")
+				return nil
+			},
+		)
+		if code != 1 {
+			t.Fatalf("dispatch exit code = %d, want 1 on provider 5xx", code)
+		}
+		if stdout.Len() != 0 {
+			t.Errorf("expected empty stdout on provider 5xx, got %q", stdout.String())
+		}
+		if !strings.HasPrefix(stderr.String(), "semeval: ") || !strings.Contains(stderr.String(), "http_5xx") {
+			t.Errorf("expected stderr to have 'semeval: ...' with http_5xx class, got %q", stderr.String())
+		}
+		if _, statErr := os.Stat(outPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("expected no report file written on provider 5xx, stat err = %v", statErr)
+		}
+
+		combined := stdout.String() + "\n" + stderr.String() + "\n" + logBuf.String()
+		for _, secret := range append(append([]string(nil), sensitiveTokens...), srv.URL()) {
+			if secret != "" && strings.Contains(combined, secret) {
+				t.Errorf("privacy violation: dispatch 5xx leaked %q", secret)
+			}
+		}
+	})
 }
 
 func TestSemevalErrorsAndPrivacy(t *testing.T) {
@@ -677,6 +897,110 @@ func TestSemevalErrorsAndPrivacy(t *testing.T) {
 		got, readErr := os.ReadFile(outPath)
 		if readErr != nil || !bytes.Equal(got, original) {
 			t.Fatalf("existing file was modified: %q", string(got))
+		}
+	})
+
+	t.Run("concurrent_publication_allows_exactly_one_winner_and_leaves_no_tmp", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		outPath := filepath.Join(dir, "concurrent-report.json")
+
+		const workers = 8
+		start := make(chan struct{})
+
+		type publishResult struct {
+			idx     int
+			err     error
+			encoded []byte
+		}
+		resultsCh := make(chan publishResult, workers)
+
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for i := range workers {
+			go func(idx int) {
+				defer wg.Done()
+				rep := semevalReport{
+					Schema:       embedding.CalReportSchema,
+					Provider:     embedding.ProviderTEI,
+					Model:        fmt.Sprintf("tei/worker-%d", idx),
+					ModelVersion: fmt.Sprintf("sha-%d;qp=00000000;dp=00000000", idx),
+					Dims:         2,
+					PairsFile:    "docs/benchmarks/semantic-eval/pairs.v1.jsonl",
+					PairsSHA256:  strings.Repeat(fmt.Sprintf("%x", idx), 64),
+					Grid: semevalGridReport{
+						Min:  embedding.CalGridMin,
+						Max:  embedding.CalGridMax,
+						Step: embedding.CalGridStep,
+					},
+					MaxFPR:      embedding.CalMaxFPR,
+					MinRecall:   embedding.CalMinRecall,
+					Threshold:   0.46,
+					Precision:   0.95,
+					Recall:      0.90,
+					FPR:         0.02,
+					Decision:    embedding.CalDecisionOK,
+					GeneratedAt: "2026-11-02T00:00:00Z",
+					Synthetic:   false,
+					Note:        semevalReportNote,
+					Results: []embedding.EvalResult{
+						{ID: "p001", Label: "related", Cos: 0.855},
+					},
+				}
+				enc, mErr := json.MarshalIndent(rep, "", "  ")
+				if mErr != nil {
+					resultsCh <- publishResult{idx: idx, err: mErr}
+					return
+				}
+				enc = append(enc, '\n')
+
+				<-start
+				err := semevalWriteReportAtomic(outPath, rep)
+				resultsCh <- publishResult{idx: idx, err: err, encoded: enc}
+			}(i)
+		}
+
+		close(start)
+		wg.Wait()
+		close(resultsCh)
+
+		var winners []publishResult
+		var refusals int
+		for res := range resultsCh {
+			if res.err == nil {
+				winners = append(winners, res)
+				continue
+			}
+			if res.err.Error() == "output file already exists (refusing to overwrite)" {
+				refusals++
+				continue
+			}
+			t.Errorf("worker %d returned unexpected error: %v", res.idx, res.err)
+		}
+
+		if len(winners) != 1 {
+			t.Fatalf("expected exactly 1 winner among %d concurrent publishers, got %d", workers, len(winners))
+		}
+		if refusals != workers-1 {
+			t.Fatalf("expected %d overwrite refusals, got %d", workers-1, refusals)
+		}
+
+		gotBytes, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatalf("read published report: %v", err)
+		}
+		if !bytes.Equal(gotBytes, winners[0].encoded) {
+			t.Fatalf("published file bytes do not match winner %d report", winners[0].idx)
+		}
+
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("readdir %s: %v", dir, err)
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".semeval-report-") || strings.HasSuffix(e.Name(), ".tmp") {
+				t.Errorf("leftover temporary file in output directory: %s", e.Name())
+			}
 		}
 	})
 
