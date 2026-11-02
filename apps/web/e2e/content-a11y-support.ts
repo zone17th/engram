@@ -1106,7 +1106,9 @@ export const KNOWN_UI_TOUCH_44: ReadonlyArray<{
     unit: 'w4fix FU11',
     control: 'import JSON parse error jump button',
     descriptor: /^button\[data-testid="import-json-parse-error-jump"\]\.m-0\.mb-1\.cursor-pointer$/,
-    minW: 202,
+    // Width follows the parse-error message text (202.45 with the old nonce fixture, 199.45 with the public fixture,
+    // CI 41378966633), so only the 44 px rule is a meaningful width floor; the known gap is the 19.5 px height.
+    minW: 44,
     minH: 19,
   },
   {
