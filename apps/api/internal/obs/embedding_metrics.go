@@ -152,7 +152,7 @@ func (m *EmbeddingMetrics) collectors() []prometheus.Collector {
 	}
 }
 
-// JobLagSample là một mẫu độ trễ hàng đợi job nhúng (giây) theo corpus và vai trò generation.
+// JobLagSample là một mẫu độ trễ hoàn tất job nhúng (`embedded_at − river_job.created_at`, giây, SPEC §6.6) theo corpus và vai trò generation.
 type JobLagSample struct {
 	Corpus  string  // "item" | "tag"
 	Role    string  // "active" | "pending" | "retired"
@@ -183,7 +183,7 @@ const GaugeCollectTimeout = 5 * time.Second
 var (
 	jobLagDesc = prometheus.NewDesc(
 		"embedding_job_lag_seconds",
-		"Độ trễ lớn nhất của job nhúng đang chờ theo corpus và vai trò generation (giây).",
+		"Độ trễ hoàn tất job nhúng từ khi tạo job tới khi ghi vector (embedded_at - river_job.created_at, giây, SPEC §6.6) theo corpus và vai trò generation.",
 		[]string{"corpus", "role"},
 		nil,
 	)
