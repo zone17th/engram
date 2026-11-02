@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -116,6 +119,22 @@ func evalsetFindRepoRoot(t *testing.T) string {
 	return ""
 }
 
+func evalsetDecodeStrict(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON value: %s", string(trailing))
+		}
+		return fmt.Errorf("trailing bytes after JSON value: %w", err)
+	}
+	return nil
+}
+
 func evalsetLoadPairs(t *testing.T, repoRoot string) ([]evalsetPairRow, []byte) {
 	t.Helper()
 	fullPath := filepath.Join(repoRoot, filepath.FromSlash(evalsetPairsRelPath))
@@ -139,14 +158,9 @@ func evalsetLoadPairs(t *testing.T, repoRoot string) ([]evalsetPairRow, []byte) 
 		if len(bytes.TrimSpace(line)) == 0 {
 			t.Fatalf("%s:%d: empty line is not allowed", evalsetPairsRelPath, lineNo)
 		}
-		dec := json.NewDecoder(bytes.NewReader(line))
-		dec.DisallowUnknownFields()
 		var row evalsetPairRow
-		if err := dec.Decode(&row); err != nil {
+		if err := evalsetDecodeStrict(line, &row); err != nil {
 			t.Fatalf("%s:%d: strict JSON decode failed: %v", evalsetPairsRelPath, lineNo, err)
-		}
-		if dec.More() {
-			t.Fatalf("%s:%d: trailing JSON tokens on line", evalsetPairsRelPath, lineNo)
 		}
 		rows = append(rows, row)
 	}
@@ -293,14 +307,9 @@ func TestCalibrationEntriesHaveReports(t *testing.T) {
 				t.Fatalf("read report %s: %v", reportFullPath, err)
 			}
 
-			dec := json.NewDecoder(bytes.NewReader(reportRaw))
-			dec.DisallowUnknownFields()
 			var doc evalsetReportDoc
-			if err := dec.Decode(&doc); err != nil {
+			if err := evalsetDecodeStrict(reportRaw, &doc); err != nil {
 				t.Fatalf("strict decode %s: %v", entry.ReportPath, err)
-			}
-			if dec.More() {
-				t.Fatalf("%s: trailing tokens after JSON object", entry.ReportPath)
 			}
 
 			if doc.Schema == nil || *doc.Schema != CalReportSchema {
@@ -431,6 +440,60 @@ func TestCalibrationEntriesHaveReports(t *testing.T) {
 			}
 			if math.Abs(recomputed.FPR-*doc.FPR) > 1e-9 {
 				t.Errorf("%s: recomputed fpr = %.12f, report has %.12f", entry.ReportPath, recomputed.FPR, *doc.FPR)
+			}
+		})
+	}
+}
+
+func TestEvalsetDecodeStrictRejectsTrailing(t *testing.T) {
+	t.Parallel()
+
+	type sample struct {
+		A int `json:"a"`
+	}
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{
+			name:    "plain object with trailing whitespace and newline is accepted",
+			input:   "{\"a\":1} \t\n",
+			wantErr: false,
+		},
+		{
+			name:    "extra closing brace is rejected",
+			input:   "{\"a\":1}}",
+			wantErr: true,
+		},
+		{
+			name:    "extra closing bracket is rejected",
+			input:   "{\"a\":1}]",
+			wantErr: true,
+		},
+		{
+			name:    "second JSON value is rejected",
+			input:   "{\"a\":1}{\"a\":2}",
+			wantErr: true,
+		},
+		{
+			name:    "trailing garbage is rejected",
+			input:   "{\"a\":1} trailing",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var dst sample
+			err := evalsetDecodeStrict([]byte(tc.input), &dst)
+			if tc.wantErr && err == nil {
+				t.Fatalf("evalsetDecodeStrict(%q) = nil, want error", tc.input)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("evalsetDecodeStrict(%q) = %v, want nil", tc.input, err)
 			}
 		})
 	}

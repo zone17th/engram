@@ -159,6 +159,9 @@ type ThresholdDecision struct {
 // SelectThreshold applies the pre-registered threshold selection rule from
 // SPEC §6.7 and plan P05 mục 2.20:
 //
+//   - Fail closed (Decision = "decision_required") before the grid scan if any
+//     row has a non-finite cosine similarity (NaN, ±Inf), a cosine outside
+//     [-1, 1], or a label other than "related" or "unrelated".
 //   - Iterate t on the grid 0.30..0.90 in steps of 0.01 using integer hundredths
 //     (30..90) so threshold values have no floating-point accumulation drift.
 //   - Pick the smallest t where FPR (unrelated pairs with cos >= t divided by
@@ -171,11 +174,16 @@ type ThresholdDecision struct {
 func SelectThreshold(results []EvalResult) ThresholdDecision {
 	var totalRelated, totalUnrelated int
 	for _, r := range results {
+		if math.IsNaN(r.Cos) || math.IsInf(r.Cos, 0) || r.Cos < -1.0 || r.Cos > 1.0 {
+			return ThresholdDecision{Decision: CalDecisionRequired}
+		}
 		switch r.Label {
 		case "related":
 			totalRelated++
 		case "unrelated":
 			totalUnrelated++
+		default:
+			return ThresholdDecision{Decision: CalDecisionRequired}
 		}
 	}
 	if totalRelated == 0 || totalUnrelated == 0 {
@@ -186,7 +194,7 @@ func SelectThreshold(results []EvalResult) ThresholdDecision {
 		t := float64(step) / 100.0
 		var tp, fp int
 		for _, r := range results {
-			if math.IsNaN(r.Cos) || r.Cos < t {
+			if r.Cos < t {
 				continue
 			}
 			switch r.Label {
