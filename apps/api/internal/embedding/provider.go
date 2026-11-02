@@ -304,6 +304,45 @@ func (c ClientConfig) LogValue() slog.Value {
 	return slog.StringValue(c.redactedSummary())
 }
 
+// Format implements fmt.Formatter on the value receiver so every verb (%v,
+// %+v, %#v, %s, %q, %x, ...) on either ClientConfig or *ClientConfig writes
+// the redacted summary rather than raw BaseURL or APIKey fields.
+func (c ClientConfig) Format(f fmt.State, verb rune) {
+	summary := c.redactedSummary()
+	if verb == 'q' {
+		_, _ = fmt.Fprintf(f, "%q", summary)
+		return
+	}
+	_, _ = f.Write([]byte(summary))
+}
+
+// MarshalJSON implements json.Marshaler with a redacted representation so JSON
+// serialization of ClientConfig or *ClientConfig never exposes BaseURL or APIKey.
+func (c ClientConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Provider        string `json:"provider"`
+		BaseURLSet      bool   `json:"base_url_set"`
+		APIKeySet       bool   `json:"api_key_set"`
+		Model           string `json:"model"`
+		Dims            int    `json:"dims"`
+		QueryTimeout    string `json:"query_timeout"`
+		DocumentTimeout string `json:"document_timeout"`
+	}{
+		Provider:        c.Provider,
+		BaseURLSet:      c.BaseURL != "",
+		APIKeySet:       !c.APIKey.IsEmpty(),
+		Model:           c.Model,
+		Dims:            c.Dims,
+		QueryTimeout:    c.QueryTimeout.String(),
+		DocumentTimeout: c.DocumentTimeout.String(),
+	})
+}
+
+// MarshalText implements encoding.TextMarshaler with the redacted summary.
+func (c ClientConfig) MarshalText() ([]byte, error) {
+	return []byte(c.redactedSummary()), nil
+}
+
 // EffectivePrefixes returns the (queryPrefix, docPrefix) pair that a client
 // built from c uses and records in embedid.Identity (plan P05 mục 2.12, ADR 0004):
 //   - openai_compat: QueryPrefix = "Instruct: " + QueryInstruction + "\nQuery:", DocPrefix = ""
