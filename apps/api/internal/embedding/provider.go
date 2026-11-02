@@ -332,16 +332,9 @@ func classifyTransportError(err error) *ProviderError {
 	if err == nil {
 		return nil
 	}
-	var pe *ProviderError
-	if errors.As(err, &pe) && pe != nil {
-		return &ProviderError{
-			Class:      pe.Class,
-			HTTPStatus: pe.HTTPStatus,
-			RetryAfter: pe.RetryAfter,
-			Detail:     pe.Detail,
-			Err:        safeUnwrapErr(pe.Err),
-		}
-	}
+	// Check context deadline and network timeout first so any timeout during
+	// DNS resolution, dialing, or body reading is always classified as
+	// ClassTimeout (never ClassRefused or ClassBadResponse).
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return &ProviderError{
 			Class:  ClassTimeout,
@@ -355,6 +348,16 @@ func classifyTransportError(err error) *ProviderError {
 			Class:  ClassTimeout,
 			Detail: "network timeout",
 			Err:    context.DeadlineExceeded,
+		}
+	}
+	var pe *ProviderError
+	if errors.As(err, &pe) && pe != nil {
+		return &ProviderError{
+			Class:      pe.Class,
+			HTTPStatus: pe.HTTPStatus,
+			RetryAfter: pe.RetryAfter,
+			Detail:     pe.Detail,
+			Err:        safeUnwrapErr(pe.Err),
 		}
 	}
 	if errors.Is(err, ErrDisallowedIP) {
