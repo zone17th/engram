@@ -2,6 +2,9 @@ package semantic_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -605,5 +608,215 @@ func TestSQLTimeoutDegradesWithoutOpeningBreaker(t *testing.T) {
 	if searcher.ItemCalls() != 2 || searcher.TagCalls() != 1 {
 		t.Fatalf("scope=item on second call should only query item corpus: itemCalls=%d tagCalls=%d",
 			searcher.ItemCalls(), searcher.TagCalls())
+	}
+}
+
+// TestCanceledHalfOpenProbeDoesNotStrandRecovery verifies RV-T12-BE-1:
+//   - Trip the API circuit breaker via a provider 503 failure.
+//   - Advance the clock by 60 s so the open window expires.
+//   - Cancel the first recovery query (caller context.Canceled) -> finish(context.Canceled)
+//     leaves the breaker HalfOpen with trialInFlight=false.
+//   - Without advancing the clock again, a replacement cache-miss query reaches the
+//     provider, and when multiple replacement queries race concurrently in HalfOpen,
+//     Acquire() admits exactly ONE probe while the others degrade cleanly with 0
+//     extra provider calls.
+//   - Once the admitted replacement probe completes successfully, the circuit closes
+//     and subsequent queries succeed.
+func TestCanceledHalfOpenProbeDoesNotStrandRecovery(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
+	ts := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(ts)
+	_, metrics := obs.NewRegistry()
+
+	teiID := testTEIIdentity()
+	spyProv := semantictest.NewSpyProvider(teiID)
+	client := embedding.NewClient(spyProv, teiID.QueryPrefix, teiID.DocPrefix)
+	cs := embedding.NewClientSet(client, nil)
+	pin := testPinForIdentity(1, teiID)
+	pinner := semantictest.NewSpyPinner(pin, true)
+	searcher := &semantictest.SpyVectorSearcher{
+		ItemHits: []semantic.VectorHit{
+			{
+				ID:         uuid.MustParse("00000000-0001-4000-8000-000000000077"),
+				Cos:        0.89,
+				Name:       "router chính",
+				Count:      3,
+				LastUsedAt: ts,
+				CreatedAt:  ts,
+			},
+		},
+	}
+
+	rt := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderTEI,
+		ClientSet:      cs,
+		Pinner:         pinner,
+		Calibration:    matchingCalibration(teiID),
+		VectorSearcher: searcher,
+		SettingsReader: &semantictest.StaticSettingsReader{Default: true},
+		Metrics:        metrics,
+		Clock:          clk,
+	})
+	nearSrc := rt.NearSource()
+
+	// 1. First query fails with provider 503 -> trips the API circuit breaker for 60 s.
+	spyProv.EmbedQueryFn = func(context.Context, string) ([]float32, error) {
+		return nil, &embedding.ProviderError{
+			Class:      embedding.Class5xx,
+			HTTPStatus: 503,
+			Detail:     "service unavailable",
+		}
+	}
+	resTrip, err := nearSrc.Near(ctx, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "trip query",
+		Scope:         suggest.ScopeAll,
+		Limit:         8,
+		Cap:           2,
+		SemanticParam: true,
+	})
+	if err != nil {
+		t.Fatalf("trip Near unexpected error: %v", err)
+	}
+	if resTrip.Semantic || resTrip.SemanticReason == nil || *resTrip.SemanticReason != suggest.ReasonDegraded {
+		t.Fatalf("trip Near = %+v, want Semantic=false Reason=degraded", resTrip)
+	}
+	if !rt.IsBreakerOpen() {
+		t.Fatal("expected IsBreakerOpen() == true immediately after provider 503")
+	}
+	if spyProv.QueryCalls() != 1 {
+		t.Fatalf("expected 1 provider call on trip, got %d", spyProv.QueryCalls())
+	}
+
+	// 2. Advance clock 60 s so the open window expires.
+	clk.Advance(embedding.BreakerOpenWindow)
+
+	// 3. First recovery query is canceled by the caller inside EmbedQuery.
+	cancelCtx, cancelFirst := context.WithCancel(ctx)
+	spyProv.EmbedQueryFn = func(callCtx context.Context, _ string) ([]float32, error) {
+		cancelFirst()
+		return nil, callCtx.Err()
+	}
+	_, err = nearSrc.Near(cancelCtx, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "canceled probe query",
+		Scope:         suggest.ScopeAll,
+		Limit:         8,
+		Cap:           2,
+		SemanticParam: true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled probe Near error = %v, want context.Canceled", err)
+	}
+	if spyProv.QueryCalls() != 2 {
+		t.Fatalf("expected 2 total provider calls after canceled probe, got %d", spyProv.QueryCalls())
+	}
+	// Breaker remains HalfOpen (unhealthy for PATCH IsBreakerOpen, but idle for a replacement probe).
+	if rt.Breaker().State() != embedding.BreakerStateHalfOpen {
+		t.Fatalf("breaker state after canceled probe = %v, want HalfOpen", rt.Breaker().State())
+	}
+	if !rt.IsBreakerOpen() {
+		t.Fatal("expected IsBreakerOpen() == true while HalfOpen before a replacement probe succeeds")
+	}
+
+	// 4. Without advancing the clock again, launch concurrent replacement cache-miss
+	// queries. Hold the admitted replacement probe inside EmbedQuery until the
+	// contenders have completed so the test is deterministic (no sleeps).
+	probeEntered := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var enterOnce sync.Once
+	spyProv.EmbedQueryFn = func(context.Context, string) ([]float32, error) {
+		enterOnce.Do(func() { close(probeEntered) })
+		<-releaseProbe
+		return []float32{1, 0, 0, 0, 0, 0, 0, 0}, nil
+	}
+
+	const contenders = 4
+	type callOutcome struct {
+		res suggest.NearResult
+		err error
+	}
+	outcomes := make([]callOutcome, contenders)
+
+	// Launch the replacement probe first and wait until it holds the HalfOpen trial slot.
+	var probeWG sync.WaitGroup
+	probeWG.Add(1)
+	go func() {
+		defer probeWG.Done()
+		r, e := nearSrc.Near(ctx, suggest.NearRequest{
+			UserID:        userID,
+			QN:            "replacement probe 0",
+			Scope:         suggest.ScopeAll,
+			Limit:         8,
+			Cap:           2,
+			SemanticParam: true,
+		})
+		outcomes[0] = callOutcome{res: r, err: e}
+	}()
+
+	<-probeEntered
+
+	// While replacement probe 0 is in flight, concurrent replacement queries 1..3
+	// must be rejected by Acquire() and degrade without calling the provider.
+	var contenderWG sync.WaitGroup
+	for i := 1; i < contenders; i++ {
+		contenderWG.Add(1)
+		go func(idx int) {
+			defer contenderWG.Done()
+			r, e := nearSrc.Near(ctx, suggest.NearRequest{
+				UserID:        userID,
+				QN:            fmt.Sprintf("replacement probe %d", idx),
+				Scope:         suggest.ScopeAll,
+				Limit:         8,
+				Cap:           2,
+				SemanticParam: true,
+			})
+			outcomes[idx] = callOutcome{res: r, err: e}
+		}(i)
+	}
+	contenderWG.Wait()
+
+	// Release the single admitted replacement probe and wait for it to finish.
+	close(releaseProbe)
+	probeWG.Wait()
+
+	// Exactly 1 replacement query called the provider (total QueryCalls: 2 -> 3).
+	if spyProv.QueryCalls() != 3 {
+		t.Fatalf("expected exactly 1 replacement probe to reach provider (total 3), got %d", spyProv.QueryCalls())
+	}
+	if outcomes[0].err != nil || !outcomes[0].res.Semantic || outcomes[0].res.SemanticReason != nil {
+		t.Fatalf("admitted replacement probe outcome = %+v (err=%v), want Semantic=true", outcomes[0].res, outcomes[0].err)
+	}
+	for i := 1; i < contenders; i++ {
+		if outcomes[i].err != nil {
+			t.Fatalf("contender %d unexpected error: %v", i, outcomes[i].err)
+		}
+		if outcomes[i].res.Semantic || outcomes[i].res.SemanticReason == nil || *outcomes[i].res.SemanticReason != suggest.ReasonDegraded {
+			t.Fatalf("contender %d outcome = %+v, want Semantic=false Reason=degraded", i, outcomes[i].res)
+		}
+	}
+
+	// 5. Breaker is now Closed and subsequent cache-miss queries succeed normally.
+	if rt.Breaker().State() != embedding.BreakerStateClosed {
+		t.Fatalf("breaker state after replacement probe success = %v, want Closed", rt.Breaker().State())
+	}
+	if rt.IsBreakerOpen() {
+		t.Fatal("expected IsBreakerOpen() == false after replacement probe succeeded")
+	}
+	resAfter, err := nearSrc.Near(ctx, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "post recovery query",
+		Scope:         suggest.ScopeAll,
+		Limit:         8,
+		Cap:           2,
+		SemanticParam: true,
+	})
+	if err != nil || !resAfter.Semantic {
+		t.Fatalf("post-recovery Near = %+v (err=%v), want Semantic=true", resAfter, err)
+	}
+	if spyProv.QueryCalls() != 4 {
+		t.Fatalf("expected post-recovery cache miss to reach provider (total 4), got %d", spyProv.QueryCalls())
 	}
 }

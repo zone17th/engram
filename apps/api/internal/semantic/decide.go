@@ -67,8 +67,8 @@ type Decision struct {
 //     - calibration missing for pin.Identity -> false, "disabled_server"
 //  3. user: settings.SemanticSuggest == true -> false, "disabled_user"
 //  4. request: req.SemanticParam == true -> false, "request_lexical"
-//  5. breaker: API circuit breaker for pin.Identity.Provider is closed (or half-open
-//     with no trial in flight) -> false, "degraded"
+//  5. breaker: API circuit breaker for pin.Identity.Provider is not Open within
+//     its 60 s window -> false, "degraded" (HalfOpen admits via Candidates Acquire)
 //  6. length: utf8.RuneCountInString(req.QN) >= 3 -> false, "short_query"
 func (r *Runtime) Decide(
 	ctx context.Context,
@@ -142,7 +142,7 @@ func (r *Runtime) decideWithPin(
 		}
 	}
 
-	if b := r.BreakerForProvider(pin.Identity.Provider); b != nil && b.IsOpen() {
+	if b := r.BreakerForProvider(pin.Identity.Provider); b != nil && b.State() == embedding.BreakerStateOpen {
 		return Decision{
 			Effective: false,
 			Reason:    suggest.ReasonDegraded,
