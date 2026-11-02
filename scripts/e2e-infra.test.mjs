@@ -632,6 +632,13 @@ function validateCiSemanticJob(workflowSource, composeSource) {
   assert.match(playwrightStep.runText, /--network host/);
   assert.match(playwrightStep.runText, /--env E2E_STACK\b/);
   assert.match(playwrightStep.runText, /--env FAKEEMBED_CONTROL_URL\b/);
+  // The FE helper reads the real document prefix from the stack's value (RV-T20b1-FE-3).
+  assert.match(
+    playwrightStep.runText,
+    /--env TEI_INPUT_PREFIX_DOCUMENT\b/,
+    'Playwright container must receive TEI_INPUT_PREFIX_DOCUMENT',
+  );
+  assert.equal(playwrightStep.effectiveEnv.get('TEI_INPUT_PREFIX_DOCUMENT'), 'passage: ');
   assert.equal(playwrightStep.effectiveEnv.get('E2E_STACK'), '1');
   assert.equal(playwrightStep.effectiveEnv.get('FAKEEMBED_CONTROL_URL'), 'http://127.0.0.1:8090');
 
@@ -646,7 +653,20 @@ function validateCiSemanticJob(workflowSource, composeSource) {
   assert.ok(healthzIndex < readinessIndex, 'the /readyz readiness step must come after the healthz wait');
   const readiness = model.steps[readinessIndex].runText;
   assert.match(readiness, /SECONDS \+ 180/);
-  assert.match(readiness, /sleep 2\b/);
+  // Every poll is bounded by the remaining budget (RV-T20b1-BE-3): a stuck request must not outlive the 180 s limit.
+  assert.match(readiness, /curl[^\n]*--connect-timeout\s+"\$request_max_time"/, 'readiness curl must set --connect-timeout');
+  assert.match(readiness, /curl[^\n]*--max-time\s+"\$request_max_time"/, 'readiness curl must set --max-time');
+  assert.match(
+    readiness,
+    /request_max_time=\$\(\(\s*remaining < 5 \? remaining : 5\s*\)\)/,
+    'request timeout must be capped by the remaining budget',
+  );
+  assert.match(
+    readiness,
+    /pause=\$\(\(\s*remaining < 2 \? remaining : 2\s*\)\)/,
+    'the 2 s pause must be capped by the remaining budget',
+  );
+  assert.match(readiness, /sleep "\$pause"/);
   assert.match(readiness, /semantic chưa available sau 180 s: g1 bootstrap chưa flip/);
   assert.match(readiness, /Last \/readyz body: \$body/);
 
@@ -695,6 +715,22 @@ test('Search semantic e2e CI job waits for /readyz before @semantic Playwright a
     () => validateCiSemanticJob(readinessAfterPlaywright, compose),
     /readiness step must come before playwright test/,
   );
+
+  // An unbounded readiness request (no curl timeout) is rejected (RV-T20b1-BE-3).
+  const withoutRequestTimeout = workflow.replace(' --max-time "$request_max_time"', '');
+  assert.notEqual(withoutRequestTimeout, workflow);
+  assert.throws(() => validateCiSemanticJob(withoutRequestTimeout, compose), /--max-time/);
+  const withoutConnectTimeout = workflow.replace(' --connect-timeout "$request_max_time"', '');
+  assert.notEqual(withoutConnectTimeout, workflow);
+  assert.throws(() => validateCiSemanticJob(withoutConnectTimeout, compose), /--connect-timeout/);
+  const uncappedPause = workflow.replace('pause=$(( remaining < 2 ? remaining : 2 ))', 'pause=2');
+  assert.notEqual(uncappedPause, workflow);
+  assert.throws(() => validateCiSemanticJob(uncappedPause, compose), /2 s pause must be capped/);
+
+  // The document prefix must reach the Playwright container (RV-T20b1-FE-3).
+  const withoutPrefixForward = workflow.replace('            --env TEI_INPUT_PREFIX_DOCUMENT \\\n', '');
+  assert.notEqual(withoutPrefixForward, workflow);
+  assert.throws(() => validateCiSemanticJob(withoutPrefixForward, compose), /TEI_INPUT_PREFIX_DOCUMENT/);
 
   // No readiness step at all is rejected.
   const withoutReadiness = workflow.replace(readinessBlock[0], '');
