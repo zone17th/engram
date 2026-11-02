@@ -185,6 +185,13 @@ func (p OpenAICompat) LogValue() slog.Value {
 	return slog.StringValue(p.redactedSummary())
 }
 
+// MarshalJSON implements json.Marshaler with a redacted representation so JSON
+// serialization of OpenAICompat or *OpenAICompat never exposes endpoint URLs
+// or credentials.
+func (p OpenAICompat) MarshalJSON() ([]byte, error) {
+	return json.Marshal(p.redactedSummary())
+}
+
 // EmbedDocuments embeds up to MaxBatch (64) document inputs without any query
 // instruction prefix (plan P05 mục 2.12). More than 64 inputs returns an error
 // without making a network request (the caller is responsible for chunking).
@@ -285,7 +292,7 @@ func (p *OpenAICompat) doEmbed(ctx context.Context, op string, inputs []string, 
 		retErr = classifyTransportError(err)
 		return nil, retErr
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	httpStatus = resp.StatusCode
 	if httpStatus < 200 || httpStatus >= 300 {

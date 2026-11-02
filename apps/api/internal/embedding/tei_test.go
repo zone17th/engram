@@ -3,8 +3,6 @@ package embedding_test
 import (
 	"context"
 	"errors"
-	"github.com/zone17th/engram/apps/api/internal/embedding"
-	"github.com/zone17th/engram/apps/api/internal/embedding/embedtest"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/zone17th/engram/apps/api/internal/embedding"
+	"github.com/zone17th/engram/apps/api/internal/embedding/embedtest"
 )
 
 func TestTEIBootInfoPrefixesAndNormalization(t *testing.T) {

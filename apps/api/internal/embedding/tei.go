@@ -148,7 +148,7 @@ func (p *TEI) fetchBootInfo(ctx context.Context) error {
 	if err != nil {
 		return classifyTransportError(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return classifyHTTPStatus(resp.StatusCode, resp.Header, p.now())
@@ -203,7 +203,7 @@ func isValidTEIInfoToken(s string) bool {
 		return false
 	}
 	c0 := s[0]
-	if !((c0 >= 'A' && c0 <= 'Z') || (c0 >= 'a' && c0 <= 'z') || (c0 >= '0' && c0 <= '9')) {
+	if (c0 < 'A' || c0 > 'Z') && (c0 < 'a' || c0 > 'z') && (c0 < '0' || c0 > '9') {
 		return false
 	}
 	for i := 1; i < len(s); i++ {
@@ -275,6 +275,12 @@ func (p TEI) Format(f fmt.State, verb rune) {
 // exposes endpoint URLs.
 func (p TEI) LogValue() slog.Value {
 	return slog.StringValue(p.redactedSummary())
+}
+
+// MarshalJSON implements json.Marshaler with a redacted representation so JSON
+// serialization of TEI or *TEI never exposes endpoint URLs or response strings.
+func (p TEI) MarshalJSON() ([]byte, error) {
+	return json.Marshal(p.redactedSummary())
 }
 
 // EmbedDocuments embeds up to MaxBatch (64) document inputs, prepending
@@ -366,7 +372,7 @@ func (p *TEI) doEmbed(ctx context.Context, op string, inputs []string, timeout t
 		retErr = classifyTransportError(err)
 		return nil, retErr
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	httpStatus = resp.StatusCode
 	if httpStatus < 200 || httpStatus >= 300 {

@@ -656,6 +656,7 @@ func (c *Config) EmbeddingShadow() (embedding.ClientConfig, bool) {
 		DocPrefix:        c.EmbeddingShadowInputPrefixDoc,
 	}, true
 }
+
 func (c *Config) GoogleLoginEnabled() bool {
 	return strings.TrimSpace(c.OAuthGoogleClientID) != ""
 }

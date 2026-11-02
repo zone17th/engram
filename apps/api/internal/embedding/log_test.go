@@ -313,6 +313,14 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal(openAIVal): %v", err)
 	}
+	jsonTEIPtrBytes, err := json.Marshal(teiPtr)
+	if err != nil {
+		t.Fatalf("json.Marshal(teiPtr): %v", err)
+	}
+	jsonTEIValBytes, err := json.Marshal(teiVal)
+	if err != nil {
+		t.Fatalf("json.Marshal(teiVal): %v", err)
+	}
 	jsonCfgBytes, err := json.Marshal(openAICfg)
 	if err != nil {
 		t.Fatalf("json.Marshal(openAICfg): %v", err)
@@ -374,6 +382,8 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 		"secret_%x":                fmt.Sprintf("%x", openAICfg.APIKey),
 		"json_openai_ptr":          string(jsonPtrBytes),
 		"json_openai_val":          string(jsonValBytes),
+		"json_tei_ptr":             string(jsonTEIPtrBytes),
+		"json_tei_val":             string(jsonTEIValBytes),
 		"json_cfg":                 string(jsonCfgBytes),
 		"text_cfg":                 string(textCfgBytes),
 		"slog_text":                textLogBuf.String(),
@@ -400,28 +410,32 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 	// RV52B-BE2-2: Direct fmt and slog of TEI and OpenAICompat providers (value and pointer)
 	// must not publish /info response strings (model_id, model_sha) or raw model strings.
 	providerDiagnosticSurfaces := map[string]string{
-		"openai_ptr_%v":  representations["openai_ptr_%v"],
-		"openai_ptr_%+v": representations["openai_ptr_%+v"],
-		"openai_ptr_%#v": representations["openai_ptr_%#v"],
-		"openai_ptr_%s":  representations["openai_ptr_%s"],
-		"openai_ptr_%q":  representations["openai_ptr_%q"],
-		"openai_val_%v":  representations["openai_val_%v"],
-		"openai_val_%+v": representations["openai_val_%+v"],
-		"openai_val_%#v": representations["openai_val_%#v"],
-		"openai_val_%s":  representations["openai_val_%s"],
-		"openai_val_%q":  representations["openai_val_%q"],
-		"tei_ptr_%v":     representations["tei_ptr_%v"],
-		"tei_ptr_%+v":    representations["tei_ptr_%+v"],
-		"tei_ptr_%#v":    representations["tei_ptr_%#v"],
-		"tei_ptr_%s":     representations["tei_ptr_%s"],
-		"tei_ptr_%q":     representations["tei_ptr_%q"],
-		"tei_val_%v":     representations["tei_val_%v"],
-		"tei_val_%+v":    representations["tei_val_%+v"],
-		"tei_val_%#v":    representations["tei_val_%#v"],
-		"tei_val_%s":     representations["tei_val_%s"],
-		"tei_val_%q":     representations["tei_val_%q"],
-		"slog_text":      representations["slog_text"],
-		"slog_json":      representations["slog_json"],
+		"openai_ptr_%v":   representations["openai_ptr_%v"],
+		"openai_ptr_%+v":  representations["openai_ptr_%+v"],
+		"openai_ptr_%#v":  representations["openai_ptr_%#v"],
+		"openai_ptr_%s":   representations["openai_ptr_%s"],
+		"openai_ptr_%q":   representations["openai_ptr_%q"],
+		"openai_val_%v":   representations["openai_val_%v"],
+		"openai_val_%+v":  representations["openai_val_%+v"],
+		"openai_val_%#v":  representations["openai_val_%#v"],
+		"openai_val_%s":   representations["openai_val_%s"],
+		"openai_val_%q":   representations["openai_val_%q"],
+		"tei_ptr_%v":      representations["tei_ptr_%v"],
+		"tei_ptr_%+v":     representations["tei_ptr_%+v"],
+		"tei_ptr_%#v":     representations["tei_ptr_%#v"],
+		"tei_ptr_%s":      representations["tei_ptr_%s"],
+		"tei_ptr_%q":      representations["tei_ptr_%q"],
+		"tei_val_%v":      representations["tei_val_%v"],
+		"tei_val_%+v":     representations["tei_val_%+v"],
+		"tei_val_%#v":     representations["tei_val_%#v"],
+		"tei_val_%s":      representations["tei_val_%s"],
+		"tei_val_%q":      representations["tei_val_%q"],
+		"json_openai_ptr": representations["json_openai_ptr"],
+		"json_openai_val": representations["json_openai_val"],
+		"json_tei_ptr":    representations["json_tei_ptr"],
+		"json_tei_val":    representations["json_tei_val"],
+		"slog_text":       representations["slog_text"],
+		"slog_json":       representations["slog_json"],
 	}
 	responseMarkers := []struct {
 		name  string

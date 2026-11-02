@@ -77,7 +77,7 @@ func TestServerTEIAndOpenAIEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /info: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /info status = %d", resp.StatusCode)
 	}
@@ -95,7 +95,7 @@ func TestServerTEIAndOpenAIEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /embed: %v", err)
 	}
-	defer teiResp.Body.Close()
+	defer func() { _ = teiResp.Body.Close() }()
 	var teiVecs [][]float32
 	if err := json.NewDecoder(teiResp.Body).Decode(&teiVecs); err != nil {
 		t.Fatalf("decode /embed: %v", err)
@@ -110,7 +110,7 @@ func TestServerTEIAndOpenAIEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/embeddings: %v", err)
 	}
-	defer oaiResp.Body.Close()
+	defer func() { _ = oaiResp.Body.Close() }()
 	raw, _ := io.ReadAll(oaiResp.Body)
 	if !bytes.Contains(raw, []byte(`"embedding"`)) {
 		t.Fatalf("unexpected OpenAI body: %s", raw)
