@@ -188,22 +188,44 @@ func (e *ProviderError) Is(target error) bool {
 	return false
 }
 
-// Secret holds a sensitive credential (such as an embedding API key) whose
-// formatting, JSON/text marshaling, and structured logging representations are
-// unconditionally redacted to "[redacted]". Call Reveal() only at the exact
-// site that constructs an outbound Authorization header.
-type Secret string
+// Secret holds a sensitive credential (such as an embedding API key) in an
+// opaque struct whose formatting, JSON/text marshaling, and structured logging
+// representations are unconditionally redacted to "[redacted]". Storing the
+// credential behind a pointer to string (rather than a string-kind value)
+// ensures that even when Go's reflection-based fmt formatter reaches Secret
+// through an unexported struct field (where CanInterface() is false and custom
+// Format/String/GoString methods cannot be invoked), fmt prints only a pointer
+// address at depth > 0 and never enumerates the raw secret bytes.
+//
+// Call Reveal() only at the exact site that constructs an outbound
+// Authorization header.
+type Secret struct {
+	v *string
+}
 
 const redactedMask = "[redacted]"
 
-// Reveal returns the underlying raw secret string.
+// NewSecret constructs a Secret from raw (trimming surrounding whitespace).
+// An empty or whitespace-only string produces the zero Secret (IsEmpty() == true).
+func NewSecret(raw string) Secret {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return Secret{}
+	}
+	return Secret{v: &s}
+}
+
+// Reveal returns the underlying raw secret string, or "" if empty.
 func (s Secret) Reveal() string {
-	return string(s)
+	if s.v == nil {
+		return ""
+	}
+	return *s.v
 }
 
 // IsEmpty reports whether the secret is empty.
 func (s Secret) IsEmpty() bool {
-	return s == ""
+	return s.v == nil || *s.v == ""
 }
 
 // String implements fmt.Stringer with a fixed redaction mask.

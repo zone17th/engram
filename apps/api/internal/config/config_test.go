@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/embedding"
 )
 
 func setEnv(t *testing.T, kv map[string]string) {
@@ -1208,11 +1209,18 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 			slog.Any("shadow_key", shadowClient.APIKey),
 		)
 
+		unexportedSecretPrimary := struct{ key embedding.Secret }{key: cfg.EmbeddingAPIKey}
+		unexportedSecretShadow := struct{ key embedding.Secret }{key: cfg.EmbeddingShadowAPIKey}
+		unexportedCfgHolder := struct{ cfg config.Config }{cfg: *cfg}
+
 		formattedParts := []string{
 			fmt.Sprint(redacted),
 			fmtMap(redacted),
 			fmt.Sprintf("%v|%s|%+v|%#v", cfg, cfg, cfg, cfg),
 			fmt.Sprintf("%v|%s|%+v|%#v", *cfg, *cfg, *cfg, *cfg),
+			fmt.Sprintf("%v|%+v|%#v", unexportedSecretPrimary, unexportedSecretPrimary, unexportedSecretPrimary),
+			fmt.Sprintf("%v|%+v|%#v", unexportedSecretShadow, unexportedSecretShadow, unexportedSecretShadow),
+			fmt.Sprintf("%v|%+v|%#v", unexportedCfgHolder, unexportedCfgHolder, unexportedCfgHolder),
 			fmt.Sprintf("%v|%s|%+v|%#v", primaryClient, primaryClient, primaryClient, primaryClient),
 			fmt.Sprintf("%v|%s|%+v|%#v", &primaryClient, &primaryClient, &primaryClient, &primaryClient),
 			fmt.Sprintf("%v|%s|%+v|%#v", shadowClient, shadowClient, shadowClient, shadowClient),

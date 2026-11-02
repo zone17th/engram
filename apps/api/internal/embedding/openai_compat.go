@@ -82,7 +82,7 @@ func NewOpenAICompat(cfg ClientConfig, opts ...OpenAICompatOption) (*OpenAICompa
 	if err := CheckURL(baseURL); err != nil {
 		return nil, err
 	}
-	apiKey := Secret(strings.TrimSpace(cfg.APIKey.Reveal()))
+	apiKey := cfg.APIKey
 	if apiKey.IsEmpty() {
 		return nil, fmt.Errorf("embedding: openai_compat requires non-empty API key")
 	}

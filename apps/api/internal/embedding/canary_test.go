@@ -55,7 +55,7 @@ func TestCanaryFirstRunIdenticalAndPerturbedDrift(t *testing.T) {
 		embedding.ClientConfig{
 			Provider:         embedding.ProviderOpenAICompat,
 			BaseURL:          srv.URL() + "/v1",
-			APIKey:           "sk-canary-test-key",
+			APIKey:           embedding.NewSecret("sk-canary-test-key"),
 			Model:            "openrouter/qwen/qwen3-embedding-8b",
 			Dims:             16,
 			QueryInstruction: "Retrieve matching items",

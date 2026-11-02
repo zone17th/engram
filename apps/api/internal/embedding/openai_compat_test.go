@@ -43,7 +43,7 @@ func TestOpenAICompatRequestShapeAndNormalization(t *testing.T) {
 	cfg := embedding.ClientConfig{
 		Provider:         embedding.ProviderOpenAICompat,
 		BaseURL:          srv.URL() + "/v1",
-		APIKey:           apiKey,
+		APIKey:           embedding.NewSecret(apiKey),
 		Model:            modelName,
 		Dims:             16,
 		QueryInstruction: instruction,
@@ -151,7 +151,7 @@ func TestOpenAICompatBatchLimit(t *testing.T) {
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider: embedding.ProviderOpenAICompat,
 		BaseURL:  srv.URL(),
-		APIKey:   "sk-test-batch-limit",
+		APIKey:   embedding.NewSecret("sk-test-batch-limit"),
 		Model:    "qwen",
 		Dims:     8,
 	})
@@ -178,7 +178,7 @@ func TestOpenAICompatBadResponseAndFaultModes(t *testing.T) {
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider:        embedding.ProviderOpenAICompat,
 		BaseURL:         srv.URL() + "/v1",
-		APIKey:          "sk-test-faults",
+		APIKey:          embedding.NewSecret("sk-test-faults"),
 		Model:           "qwen",
 		Dims:            8,
 		QueryTimeout:    80 * time.Millisecond,
@@ -229,7 +229,7 @@ func TestOpenAICompatBadResponseAndFaultModes(t *testing.T) {
 		p2, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 			Provider: embedding.ProviderOpenAICompat,
 			BaseURL:  wrongCountSrv.URL,
-			APIKey:   "sk-test",
+			APIKey:   embedding.NewSecret("sk-test"),
 			Model:    "qwen",
 			Dims:     8,
 		})
@@ -256,7 +256,7 @@ func TestOpenAICompatBadResponseAndFaultModes(t *testing.T) {
 			pNull, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 				Provider: embedding.ProviderOpenAICompat,
 				BaseURL:  nullSrv.URL,
-				APIKey:   "sk-test-null",
+				APIKey:   embedding.NewSecret("sk-test-null"),
 				Model:    "qwen",
 				Dims:     8,
 			})
@@ -328,7 +328,7 @@ func TestOpenAICompatRedirectNotFollowed(t *testing.T) {
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider: embedding.ProviderOpenAICompat,
 		BaseURL:  srv.URL() + "/v1",
-		APIKey:   "sk-redirect-secret",
+		APIKey:   embedding.NewSecret("sk-redirect-secret"),
 		Model:    "qwen",
 		Dims:     8,
 	})
@@ -359,7 +359,7 @@ func TestNewClientFromConfigComputesFullIdentity(t *testing.T) {
 	primaryCfg := embedding.ClientConfig{
 		Provider:         embedding.ProviderOpenAICompat,
 		BaseURL:          srv.URL() + "/v1",
-		APIKey:           "sk-primary-key",
+		APIKey:           embedding.NewSecret("sk-primary-key"),
 		Model:            "openrouter/qwen/qwen3-embedding-8b",
 		Dims:             16,
 		QueryInstruction: "Retrieve matching items",
@@ -437,7 +437,7 @@ func TestOpenAICompatNon2xxDoesNotBlockOnStalledBody(t *testing.T) {
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider:     embedding.ProviderOpenAICompat,
 		BaseURL:      stalledSrv.URL,
-		APIKey:       "sk-stalled-429",
+		APIKey:       embedding.NewSecret("sk-stalled-429"),
 		Model:        "qwen",
 		Dims:         8,
 		QueryTimeout: 50 * time.Millisecond,
@@ -461,7 +461,7 @@ func TestOpenAICompatCallerCancelPreservesCanceledSentinel(t *testing.T) {
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider:     embedding.ProviderOpenAICompat,
 		BaseURL:      srv.URL() + "/v1",
-		APIKey:       "sk-cancel-secret-key",
+		APIKey:       embedding.NewSecret("sk-cancel-secret-key"),
 		Model:        "qwen",
 		Dims:         8,
 		QueryTimeout: 5 * time.Second,
@@ -506,7 +506,7 @@ func TestFactoryEnforcesTransportPolicyAndTrimmedProviderPrefixes(t *testing.T) 
 		embedding.ClientConfig{
 			Provider:         "  openai_compat  ",
 			BaseURL:          "http://rebind-factory.example.invalid:8080/v1",
-			APIKey:           "sk-factory-policy",
+			APIKey:           embedding.NewSecret("sk-factory-policy"),
 			Model:            "qwen",
 			Dims:             8,
 			QueryInstruction: "Retrieve matching items",

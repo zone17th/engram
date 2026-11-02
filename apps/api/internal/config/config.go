@@ -161,8 +161,8 @@ func Load() (*Config, error) {
 	cfg.rawReauth = secrets.AuthReauthSecret
 	cfg.rawIP = secrets.AuthIPPepper
 	cfg.rawEmail = secrets.AuthEmailPepper
-	cfg.rawEmbeddingAPIKey = embedding.Secret(strings.TrimSpace(secrets.EmbeddingAPIKey))
-	cfg.rawEmbeddingShadowAPIKey = embedding.Secret(strings.TrimSpace(secrets.EmbeddingShadowAPIKey))
+	cfg.rawEmbeddingAPIKey = embedding.NewSecret(secrets.EmbeddingAPIKey)
+	cfg.rawEmbeddingShadowAPIKey = embedding.NewSecret(secrets.EmbeddingShadowAPIKey)
 	cfg.EmbeddingAPIKey = cfg.rawEmbeddingAPIKey
 	cfg.EmbeddingShadowAPIKey = cfg.rawEmbeddingShadowAPIKey
 
