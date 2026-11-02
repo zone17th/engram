@@ -597,6 +597,146 @@ test('Content e2e CI job, Browser project filter, and NEXT_PUBLIC_CONTENT_ENABLE
   validateCiContentAndBrowserJobs(workflow);
 });
 
+// P05 Task 20b (PR 20b-1): the `@semantic` Playwright specs run only in job `e2e-search-semantic` (compose profile
+// `semantic-fake`), after a /readyz readiness step; `Content e2e` excludes them.
+function validateCiSemanticJob(workflowSource, composeSource) {
+  const semanticJobMatch = workflowSource.match(
+    /  e2e-search-semantic:\r?\n    name:\s*Search semantic e2e \(fake provider\)\r?\n([\s\S]*?)(?=\r?\n  [a-z0-9-]+:|$)/,
+  );
+  assert.ok(semanticJobMatch, 'missing "Search semantic e2e (fake provider)" job e2e-search-semantic in ci.yml');
+  const model = parseCiJobModel(semanticJobMatch[1]);
+
+  // Stack: compose profile semantic-fake with the tei provider pointed at fakeembed (T16 handoff, advisor-dec-279).
+  const env = model.jobEnv;
+  assert.equal(env.get('COMPOSE_PROFILES'), 'semantic-fake', 'e2e-search-semantic must run compose profile semantic-fake');
+  assert.equal(env.get('SEARCH_SEMANTIC_ENABLED'), 'true');
+  assert.equal(env.get('EMBEDDING_PROVIDER'), 'tei');
+  assert.equal(env.get('TEI_URL'), 'http://fakeembed:8080');
+  assert.equal(env.get('TEI_INPUT_PREFIX_QUERY'), 'query: ');
+  assert.equal(env.get('TEI_INPUT_PREFIX_DOCUMENT'), 'passage: ');
+  assert.equal(env.get('EMBEDDING_BOOTSTRAP_FLIP_INTERVAL'), '5s');
+  assert.equal(env.get('FAKEEMBED_PORT'), '8090');
+  // fakeembed is published on loopback only (spec reaches /__control through the host network).
+  assert.match(composeSource, /fakeembed:[\s\S]*?ports: \['127\.0\.0\.1:\$\{FAKEEMBED_PORT:-8090\}:8080'\]/);
+
+  const playwrightStepIndexes = model.steps
+    .map((step, index) => (step.runLines.some((line) => line.includes('playwright test')) ? index : -1))
+    .filter((index) => index !== -1);
+  assert.equal(playwrightStepIndexes.length, 1, 'expected one playwright test step in e2e-search-semantic');
+  const playwrightIndex = playwrightStepIndexes[0];
+  const playwrightStep = model.steps[playwrightIndex];
+  const playwrightLine = playwrightStep.runLines.find((line) => line.includes('playwright test'));
+  assert.match(playwrightLine, /--project(?:=|\s+)content\b/);
+  assert.match(playwrightLine, /--grep(?:=|\s+)@semantic\b/, 'e2e-search-semantic must run only --grep @semantic');
+  assert.doesNotMatch(playwrightLine, /--grep-invert/);
+  assert.match(playwrightStep.runText, /--network host/);
+  assert.match(playwrightStep.runText, /--env E2E_STACK\b/);
+  assert.match(playwrightStep.runText, /--env FAKEEMBED_CONTROL_URL\b/);
+  // The FE helper reads the real document prefix from the stack's value (RV-T20b1-FE-3).
+  assert.match(
+    playwrightStep.runText,
+    /--env TEI_INPUT_PREFIX_DOCUMENT\b/,
+    'Playwright container must receive TEI_INPUT_PREFIX_DOCUMENT',
+  );
+  assert.equal(playwrightStep.effectiveEnv.get('TEI_INPUT_PREFIX_DOCUMENT'), 'passage: ');
+  assert.equal(playwrightStep.effectiveEnv.get('E2E_STACK'), '1');
+  assert.equal(playwrightStep.effectiveEnv.get('FAKEEMBED_CONTROL_URL'), 'http://127.0.0.1:8090');
+
+  // Readiness: poll /readyz for semantic_available=true (max 180 s) BEFORE Playwright, AFTER the healthz wait.
+  const readinessIndex = model.steps.findIndex(
+    (step) => step.runText.includes('/api/v1/readyz') && step.runText.includes('semantic_available'),
+  );
+  assert.notEqual(readinessIndex, -1, 'e2e-search-semantic must have a /readyz semantic_available readiness step');
+  assert.ok(readinessIndex < playwrightIndex, 'the /readyz readiness step must come before playwright test');
+  const healthzIndex = model.steps.findIndex((step) => step.runText.includes('/api/v1/healthz'));
+  assert.notEqual(healthzIndex, -1, 'e2e-search-semantic must wait for /api/v1/healthz');
+  assert.ok(healthzIndex < readinessIndex, 'the /readyz readiness step must come after the healthz wait');
+  const readiness = model.steps[readinessIndex].runText;
+  assert.match(readiness, /SECONDS \+ 180/);
+  // Every poll is bounded by the remaining budget (RV-T20b1-BE-3): a stuck request must not outlive the 180 s limit.
+  assert.match(readiness, /curl[^\n]*--connect-timeout\s+"\$request_max_time"/, 'readiness curl must set --connect-timeout');
+  assert.match(readiness, /curl[^\n]*--max-time\s+"\$request_max_time"/, 'readiness curl must set --max-time');
+  assert.match(
+    readiness,
+    /request_max_time=\$\(\(\s*remaining < 5 \? remaining : 5\s*\)\)/,
+    'request timeout must be capped by the remaining budget',
+  );
+  assert.match(
+    readiness,
+    /pause=\$\(\(\s*remaining < 2 \? remaining : 2\s*\)\)/,
+    'the 2 s pause must be capped by the remaining budget',
+  );
+  assert.match(readiness, /sleep "\$pause"/);
+  assert.match(readiness, /semantic chưa available sau 180 s: g1 bootstrap chưa flip/);
+  assert.match(readiness, /Last \/readyz body: \$body/);
+
+  // Content e2e keeps the default noop stack and must not run the @semantic specs.
+  const contentJobMatch = workflowSource.match(
+    /  [a-z0-9-]+:\r?\n    name:\s*Content e2e \(email verification required\)\r?\n([\s\S]*?)(?=\r?\n  [a-z0-9-]+:|$)/,
+  );
+  assert.ok(contentJobMatch, 'missing "Content e2e (email verification required)" job in ci.yml');
+  const contentLines = parseCiJobModel(contentJobMatch[1])
+    .steps.flatMap((step) => step.runLines)
+    .filter((line) => line.includes('playwright test'));
+  assert.equal(contentLines.length, 1, 'expected one playwright test command in Content e2e job');
+  assert.match(contentLines[0], /--project(?:=|\s+)content\b/);
+  assert.match(contentLines[0], /--grep-invert(?:=|\s+)@semantic\b/, 'Content e2e must run with --grep-invert @semantic');
+}
+
+test('Search semantic e2e CI job waits for /readyz before @semantic Playwright and Content e2e excludes @semantic', () => {
+  const workflow = readFileSync(join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const compose = readFileSync(join(ROOT, 'infra', 'docker-compose.yml'), 'utf8');
+
+  validateCiSemanticJob(workflow, compose);
+
+  // Content e2e without --grep-invert @semantic would run the semantic specs on the noop stack.
+  const withoutInvert = workflow.replace(' --grep-invert @semantic', '');
+  assert.notEqual(withoutInvert, workflow);
+  assert.throws(() => validateCiSemanticJob(withoutInvert, compose), /Content e2e must run with --grep-invert @semantic/);
+
+  // The semantic job must select the @semantic specs only.
+  const withoutGrep = workflow.replace('--project content --grep @semantic', '--project content');
+  assert.notEqual(withoutGrep, workflow);
+  assert.throws(() => validateCiSemanticJob(withoutGrep, compose), /--grep @semantic/);
+
+  // Readiness step moved after Playwright is rejected.
+  const readinessBlock = workflow.match(
+    /      # Readiness \(M3, FS-25\)[\s\S]*?\r?\n(?=      - name: Run semantic content Playwright)/,
+  );
+  assert.ok(readinessBlock, 'readiness step block not found');
+  const readinessAfterPlaywright = workflow
+    .replace(readinessBlock[0], '')
+    .replace(
+      /(  e2e-search-semantic:[\s\S]*?)(      - name: Stage sanitized content artifacts)/,
+      (_match, head, tail) => `${head}${readinessBlock[0]}${tail}`,
+    );
+  assert.notEqual(readinessAfterPlaywright, workflow);
+  assert.throws(
+    () => validateCiSemanticJob(readinessAfterPlaywright, compose),
+    /readiness step must come before playwright test/,
+  );
+
+  // An unbounded readiness request (no curl timeout) is rejected (RV-T20b1-BE-3).
+  const withoutRequestTimeout = workflow.replace(' --max-time "$request_max_time"', '');
+  assert.notEqual(withoutRequestTimeout, workflow);
+  assert.throws(() => validateCiSemanticJob(withoutRequestTimeout, compose), /--max-time/);
+  const withoutConnectTimeout = workflow.replace(' --connect-timeout "$request_max_time"', '');
+  assert.notEqual(withoutConnectTimeout, workflow);
+  assert.throws(() => validateCiSemanticJob(withoutConnectTimeout, compose), /--connect-timeout/);
+  const uncappedPause = workflow.replace('pause=$(( remaining < 2 ? remaining : 2 ))', 'pause=2');
+  assert.notEqual(uncappedPause, workflow);
+  assert.throws(() => validateCiSemanticJob(uncappedPause, compose), /2 s pause must be capped/);
+
+  // The document prefix must reach the Playwright container (RV-T20b1-FE-3).
+  const withoutPrefixForward = workflow.replace('            --env TEI_INPUT_PREFIX_DOCUMENT \\\n', '');
+  assert.notEqual(withoutPrefixForward, workflow);
+  assert.throws(() => validateCiSemanticJob(withoutPrefixForward, compose), /TEI_INPUT_PREFIX_DOCUMENT/);
+
+  // No readiness step at all is rejected.
+  const withoutReadiness = workflow.replace(readinessBlock[0], '');
+  assert.throws(() => validateCiSemanticJob(withoutReadiness, compose), /readiness step/);
+});
+
 test('NEXT_PUBLIC_CONTENT_ENABLED build guards reject runtime-only declarations and comments', () => {
   const dockerfile = readFileSync(join(ROOT, 'apps', 'web', 'Dockerfile'), 'utf8');
   const compose = readFileSync(join(ROOT, 'infra', 'docker-compose.yml'), 'utf8');
