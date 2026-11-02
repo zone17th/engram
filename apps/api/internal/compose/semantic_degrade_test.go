@@ -29,14 +29,21 @@ package compose_test
 // What the job scheduler models, and what it does not. River's scheduler cannot
 // be fast-forwarded, so the job tests drive the REAL embed_item worker
 // (jobs.EmbedItemWorker.Work, real DB, real breakers, real snooze + jitter) from
-// a small virtual-time simulator that applies River's contract: a returned
+// a small virtual-time simulator that applies River's retry semantics: a returned
 // JobSnooze reschedules at completion + duration without consuming an attempt, any
 // other error consumes one and retries at worker.NextRetry, and the attempt that
 // reaches the persisted row's MaxAttempts is the last. The simulator is event
-// driven: the next event is the earliest due job, rounded up to River's 1 s fetch
-// poll; backoff always comes from the worker's own snooze/retry (a snooze below
-// the breaker's remaining window, or an immediate one, is a violation and aborts
-// the run). Work runs on jobs.MaxEmbedWorkers overlapping slots, and the provider
+// driven: the next event is the earliest due job, rounded up to a one-second grid;
+// backoff always comes from the worker's own snooze/retry (a snooze below the
+// breaker's remaining window, or an immediate one, is a violation and aborts the
+// run). The one-second grid and the "snooze < 1 s is immediate" guard are
+// SIMULATOR ASSUMPTIONS, not River's scheduling contract: River v0.31 fetches
+// with a 100 ms FetchCooldown, polls as a backup every 1 s (with jitter), and its
+// job scheduler looks 5 s ahead, so a real producer need not wait for a whole
+// second and a sub-second positive snooze is valid for it. The fixture's times
+// are whole seconds and its real worker durations are checked before rounding;
+// do not read it as a certificate of sub-second River rescheduling or of
+// production fetch load at that resolution. Work runs on jobs.MaxEmbedWorkers overlapping slots, and the provider
 // measures the peak number of simultaneous requests and the largest document batch
 // through entry/release channels. MaxAttempts and the queue come from the rows
 // River actually persisted for the inserted jobs. Not covered here, by design:
@@ -122,10 +129,13 @@ const (
 	dgRecoveryQueryTimeout = 30 * time.Second
 	dgJobDocTimeout        = 60 * time.Second // job fixtures park requests at the provider on purpose
 	dgJobCount             = 200
-	dgFetchPoll            = time.Second // River's default FetchPollInterval: events are rounded up to it
-	dgOutageWindow         = 10 * time.Minute
-	dgShortOutage          = 3 * time.Minute
-	dgRecoveryLimit        = 10 * time.Minute
+	// dgFetchPoll is the simulator's event grid: a deliberate fixture assumption (River
+	// v0.31: FetchCooldown 100 ms, jittered 1 s backup poll, 5 s scheduler lookahead),
+	// not a minimum resolution River guarantees or requires.
+	dgFetchPoll     = time.Second
+	dgOutageWindow  = 10 * time.Minute
+	dgShortOutage   = 3 * time.Minute
+	dgRecoveryLimit = 10 * time.Minute
 
 	// Plan P05 2.17 limits, spelled out so a regression of the product constant is
 	// not silently followed by the test: 2 workers on the embedding queue, 30
@@ -663,6 +673,9 @@ func (e *dgEnv) create(corpus, name string) uuid.UUID {
 type dgResponse struct {
 	Semantic       bool    `json:"semantic"`
 	SemanticReason *string `json:"semantic_reason"`
+	// LexicalPartial lists the corpora whose lexical branch ran past its 50 ms
+	// statement budget (suggest.BranchTimeout): that branch then returns no rows.
+	LexicalPartial []string `json:"lexical_partial"`
 	Items          []struct {
 		ID uuid.UUID `json:"id"`
 	} `json:"items"`
@@ -752,9 +765,34 @@ func (e *dgEnv) assertDegradedLexical(r dgResponse, wantItem uuid.UUID, what str
 	if len(r.Near) != 0 {
 		e.t.Fatalf("%s: near has %d rows, want 0", what, len(r.Near))
 	}
-	if !r.hasItem(wantItem) {
-		e.t.Fatalf("%s: lexical rows lost the item while degraded", what)
+	if len(r.LexicalPartial) != 0 {
+		// A 50 ms branch timeout (cold pool/plan under -race on a loaded runner) empties
+		// the branch by design; it says nothing about whether the item is findable.
+		e.t.Fatalf("%s: lexical_partial=%v (branch exceeded its 50 ms budget), cannot judge the item", what, r.LexicalPartial)
 	}
+	if !r.hasItem(wantItem) {
+		e.t.Fatalf("%s: complete lexical rows (%d items) lost the item while degraded", what, len(r.Items))
+	}
+}
+
+// dgLexicalBudgetRetries bounds the re-asks of queryComplete.
+const dgLexicalBudgetRetries = 4
+
+// queryComplete is query for the first lexical request of a cold fixture: the
+// product gives every lexical branch a fixed 50 ms statement budget (SPEC §6.3;
+// suggest.BranchTimeout, not injectable through compose), and a first request on
+// a fresh pool and plan cache under -race can legitimately overrun it, which
+// answers 200 with lexical_partial set and the branch's rows dropped. Such a
+// response is a timeout, not evidence about the item, so it is asked again (a
+// bounded number of times, never skipped by relaxing what is asserted); the
+// caller still asserts the item on a response that is NOT partial.
+func (e *dgEnv) queryComplete(route, q string, step time.Duration) dgResponse {
+	e.t.Helper()
+	r := e.query(route, q, step)
+	for i := 0; i < dgLexicalBudgetRetries && len(r.LexicalPartial) != 0; i++ {
+		r = e.query(route, q, step)
+	}
+	return r
 }
 
 func (e *dgEnv) breakerOpenGauge() float64 {
@@ -885,7 +923,9 @@ func TestQuickAddWhileProviderDown(t *testing.T) {
 	if code, _ := e.do(http.MethodGet, "/api/v1/items/"+itemID.String(), ""); code != http.StatusOK {
 		t.Fatalf("GET /items/{id} = %d, want 200", code)
 	}
-	r := e.query("suggest", "quick add", time.Second)
+	// The item name starts with the query, so it is the strongest (prefix) lexical
+	// tier; the only way it can be absent from a non-partial response is a bug.
+	r := e.queryComplete("suggest", "quick add", time.Second)
 	e.assertDegradedLexical(r, itemID, "suggest right after quick-add")
 	e.assertReadyz()
 
@@ -1068,9 +1108,9 @@ func (e *dgJobsEnv) allFinal() bool {
 	return true
 }
 
-// nextEvent is the earliest due pending job, rounded up to River's fetch poll
-// (relative to the start). It never invents backoff: it only quantises a due
-// time the worker itself chose.
+// nextEvent is the earliest due pending job, rounded up to the simulator's
+// one-second grid (relative to the start; an assumption, see the file header).
+// It never invents backoff: it only quantises a due time the worker itself chose.
 func (e *dgJobsEnv) nextEvent() (time.Time, bool) {
 	var earliest time.Time
 	found := false
@@ -1186,7 +1226,8 @@ func (e *dgJobsEnv) round() {
 	e.verifySnoozes(now, before, snoozed)
 }
 
-// handle applies River's contract to one Work result.
+// handle applies River's retry semantics to one Work result (snooze, error,
+// attempt budget); timing is quantised by the simulator's own grid.
 func (e *dgJobsEnv) handle(r dgWorkResult, now time.Time, snoozed *[]time.Duration) {
 	sj := e.sims[r.idx]
 	e.invocations++
@@ -1202,6 +1243,8 @@ func (e *dgJobsEnv) handle(r dgWorkResult, now time.Time, snoozed *[]time.Durati
 	case errors.As(r.err, &snooze):
 		// River: a snooze reschedules at completion + duration and does not consume an attempt.
 		sj.snoozes++
+		// Fixture guard, not a River rule: River accepts any positive snooze; this
+		// simulator only models whole-second events, so a shorter one cannot be placed.
 		if snooze.Duration < dgFetchPoll {
 			e.violate("immediate reschedule: a job was snoozed for %s (< %s); backoff must come from the worker, not the scheduler", snooze.Duration, dgFetchPoll)
 			e.aborted = true
