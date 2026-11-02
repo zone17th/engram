@@ -24,6 +24,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/db"
 	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 )
 
@@ -308,6 +309,14 @@ func TestSharedLockBlocksCreate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pool := newTestPool(t)
+	q := gen.New(pool)
+	ident := sampleBootstrapIdentity()
+	calib := func(got embedid.Identity) (float64, string, bool) {
+		if got.Key() != ident.Key() {
+			return 0, "", false
+		}
+		return 0.58, "docs/benchmarks/semantic-eval/report-qwen3-3-20261102.json", true
+	}
 
 	// Holder transaction acquires the shared generation-set lock (as a mutation tx does).
 	txShared, err := pool.Begin(ctx)
@@ -320,32 +329,22 @@ func TestSharedLockBlocksCreate(t *testing.T) {
 		t.Fatalf("LockGenerationSetShared: %v", err)
 	}
 
-	// Dedicated connection for the exclusive locker so we know its exact backend PID
-	// and can poll pg_locks deterministically without time.Sleep synchronization.
-	exclConn, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("Acquire exclConn: %v", err)
+	type bootResult struct {
+		res generation.BootstrapResult
+		err error
 	}
-	defer exclConn.Release()
-
-	exclPID := exclConn.Conn().PgConn().PID()
-
-	txExcl, err := exclConn.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin txExcl: %v", err)
-	}
-	defer func() { _ = txExcl.Rollback(context.Background()) }()
-
-	exclStarting := make(chan struct{})
-	exclAcquired := make(chan error, 1)
+	bootStarting := make(chan struct{})
+	bootDone := make(chan bootResult, 1)
 	go func() {
-		close(exclStarting)
-		exclAcquired <- generation.LockGenerationSetExclusive(ctx, txExcl)
+		close(bootStarting)
+		res, err := generation.Bootstrap(ctx, pool, ident, calib)
+		bootDone <- bootResult{res: res, err: err}
 	}()
 
-	<-exclStarting
+	<-bootStarting
 
-	// Bounded poll on pg_locks until exclPID appears with granted = false on the advisory lock.
+	// Bounded poll on pg_locks until Bootstrap's exclusive advisory lock request
+	// appears with granted = false on the shared generation-set lock key.
 	classid := int32(uint64(generation.GenerationSetLockKey) >> 32)
 	objid := int32(uint64(generation.GenerationSetLockKey) & 0xffffffff)
 
@@ -356,12 +355,12 @@ func TestSharedLockBlocksCreate(t *testing.T) {
 		err := pool.QueryRow(ctx, `
 			SELECT count(*)
 			FROM pg_locks
-			WHERE pid = $1
-			  AND locktype = 'advisory'
-			  AND classid = $2
-			  AND objid = $3
+			WHERE locktype = 'advisory'
+			  AND classid = $1
+			  AND objid = $2
+			  AND mode = 'ExclusiveLock'
 			  AND granted = false
-		`, exclPID, classid, objid).Scan(&waitingCount)
+		`, classid, objid).Scan(&waitingCount)
 		if err != nil {
 			t.Fatalf("query pg_locks: %v", err)
 		}
@@ -372,23 +371,49 @@ func TestSharedLockBlocksCreate(t *testing.T) {
 		runtimeYield(ctx)
 	}
 	if !waitingObserved {
-		t.Fatalf("exclusive lock pid=%d did not block on shared generation-set lock", exclPID)
+		t.Fatal("Bootstrap exclusive advisory lock did not block on shared generation-set lock")
 	}
 
-	// Verify exclusive lock has NOT resolved while shared lock is still held.
+	// Verify Bootstrap has NOT completed and no registry row or tables exist before release.
 	select {
-	case err := <-exclAcquired:
-		t.Fatalf("LockGenerationSetExclusive returned while shared lock held: %v", err)
+	case out := <-bootDone:
+		t.Fatalf("Bootstrap returned while shared lock held: res=%+v err=%v", out.res, out.err)
 	default:
 	}
 
-	// Commit shared transaction -> exclusive lock must now unblock and succeed.
+	genCountBefore, err := q.CountEmbeddingGenerations(ctx)
+	if err != nil || genCountBefore != 0 {
+		t.Fatalf("CountEmbeddingGenerations while blocked = %d err=%v, want 0", genCountBefore, err)
+	}
+	var tblCountBefore int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'item_embedding_g%' OR table_name LIKE 'tag_embedding_g%'`,
+	).Scan(&tblCountBefore); err != nil || tblCountBefore != 0 {
+		t.Fatalf("dynamic tables count while blocked = %d err=%v, want 0", tblCountBefore, err)
+	}
+
+	// Commit shared transaction -> Bootstrap must now unblock and succeed.
 	if err := txShared.Commit(ctx); err != nil {
 		t.Fatalf("txShared.Commit: %v", err)
 	}
 
-	if err := <-exclAcquired; err != nil {
-		t.Fatalf("LockGenerationSetExclusive after shared release: %v", err)
+	out := <-bootDone
+	if out.err != nil {
+		t.Fatalf("Bootstrap after shared release: %v", out.err)
+	}
+	if !out.res.Created || out.res.Generation.ID != 1 {
+		t.Fatalf("Bootstrap result after release = %+v, want Created=true ID=1", out.res)
+	}
+
+	genCountAfter, err := q.CountEmbeddingGenerations(ctx)
+	if err != nil || genCountAfter != 1 {
+		t.Fatalf("CountEmbeddingGenerations after release = %d err=%v, want 1", genCountAfter, err)
+	}
+	var partCountAfter int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'item_embedding_g1_p%' OR table_name LIKE 'tag_embedding_g1_p%'`,
+	).Scan(&partCountAfter); err != nil || partCountAfter != 32 {
+		t.Fatalf("partition count after release = %d err=%v, want 32", partCountAfter, err)
 	}
 }
 
@@ -702,5 +727,210 @@ func TestPinCacheInvalidatedByNotify(t *testing.T) {
 	}
 	if pin2.GenID != 2 || pin2.Identity.Model != "openai_compat/qwen/qwen3-embedding-8b" {
 		t.Fatalf("ActivePin after NOTIFY = %+v, want GenID=2", pin2)
+	}
+}
+
+func TestPinListenerRetryAfterFailedStartReceivesNotify(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := newTestPool(t)
+	q := gen.New(pool)
+
+	t0 := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	var attempt atomic.Int32
+	simulatedErr := errors.New("simulated initial startup failure")
+
+	pinner := generation.NewPinner(
+		pool,
+		generation.WithPinNowFunc(func() time.Time { return t0 }),
+		generation.WithBeforeListenHook(func(context.Context) error {
+			if attempt.Add(1) == 1 {
+				return simulatedErr
+			}
+			return nil
+		}),
+	)
+	defer pinner.Close()
+
+	// 1. First StartListener call fails via the hook and returns the real error.
+	if err := pinner.StartListener(ctx); !errors.Is(err, simulatedErr) {
+		t.Fatalf("first StartListener err = %v, want %v", err, simulatedErr)
+	}
+
+	// Also verify a canceled-context attempt fails and does not poison subsequent retry.
+	canceledCtx, cancelNow := context.WithCancel(ctx)
+	cancelNow()
+	if err := pinner.StartListener(canceledCtx); err == nil {
+		t.Fatal("StartListener with canceled ctx must return error")
+	}
+
+	// 2. Retry with healthy context succeeds and starts the listener.
+	if err := pinner.StartListener(ctx); err != nil {
+		t.Fatalf("retry StartListener with healthy ctx: %v", err)
+	}
+
+	subNotified := make(chan struct{}, 4)
+	pinner.Subscribe(func() {
+		select {
+		case subNotified <- struct{}{}:
+		default:
+		}
+	})
+
+	if _, err := q.InsertPendingEmbeddingGeneration(ctx, gen.InsertPendingEmbeddingGenerationParams{
+		ID:                 1,
+		Provider:           generation.ProviderTEI,
+		Model:              "tei/BAAI/bge-m3",
+		ModelVersion:       "v1",
+		Preprocessing:      "v1",
+		QueryPrefix:        "",
+		DocPrefix:          "",
+		Dims:               3,
+		Partitions:         4,
+		HnswM:              16,
+		HnswEfConstruction: 64,
+		SemanticMinCos:     0.55,
+		CalibrationRef:     "ref1",
+		Bootstrap:          true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.ActivateEmbeddingGeneration(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpsertEmbeddingActive(ctx, gen.UpsertEmbeddingActiveParams{
+		GenerationID:  1,
+		FlippedReason: new("boot"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.InsertPendingEmbeddingGeneration(ctx, gen.InsertPendingEmbeddingGenerationParams{
+		ID:                 2,
+		Provider:           generation.ProviderOpenAICompat,
+		Model:              "openai_compat/qwen/qwen3-embedding-8b",
+		ModelVersion:       "v2",
+		Preprocessing:      "v1",
+		QueryPrefix:        "Instruct: q\nQuery:",
+		DocPrefix:          "",
+		Dims:               3,
+		Partitions:         4,
+		HnswM:              16,
+		HnswEfConstruction: 64,
+		SemanticMinCos:     0.65,
+		CalibrationRef:     "ref2",
+		Bootstrap:          false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pin1, err := pinner.ActivePin(ctx)
+	if err != nil || pin1.GenID != 1 {
+		t.Fatalf("initial ActivePin = %+v err=%v, want GenID=1", pin1, err)
+	}
+
+	if _, err := q.RetireEmbeddingGeneration(ctx, gen.RetireEmbeddingGenerationParams{
+		ID:            1,
+		RollbackUntil: pgtype.Timestamptz{Time: t0.Add(24 * time.Hour), Valid: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.ActivateEmbeddingGeneration(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpsertEmbeddingActive(ctx, gen.UpsertEmbeddingActiveParams{
+		GenerationID:  2,
+		FlippedReason: new("flip"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "NOTIFY "+generation.NotifyChannel); err != nil {
+		t.Fatalf("NOTIFY: %v", err)
+	}
+
+	select {
+	case <-subNotified:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for Subscribe callback after retry StartListener")
+	}
+
+	pin2, err := pinner.ActivePin(ctx)
+	if err != nil || pin2.GenID != 2 {
+		t.Fatalf("ActivePin after NOTIFY = %+v err=%v, want GenID=2", pin2, err)
+	}
+}
+
+func TestPinListenerCloseCancelsBlockedStart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := newTestPool(t)
+
+	inStartup := make(chan struct{})
+	releaseBarrier := make(chan struct{})
+
+	pinner := generation.NewPinner(
+		pool,
+		generation.WithBeforeListenHook(func(hookCtx context.Context) error {
+			close(inStartup)
+			select {
+			case <-releaseBarrier:
+				return hookCtx.Err()
+			case <-hookCtx.Done():
+				<-releaseBarrier
+				return hookCtx.Err()
+			}
+		}),
+	)
+
+	startErrCh := make(chan error, 1)
+	go func() {
+		startErrCh <- pinner.StartListener(ctx)
+	}()
+
+	// Wait until StartListener has acquired a pool connection and entered the barrier.
+	select {
+	case <-inStartup:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for StartListener to enter barrier")
+	}
+	if got := pool.Stat().AcquiredConns(); got != 1 {
+		t.Fatalf("AcquiredConns while in startup barrier = %d, want 1", got)
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		pinner.Close()
+		close(closeDone)
+	}()
+
+	// Release the barrier so StartListener and Close can finish deterministically.
+	close(releaseBarrier)
+
+	var startErr error
+	select {
+	case startErr = <-startErrCh:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for StartListener to return after Close")
+	}
+	if !errors.Is(startErr, generation.ErrPinnerClosed) && !errors.Is(startErr, context.Canceled) {
+		t.Fatalf("StartListener error after concurrent Close = %v, want ErrPinnerClosed or context.Canceled", startErr)
+	}
+
+	select {
+	case <-closeDone:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for Close to return")
+	}
+
+	// Connection must be released back to the pool when Close has returned.
+	if got := pool.Stat().AcquiredConns(); got != 0 {
+		t.Fatalf("AcquiredConns after Close returned = %d, want 0", got)
+	}
+
+	// Subsequent StartListener after Close must fail with ErrPinnerClosed and not acquire a connection.
+	if err := pinner.StartListener(ctx); !errors.Is(err, generation.ErrPinnerClosed) {
+		t.Fatalf("StartListener after Close = %v, want ErrPinnerClosed", err)
+	}
+	if got := pool.Stat().AcquiredConns(); got != 0 {
+		t.Fatalf("AcquiredConns after post-Close StartListener = %d, want 0", got)
 	}
 }

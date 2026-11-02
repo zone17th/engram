@@ -3,6 +3,7 @@ package generation_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
@@ -183,5 +184,86 @@ func TestBootstrapSkipsWhenGenerationExists(t *testing.T) {
 	count, err := q.CountEmbeddingGenerations(ctx)
 	if err != nil || count != 1 {
 		t.Fatalf("CountEmbeddingGenerations = %d err=%v, want 1", count, err)
+	}
+}
+
+func TestBootstrapConcurrentCallers(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	ident := sampleBootstrapIdentity()
+
+	calib := func(got embedid.Identity) (float64, string, bool) {
+		if got.Key() != ident.Key() {
+			return 0, "", false
+		}
+		return 0.58, "docs/benchmarks/semantic-eval/report-qwen3-3-20261102.json", true
+	}
+
+	type callerResult struct {
+		res generation.BootstrapResult
+		err error
+	}
+	startBarrier := make(chan struct{})
+	var readyWG sync.WaitGroup
+	readyWG.Add(2)
+	results := make([]callerResult, 2)
+	var doneWG sync.WaitGroup
+	doneWG.Add(2)
+
+	for i := range 2 {
+		go func(idx int) {
+			defer doneWG.Done()
+			readyWG.Done()
+			<-startBarrier
+			res, err := generation.Bootstrap(ctx, pool, ident, calib)
+			results[idx] = callerResult{res: res, err: err}
+		}(i)
+	}
+
+	readyWG.Wait()
+	close(startBarrier)
+	doneWG.Wait()
+
+	createdCount := 0
+	for i, r := range results {
+		if r.err != nil {
+			t.Fatalf("concurrent caller %d returned error: %v", i, r.err)
+		}
+		if r.res.Created {
+			createdCount++
+			if r.res.Generation.ID != 1 ||
+				r.res.Generation.State != generation.StatePending ||
+				!r.res.Generation.Bootstrap ||
+				r.res.Generation.Identity().Key() != ident.Key() {
+				t.Fatalf("creator caller %d generation mismatch: %+v", i, r.res.Generation)
+			}
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("concurrent Bootstrap Created count = %d, want 1 (results=%+v)", createdCount, results)
+	}
+
+	q := gen.New(pool)
+	totalCount, err := q.CountEmbeddingGenerations(ctx)
+	if err != nil || totalCount != 1 {
+		t.Fatalf("CountEmbeddingGenerations = %d err=%v, want 1", totalCount, err)
+	}
+
+	existing, err := generation.ExistingGenerations(ctx, pool)
+	if err != nil || len(existing) != 1 || existing[0].ID != 1 {
+		t.Fatalf("ExistingGenerations = %+v err=%v, want [g1]", existing, err)
+	}
+
+	var partCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'item_embedding_g1_p%' OR table_name LIKE 'tag_embedding_g1_p%'`,
+	).Scan(&partCount); err != nil || partCount != 32 {
+		t.Fatalf("partition count = %d err=%v, want 32 (16 item + 16 tag)", partCount, err)
+	}
+	var hnswCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_indexes WHERE indexname LIKE 'item_embedding_g1_p%_hnsw' OR indexname LIKE 'tag_embedding_g1_p%_hnsw'`,
+	).Scan(&hnswCount); err != nil || hnswCount != 32 {
+		t.Fatalf("HNSW index count = %d err=%v, want 32", hnswCount, err)
 	}
 }
