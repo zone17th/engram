@@ -272,37 +272,105 @@
       </div>
     </section>
 
-    <!-- ===== tìm kiếm ===== -->
+    <!-- ===== tìm kiếm (U16, P05 mục 2.11 + 2.24 item 7) ===== -->
+    <!-- Intended i18n keys (Task 17/18):
+         settings.searchHeading ("Tìm kiếm" / "Search"),
+         settings.searchTitle ("Tìm kiếm thấy được gì?" / "What search can see"),
+         settings.searchBody ("Tên mục, gợi ý và tag không được mã hoá, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá." /
+           "Item names, hints and tags are not encrypted, so the server can search item names and tags. Entry content stays encrypted."),
+         settings.semanticTitle ("Gợi ý gần nghĩa (≈)" / "Similar-meaning suggestions (≈)"),
+         settings.semanticDesc ("Gõ “mạng nhà” cũng gợi ý mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng bên dưới kết quả khớp chữ, nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc." /
+           "Typing “home network” also suggests an item named “wifi”. Similar-meaning hits stay in their own group below lexical matches, so toggling never reorders exact or prefix results."),
+         settings.semanticCopyExternal ("Gợi ý gần nghĩa gửi câu tìm, tên mục và tag của bạn tới dịch vụ nhúng đã cấu hình để tính vector; tắt sẽ xoá các vector bên ngoài đã lưu và ngừng gửi. Nội dung ghi chú luôn mã hoá đầu-cuối, không bao giờ gửi đi." /
+           "Similar-meaning suggestions send your search query, item names, and tags to the configured embedding service to compute vectors; turning it off deletes stored external vectors and stops sending. Entry contents are always end-to-end encrypted and never leave your device in plaintext."),
+         settings.semanticCopySelfHost ("Gợi ý gần nghĩa tính vector trên máy chủ nhúng tự vận hành cho câu tìm, tên mục và tag; tắt sẽ ngừng truy vấn gần nghĩa (vector nội bộ vẫn giữ để bật lại tức thì). Nội dung ghi chú luôn mã hoá đầu-cuối, không bao giờ gửi đi." /
+           "Similar-meaning suggestions compute vectors on the self-hosted embedding server for your search query, item names, and tags; turning it off stops semantic queries while keeping internal vectors for instant re-enable. Entry contents are always end-to-end encrypted and never leave your device in plaintext."),
+         settings.semanticServerOff ("Máy chủ này chưa bật gợi ý gần nghĩa." / "Similar-meaning suggestions are not enabled on this server."),
+         settings.semanticConflict409 ("Gợi ý gần nghĩa tạm thời không khả dụng trên máy chủ (409 semantic_unavailable). Đã giữ nguyên cài đặt." /
+           "Similar-meaning suggestions are temporarily unavailable on the server (409 semantic_unavailable). Your setting was kept.") -->
     <section id="timkiem">
-      <h2 class="t-title-md mb-6">Tìm kiếm</h2>
+      <h2 class="t-title-md mb-4">Tìm kiếm · <span lang="en" class="font-normal text-muted text-[18px]">Search</span></h2>
 
-      <div class="card p-5 mb-3 control-disabled" aria-disabled="true">
-        <div class="flex items-start gap-4 flex-wrap mb-4">
-          <div class="min-w-0 flex-1 basis-[240px]">
-            <div class="text-[15px] font-semibold mb-1">Tìm gần nghĩa <span class="phase-badge">P05</span></div>
-            <p class="text-[13px] m-0" style="color:var(--muted)">
-              Gõ “mật khẩu” cũng ra mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng, dưới kết quả khớp chữ,
-              nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc.
-            </p>
-          </div>
-          <button type="button" class="switch" role="switch" aria-checked="false" aria-label="Bật tìm gần nghĩa" disabled></button>
-        </div>
-        <div class="rounded-md p-4" style="background:var(--surface)">
-          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
-            Để làm việc này, tên mục và tên tag được gửi tới máy chủ nhúng của chúng tôi để tính vector.
-            Nội dung entry thì không — nó đã mã hoá trước khi rời máy bạn và máy chủ không đọc được.
-          </p>
-          <p class="mono text-[12px] m-0" style="color:var(--muted)">bge-m3 · 1024 chiều · tự vận hành, không gọi API bên thứ ba</p>
+      <!-- Thẻ giải thích quyền riêng tư cố định (apps/web/app/app/settings/page.tsx:58-63) -->
+      <div class="card p-5 mb-3" id="timkiem-privacy-card">
+        <div class="text-[15px] font-semibold mb-1">Tìm kiếm thấy được gì? · <span lang="en" class="font-normal text-muted">What search can see</span></div>
+        <p class="text-[13px] m-0" style="color:var(--muted)">
+          Tên mục, gợi ý và tag không được mã hoá, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá.
+          <span lang="en" class="block text-[12px] mt-1">Item names, hints and tags are not encrypted, so the server can search item names and tags. Entry content stays encrypted.</span>
+        </p>
+      </div>
+
+      <!-- Thanh chuyển trạng thái demo U16 (4 biến thể mục 2.11 + 409 revert) -->
+      <div class="mb-3 p-3.5 rounded-lg bg-surface rule-line" id="timkiem-demo-bar">
+        <p class="t-caption text-muted m-0 mb-2">
+          Trạng thái U16 <span class="mono">#timkiem</span> (P05 mục 2.11, không có nút “Nhúng lại tất cả” — user không bao giờ cần bấm) ·
+          <span lang="en">U16 <span class="mono">#timkiem</span> states (no “Re-embed all” button)</span>
+        </p>
+        <div class="seg flex-wrap" data-seg id="timkiem-state-seg" role="group" aria-label="Trạng thái Tìm kiếm · Search settings states">
+          <button type="button" data-timkiem-mode="external-on" aria-pressed="true">1. Dịch vụ ngoài · Đang bật · <span lang="en">External · On</span></button>
+          <button type="button" data-timkiem-mode="external-off" aria-pressed="false">2. Dịch vụ ngoài · Đang tắt · <span lang="en">External · Off</span></button>
+          <button type="button" data-timkiem-mode="selfhost-on" aria-pressed="false">3. Tự vận hành (TEI) · Đang bật · <span lang="en">Self-host · On</span></button>
+          <button type="button" data-timkiem-mode="server-off" aria-pressed="false">4. Máy chủ tắt / 409 · <span lang="en">Server off / 409</span></button>
         </div>
       </div>
 
-      <div class="card p-5">
-        <div class="flex items-center gap-4 flex-wrap">
+      <!-- Thẻ công tắc Gợi ý gần nghĩa (≈) duy nhất -->
+      <div class="card p-5" id="timkiem-semantic-card">
+        <div class="flex items-start gap-4 flex-wrap mb-4">
           <div class="min-w-0 flex-1 basis-[240px]">
-            <div class="text-[15px] font-semibold mb-1">Chỉ mục nhúng</div>
-            <p class="text-[13px] m-0" style="color:var(--muted)">64 mục · 7 tag đã có vector. Tắt rồi bật lại sẽ nhúng lại phần đã đổi.</p>
+            <div class="flex items-center gap-2 flex-wrap mb-1">
+              <span class="text-[15px] font-semibold">Gợi ý gần nghĩa (<span class="mono">≈</span>) · <span lang="en" class="font-normal text-muted">Similar-meaning suggestions (≈)</span></span>
+              <span class="sugg-badge sugg-badge-sem" id="timkiem-status-chip">≈ đang bật · <span lang="en">on</span></span>
+            </div>
+            <p class="text-[13px] m-0" style="color:var(--muted)">
+              Gõ “mạng nhà” cũng gợi ý mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng bên dưới kết quả khớp chữ,
+              nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc.
+              <span lang="en" class="block text-[12px] mt-1">Typing “home network” also suggests an item named “wifi”. Similar-meaning hits stay in their own group below lexical matches, so toggling never reorders exact or prefix results.</span>
+            </p>
           </div>
-          <button type="button" class="btn btn-tertiary" disabled>Nhúng lại tất cả <span class="phase-badge">P05</span></button>
+          <button type="button" class="switch" id="timkiem-sem-switch" role="switch" aria-checked="true" aria-label="Gợi ý gần nghĩa (≈) · Similar-meaning suggestions (≈)" data-sem-toggle></button>
+        </div>
+
+        <!-- Copy khi semantic_external = true (hoặc vắng = mặc định an toàn) -->
+        <div class="rounded-md p-4" style="background:var(--surface)" id="timkiem-copy-external">
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            Gợi ý gần nghĩa gửi câu tìm, tên mục và tag của bạn tới dịch vụ nhúng đã cấu hình để tính vector; tắt sẽ xoá các vector bên ngoài đã lưu và ngừng gửi. Nội dung ghi chú luôn mã hoá đầu-cuối, không bao giờ gửi đi.
+            <span lang="en" class="block text-[12px] mt-1 text-muted">Similar-meaning suggestions send your search query, item names, and tags to the configured embedding service to compute vectors; turning it off deletes stored external vectors and stops sending. Entry contents are always end-to-end encrypted and never leave your device in plaintext.</span>
+          </p>
+          <p class="mono text-[12px] m-0" style="color:var(--muted)" id="timkiem-meta-external">
+            PATCH /settings { "semantic_suggest": true } · features.semantic_external = true · tắt → xoá vector openai_compat trong cùng giao dịch
+          </p>
+        </div>
+
+        <!-- Copy khi semantic_external = false (chỉ TEI tự vận hành) -->
+        <div class="rounded-md p-4" style="background:var(--surface)" id="timkiem-copy-selfhost" hidden>
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            Gợi ý gần nghĩa tính vector trên máy chủ nhúng tự vận hành cho câu tìm, tên mục và tag; tắt sẽ ngừng truy vấn gần nghĩa (vector nội bộ vẫn giữ để bật lại tức thì). Nội dung ghi chú luôn mã hoá đầu-cuối, không bao giờ gửi đi.
+            <span lang="en" class="block text-[12px] mt-1 text-muted">Similar-meaning suggestions compute vectors on the self-hosted embedding server for your search query, item names, and tags; turning it off stops semantic queries while keeping internal vectors for instant re-enable. Entry contents are always end-to-end encrypted and never leave your device in plaintext.</span>
+          </p>
+          <p class="mono text-[12px] m-0" style="color:var(--muted)">
+            PATCH /settings { "semantic_suggest": true } · features.semantic_external = false (TEI tự vận hành) · tắt không xoá vector nội bộ
+          </p>
+        </div>
+
+        <!-- Chú thích khi máy chủ tắt ngữ nghĩa (features.semantic_available = false) -->
+        <div class="rounded-md p-3.5 mt-3 rule-line" style="background:var(--surface-alt)" id="timkiem-server-off-note" hidden>
+          <p class="text-[13px] m-0 font-semibold" style="color:var(--body)">
+            Máy chủ này chưa bật gợi ý gần nghĩa. · <span lang="en" class="font-normal text-muted">Similar-meaning suggestions are not enabled on this server.</span>
+          </p>
+          <p class="text-[12px] m-0 mt-1" style="color:var(--muted)">
+            Công tắc bị khoá (<span class="mono">disabled</span>) khi <span class="mono">features.semantic_available = false</span> hoặc breaker đang mở. Nếu máy chủ trả <span class="mono">409 semantic_unavailable</span> khi bật, công tắc tự hoàn tác về tắt và báo lỗi tại chỗ (không bật toast). ·
+            <span lang="en">Switch is disabled when <span class="mono">features.semantic_available = false</span>. On <span class="mono">409 semantic_unavailable</span>, the switch reverts inline without a toast.</span>
+          </p>
+          <div class="mt-2.5">
+            <button type="button" class="btn btn-tertiary btn-sm" id="timkiem-sim-409-btn">Thử bật khi lỗi 409 (tự hoàn tác, không toast) · <span lang="en">Simulate 409 inline revert</span></button>
+          </div>
+        </div>
+
+        <!-- Thông báo lỗi inline khi PATCH /settings trả 409 semantic_unavailable -->
+        <div class="omni-guard-alert mt-3" role="alert" id="timkiem-409-alert" hidden>
+          <span class="omni-guard-vi">Gợi ý gần nghĩa tạm thời không khả dụng trên máy chủ (<span class="mono">409 semantic_unavailable</span>). Đã hoàn tác công tắc về tắt.</span>
+          <span class="omni-guard-en" lang="en">Similar-meaning suggestions are temporarily unavailable on the server (<span class="mono">409 semantic_unavailable</span>). Reverted switch to off.</span>
         </div>
       </div>
     </section>
@@ -1289,6 +1357,100 @@
 </dialog>
 
 <script src="mock.js"></script>
-<script>SAK.initChrome();</script>
+<script>
+  SAK.initChrome();
+  (function () {
+    const card = document.getElementById('timkiem-semantic-card');
+    const sw = document.getElementById('timkiem-sem-switch');
+    const chip = document.getElementById('timkiem-status-chip');
+    const copyExt = document.getElementById('timkiem-copy-external');
+    const copySelf = document.getElementById('timkiem-copy-selfhost');
+    const metaExt = document.getElementById('timkiem-meta-external');
+    const serverOffNote = document.getElementById('timkiem-server-off-note');
+    const alert409 = document.getElementById('timkiem-409-alert');
+    const sim409Btn = document.getElementById('timkiem-sim-409-btn');
+    if (!card || !sw) return;
+
+    function syncTimkiemUI() {
+      const avail = SAK.state.semanticAvailable !== false;
+      const ext = SAK.state.semanticExternal !== false;
+      const on = avail && !!SAK.state.semantic;
+
+      sw.disabled = !avail;
+      sw.setAttribute('aria-checked', String(on));
+      card.classList.toggle('control-disabled', !avail);
+      if (!avail) {
+        card.setAttribute('aria-disabled', 'true');
+      } else {
+        card.removeAttribute('aria-disabled');
+      }
+
+      if (chip) {
+        if (!avail) {
+          chip.className = 'sugg-badge';
+          chip.innerHTML = '≈ máy chủ tắt · <span lang="en">server off</span>';
+        } else if (on) {
+          chip.className = 'sugg-badge sugg-badge-sem';
+          chip.innerHTML = '≈ đang bật · <span lang="en">on</span>';
+        } else {
+          chip.className = 'sugg-badge';
+          chip.innerHTML = '≈ đang tắt · <span lang="en">off</span>';
+        }
+      }
+
+      if (copyExt) copyExt.hidden = !ext;
+      if (copySelf) copySelf.hidden = ext;
+      if (metaExt) {
+        metaExt.textContent = on
+          ? 'PATCH /settings { "semantic_suggest": true } · features.semantic_external = true · tắt → xoá vector openai_compat trong cùng giao dịch'
+          : 'PATCH /settings { "semantic_suggest": false } · Đã xoá các vector bên ngoài (DeleteUserExternal) và ngừng gửi truy vấn ngữ nghĩa';
+      }
+      if (serverOffNote) serverOffNote.hidden = avail;
+    }
+
+    sw.addEventListener('click', (e) => {
+      e.stopImmediatePropagation();
+      if (SAK.state.semanticAvailable === false) return;
+      if (alert409) alert409.hidden = true;
+      SAK.state.semantic = !SAK.state.semantic;
+      syncTimkiemUI();
+    });
+
+    document.querySelectorAll('[data-timkiem-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.timkiemMode;
+        if (alert409) alert409.hidden = true;
+        if (mode === 'external-on') {
+          SAK.state.semanticAvailable = true;
+          SAK.state.semanticExternal = true;
+          SAK.state.semantic = true;
+        } else if (mode === 'external-off') {
+          SAK.state.semanticAvailable = true;
+          SAK.state.semanticExternal = true;
+          SAK.state.semantic = false;
+        } else if (mode === 'selfhost-on') {
+          SAK.state.semanticAvailable = true;
+          SAK.state.semanticExternal = false;
+          SAK.state.semantic = true;
+        } else if (mode === 'server-off') {
+          SAK.state.semanticAvailable = false;
+          SAK.state.semanticExternal = true;
+          SAK.state.semantic = false;
+        }
+        syncTimkiemUI();
+      });
+    });
+
+    if (sim409Btn) {
+      sim409Btn.addEventListener('click', () => {
+        SAK.state.semantic = false;
+        syncTimkiemUI();
+        if (alert409) alert409.hidden = false;
+      });
+    }
+
+    syncTimkiemUI();
+  })();
+</script>
 </body>
 </html>

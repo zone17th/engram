@@ -50,6 +50,7 @@
     <button data-target="err"    aria-pressed="false">Lỗi</button>
     <button data-target="auth"   aria-pressed="false">Auth/P02</button>
     <button data-target="vault"  aria-pressed="false">Vault/P03</button>
+    <button data-target="search" aria-pressed="false">Tìm kiếm/P05</button>
     <button data-target="off"    aria-pressed="false">Ngoại tuyến</button>
     <button data-target="degr"   aria-pressed="false">Giảm chức năng</button>
   </div>
@@ -70,13 +71,13 @@
     </div>
 
     <div class="card p-6 text-center" id="empty-search-no-match">
-      <p class="t-label mb-2 text-muted">Tìm không ra · <span lang="en">No prefix match</span></p>
-      <h2 class="t-title-sm mb-2">Không có mục bắt đầu bằng “thuế 2024”</h2>
+      <p class="t-label mb-2 text-muted">Tìm không ra · <span lang="en">No match</span></p>
+      <h2 class="t-title-sm mb-2">Không có gì khớp “thuế 2024”</h2>
       <p class="t-body mb-1 text-muted">
-        Tìm kiếm theo tiền tố tên mục đã chuẩn hoá (<span class="mono">GET /items?q=</span>, chỉ gửi khi nhấn Enter). Tìm kiếm chỉ soi tên mục và tag — không soi nội dung entry.
+        Tìm kiếm theo từ khoá và gần nghĩa (<span class="mono">GET /suggest</span> khi gõ câu tìm sạch &amp; <span class="mono">GET /search</span> khi nhấn Enter). Tìm kiếm chỉ soi tên mục và tag — không soi nội dung entry đã mã hoá đầu-cuối.
       </p>
       <p class="text-[12px] text-muted m-0 mb-4" lang="en">
-        <strong>No items starting with “thuế 2024”.</strong> Prefix search runs only on Enter against normalized item names (<span class="mono">GET /items?q=</span>) and never inspects encrypted entry bodies.
+        <strong>Nothing matches “thuế 2024”.</strong> Lexical and similar-meaning search (<span class="mono">GET /suggest</span> while typing clean search queries &amp; <span class="mono">GET /search</span> on Enter) only inspect item names and tags — never encrypted entry bodies.
       </p>
       <div class="flex gap-2 justify-center flex-wrap">
         <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đã tạo mục “thuế 2024” (chưa có entry) · Created item “thuế 2024” (no entries)','Hoàn tác')">Tạo mục “thuế 2024” · <span lang="en">Create item “thuế 2024”</span></button>
@@ -428,6 +429,487 @@
         <button type="button" class="btn btn-secondary" onclick="SAK.toast('Đang thử tính lại khoá…')">Thử lại · <span lang="en">Try again</span></button>
         <a href="unlock.html" class="btn btn-tertiary no-underline">Dùng passkey · <span lang="en">Use passkey</span></a>
       </div>
+    </div>
+
+  </section>
+
+  <!-- ============================================================= -->
+  <!-- TÌM KIẾM / P05 (U18, mục 2.10 + 2.8 quy tắc 5 + 2.24 item 3)  -->
+  <!-- ============================================================= -->
+  <!-- Intended i18n keys (Task 17/18):
+       search.group.tags ("Tags"), search.group.items ("Items"), search.group.near ("Gần nghĩa" / "Similar meaning"),
+       search.group.recentItems ("Gần đây" / "Recent"), search.group.recentTags ("Tag hay dùng" / "Frequent tags"),
+       search.group.actions ("Thao tác" / "Actions"), search.match.fuzzy ("gần đúng" / "fuzzy"),
+       search.match.semantic ("≈ gần nghĩa" / "≈ similar"), search.help.sentToServer, search.help.sentToServerExternal,
+       search.help.enterToSearch, search.state.nearPending, search.state.rateLimited, search.state.offline,
+       search.state.noMatch, search.actions.createItem, search.actions.loadMore -->
+  <section data-view="search" hidden class="flex flex-col gap-4 scope-vault">
+
+    <!-- 1. #omnibox-state-recent: Gợi ý khi rỗng (on focus, q="") -->
+    <div class="card p-5" id="omnibox-state-recent">
+      <p class="t-label mb-2 text-muted">1 · Gợi ý khi rỗng (<span class="mono">q=""</span>, <span class="mono">scope=all</span>) · <span lang="en">Recent suggestions on focus</span></p>
+      <p class="text-[13px] text-muted m-0 mb-3">
+        Tối đa 5 mục gần đây (<span class="mono">last_used_at DESC</span>) + 3 tag hay dùng; không gọi provider nhúng (<span class="mono">semantic_reason="recent"</span>), không tự chọn hàng đầu (<span class="mono">activeKey=null</span>).
+      </p>
+      <div class="popover p-2">
+        <div id="u18-recent-listbox" role="listbox" aria-label="Gợi ý gần đây · Recent suggestions">
+          <div role="group" aria-labelledby="u18-recent-items-hdr">
+            <div id="u18-recent-items-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Gần đây · <span lang="en">Recent</span></span>
+              <span class="mono">5</span>
+            </div>
+            <div id="u18-recent-opt-i1" class="sugg-row" role="option" aria-selected="false" data-key="item:i1">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">wifi</span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span><span class="chip !py-0 !px-2 !text-[11px]">#office</span><span class="chip !py-0 !px-2 !text-[11px]">#home-lab</span><span class="chip !py-0 !px-2 !text-[11px] text-muted">+1</span></span>
+                </span>
+              </span>
+              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+            </div>
+            <div id="u18-recent-opt-i5" class="sugg-row" role="option" aria-selected="false" data-key="item:i5">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">docker</span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#ops</span><span class="chip !py-0 !px-2 !text-[11px]">#home-lab</span></span>
+                </span>
+              </span>
+              <span class="sugg-meta mono">8 entries · 10/03/2026</span>
+            </div>
+          </div>
+          <div role="group" aria-labelledby="u18-recent-tags-hdr">
+            <div id="u18-recent-tags-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Tag hay dùng · <span lang="en">Frequent tags</span></span>
+              <span class="mono">3</span>
+            </div>
+            <div id="u18-recent-opt-t1" class="sugg-row" role="option" aria-selected="false" data-key="tag:t1">
+              <span class="sugg-icon mono" aria-hidden="true">#</span>
+              <span class="sugg-main"><span class="sugg-title-row"><span class="sugg-name mono">#nhà</span></span></span>
+              <span class="sugg-meta mono">24 mục · <span lang="en">24 items</span></span>
+            </div>
+            <div id="u18-recent-opt-t4" class="sugg-row" role="option" aria-selected="false" data-key="tag:t4">
+              <span class="sugg-icon mono" aria-hidden="true">#</span>
+              <span class="sugg-main"><span class="sugg-title-row"><span class="sugg-name mono">#ops</span></span></span>
+              <span class="sugg-meta mono">15 mục · <span lang="en">15 items</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. #omnibox-state-typing: Đang gõ có kết quả (Tags -> Items -> Gần nghĩa) -->
+    <div class="card p-5" id="omnibox-state-typing">
+      <p class="t-label mb-2 text-muted">2 · Đang gõ có kết quả (<span class="mono">Tags → Items → Gần nghĩa</span>, quota 8) · <span lang="en">Typing with lexical + semantic hits</span></p>
+      <p class="text-[13px] text-muted m-0 mb-3">
+        Một <span class="mono">role="listbox"</span> duy nhất chứa các <span class="mono">role="group"</span> + <span class="mono">aria-labelledby</span>; chỉ các hàng kết quả mang <span class="mono">role="option"</span> (header mang <span class="mono">role="presentation"</span>). Mục <span class="mono">fuzzy</span> có nhãn <span class="mono">gần đúng</span>; mục nhóm dưới có nhãn <span class="mono">≈ gần nghĩa</span> (không bao giờ hiện điểm số).
+      </p>
+      <div class="popover p-2">
+        <div id="u18-typing-listbox" role="listbox" aria-label="Gợi ý tìm kiếm · Search suggestions">
+          <div role="group" aria-labelledby="u18-typing-tags-hdr">
+            <div id="u18-typing-tags-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Tags</span>
+              <span class="mono">1</span>
+            </div>
+            <div id="u18-typing-opt-t7" class="sugg-row" role="option" aria-selected="false" data-key="tag:t7">
+              <span class="sugg-icon mono" aria-hidden="true">#</span>
+              <span class="sugg-main"><span class="sugg-title-row"><span class="sugg-name mono">#wifi-khách</span></span></span>
+              <span class="sugg-meta mono">4 mục · <span lang="en">4 items</span></span>
+            </div>
+          </div>
+          <div role="group" aria-labelledby="u18-typing-items-hdr">
+            <div id="u18-typing-items-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Items</span>
+              <span class="mono">3</span>
+            </div>
+            <div id="u18-typing-opt-i1" class="sugg-row" role="option" aria-selected="true" data-key="item:i1">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">wifi</span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span><span class="chip !py-0 !px-2 !text-[11px]">#office</span><span class="chip !py-0 !px-2 !text-[11px]">#home-lab</span><span class="chip !py-0 !px-2 !text-[11px] text-muted">+1</span></span>
+                </span>
+              </span>
+              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+            </div>
+            <div id="u18-typing-opt-i2" class="sugg-row" role="option" aria-selected="false" data-key="item:i2">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">wifi</span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#công-ty</span><span class="chip !py-0 !px-2 !text-[11px]">#office</span></span>
+                </span>
+                <span class="sugg-hint">tầng 4 — SSID nội bộ · tạo 01/06/2026</span>
+              </span>
+              <span class="sugg-meta mono">3 entries · 01/06/2026</span>
+            </div>
+            <div id="u18-typing-opt-i3" class="sugg-row" role="option" aria-selected="false" data-key="item:i3">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">wifi-office</span>
+                  <span class="sugg-badge" title="search.match.fuzzy">gần đúng · <span lang="en">fuzzy</span></span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#office</span></span>
+                </span>
+              </span>
+              <span class="sugg-meta mono">3 entries · 02/03/2026</span>
+            </div>
+          </div>
+          <div role="group" aria-labelledby="u18-typing-near-hdr">
+            <div id="u18-typing-near-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Gần nghĩa · <span lang="en">Similar meaning</span></span>
+              <span class="mono">2</span>
+            </div>
+            <div id="u18-typing-opt-i4" class="sugg-row" role="option" aria-selected="false" data-key="item:i4">
+              <span class="sugg-icon mono" aria-hidden="true">≈</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">mạng nhà</span>
+                  <span class="sugg-badge sugg-badge-sem" title="search.match.semantic">≈ gần nghĩa · <span lang="en">≈ similar</span></span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span></span>
+                </span>
+                <span class="sugg-hint">PPPoE + mật khẩu modem</span>
+              </span>
+              <span class="sugg-meta mono">4 entries · 28/02/2026</span>
+            </div>
+            <div id="u18-typing-opt-i8" class="sugg-row" role="option" aria-selected="false" data-key="item:i8">
+              <span class="sugg-icon mono" aria-hidden="true">≈</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">cấu hình router</span>
+                  <span class="sugg-badge sugg-badge-sem" title="search.match.semantic">≈ gần nghĩa · <span lang="en">≈ similar</span></span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span><span class="chip !py-0 !px-2 !text-[11px]">#home-lab</span></span>
+                </span>
+                <span class="sugg-hint">VLAN + DHCP cố định</span>
+              </span>
+              <span class="sugg-meta mono">5 entries · 19/02/2026</span>
+            </div>
+          </div>
+          <!-- Mục 2.24 item 3 (FE-C12): Hàng hành động nằm trong một role=group cuối riêng tên search.group.actions -->
+          <div role="group" aria-labelledby="u18-typing-actions-hdr">
+            <div id="u18-typing-actions-hdr" class="sugg-group-hdr" role="presentation" title="search.group.actions">
+              <span>Thao tác · <span lang="en">Actions</span></span>
+            </div>
+            <div id="u18-typing-opt-create" class="sugg-row" role="option" aria-selected="false" data-key="action:create">
+              <span class="sugg-icon mono" aria-hidden="true">+</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name font-semibold" style="color:var(--accent)">Tạo mục “wifi” · <span lang="en" class="font-normal text-muted">Create item “wifi”</span></span>
+                </span>
+              </span>
+              <span class="kbd">Ctrl+Enter</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. #omnibox-state-near-pending: Lexical xong, semantic đang tính (>120ms) -->
+    <div class="card p-5" id="omnibox-state-near-pending">
+      <p class="t-label mb-2 text-muted">3 · Lexical đã về, <span class="mono">≈</span> đang tìm (&gt; 120 ms) · <span lang="en">Lexical ready, semantic pending</span></p>
+      <p class="text-[13px] text-muted m-0 mb-3">
+        Nhóm <span class="mono">Tags</span> / <span class="mono">Items</span> giữ cố định vị trí; khung chờ <span class="mono">≈ đang tìm gợi ý gần nghĩa…</span> nằm dưới cùng (trước nhóm <span class="mono">search.group.actions</span>), mang <span class="mono">role="presentation"</span> để mũi tên <span class="mono">↑↓</span> không rơi vào skeleton.
+      </p>
+      <div class="popover p-2">
+        <div id="u18-pending-listbox" role="listbox" aria-label="Gợi ý tìm kiếm · Search suggestions">
+          <div role="group" aria-labelledby="u18-pending-items-hdr">
+            <div id="u18-pending-items-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Items</span>
+              <span class="mono">2</span>
+            </div>
+            <div id="u18-pending-opt-i4" class="sugg-row" role="option" aria-selected="true" data-key="item:i4">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">mạng nhà</span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span></span>
+                </span>
+                <span class="sugg-hint">PPPoE + mật khẩu modem</span>
+              </span>
+              <span class="sugg-meta mono">4 entries · 28/02/2026</span>
+            </div>
+            <div id="u18-pending-opt-i8" class="sugg-row" role="option" aria-selected="false" data-key="item:i8">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">cấu hình router</span>
+                  <span class="sugg-badge">gần đúng · <span lang="en">fuzzy</span></span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span><span class="chip !py-0 !px-2 !text-[11px]">#home-lab</span></span>
+                </span>
+              </span>
+              <span class="sugg-meta mono">5 entries · 19/02/2026</span>
+            </div>
+          </div>
+          <div role="group" aria-labelledby="u18-pending-actions-hdr">
+            <div id="u18-pending-actions-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Thao tác · <span lang="en">Actions</span></span>
+            </div>
+            <div id="u18-pending-opt-create" class="sugg-row" role="option" aria-selected="false" data-key="action:create">
+              <span class="sugg-icon mono" aria-hidden="true">+</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name font-semibold" style="color:var(--accent)">Tạo mục “mạng nhà” · <span lang="en" class="font-normal text-muted">Create item “mạng nhà”</span></span>
+                </span>
+              </span>
+              <span class="kbd">Ctrl+Enter</span>
+            </div>
+          </div>
+        </div>
+        <!-- Dòng trạng thái hiển thị nằm NGOÀI listbox và NGOÀI live region, không mang role="status"/aria-live (mục 2.8 quy tắc 5) -->
+        <div class="sugg-status-line" data-omni-status="near-pending" title="search.state.nearPending">
+          <span class="sugg-near-pending-dot" aria-hidden="true"></span>
+          <span>≈ đang tìm gợi ý gần nghĩa… · <span lang="en">finding similar-meaning matches…</span></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. #omnibox-state-near-late: Semantic đến muộn (append-only, giữ activeKey) -->
+    <div class="card p-5" id="omnibox-state-near-late">
+      <p class="t-label mb-2 text-muted">4 · <span class="mono">≈</span> đến muộn (append-only, giữ <span class="mono">activeKey</span>) · <span lang="en">Late semantic append</span></p>
+      <p class="text-[13px] text-muted m-0 mb-3">
+        Khi response thứ hai cùng <span class="mono">gen</span> trả về, client lọc trùng <span class="mono">id</span> đã có ở <span class="mono">items</span>, cắt theo <span class="mono">min(quota.near, limit - lexical.length)</span> và chỉ nối vào nhóm <span class="mono">Gần nghĩa</span> — không dựng lại node lexical, giữ nguyên <span class="mono">activeKey="item:i4"</span>. Live region đọc <em>“Thêm 2 gợi ý gần nghĩa”</em>.
+      </p>
+      <div class="popover p-2">
+        <div id="u18-late-listbox" role="listbox" aria-label="Gợi ý tìm kiếm · Search suggestions">
+          <div role="group" aria-labelledby="u18-late-items-hdr">
+            <div id="u18-late-items-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Items</span>
+              <span class="mono">2</span>
+            </div>
+            <div id="u18-late-opt-i4" class="sugg-row" role="option" aria-selected="true" data-key="item:i4">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">mạng nhà</span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span></span>
+                </span>
+                <span class="sugg-hint">PPPoE + mật khẩu modem</span>
+              </span>
+              <span class="sugg-meta mono">4 entries · 28/02/2026</span>
+            </div>
+            <div id="u18-late-opt-i8" class="sugg-row" role="option" aria-selected="false" data-key="item:i8">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">cấu hình router</span>
+                  <span class="sugg-badge">gần đúng · <span lang="en">fuzzy</span></span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span><span class="chip !py-0 !px-2 !text-[11px]">#home-lab</span></span>
+                </span>
+              </span>
+              <span class="sugg-meta mono">5 entries · 19/02/2026</span>
+            </div>
+          </div>
+          <div role="group" aria-labelledby="u18-late-near-hdr">
+            <div id="u18-late-near-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Gần nghĩa · <span lang="en">Similar meaning</span></span>
+              <span class="mono">2</span>
+            </div>
+            <div id="u18-late-opt-i1" class="sugg-row" role="option" aria-selected="false" data-key="item:i1">
+              <span class="sugg-icon mono" aria-hidden="true">≈</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">wifi</span>
+                  <span class="sugg-badge sugg-badge-sem">≈ gần nghĩa · <span lang="en">≈ similar</span></span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span><span class="chip !py-0 !px-2 !text-[11px]">#office</span><span class="chip !py-0 !px-2 !text-[11px]">#home-lab</span></span>
+                </span>
+              </span>
+              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+            </div>
+            <div id="u18-late-opt-i11" class="sugg-row" role="option" aria-selected="false" data-key="item:i11">
+              <span class="sugg-icon mono" aria-hidden="true">≈</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">wifi</span>
+                  <span class="sugg-badge sugg-badge-sem">≈ gần nghĩa · <span lang="en">≈ similar</span></span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span><span class="chip !py-0 !px-2 !text-[11px]">#wifi-khách</span></span>
+                </span>
+                <span class="sugg-hint">nhà bố mẹ · cáp quang · tạo 14/01/2026</span>
+              </span>
+              <span class="sugg-meta mono">2 entries · 14/01/2026</span>
+            </div>
+          </div>
+          <div role="group" aria-labelledby="u18-late-actions-hdr">
+            <div id="u18-late-actions-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Thao tác · <span lang="en">Actions</span></span>
+            </div>
+            <div id="u18-late-opt-create" class="sugg-row" role="option" aria-selected="false" data-key="action:create">
+              <span class="sugg-icon mono" aria-hidden="true">+</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name font-semibold" style="color:var(--accent)">Tạo mục “mạng nhà” · <span lang="en" class="font-normal text-muted">Create item “mạng nhà”</span></span>
+                </span>
+              </span>
+              <span class="kbd">Ctrl+Enter</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. #omnibox-state-near-silent-skip: Semantic tắt / lỗi / timeout / query <3 ký tự -->
+    <div class="card p-5" id="omnibox-state-near-silent-skip">
+      <p class="t-label mb-2 text-muted">5 · Ẩn nhóm <span class="mono">Gần nghĩa</span> trong im lặng (<span class="mono">disabled</span> / <span class="mono">timeout</span> / <span class="mono">error</span> / <span class="mono">short_query</span>) · <span lang="en">Silent semantic skip</span></p>
+      <p class="text-[13px] text-muted m-0 mb-3">
+        Khi <span class="mono">semantic_reason</span> là <span class="mono">disabled</span>, <span class="mono">server_disabled</span>, <span class="mono">short_query</span>, <span class="mono">timeout</span> hoặc <span class="mono">error</span>, nhóm <span class="mono">Gần nghĩa</span> ẩn hẳn — tuyệt đối không bật banner lỗi hay toast khi đang gõ.
+      </p>
+      <div class="popover p-2">
+        <div id="u18-silent-listbox" role="listbox" aria-label="Gợi ý tìm kiếm · Search suggestions">
+          <div role="group" aria-labelledby="u18-silent-items-hdr">
+            <div id="u18-silent-items-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Items</span>
+              <span class="mono">2</span>
+            </div>
+            <div id="u18-silent-opt-i1" class="sugg-row" role="option" aria-selected="false" data-key="item:i1">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">wifi</span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#nhà</span><span class="chip !py-0 !px-2 !text-[11px]">#office</span></span>
+                </span>
+              </span>
+              <span class="sugg-meta mono">12 entries · 12/03/2026</span>
+            </div>
+            <div id="u18-silent-opt-i3" class="sugg-row" role="option" aria-selected="false" data-key="item:i3">
+              <span class="sugg-icon mono" aria-hidden="true">↗</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name">wifi-office</span>
+                  <span class="sugg-chips"><span class="chip !py-0 !px-2 !text-[11px]">#office</span></span>
+                </span>
+              </span>
+              <span class="sugg-meta mono">3 entries · 02/03/2026</span>
+            </div>
+          </div>
+          <div role="group" aria-labelledby="u18-silent-actions-hdr">
+            <div id="u18-silent-actions-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Thao tác · <span lang="en">Actions</span></span>
+            </div>
+            <div id="u18-silent-opt-create" class="sugg-row" role="option" aria-selected="false" data-key="action:create">
+              <span class="sugg-icon mono" aria-hidden="true">+</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name font-semibold" style="color:var(--accent)">Tạo mục “wi” · <span lang="en" class="font-normal text-muted">Create item “wi”</span></span>
+                </span>
+              </span>
+              <span class="kbd">Ctrl+Enter</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 6. #omnibox-state-empty: Không khớp gì -->
+    <div class="card p-5" id="omnibox-state-empty">
+      <p class="t-label mb-2 text-muted">6 · Không khớp gì (<span class="mono">tags=[]</span>, <span class="mono">items=[]</span>, <span class="mono">near=[]</span>) · <span lang="en">Empty suggest with Create item action</span></p>
+      <p class="text-[13px] text-muted m-0 mb-3">
+        Thông báo rỗng (<span class="mono">role="presentation"</span>) + hàng hành động <span class="mono">role="option"</span> duy nhất trong nhóm <span class="mono">search.group.actions</span> để nhấn <span class="kbd">↓</span> / <span class="kbd">Ctrl+Enter</span> tạo mục ngay.
+      </p>
+      <div class="popover p-2">
+        <!-- Khung thông báo rỗng nằm NGOÀI listbox (mục 2.8 quy tắc 5) -->
+        <div class="omni-empty-box" title="search.state.noMatch">
+          <p class="t-body m-0 mb-1 text-body">Không có gì khớp “thuế 2024”. Gõ <span class="mono">thuế 2024: nội dung</span> để lưu ngay.</p>
+          <p class="text-[12px] text-muted m-0" lang="en">Nothing matches “thuế 2024”. Type <span class="mono">thuế 2024: content</span> to save right away.</p>
+        </div>
+        <div id="u18-empty-listbox" role="listbox" aria-label="Gợi ý tìm kiếm · Search suggestions">
+          <div role="group" aria-labelledby="u18-empty-actions-hdr">
+            <div id="u18-empty-actions-hdr" class="sugg-group-hdr" role="presentation">
+              <span>Thao tác · <span lang="en">Actions</span></span>
+            </div>
+            <div id="u18-empty-opt-create" class="sugg-row" role="option" aria-selected="true" data-key="action:create">
+              <span class="sugg-icon mono" aria-hidden="true">+</span>
+              <span class="sugg-main">
+                <span class="sugg-title-row">
+                  <span class="sugg-name font-semibold" style="color:var(--accent)">Tạo mục “thuế 2024” · <span lang="en" class="font-normal text-muted">Create item “thuế 2024”</span></span>
+                </span>
+              </span>
+              <span class="kbd">Ctrl+Enter</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 7. #omnibox-state-paste-guard: Dán hoặc autofill không có ':' (tainted gate) -->
+    <div class="card p-5" id="omnibox-state-paste-guard">
+      <p class="t-label mb-2 text-muted">7 · Chặn gửi khi dán / autofill (<span class="mono">tainted = true</span>, mục 2.1 + 2.24 item 1-2) · <span lang="en">Paste / autofill send gate</span></p>
+      <p class="text-[13px] text-muted m-0 mb-3">
+        Khi phát hiện <span class="mono">insertFromPaste</span>, <span class="mono">insertReplacementText</span>, <span class="mono">insertText</span> &gt; 1 cụm grapheme hoặc <span class="mono">compositionend</span> &gt; 64 cụm grapheme, client đóng dropdown gợi ý (<span class="mono">activeKey=null</span>), không gọi <span class="mono">/suggest</span> và đổi dòng hướng dẫn dưới ô sang nhắc nhấn <span class="kbd">Enter</span>.
+      </p>
+      <div class="omnibox-shell mb-2">
+        <span class="mono text-muted" aria-hidden="true">⌕</span>
+        <span class="omnibox-input">ghp_9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e</span>
+        <button type="button" class="omni-sem-btn" aria-pressed="true" aria-label="Gợi ý gần nghĩa (≈): đang bật · Similar-meaning suggestions (≈): on"><span aria-hidden="true">≈</span><span>on</span></button>
+        <span class="kbd">Ctrl K</span>
+      </div>
+      <p class="omni-hint-line" title="search.help.enterToSearch">
+        <span class="omni-hint-vi">Nhấn Enter để tìm; chữ gõ được gửi tới máy chủ, không mã hoá.</span>
+        <span class="omni-hint-en" lang="en">Press Enter to search; the text is sent to the server, not encrypted.</span>
+      </p>
+    </div>
+
+    <!-- 8. #omnibox-state-quick-add: Đang gõ quick-add có ':' -->
+    <div class="card p-5" id="omnibox-state-quick-add">
+      <p class="t-label mb-2 text-muted">8 · Chế độ thêm nhanh có dấu <span class="mono">:</span> (<span class="mono">colon_locked = true</span>) · <span lang="en">Quick-add mode with colon</span></p>
+      <p class="text-[13px] text-muted m-0 mb-3">
+        Ngay khi có dấu <span class="mono">:</span> (kể cả vừa điền bằng <span class="kbd">Tab</span>), cờ <span class="mono">colon_locked</span> bật cho tới khi ô về rỗng <span class="mono">""</span> — huỷ mọi request <span class="mono">/suggest</span> đang bay, đóng dropdown tìm và hiện preview lưu cục bộ.
+      </p>
+      <div class="omnibox-shell is-add mb-2">
+        <span class="mono text-muted" aria-hidden="true">⌕</span>
+        <span class="omnibox-input">wifi #nhà: mật khẩu mới 2026</span>
+        <button type="button" class="omni-sem-btn" aria-pressed="true" aria-label="Gợi ý gần nghĩa (≈): đang bật · Similar-meaning suggestions (≈): on"><span aria-hidden="true">≈</span><span>on</span></button>
+        <span class="kbd">Ctrl K</span>
+      </div>
+      <div class="omni-add-panel">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap items-center gap-2 min-w-0">
+            <span class="text-[12px] font-semibold uppercase tracking-[.06em] text-muted">Sẽ lưu vào · <span lang="en">Saving to</span></span>
+            <span class="mono font-semibold text-[14px] text-ink">wifi</span>
+            <span class="chip dup-chip">#nhà</span>
+          </div>
+          <span class="text-[12px] text-muted">Enter lưu · Shift+Enter xuống dòng · <span lang="en">Enter to save</span></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 9. #omnibox-state-rate-limited: Quá giới hạn 429 rate_limited -->
+    <div class="card card-warning p-5" id="omnibox-state-rate-limited">
+      <span class="badge-type badge-warn mb-2 inline-block">429 rate_limited · Retry-After: 12</span>
+      <p class="t-label mb-1 text-muted">9 · Quá giới hạn tìm kiếm / gợi ý (mục 2.6, <span class="mono">search.state.rateLimited</span>) · <span lang="en">Search rate-limited</span></p>
+      <p class="text-[14px] font-semibold m-0 mb-1 text-body">
+        Đang tìm quá nhanh, thử lại sau 12 giây.
+      </p>
+      <p class="text-[13px] text-muted m-0 mb-2" lang="en">
+        <strong>Searching too fast, try again in 12 seconds.</strong>
+      </p>
+      <p class="text-[12px] text-muted m-0">
+        Khi nhận <span class="mono">429 rate_limited</span> (kèm header <span class="mono">Retry-After</span>), client tạm dừng gửi <span class="mono">/suggest</span> mới tới hết thời gian chờ nhưng giữ nguyên các hàng gợi ý đang hiển thị trên màn hình (không xoá trắng listbox).
+      </p>
+    </div>
+
+    <!-- 10. #omnibox-state-offline: Mất mạng khi tìm -->
+    <div class="card p-5" id="omnibox-state-offline">
+      <p class="t-label mb-1 text-muted">10 · Mất mạng khi tìm (<span class="mono">search.state.offline</span>) · <span lang="en">Offline while searching</span></p>
+      <p class="text-[14px] font-semibold m-0 mb-1 text-body">
+        Đang ngoại tuyến — hiển thị gợi ý đã lưu trong phiên.
+      </p>
+      <p class="text-[13px] text-muted m-0 mb-2" lang="en">
+        <strong>Offline — showing cached suggestions from this session.</strong>
+      </p>
+      <p class="text-[12px] text-muted m-0">
+        Phục vụ từ bộ nhớ đệm LRU trong phiên (tối đa 64 mục, chỉ thuộc bộ nhớ RAM của tab, xoá sạch khi đăng xuất / đổi tài khoản / đặt lại vault).
+      </p>
+    </div>
+
+    <!-- 11. #omnibox-state-vault-locked: Vault đang khoá -->
+    <div class="card p-5" id="omnibox-state-vault-locked">
+      <p class="t-label mb-1 text-muted">11 · Tìm kiếm khi vault đang khoá · <span lang="en">Searching while vault is locked</span></p>
+      <p class="text-[14px] font-semibold m-0 mb-1 text-body">
+        Vault đang khoá — tìm và mở mục bình thường; mở khoá khi cần đọc hoặc lưu nội dung entry
+      </p>
+      <p class="text-[13px] text-muted m-0" lang="en">
+        Because item names and tags are unencrypted metadata, <span class="mono">/suggest</span> and <span class="mono">/search</span> work normally while the vault is locked. Unlocking is only prompted when opening an encrypted entry body or saving a quick-add draft.
+      </p>
     </div>
 
   </section>

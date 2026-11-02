@@ -136,16 +136,29 @@
 
   <!-- cột chính -->
   <section class="min-w-0">
-    <h1 class="t-title-lg mb-1">Gõ rồi Enter để tìm. Gõ <span class="mono">tên: nội dung</span> để lưu.</h1>
-    <p class="t-body-lg mb-1 text-muted" lang="en">Type then press Enter to search. Type <span class="mono">name: content</span> to save.</p>
-    <p class="t-body mb-6 text-muted">Một ô duy nhất cho cả hai việc — không gửi yêu cầu nào trước khi bạn nhấn Enter. · <span lang="en">One box for both — nothing is sent before you press Enter.</span></p>
-    <!-- Thanh chuyển kịch bản Omnibox & Quick-add (P04 Bước 2: U8, U9, Q17, Q18) -->
+    <h1 class="t-title-lg mb-1">Gõ để tìm. Gõ <span class="mono">tên: nội dung</span> để lưu.</h1>
+    <p class="t-body-lg mb-1 text-muted" lang="en">Type to search. Type <span class="mono">name: content</span> to save.</p>
+    <p class="t-body mb-6 text-muted">Một ô duy nhất cho cả hai việc — chỉ gửi chuỗi chắc chắn do bạn gõ tay ở chế độ tìm; mọi chuỗi có dấu <span class="mono">:</span> hoặc dán từ clipboard được giữ cục bộ cho tới khi nhấn Enter. · <span lang="en">One box for both — keystroke suggestions run only on clean typed search queries; any draft with <span class="mono">:</span> or pasted text stays local until Enter.</span></p>
+    <!-- Thanh chuyển kịch bản Omnibox & Quick-add (P05 U15/U18 + P04 U8/U9/Q17) -->
+    <!-- Intended i18n keys (Task 17/18):
+         search.group.tags ("Tags"), search.group.items ("Items"), search.group.near ("Gần nghĩa" / "Similar meaning"),
+         search.group.recentItems ("Gần đây" / "Recent"), search.group.recentTags ("Tag hay dùng" / "Frequent tags"),
+         search.group.actions ("Thao tác" / "Actions"), search.match.fuzzy ("gần đúng" / "fuzzy"),
+         search.match.semantic ("≈ gần nghĩa" / "≈ similar"), search.help.sentToServer, search.help.sentToServerExternal,
+         search.help.enterToSearch, search.state.nearPending, search.state.noMatch, search.actions.createItem, search.actions.loadMore -->
     <div class="mb-4 p-3.5 rounded-lg bg-surface rule-line" id="omni-demo-bar">
       <p class="t-caption text-muted m-0 mb-2">
-        Trạng thái Omnibox &amp; Quick-add (P04 U8, U9, Q17) · <span lang="en">Omnibox &amp; Quick-add states</span>
+        Kịch bản Omnibox P05 (U15, U18) &amp; Quick-add P04 (U8, U9, Q17) · <span lang="en">P05 Suggest &amp; P04 Quick-add scenarios</span>
       </p>
       <div class="seg flex-wrap" data-seg id="omni-state-seg" role="group" aria-label="Trạng thái Omnibox · Omnibox states">
-        <button type="button" data-omni-scenario="search-hint" aria-pressed="true">1. Gợi ý tìm · <span lang="en">Search hint</span></button>
+        <button type="button" data-omni-scenario="suggest-recent" aria-pressed="false">P05 · Gần đây · <span lang="en">Recent</span></button>
+        <button type="button" data-omni-scenario="suggest-typing" aria-pressed="true">P05 · Gõ gợi ý (Tags → Items → ≈) · <span lang="en">Typing</span></button>
+        <button type="button" data-omni-scenario="suggest-near-late" aria-pressed="false">P05 · ≈ đến muộn · <span lang="en">Late near</span></button>
+        <button type="button" data-omni-scenario="suggest-empty" aria-pressed="false">P05 · Không khớp · <span lang="en">Suggest empty</span></button>
+        <button type="button" data-omni-scenario="suggest-paste-guard" aria-pressed="false">P05 · Chặn dán (tainted) · <span lang="en">Paste guard</span></button>
+        <button type="button" data-omni-scenario="suggest-tab-item" aria-pressed="false">P05 · Tab điền mục · <span lang="en">Tab item</span></button>
+        <button type="button" data-omni-scenario="suggest-tab-tag" aria-pressed="false">P05 · Tab điền #tag · <span lang="en">Tab tag</span></button>
+        <button type="button" data-omni-scenario="search-hint" aria-pressed="false">1. Gợi ý tìm · <span lang="en">Search hint</span></button>
         <button type="button" data-omni-scenario="search-results" aria-pressed="false">2. Kết quả Enter · <span lang="en">Results</span></button>
         <button type="button" data-omni-scenario="search-empty" aria-pressed="false">3. Tìm rỗng · <span lang="en">No match</span></button>
         <button type="button" data-omni-scenario="search-multiline-guard" aria-pressed="false">4a. Chặn nhiều dòng · <span lang="en">Multiline guard</span></button>
@@ -165,12 +178,17 @@
       <p class="t-caption mt-2.5 mb-0 text-muted">
         Thử nhanh · <span lang="en">Quick triggers:</span>
         <button type="button" class="mono link-btn" data-open-dup-picker="wifi">Picker trùng tên (U9) · <span lang="en">U9 Picker</span></button> ·
-        <button type="button" class="mono link-btn" id="omni-sim-toast-4">Chồng 4 toast Undo (+1) · <span lang="en">4 Undo toasts (+1)</span></button>
+        <button type="button" class="mono link-btn" id="omni-sim-toast-4">Chồng 4 toast Undo (+1) · <span lang="en">4 Undo toasts (+1)</span></button> ·
+        <button type="button" class="mono link-btn" id="omni-sim-server-off">Giả lập server tắt ≈ · <span lang="en">Toggle server-off</span></button>
+      </p>
+      <p class="t-caption mt-1.5 mb-0 text-muted" id="omni-touch-tab-note">
+        Ghi chú thiết kế (FE-18a, L5): <span class="kbd">Tab</span> điền (<span class="mono">tên: </span> / <span class="mono">#tag </span>) là phím tắt bàn phím, không có nút chạm tương đương ở 390 px — chấp nhận; trên màn cảm ứng người dùng gõ <span class="mono">tên:</span> trực tiếp. ·
+        <span lang="en">Design note (FE-18a, L5): Tab-fill has no touch equivalent at 390 px — accepted; mobile users type <span class="mono">name:</span> directly.</span>
       </p>
     </div>
 
     <div class="relative" data-omnibox id="omni">
-      <label class="omnibox-shell">
+      <div class="omnibox-shell">
         <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" class="shrink-0">
           <circle cx="8.5" cy="8.5" r="5.5" stroke="var(--muted)" stroke-width="1.8"/>
           <path d="M12.8 12.8 17 17" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/>
@@ -178,8 +196,9 @@
         <textarea rows="1" class="omnibox-input" placeholder="Tìm hoặc tên: nội dung"
                   data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
                   aria-label="Tìm hoặc lưu · Search or save"></textarea>
+        <button type="button" class="omni-sem-btn" data-omni-sem-toggle aria-pressed="true" aria-label="Gợi ý gần nghĩa (≈): đang bật · Similar-meaning suggestions (≈): on"><span aria-hidden="true">≈</span><span>on</span></button>
         <span class="kbd">Ctrl K</span>
-      </label>
+      </div>
       <div data-pop hidden id="omni-pop" class="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[440px] overflow-auto"></div>
     </div>
     <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mt-12 mb-4" id="recent-items-header">
@@ -304,6 +323,16 @@
         SAK.toast(`Đã lưu vào “${n}” · Saved to “${n}”`, 'Hoàn tác', { sub, originEl: box ? box.input : simToast4Btn });
       });
     });
+  }
+  const simServerOffBtn = document.getElementById('omni-sim-server-off');
+  if (simServerOffBtn) {
+    simServerOffBtn.addEventListener('click', () => {
+      SAK.state.semanticAvailable = !SAK.state.semanticAvailable;
+      if (box && typeof box.paint === 'function') box.paint();
+    });
+  }
+  if (box && typeof box.setScenario === 'function') {
+    box.setScenario('suggest-typing');
   }
   /* Rail tag filter, menu, rename & delete with Undo toast */
   let activeTagFilter = null;
