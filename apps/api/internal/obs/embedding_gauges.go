@@ -44,11 +44,11 @@ type DBQuerier interface {
 // không chạm văn bản người dùng (chỉ đếm hàng, UUID không được trả ra, nhãn chỉ
 // gồm corpus, vai trò và id generation).
 //
-// Cache: một snapshot duy nhất cho cả ba gauge, sống GaugeCacheTTL. Mutex bao
-// quanh lần nạp nên các scrape đồng thời chỉ gây một lượt truy vấn (không
-// stampede); lỗi của lần nạp cũng được giữ trong TTL để một DB chậm không bị
-// truy vấn lại mỗi scrape. Ngoại lệ: lỗi do chính context của người gọi bị huỷ
-// thì không cache, vì nó không phản ánh trạng thái DB.
+// Cache: một snapshot duy nhất cho cả ba gauge, sống GaugeCacheTTL. Các scrape
+// đồng thời dùng chung một lần nạp đang chạy (không stampede) và mỗi người chờ
+// vẫn tôn trọng context của riêng mình; lỗi của lần nạp cũng được giữ trong TTL
+// để một DB chậm không bị truy vấn lại mỗi scrape. Ngoại lệ: lỗi do chính context
+// của người nạp bị huỷ thì không cache, vì nó không phản ánh trạng thái DB.
 //
 // Chọn số liệu (SPEC §6.6, plan 2.21):
 //   - lag: với mỗi generation chưa `dropped`, p95 của `embedded_at −
@@ -79,8 +79,9 @@ type DBGaugeSource struct {
 	db  DBQuerier
 	now func() time.Time
 
-	mu   sync.Mutex
-	snap *gaugeSnapshot
+	mu       sync.Mutex
+	snap     *gaugeSnapshot
+	inflight *gaugeLoad
 }
 
 // gaugeSnapshot là kết quả một lần nạp; mỗi phần có lỗi riêng để một truy vấn
@@ -139,24 +140,73 @@ func (s *DBGaugeSource) Coverage(ctx context.Context) ([]GenerationCoverageSampl
 	return snap.cov, snap.covErr
 }
 
+// gaugeLoad là một lần nạp đang chạy; người gọi khác đợi done thay vì tự nạp.
+type gaugeLoad struct {
+	done chan struct{}
+	snap *gaugeSnapshot // đã ghi trước khi đóng done
+	err  error          // chỉ khác nil khi context của người nạp bị huỷ (không cache)
+}
+
+// snapshot trả snapshot còn hạn, hoặc nạp mới. Mutex chỉ bảo vệ sổ sách
+// (snapshot + lần nạp đang chạy); truy vấn DB chạy ngoài mutex. Đúng một người
+// gọi (leader) nạp, những người khác chọn giữa việc nạp xong và `ctx.Done()` của
+// chính họ nên deadline/huỷ của người gọi luôn được tôn trọng khi chờ. Nếu leader
+// bị huỷ (lỗi ctx của leader, không phải của DB) thì người chờ còn sống thử lại.
 func (s *DBGaugeSource) snapshot(ctx context.Context) (*gaugeSnapshot, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("obs: nil gauge database")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := s.now()
-	if s.snap != nil {
-		if age := now.Sub(s.snap.at); age >= 0 && age < GaugeCacheTTL {
-			return s.snap, nil
+	for {
+		s.mu.Lock()
+		now := s.now()
+		if s.snap != nil {
+			if age := now.Sub(s.snap.at); age >= 0 && age < GaugeCacheTTL {
+				snap := s.snap
+				s.mu.Unlock()
+				return snap, nil
+			}
 		}
-	}
+		if cur := s.inflight; cur != nil {
+			s.mu.Unlock()
+			select {
+			case <-cur.done:
+				if cur.err == nil {
+					return cur.snap, nil
+				}
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				continue // leader bị huỷ: thử lại (có thể trở thành leader)
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		load := &gaugeLoad{done: make(chan struct{})}
+		s.inflight = load
+		s.mu.Unlock()
 
-	snap := &gaugeSnapshot{at: now}
-	gens, err := s.generations(ctx)
-	if err != nil {
-		snap.lagErr, snap.covErr = err, err
+		return s.runLoad(ctx, load, now)
+	}
+}
+
+// runLoad nạp ngoài mutex rồi công bố kết quả; luôn gỡ inflight và đóng done
+// (kể cả khi panic) để người chờ không bị kẹt.
+func (s *DBGaugeSource) runLoad(ctx context.Context, load *gaugeLoad, now time.Time) (snap *gaugeSnapshot, err error) {
+	load.err = context.Canceled // mặc định nếu panic
+	defer func() {
+		s.mu.Lock()
+		if load.err == nil {
+			s.snap = load.snap
+		}
+		s.inflight = nil
+		s.mu.Unlock()
+		close(load.done)
+	}()
+
+	snap = &gaugeSnapshot{at: now}
+	gens, gerr := s.generations(ctx)
+	if gerr != nil {
+		snap.lagErr, snap.covErr = gerr, gerr
 	} else {
 		snap.lag, snap.lagErr = s.queryLag(ctx, gens)
 		snap.cov, snap.covErr = s.queryCoverage(ctx, gens)
@@ -165,9 +215,10 @@ func (s *DBGaugeSource) snapshot(ctx context.Context) (*gaugeSnapshot, error) {
 
 	// Lỗi do context của người gọi bị huỷ không phản ánh trạng thái DB: không cache.
 	if ctx.Err() != nil && (snap.lagErr != nil || snap.deadErr != nil || snap.covErr != nil) {
-		return nil, ctx.Err()
+		load.err = ctx.Err()
+		return nil, load.err
 	}
-	s.snap = snap
+	load.snap, load.err = snap, nil
 	return snap, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -381,5 +382,107 @@ func TestDBGaugesCached15s(t *testing.T) {
 	wg.Wait()
 	if got := counter.n.Load(); got != 3*perLoad {
 		t.Fatalf("16 concurrent scrapes: DB queries = %d, want %d (single load)", got, 3*perLoad)
+	}
+}
+
+// gateQuerier chặn lần Query đầu cho tới khi release đóng (hoặc ctx của lần gọi
+// bị huỷ); không cần Docker. Mọi truy vấn trả lỗi errGate sau khi được thả.
+type gateQuerier struct {
+	entered chan struct{} // nhận một tín hiệu khi truy vấn đầu vào DB
+	release chan struct{}
+	calls   atomic.Int64
+}
+
+var errGate = errors.New("gate: fake database error")
+
+func (q *gateQuerier) Query(ctx context.Context, _ string, _ ...any) (pgx.Rows, error) {
+	q.calls.Add(1)
+	select {
+	case q.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-q.release:
+		return nil, errGate
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (q *gateQuerier) QueryRow(context.Context, string, ...any) pgx.Row {
+	q.calls.Add(1)
+	return errRow{err: errGate}
+}
+
+type errRow struct{ err error }
+
+func (r errRow) Scan(...any) error { return r.err }
+
+// TestDBGaugeWaiterHonoursOwnContext (RV-T20a-BE-3): một lần nạp đang bị chặn;
+// người gọi thứ hai với context đã huỷ phải trả về ngay (không chờ lần nạp), người
+// gọi thứ ba còn sống nhận chung kết quả của đúng một lần nạp. Điều phối bằng
+// channel, không ngủ; time.After chỉ là chốt chặn chống treo khi code hỏng.
+func TestDBGaugeWaiterHonoursOwnContext(t *testing.T) {
+	q := &gateQuerier{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	src := obs.NewDBGaugeSource(q)
+	guard := func() <-chan time.Time { return time.After(30 * time.Second) }
+
+	type result struct {
+		err error
+	}
+	first := make(chan result, 1)
+	go func() {
+		_, err := src.DeadLetterJobs(context.Background())
+		first <- result{err}
+	}()
+	select {
+	case <-q.entered: // lần nạp đang chạy và bị chặn trong Query
+	case <-guard():
+		t.Fatal("first load never reached the database")
+	}
+
+	// Người gọi với context đã huỷ: phải trả về trước khi lần nạp được thả.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	second := make(chan result, 1)
+	go func() {
+		_, err := src.DeadLetterJobs(cancelled)
+		second <- result{err}
+	}()
+	select {
+	case r := <-second:
+		if !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("cancelled waiter err = %v, want context.Canceled", r.err)
+		}
+	case <-guard():
+		t.Fatal("cancelled waiter blocked behind the in-flight load")
+	}
+	select {
+	case r := <-first:
+		t.Fatalf("first load returned before release: %v", r.err)
+	default:
+	}
+
+	// Người gọi còn sống chờ chung lần nạp (đến sau khi nạp xong thì dùng cache).
+	third := make(chan result, 1)
+	go func() {
+		_, err := src.DeadLetterJobs(context.Background())
+		third <- result{err}
+	}()
+
+	close(q.release)
+	for name, ch := range map[string]chan result{"first": first, "third": third} {
+		select {
+		case r := <-ch:
+			if !errors.Is(r.err, errGate) {
+				t.Errorf("%s caller err = %v, want the shared load's error", name, r.err)
+			}
+		case <-guard():
+			t.Fatalf("%s caller never finished after release", name)
+		}
+	}
+	// Một lần nạp duy nhất: registry Query (lỗi) + dead-letter QueryRow.
+	if got := q.calls.Load(); got != 2 {
+		t.Fatalf("database calls = %d, want 2 (one shared load)", got)
 	}
 }
