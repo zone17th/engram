@@ -5,7 +5,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/auth"
 )
 
 func TestValidatePasswordBounds(t *testing.T) {

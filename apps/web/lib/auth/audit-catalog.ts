@@ -18,6 +18,17 @@ export const AUDIT_EVENTS = [
   'auth.settings.change',
   'auth.oauth.login',
   'auth.reauth',
+  'auth.password.reset',
+  // Vault service events (apps/api/internal/vault/service.go); display labels only.
+  'vault.create',
+  'vault.rewrap',
+  'vault.recover',
+  'vault.reset',
+  'recovery_key.consume',
+  'recovery_key.regenerate',
+  'recovery_key.rotate',
+  'passkey.register',
+  'passkey.revoke',
 ] as const;
 
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];

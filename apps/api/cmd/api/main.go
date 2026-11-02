@@ -18,13 +18,17 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth/authhttp"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/compose"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/obs"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/vault/vaulthttp"
+	"github.com/zone17th/engram/apps/api/internal/auth/authhttp"
+	"github.com/zone17th/engram/apps/api/internal/compose"
+	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/db"
+	"github.com/zone17th/engram/apps/api/internal/entry"
+	"github.com/zone17th/engram/apps/api/internal/entry/entryhttp"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/item/itemhttp"
+	"github.com/zone17th/engram/apps/api/internal/obs"
+	"github.com/zone17th/engram/apps/api/internal/tag/taghttp"
+	"github.com/zone17th/engram/apps/api/internal/vault/vaulthttp"
 )
 
 func main() {
@@ -108,10 +112,15 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("compose auth: %w", err)
 	}
+	defer svc.Close()
 	authn, csrfv, reauth := compose.Adapters(svc)
-	_, vaultAPI, err := compose.NewVault(cfg, pool, riverInsert, nil, nil, metrics, nil, logger)
+	_, vaultAPI, err := compose.NewVault(cfg, pool, riverInsert, nil, nil, metrics, entry.ResetHook, logger)
 	if err != nil {
 		return fmt.Errorf("compose vault: %w", err)
+	}
+	contentComp, err := compose.NewContent(cfg, pool, nil, metrics, logger)
+	if err != nil {
+		return fmt.Errorf("compose content: %w", err)
 	}
 
 	srv := &http.Server{
@@ -125,7 +134,7 @@ func run() error {
 			Authenticator:    authn,
 			CSRF:             csrfv,
 			Reauth:           reauth,
-			MountAPI:         compose.MountAll(authhttp.Mount(api), vaulthttp.Mount(vaultAPI)),
+			MountAPI:         compose.MountAll(authhttp.Mount(api), vaulthttp.Mount(vaultAPI), itemhttp.Mount(contentComp), taghttp.Mount(contentComp), entryhttp.Mount(contentComp)),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

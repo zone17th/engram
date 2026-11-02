@@ -60,10 +60,12 @@
   --pale-pink: #FFF1FE;
   --pale-blue: #E9E9F6;
   --pale-orange: #FFECE5;
-
+  --error-ink: #C5282D;
+  --success-ink: #1F7A4C;
+  --warning-ink: #8A5200;
+  --link-ink: #006AD4;
   --on-primary: #FFFFFF;
   --on-dark: #FFFFFF;
-
   /* Radius */
   --r-sm: 6px;
   --r-md: 8px;
@@ -100,6 +102,10 @@
   --pale-pink: #33122E;
   --pale-orange: #33201A;
   --accent: #FF7AD9;
+  --error-ink: #FF8589;
+  --success-ink: #5ED093;
+  --warning-ink: #F5B83D;
+  --link-ink: #5EB5FF;
 }
 
 /* ---------- base ---------- */
@@ -193,9 +199,8 @@ body {
 .btn-ai { background: var(--pale-pink); color: var(--ai-pink); }
 .btn-ai:hover:not(:disabled) { background: #FFE3FC; }
 
-.btn-danger { --danger-text: #B4232A; background: var(--canvas); color: var(--danger-text); border-color: var(--error); border-radius: var(--r-md); padding: 8px 12px; min-height: 38px; }
+.btn-danger { background: var(--canvas); color: var(--error-ink); border-color: var(--error); border-radius: var(--r-md); padding: 8px 12px; min-height: 38px; }
 .btn-danger:hover:not(:disabled) { background: #FEF1F1; }
-[data-theme='dark'] .btn-danger { --danger-text: var(--error); }
 [data-theme='dark'] .btn-danger:hover:not(:disabled) { background: #331B1C; }
 
 .btn-sm { min-height: 32px; padding: 6px 10px; font-size: 13px; border-radius: var(--r-sm); }
@@ -234,8 +239,13 @@ body {
 .chip:hover { background: var(--surface-alt); border-color: var(--border-strong); }
 .chip-accent { background: var(--pale-accent); color: var(--accent); border-color: transparent; }
 .chip-lg { font-size: 16px; padding: 8px 14px; }
-.chip-x { color: var(--muted); font-size: 15px; line-height: 1; }
-.chip-x:hover { color: var(--error); }
+.chip-dashed { border-style: dashed; color: var(--muted); }
+.chip:disabled { opacity: .45; cursor: not-allowed; }
+.chip-x {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 15px; line-height: 1;
+}
+.chip-x:hover { color: var(--error-ink); }
 
 /* Badge kiểu entry — taxonomy, nên dùng mono */
 .badge-type {
@@ -244,6 +254,9 @@ body {
 }
 .badge-text { background: var(--pale-blue); color: var(--app-navy); }
 .badge-json { background: var(--pale-orange); color: #8A3A10; }
+.badge-error, .badge-err, .badge-conflict { background: var(--pale-orange); color: var(--error-ink); }
+.badge-warn { background: var(--pale-orange); color: var(--warning-ink); }
+.badge-ok { background: var(--surface-alt); color: var(--body); border: 1px solid var(--border); }
 [data-theme='dark'] .badge-text { color: #C7D0F5; }
 [data-theme='dark'] .badge-json { color: #F7A57A; }
 
@@ -267,6 +280,23 @@ body {
   flex: 1; border: 0; outline: 0; background: transparent;
   font-family: var(--font-sans); font-size: 18px; letter-spacing: -.02em;
   color: var(--body); min-width: 0;
+}
+/* App-only (audit UIA-8): the global :focus-visible outline below would draw a second ring
+   inside the shell; the shell's :focus-within ring above is the visible focus indicator. */
+.omnibox-input:focus-visible { outline: none; }
+textarea.omnibox-input {
+  resize: none;
+  line-height: 1.4;
+  padding: 0;
+  margin: 0;
+  max-height: 132px;
+  overflow-y: hidden;
+  display: block;
+}
+textarea.omnibox-input::placeholder {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .omnibox-input::placeholder { color: var(--muted); }
 
@@ -328,10 +358,17 @@ body {
   padding: 8px 12px; border-bottom: 1px solid var(--border);
   vertical-align: top; color: var(--body);
 }
+.json-table thead ~ tbody > tr > td:not(.k):not(.json-col-act):not([colspan]) { min-width: 112px; }
+.json-table td.k, .json-table td.json-col-act, .json-table td[colspan] { min-width: 0; }
+@media (max-width: 639px) {
+  .json-dup-row-note { max-width: calc(100vw - 134px); }
+}
 .json-table tr:last-child td { border-bottom: 0; }
 .json-table .k { font-family: var(--font-mono); color: var(--muted); white-space: nowrap; }
+.json-table .k-occ { font-family: var(--font-mono); }
 .json-table .v-num { font-family: var(--font-mono); color: var(--accent); }
-.json-table .v-bool { font-family: var(--font-mono); color: var(--product-teal); }
+.json-table .v-bool { font-family: var(--font-mono); color: var(--success-ink); }
+[data-theme='dark'] .json-table .v-bool { color: var(--product-teal); }
 .json-table .v-null { font-family: var(--font-mono); color: var(--muted); font-style: italic; }
 .json-nest { border: 1px solid var(--border); border-radius: var(--r-md); margin: 4px 0; overflow: hidden; }
 .json-toggle {
@@ -345,7 +382,46 @@ body {
   font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
   white-space: pre; overflow-x: auto; padding: 16px;
   background: var(--surface); color: var(--body); margin: 0;
+  border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
 }
+.json-raw-editor { font-family: var(--font-mono); }
+.json-raw-editor:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--pale-accent);
+}
+.json-raw-editor[aria-invalid='true'] {
+  border-color: var(--error);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--error) 18%, transparent);
+}
+.json-cell-edit-wrap {
+  display: flex; flex-direction: column; gap: 6px;
+  min-width: 180px; max-width: 100%;
+}
+.json-cell-btn { font-family: var(--font-sans); }
+.json-cell-btn:hover { background: var(--surface); border-color: var(--border); }
+.json-cell-readonly { font-family: var(--font-mono); }
+.json-cell-input { font-family: var(--font-mono); }
+.json-cell-input[aria-invalid='true'] {
+  border-color: var(--error);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--error) 18%, transparent);
+}
+.json-type-btn { font-family: var(--font-mono); }
+.json-type-btn:hover { background: var(--surface-alt); color: var(--body); border-color: var(--border-strong); }
+.json-table-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 8px 12px; padding: 8px 12px; background: var(--surface);
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--muted);
+}
+.json-page-bar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 8px 12px; padding: 8px 12px; background: var(--surface);
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--muted);
+}
+.json-readonly-note {
+  margin: 0; padding: 8px 12px; background: var(--surface-alt);
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--body);
+}
+.json-col-idx { width: 44px; min-width: 44px; }
 
 /* ---------- misc ---------- */
 
@@ -355,6 +431,9 @@ body {
   font-family: var(--font-mono); color: var(--muted);
   background: var(--surface-alt); border-radius: var(--r-md);
   padding: 12px 14px; letter-spacing: .12em;
+}
+[data-secret][data-locked] > :not([data-lock-veil]) {
+  display: none !important;
 }
 
 .seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; background: var(--surface-alt); border-radius: var(--r-md); padding: 3px; gap: 2px; }
@@ -388,30 +467,87 @@ body {
   border: 1px solid transparent; font-size: 13px; font-weight: 600;
   font-family: var(--font-sans); white-space: nowrap;
 }
-.vault-open { background: rgba(48,164,108,.12); color: #117A4B; }
-.vault-shut { background: rgba(229,72,77,.10); color: #B4232A; }
+.vault-open { background: rgba(48,164,108,.12); color: var(--success-ink); }
+.vault-shut { background: rgba(229,72,77,.10); color: var(--error-ink); }
+/* App-only, light theme (RV-UI1-1): the mockup --success-ink (#1F7A4C) on the 12% tint is only
+   ~4.5:1 over the app header (bg-surface/80: 4.52, pure --surface: 4.48), so the open pill text
+   keeps the pre-port darker #117A4B (4.56 / 4.52). No :root token change; dark stays on the token. */
+:root:not([data-theme='dark']) .vault-open { color: #117A4B; }
 
-/* Keep the status text readable in both themes without changing the shared
-   brand/error token used by buttons and mockup parity checks. */
-[data-theme='dark'] .vault-open { color: #6FD9A5; }
-[data-theme='dark'] .vault-shut { color: #FF8589; }
+.locked-banner {
+  background: color-mix(in srgb, var(--error) 10%, var(--canvas));
+  border-bottom: 1px solid var(--border);
+  color: var(--error-ink);
+}
 
-/* The app preview link sits on a white/dark card and needs a dedicated AA-safe
-   shade; the global link token remains the visual brand reference. */
-.card .text-link { color: #005A9F; }
-[data-theme='dark'] .card .text-link { color: #63B3FF; }
+/* App-only: the brand --link (#0091FF) fails AA as text on a card; the
+   text-link utility inside a card uses the AA-safe ink token instead. */
+.card .text-link { color: var(--link-ink); }
 
-/* Opacity utilities are attractive on the dark panel but fail AA at 12px. */
-.bg-deepPanel .mono { color: #A3A3A3; }
+/* App-only: opacity utilities fail AA at 12px on the always-dark panel; use the
+   mockup's secondary-text-on-deep-panel pair (same as .toast-sub below). */
+.bg-deepPanel .mono { color: var(--border); }
+[data-theme='dark'] .bg-deepPanel .mono { color: var(--muted); }
 
 .toast {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
   background: var(--deep-panel); color: #fff; border-radius: var(--r-xl);
   padding: 12px 16px; display: flex; align-items: center; gap: 14px;
   box-shadow: var(--sh-pop); font-size: 14px; z-index: 80;
+  max-width: min(560px, 92vw);
 }
-.toast button { background: transparent; border: 0; color: var(--ai-cyan); font-weight: 700; cursor: pointer; font-size: 14px; }
+.toast button { background: transparent; border: 0; color: var(--ai-cyan); font-weight: 700; cursor: pointer; font-size: 14px; white-space: nowrap; }
 
+.toast-stack {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  display: flex; flex-direction: column-reverse; align-items: center; gap: 8px;
+  z-index: 80; width: min(560px, 92vw); pointer-events: none;
+}
+.toast-live {
+  display: flex; flex-direction: column-reverse; align-items: center; gap: 8px;
+  width: 100%;
+}
+.toast-stack .toast {
+  position: static; transform: none; width: 100%; pointer-events: auto;
+  flex-wrap: wrap; justify-content: space-between;
+}
+.toast-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.toast-sub { font-size: 12px; color: var(--border); line-height: 1.4; }
+[data-theme='dark'] .toast-sub { color: var(--muted); }
+.toast-more {
+  pointer-events: auto; background: var(--deep-panel); color: var(--on-dark);
+  border: 1px solid var(--border-strong); border-radius: var(--r-pill);
+  padding: 6px 14px; font-family: var(--font-mono); font-size: 12px;
+  font-weight: 600; cursor: pointer; box-shadow: var(--sh-card);
+}
+.toast-more:hover { background: var(--dark-footer); }
+@media (max-width: 639px) {
+  .toast-stack { gap: 6px; bottom: 16px; }
+  .toast-live { gap: 6px; }
+  .toast-stack .toast {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 9px 12px;
+    font-size: 13px;
+    line-height: 1.3;
+  }
+  .toast-stack .toast .toast-body {
+    width: 100%;
+    flex: none;
+    gap: 2px;
+  }
+  .toast-stack .toast .toast-sub {
+    font-size: 11px;
+    line-height: 1.3;
+  }
+  .toast-stack .toast button {
+    align-self: flex-end;
+    font-size: 13px;
+    line-height: 1.25;
+    padding: 2px 0;
+  }
+}
 /* ---------- form fields (P02 auth/account) ---------- */
 
 .field { display: block; margin-bottom: 1rem; }
@@ -436,7 +572,7 @@ body {
   display: block;
   font-size: 13px;
   margin-top: 6px;
-  color: var(--error);
+  color: var(--error-ink);
 }
 
 .field-input {
@@ -504,12 +640,8 @@ body {
 }
 .auth-alert {
   background: color-mix(in srgb, var(--error) 8%, var(--canvas));
-  /* --error (#E5484D) is 3.5:1 on the pale wash; use the vault-shut AA pair. */
-  color: #B4232A;
+  color: var(--error-ink);
   border: 1px solid color-mix(in srgb, var(--error) 35%, var(--border));
-}
-[data-theme='dark'] .auth-alert {
-  color: #FF8589;
 }
 
 /* Radix dialog overlay/content — giữ token P01 */
@@ -554,13 +686,300 @@ body {
 }
 
 dialog::backdrop { background: rgba(9,12,29,.45); }
-dialog { border: 0; padding: 0; background: transparent; }
+dialog { border: 0; padding: 0; background: transparent; max-width: calc(100vw - 16px); }
+#passDlg, #rkDlg, #rotateDlg, #passkeyAddDlg, #resetDlg, #dupDialog, #tagRenameDlg, #importDlg, #jsonImportStubDlg { color: var(--body); }
+#passDlg .btn, #rkDlg .btn, #rotateDlg .btn, #passkeyAddDlg .btn, #resetDlg .btn,
+#dupDialog .btn, #tagRenameDlg .btn, #importDlg .btn, #jsonImportStubDlg .btn,
+section.scope-vault .btn,
+section[data-view] .btn { white-space: normal; text-align: center; }
+#passDlg .t-label, #rkDlg .t-label, #rotateDlg .t-label, #passkeyAddDlg .t-label, #resetDlg .t-label,
+#dupDialog .t-label, #tagRenameDlg .t-label, #importDlg .t-label, #jsonImportStubDlg .t-label,
+section.scope-vault .t-label,
+section[data-view] .t-label { overflow-wrap: anywhere; }
 
-/* Brand --link (#0091FF) fails WCAG AA on white; keep the token, paint only
-   unstyled links with the AA-safe pair. Explicit text utilities and button
-   links keep their component colors. */
-:where(a:not(.btn):not([class*='text-'])) { color: #005A9F; }
-:where([data-theme='dark'] a:not(.btn):not([class*='text-'])) { color: #63B3FF; }
+.card-error { border-color: var(--error); }
+.card-warning { border-color: var(--warning); }
+.card-dashed { border-style: dashed; }
+.text-error-ink { color: var(--error-ink); }
+.text-success-ink { color: var(--success-ink); }
+.text-warning-ink { color: var(--warning-ink); }
+
+.privacy-note {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.dup-panel {
+  width: min(540px, 100%);
+  max-width: calc(100vw - 24px);
+  padding: 20px;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.dup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.dup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--body);
+  width: 100%;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.dup-row:hover,
+.dup-row[aria-selected='true'] {
+  background: var(--pale-accent);
+  border-color: var(--accent);
+}
+[data-theme='dark'] .dup-row[aria-selected='true'] {
+  background: var(--surface-alt);
+}
+.dup-row-new { border-style: dashed; align-items: center; justify-content: flex-start; }
+.dup-row-main { min-width: 0; flex: 1 1 180px; display: flex; flex-direction: column; gap: 4px; }
+.dup-row-tags { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.dup-chip { padding: 2px 8px; font-size: 12px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
+.dup-row .sugg-meta { margin-left: 0; flex-wrap: wrap; white-space: normal; }
+.tag-pill-group {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.tag-pill-group:hover,
+.tag-pill-group.is-active {
+  background: var(--surface-alt);
+  border-color: var(--border-strong);
+}
+.tag-pill-group.is-active {
+  background: var(--pale-accent);
+  border-color: var(--accent);
+}
+.tag-pill-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; border: 0; color: var(--body);
+  font-family: var(--font-mono); font-size: 14px; font-weight: 500;
+  padding: 6px 8px 6px 12px; cursor: pointer; border-radius: var(--r-pill) 0 0 var(--r-pill);
+}
+.tag-pill-group.is-active .tag-pill-btn { color: var(--accent); }
+.tag-pill-count { color: var(--muted); font-size: 12px; }
+.tag-menu-trigger {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-left: 1px solid var(--border);
+  color: var(--muted); font-family: var(--font-mono); font-size: 13px;
+  padding: 6px 10px; cursor: pointer; border-radius: 0 var(--r-pill) var(--r-pill) 0;
+}
+.tag-menu-trigger:hover { color: var(--body); background: var(--surface-alt); }
+.menu-pop {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 50;
+  min-width: 180px; max-width: calc(100vw - 32px);
+  background: var(--canvas); border: 1px solid var(--border);
+  border-radius: var(--r-md); box-shadow: var(--sh-pop); padding: 4px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.menu-pop.menu-pop-right { left: auto; right: 0; }
+.menu-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; border: 0; background: transparent; color: var(--body);
+  font-family: var(--font-sans); font-size: 14px; font-weight: 500;
+  padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; text-align: left;
+}
+.menu-item:hover:not(:disabled) { background: var(--surface); }
+.menu-item:disabled { opacity: .45; cursor: not-allowed; }
+.menu-item-danger { color: var(--error-ink); }
+.menu-item-danger:hover { background: color-mix(in srgb, var(--error) 10%, var(--canvas)); }
+
+.link-btn {
+  color: var(--link-ink);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 13px;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+/* Not ported from the mockup: `.sr-only` (Tailwind ships the identical utility) and
+   `.border-line` / `.border-top-line` (they would override the Tailwind `border-line`
+   colour utility the app uses with a full 1px border on every side). */
+
+.omni-aux {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.omni-hint-line {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.omni-hint-vi {
+  display: block;
+  color: var(--body);
+}
+.omni-hint-en {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+}
+.omni-guard-alert {
+  font-size: 13px;
+  line-height: 1.45;
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--warning) 14%, var(--canvas));
+  border: 1px solid var(--warning);
+  color: var(--body);
+}
+.omni-lock-notice {
+  font-size: 13px;
+  line-height: 1.45;
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--body);
+}
+.omni-lock-notice-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.omni-add-panel {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+  box-shadow: var(--sh-card);
+}
+.omni-add-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.omni-add-dest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+.omni-add-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.omni-json-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--pale-orange);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+}
+[data-theme='dark'] .omni-json-banner {
+  background: var(--surface-alt);
+}
+.omni-plan-box {
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.omni-step-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--canvas);
+  border: 1px solid var(--border);
+}
+.omni-opt-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+.omni-opt-title {
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.omni-empty-box {
+  padding: 18px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.omni-create-option {
+  border-top: 1px dashed var(--border);
+  background: var(--canvas);
+  padding: 14px 16px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.omni-create-option > span:nth-child(2) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  flex: 1 1 180px;
+  line-height: 1.35;
+}
+.omni-hint-line[hidden], .omni-hint-vi[hidden] {
+  display: none !important;
+}
+
+/* Mockup `a { color: var(--link) }`, ported at zero specificity so it can never paint text
+   #0091FF (3.2:1 on white). Note (RV-UI1-3): tokens.css is imported before `@tailwind base`,
+   and Tailwind preflight `a { color: inherit }` (0,0,1) beats both zero-specificity :where()
+   rules here, so today they change nothing: unstyled anchors inherit their parent colour.
+   Give a rule class specificity if unstyled links ever need a real colour. */
+:where(a) { color: var(--link); }
+/* App-only: brand --link fails WCAG AA as text on white; unstyled links use the AA-safe
+   ink token. Explicit text utilities and button links keep their component colours. */
+:where(a:not(.btn):not([class*='text-'])) { color: var(--link-ink); }
+
+@media (pointer: coarse) {
+  .btn, .btn-sm, .btn-tertiary, .btn-danger,
+  .seg button, .chip, .tag-pill-btn, .tag-menu-trigger,
+  .menu-item, .dup-row, .sugg-row, .toast button, .toast-more, .link-btn,
+  .json-toggle, .json-cell-btn, .json-type-btn {
+    min-height: 44px;
+  }
+  .tag-menu-trigger, .btn-icon { min-width: 44px; }
+  .chip-x::after {
+    content: ''; position: absolute; left: 50%; top: 50%;
+    width: 44px; height: 44px; transform: translate(-50%, -50%);
+  }
+}
 
 :focus-visible {
   outline: 2px solid var(--accent);

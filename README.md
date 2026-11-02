@@ -87,4 +87,4 @@ pnpm e2e                              # Playwright, ma trận auth
 
 ## Tên gọi
 
-Trong thần kinh học, **engram** là dấu vết mà một ký ức để lại. Tên luôn viết thường: `engram`. Module Go/pnpm còn giữ đường dẫn cũ `save-all-by-keyword`.
+Trong thần kinh học, **engram** là dấu vết mà một ký ức để lại. Tên luôn viết thường: `engram`. Module Go là `github.com/zone17th/engram/apps/api`, package pnpm gốc tên `engram`.

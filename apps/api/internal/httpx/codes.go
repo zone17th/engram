@@ -46,6 +46,25 @@ var ProblemCodes = []string{
 	"passkey_name_invalid",
 	"passkey_exists",
 	"passkey_not_found",
+	// P04 content (plan P04 mục 3): thêm cuối catalog, thứ tự cố định.
+	"name_invalid",
+	"hint_invalid",
+	"tag_display_invalid",
+	"item_id_conflict",
+	"item_deleted",
+	"item_tag_limit",
+	"item_entry_limit",
+	"tag_conflict",
+	"entry_invalid",
+	"entry_too_large",
+	"entry_id_conflict",
+	"entry_key_mismatch",
+	"entry_nonce_reused",
+	"entry_restore_via_item",
+	"reorder_mismatch",
+	"changes_window_expired",
+	// P04 authui (ADR 0006): đặt lại mật khẩu tài khoản, nối cuối catalog.
+	"reset_token_invalid",
 }
 
 // SessionInvalidReason là extension `reason` khi code = session_invalid.

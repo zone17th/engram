@@ -13,10 +13,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/dbtest"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
-	"github.com/zone17th/save-all-by-keyword/apps/api/migrations"
+	"github.com/zone17th/engram/apps/api/internal/db"
+	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/migrations"
 )
 
 func migrateToVersion(t *testing.T, dsn string, target uint) {
@@ -110,7 +110,7 @@ func TestAuthMigrationDownOnEphemeralDB(t *testing.T) {
 func TestVaultMigration0005TablesConstraintsAndDown(t *testing.T) {
 	ctx := context.Background()
 	dsn := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsn)
+	migrateToVersion(t, dsn, 5)
 
 	v, dirty, err := db.Version(dsn)
 	if err != nil {

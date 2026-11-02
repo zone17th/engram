@@ -3,7 +3,7 @@ package authhttp
 import (
 	"github.com/go-chi/chi/v5"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 )
 
 // Mount đăng ký 26 operation P02. Từ chối mount khi thiếu verifier thật.
@@ -33,6 +33,8 @@ func Mount(api *API) func(v1 chi.Router, d httpx.Deps) {
 			g.Post("/auth/refresh", api.Refresh)
 			g.Post("/auth/logout", api.Logout)
 			g.With(httpx.RequireCSRF(d.CSRF)).Post("/auth/oauth/complete", api.OauthComplete)
+			g.With(httpx.RequireCSRF(d.CSRF)).Post("/auth/password/forgot", api.PasswordForgot)
+			g.With(httpx.RequireCSRF(d.CSRF)).Post("/auth/password/reset", api.PasswordReset)
 		})
 
 		v1.Get("/auth/oauth/{provider}/start", api.OauthStart)

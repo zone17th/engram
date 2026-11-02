@@ -16,11 +16,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
-
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/authctx"
+	"github.com/zone17th/engram/apps/api/internal/clock"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
 )
 
 const (
@@ -35,8 +35,44 @@ const (
 	// mọi route vault và entry 256 KiB của P04).
 	IdempotencyMaxBodyBytes = 512 * 1024
 
+	// ContentEntryJSONLimit là trần body JSON cho các route ghi entry P04 (400 KiB, mục 2.3).
+	ContentEntryJSONLimit int64 = 400 * 1024
+
+	// ContentItemTagJSONLimit là trần body JSON cho các route ghi item và tag P04 (16 KiB, mục 2.3).
+	ContentItemTagJSONLimit int64 = 16 * 1024
+
+	// ContentEntryTooLargeCode là mã lỗi 413 khi body route entry vượt ContentEntryJSONLimit.
+	ContentEntryTooLargeCode = "entry_too_large"
+
+	// ContentItemTagTooLargeCode là mã lỗi 413 khi body route item/tag vượt ContentItemTagJSONLimit.
+	ContentItemTagTooLargeCode = "invalid_request"
+
+	// SQLSTATE của PostgreSQL cho deadlock, lock timeout và unique violation (mục 2.5, 2.7).
+	PGCodeDeadlockDetected = "40P01"
+	PGCodeLockNotAvailable = "55P03"
+	PGCodeUniqueViolation  = "23505"
+
 	idempotencyStateKey ctxKey = iota + 200
 )
+
+// IdempotencyBodyLimit cấu hình trần đọc request body trước bước Idempotency.Lookup (mục 2.3, P4BE2-2).
+// Giá trị rỗng (Bytes <= 0) giữ nguyên hành vi P03 (Lookup đọc tối đa IdempotencyMaxBodyBytes = 512 KiB).
+type IdempotencyBodyLimit struct {
+	Bytes int64
+	Code  string
+}
+
+// ContentEntryBodyLimit là cấu hình BodyLimit chuẩn cho các route ghi entry (400 KiB -> 413 entry_too_large).
+var ContentEntryBodyLimit = IdempotencyBodyLimit{
+	Bytes: ContentEntryJSONLimit,
+	Code:  ContentEntryTooLargeCode,
+}
+
+// ContentItemTagBodyLimit là cấu hình BodyLimit chuẩn cho các route ghi item/tag (16 KiB -> 413 invalid_request).
+var ContentItemTagBodyLimit = IdempotencyBodyLimit{
+	Bytes: ContentItemTagJSONLimit,
+	Code:  ContentItemTagTooLargeCode,
+}
 
 var idempotencyKeyRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
@@ -600,6 +636,116 @@ func ReleaseIdempotencyClaim(ctx context.Context, db gen.DBTX) error {
 	return err
 }
 
+// IsContentRetryableTxError kiểm tra lỗi PostgreSQL cần chuyển thành 503 dependency_unavailable
+// kèm Retry-After: 1 trên các transaction ghi content P04 (mục 2.5, 2.7):
+//   - 40P01 (deadlock_detected)
+//   - 55P03 (lock_not_available / lock timeout)
+//   - 23505 (unique_violation — lưới an toàn cho race qua partial unique index như tag_user_norm_uq)
+//
+// Lưu ý cho W2 handlers (itemtag / entryapi):
+// Các xung đột ID do client gửi (`item_id_conflict` trên POST /items, `entry_id_conflict` trên
+// POST /items/{id}/entries hoặc import-json) và xung đột tên tag (`tag_conflict` trên PATCH /tags/{id}
+// hoặc POST /tags/{id}/restore) được kiểm tra tường minh trong handler dưới LockUserContent TRƯỚC khi
+// INSERT/UPDATE. Nếu W2 handler chọn bắt 23505 theo tên constraint cho `item_pkey`/`item_user_id_id_key`
+// hoặc `entry_pkey`, handler kiểm tra constraint đó trước khi gọi WriteContentTxError; mọi 23505 còn lại
+// (hoặc khi gọi trực tiếp WriteContentTxError) đều ánh xạ an toàn về 503 dependency_unavailable + Retry-After: 1
+// và giải phóng claim idempotency để client thử lại cùng key.
+func IsContentRetryableTxError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	switch pgErr.Code {
+	case PGCodeDeadlockDetected, PGCodeLockNotAvailable, PGCodeUniqueViolation:
+		return true
+	default:
+		return false
+	}
+}
+
+// WriteContentTxError kiểm tra nếu `err` là lỗi transaction PostgreSQL có thể thử lại của content
+// (`40P01`, `55P03`, `23505` theo mục 2.5): rollback `tx` (nếu khác nil), giải phóng claim idempotency
+// hiện tại (chưa commit) để retry cùng Idempotency-Key chạy lại từ đầu, và ghi response
+// `503 dependency_unavailable` kèm header `Retry-After: 1` (và trường `retry_after: 1` trong body).
+// Trả `true` nếu đã xử lý và ghi response; trả `false` nếu `err` không thuộc nhóm trên.
+func WriteContentTxError(ctx context.Context, w http.ResponseWriter, r *http.Request, db gen.DBTX, tx IdempotencyTx, err error) bool {
+	if !IsContentRetryableTxError(err) {
+		return false
+	}
+	if tx != nil {
+		_ = tx.Rollback(ctx)
+	}
+	if db != nil {
+		_ = ReleaseIdempotencyClaim(ctx, db)
+	}
+	retry := 1
+	WriteProblemExtra(
+		w,
+		r,
+		http.StatusServiceUnavailable,
+		"dependency_unavailable",
+		"Hệ thống đang bận, vui lòng thử lại.",
+		ProblemExtra{RetryAfter: &retry},
+	)
+	return true
+}
+
+// EnforceBodyLimit đọc trước tối đa `limit.Bytes + 1` byte từ `r.Body` bất kể có `Content-Length`
+// hay không (kể cả chunked / unknown length):
+//   - Nếu lỗi đọc thông thường -> ghi `400 invalid_request`.
+//   - Nếu số byte đọc được > `limit.Bytes` -> ghi `413` với mã `limit.Code` (mặc định `invalid_request`),
+//     không tạo claim và không ghi DB.
+//   - Nếu không vượt -> đặt lại đúng các byte đã đọc vào `r.Body` để `Idempotency.Lookup` và handler
+//     đọc nguyên vẹn (fingerprint khớp đúng body gốc).
+//
+// Nếu `limit.Bytes <= 0`, trả về `next` nguyên trạng (giữ nguyên hành vi P03).
+func EnforceBodyLimit(limit IdempotencyBodyLimit) func(http.Handler) http.Handler {
+	if limit.Bytes <= 0 {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	code := limit.Code
+	if code == "" {
+		code = "invalid_request"
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Body != nil && r.Body != http.NoBody {
+				bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, limit.Bytes+1))
+				if err != nil {
+					WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "Không đọc được nội dung.")
+					return
+				}
+				if int64(len(bodyBytes)) > limit.Bytes {
+					WriteProblem(w, r, http.StatusRequestEntityTooLarge, code, "Nội dung quá lớn.")
+					return
+				}
+				_ = r.Body.Close()
+				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequireVersionIfMatch là middleware bước 5 cho các route content P04 có `If-Match`:
+// sau khi `RequireIfMatch` tách strong ETag, kiểm tra thêm tag phải là số nguyên dương
+// thập phân hợp lệ theo `ParseVersionIfMatch` (nếu sai dạng như `"01"`, `"abc"`, `"vk:...:1"`
+// thì trả ngay `428 precondition_required` trước khi `Idempotency.Claim` tạo bản ghi).
+func RequireVersionIfMatch(next http.Handler) http.Handler {
+	return RequireIfMatch(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tag, ok := IfMatchFrom(r.Context())
+		if !ok {
+			WriteProblem(w, r, http.StatusPreconditionRequired, "precondition_required", "Thiếu hoặc sai định dạng If-Match.")
+			return
+		}
+		if _, ok := ParseVersionIfMatch(tag); !ok {
+			WriteProblem(w, r, http.StatusPreconditionRequired, "precondition_required", "Thiếu hoặc sai định dạng If-Match.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
 // IdempotencyRouteConfig cấu hình chuỗi middleware 8 bước của mục 2.3 cho một route có idempotency.
 type IdempotencyRouteConfig struct {
 	AppOrigin        string
@@ -611,21 +757,27 @@ type IdempotencyRouteConfig struct {
 	RateLimit        func(http.Handler) http.Handler // nil nếu route không gắn R
 	RequireIfMatch   bool                            // true nếu route yêu cầu M
 	AllowEmptyDelete bool                            // true cho DELETE không có body (bỏ qua RequireJSONContent khi không có body)
+	BodyLimit        IdempotencyBodyLimit            // trần đọc body trước Lookup (mục 2.3; rỗng giữ nguyên P03)
 }
 
 // ChainIdempotencyMiddleware ghép đúng thứ tự 8 bước của mục 2.3:
 //  1. RequireOrigin -> RequireSession -> RequireCSRF -> RequireJSONContent (hoặc RequireJSONContentExceptEmptyDelete)
+//     1b. EnforceBodyLimit (nếu BodyLimit.Bytes > 0, chặn trước Idempotency.Lookup theo P04 mục 2.3)
 //  2. Idempotency.Lookup
 //  3. RequireReauth(action) nếu có ReauthAction
 //  4. RateLimit nếu khác nil
-//  5. RequireIfMatch nếu bật
+//  5. RequireIfMatch nếu bật (với route content có BodyLimit đặt, kiểm luôn định dạng version nguyên dương trước Claim)
 //  6. Idempotency.Claim (kèm bước 8 Release trong defer)
 //  7. Handler (chạy mutation trong tx và gọi FinishIdempotencyTx / CommitIdempotencyTx).
 func ChainIdempotencyMiddleware(cfg IdempotencyRouteConfig, handler http.Handler) http.Handler {
 	h := handler
 	h = cfg.Idempotency.Claim(h)
 	if cfg.RequireIfMatch {
-		h = RequireIfMatch(h)
+		if cfg.BodyLimit.Bytes > 0 {
+			h = RequireVersionIfMatch(h)
+		} else {
+			h = RequireIfMatch(h)
+		}
 	}
 	if cfg.RateLimit != nil {
 		h = cfg.RateLimit(h)
@@ -634,6 +786,9 @@ func ChainIdempotencyMiddleware(cfg IdempotencyRouteConfig, handler http.Handler
 		h = RequireReauth(cfg.Reauth, cfg.ReauthAction)(h)
 	}
 	h = cfg.Idempotency.Lookup(h)
+	if cfg.BodyLimit.Bytes > 0 {
+		h = EnforceBodyLimit(cfg.BodyLimit)(h)
+	}
 	if cfg.AllowEmptyDelete {
 		h = RequireJSONContentExceptEmptyDelete(h)
 	} else {

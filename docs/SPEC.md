@@ -1,8 +1,8 @@
 # engram — Project Specification
 
-> Phiên bản: 0.7 · Ngày: 2026-09-15 · Trạng thái: chia triển khai thành **P01–P08**, có [spec từng phase](phases/README.md); giữ baseline sản phẩm/thiết kế v0.6, MVP = P01–P06. P02 bổ sung contract session/CSRF/enrollment vào §3.1, §8, §9, §10.2 — xem [ADR 0001](adr/0001-auth-session-va-reauth-assurance.md). 2026-10-29: embedding qua API tương thích OpenAI (`qwen3-embedding-8b`, 1024 dims) — xem [ADR 0004](adr/0004-embedding-provider-openai-compat.md); ADR thắng các đoạn TEI-only còn sót.
+> Phiên bản: 0.7 · Ngày: 2026-09-15 · Trạng thái: chia triển khai thành **P01–P08**, có [spec từng phase](phases/README.md); giữ baseline sản phẩm/thiết kế v0.6, MVP = P01–P06. P02 bổ sung contract session/CSRF/enrollment vào §3.1, §8, §9, §10.2 — xem [ADR 0001](adr/0001-auth-session-va-reauth-assurance.md). 2026-10-29: embedding qua API tương thích OpenAI (`qwen3-embedding-8b`, 1024 dims) — xem [ADR 0004](adr/0004-embedding-provider-openai-compat.md); ADR thắng các đoạn TEI-only còn sót. 2026-11-01: contract P04 (mục, tag, entry text/JSON lossless) — If-Match theo `version`, `Idempotency-Key` cho mọi mutation content, gán tag cộng dồn, provenance xoá, feed thay đổi — xem [ADR 0005](adr/0005-content-lossless-va-concurrency.md) và [plan P04](plans/2026-11-01-P04-content.md) mục 2–3.
 >
-> Tài liệu này là spec tổng thể cho sản phẩm **engram** (repo `save-all-by-keyword`): lưu thông tin theo **mục (Item)** — một `name`, nhiều **tag**, nhiều **entry có kiểu** — tìm lại cực nhanh (lexical + semantic trên name và tag), **chỉ thân entry** được **mã hoá đầu-cuối (E2E)**.
+> Tài liệu này là spec tổng thể cho sản phẩm **engram** (repo `zone17th/engram`): lưu thông tin theo **mục (Item)** — một `name`, nhiều **tag**, nhiều **entry có kiểu** — tìm lại cực nhanh (lexical + semantic trên name và tag), **chỉ thân entry** được **mã hoá đầu-cuối (E2E)**.
 
 ## Mục lục
 
@@ -38,7 +38,7 @@
 - **Server-first, multi-user, multi-device**: đăng nhập máy khác, **unlock vault** bằng passphrase, **passkey (PRF)**, hoặc **một recovery key** (rồi đặt passphrase mới).
 - **Miễn phí, embedding qua provider cấu hình được**: không gói trả phí; mặc định production gọi API tương thích OpenAI (`qwen/qwen3-embedding-8b`, 1024 dims) qua router của sản phẩm, TEI tự host vẫn là lựa chọn ([ADR 0004](adr/0004-embedding-provider-openai-compat.md)). Khi bật gợi ý gần nghĩa, name/tag/hint/query **được gửi** tới dịch vụ embedding bên thứ ba; tắt `≈` thì không gửi gì của user đó.
 
-**Tên sản phẩm: `engram`** — dấu vết vật lý mà một ký ức để lại. Viết thường trong mọi ngữ cảnh (`engram`, không `Engram`). Chốt ở v0.6, thay cho tên tạm cũ; lý do chọn và các tên đã loại nằm trong [README](../README.md#tên). **Tên repo giữ `save-all-by-keyword`** vì lịch sử, và thư mục gốc trong §11.1 giữ nguyên. Chưa tra domain và nhãn hiệu — phải kiểm trước khi đăng ký gì.
+**Tên sản phẩm: `engram`** — dấu vết vật lý mà một ký ức để lại. Viết thường trong mọi ngữ cảnh (`engram`, không `Engram`). Chốt ở v0.6, thay cho tên tạm cũ; lý do chọn và các tên đã loại nằm trong [README](../README.md#tên). **Tên repo cũng là `engram`** (`github.com/zone17th/engram`), thư mục gốc trong §11.1 theo tên repo. Chưa tra domain và nhãn hiệu — phải kiểm trước khi đăng ký gì.
 
 Thực thể chính **không** còn là "keyword". Xem §2 và §14.
 
@@ -132,8 +132,9 @@ Item  N ─── N  Tag     (item_tag)
 Item  1 ─── N  Entry   // entry thuộc đúng một item; không còn N–N entry↔keyword
 ```
 
-- Xoá Item → soft-delete entries của item đó; gỡ `item_tag`.
-- Xoá Tag → gỡ khỏi mọi item; **không** xoá item.
+- Xoá Item → soft-delete item và mọi entry **sống** của item trong cùng một lô (`delete_batch`, `deleted_via='item'`); **giữ** `item_tag` để Undo/restore khôi phục đúng tag. Entry user đã xoá riêng trước đó không bị khôi phục theo item (provenance, [ADR 0005](adr/0005-content-lossless-va-concurrency.md)).
+- Xoá Tag → soft-delete tag; `item_tag` giữ nguyên nhưng tag đã xoá không còn tính là tag của item; **không** xoá item.
+- Restore: entry (chỉ entry xoá riêng, `deleted_via='entry'`), item (kèm đúng các entry đã xoá theo item cùng lô) và tag, trong 30 ngày, vẫn tuân trần 20 tag / 200 entry. Purge sau 30 ngày (job `content_purge`) xoá vĩnh viễn entry, item (cascade entry, `item_tag`) và tag (cascade `item_tag`, item còn nguyên). Chi tiết §8, §9.2.
 - Reset vault → xoá **entries** (+ vault cũ, recovery key, passkey wrap) → tạo vault mới (10 RK mới, onboard lại); **giữ Item + Tag** (plaintext, không phụ thuộc VK).
 
 ### 2.4 Quyết định thiết kế
@@ -143,12 +144,18 @@ User muốn nhiều mục cùng tên (hai "wifi": nhà vs công ty). Server **kh
 
 Chuẩn hoá để search, **không** để identity:
 
-`name_normalized` = NFC → lowercase → trim → collapse whitespace → bỏ dấu câu đầu/cuối. **Giữ dấu tiếng Việt** (`mã` ≠ `ma`). Fuzzy/unaccent ở tầng search (§6).
+`name_normalized` (một hàm duy nhất phía Go `internal/textnorm.Normalize`, dùng cho `item.name_normalized`, `tag.normalized`, exact lookup và lọc `q`; fixture chung `packages/content-fixtures/normalize.json`):
 
-Độ dài: `name` 1–200 ký tự. `hint` opt-in, ≤ 120 ký tự, plaintext, có nhãn "server đọc được" — dùng khi tên quá ngắn/viết tắt (`k8s`) để embedding tốt hơn.
+1. Từ chối chuỗi không phải UTF-8 hợp lệ, có ký tự điều khiển C0/C1 (trừ space), ký tự bidi override (U+202A–U+202E, U+2066–U+2069), hoặc rỗng sau trim (`400 name_invalid` / `400 tag_display_invalid`).
+2. NFC → lowercase Unicode theo từng rune (`unicode.ToLower`, **không** special-casing theo locale) → NFC lần nữa (advisor-dec-125) → thay mọi chuỗi ký tự `White_Space` bằng một space → trim → bỏ ký tự category `P*` ở **đầu và cuối** (lặp tới khi hết; dấu câu ở giữa như `c++`, `wi-fi` giữ nguyên). **Giữ dấu tiếng Việt** (`mã` ≠ `ma`).
+3. Kết quả chuẩn hoá rỗng (ví dụ `"!!!"`) → từ chối `name_invalid`. Độ dài đếm theo rune, kiểm cả trên giá trị gốc (sau trim) lẫn kết quả chuẩn hoá.
+
+Web không tự chuẩn hoá để quyết định danh tính; khi UI cần so (ví dụ gộp tag trùng trong quick-add) thì dùng bản TS chạy cùng fixture. Fuzzy/unaccent ở tầng search (§6).
+
+Độ dài: `name` 1–200 rune. `hint` opt-in, ≤ 120 ký tự, plaintext, có nhãn "server đọc được" — dùng khi tên quá ngắn/viết tắt (`k8s`) để embedding tốt hơn.
 
 **`Tag` — first-class, unique theo `normalized`.**
-Catalog per-user. `display` giữ cách viết lần đầu (hoặc lần rename). Cùng thuật toán normalize như name. Unique `(user_id, normalized) WHERE deleted_at IS NULL`. Đổi `display` mà `normalized` trùng tag khác → `409 TAG_CONFLICT` (merge tag = P07).
+Catalog per-user. `display` giữ cách viết lần đầu (hoặc lần rename). Cùng thuật toán normalize như name. Unique `(user_id, normalized) WHERE deleted_at IS NULL`. Đổi `display` (hoặc restore tag) mà `normalized` trùng tag sống khác → `409 tag_conflict` (merge tag = P07). Mã lỗi luôn `snake_case` (§9.1).
 
 **Giới hạn (ý kiến, dùng xuyên spec):**
 
@@ -157,7 +164,7 @@ Catalog per-user. `display` giữ cách viết lần đầu (hoặc lần rename
 | Tag / item | **20** | Chip UI; quá nhiều tag làm filter mất nghĩa |
 | Entry / item | **200** | Mục là một bó, không phải dump vô hạn; vẫn dư cho journal + nhiều bảng |
 | Plaintext / entry | **256 KiB** | Số byte UTF-8 thực sự mã hoá; JSON đo trên text sau edit, không qua `JSON.stringify` |
-| Tag `display` | 1–50 ký tự | Nhãn, không phải đoạn văn |
+| Tag `display` | 1–50 rune | Nhãn, không phải đoạn văn |
 | Catalog tag / user | không cứng; alert vận hành ~ 20k | |
 | Item / user | không cứng; alert ~ 50k | |
 
@@ -306,8 +313,11 @@ erDiagram
         text name_normalized
         text hint
         int entry_count
+        int version "P04 If-Match"
         timestamptz last_used_at
         timestamptz created_at
+        timestamptz deleted_at
+        uuid delete_batch
     }
     TAG {
         uuid id PK
@@ -316,6 +326,7 @@ erDiagram
         text normalized
         int item_count
         timestamptz last_used_at
+        timestamptz deleted_at
     }
     ITEM_TAG {
         uuid item_id FK
@@ -330,6 +341,11 @@ erDiagram
         jsonb envelope
         bytea ciphertext
         int plaintext_len_bucket
+        int version "P04 If-Match"
+        timestamptz updated_at
+        timestamptz deleted_at
+        text deleted_via "entry|item"
+        uuid delete_batch
     }
     ITEM_EMBEDDING {
         uuid user_id PK, FK
@@ -357,6 +373,7 @@ erDiagram
 
 - **US1** Là user mới, tôi đăng ký email/password hoặc Google/GitHub, đặt **encryption passphrase**, **lưu 10 recovery key** (bắt buộc — tải/in/copy + checkbox), optionally **thêm passkey**.
 - **US1b** Là user OAuth-only (chưa có password đăng nhập), tôi đặt password lần đầu bằng email **đã verified của chính tài khoản** (enrollment) hoặc bằng Google re-auth nếu provider chứng minh freshness. Email proof không phải recovery vault và không phải reset password đã có.
+- **US1c** Là user đã có password đăng nhập nhưng quên password đó, tôi yêu cầu đặt lại password tài khoản qua email (`POST /auth/password/forgot` → `POST /auth/password/reset`, [ADR 0006](adr/0006-account-password-reset.md)). Đặt lại password tài khoản **chỉ khôi phục quyền đăng nhập vào tài khoản, tuyệt đối không mở khoá, re-key hay reset vault** (`user-dec-016`): sau khi đăng nhập lại tôi vẫn phải mở khoá vault bằng encryption passphrase, một recovery key hoặc passkey PRF (hoặc trình duyệt này nếu trình duyệt vẫn còn nhớ `DevKey`; việc đặt lại thu hồi mọi phiên nên có thể xoá trạng thái nhớ thiết bị). Tài khoản OAuth-only không dùng luồng này để đặt password lần đầu (giữ nguyên US1b).
 - **US2** Là user, tôi gõ `wifi: Abc123` vào omnibox → text entry được thêm vào mục `wifi` (tạo mới nếu chưa có; nếu trùng tên xem §3.4).
 - **US3** Là user, khi gõ `wi` tôi thấy mục `wifi`, `wifi-office` **và** tag `wifi-khách`; từ 3 ký tự trở lên có thể thêm `mạng nhà` ở vùng Gần nghĩa nếu bật ≈.
 - **US4** Là user, tôi mở một mục, thấy chip tag + danh sách entry theo `position`, sửa/xoá entry, thêm/gỡ tag.
@@ -432,23 +449,46 @@ Cảnh báo (một lần, bước 2): chụp màn hình / người nhìn trộm 
 
 Cú pháp: `name: nội dung` (một `name`). Mở rộng: `name #tag1 #tag2: nội dung` — gán tag khi tạo/append.
 
-1. Parse client: tách tại `:` đầu tiên **không nằm trong URL** (`^\s*([^:]+?)\s*:\s*(?!//)(.+)$`). Phần trái: token `name` + các `#tag`.
-2. Không có `:` → **search** (§3.5).
-3. Khớp item theo `name_normalized` **chính xác**:
-   - **0** → `POST /items` tạo mục mới, gán tag nếu có.
+**Grammar** (client, `features/omnibox/quick-add-parse.ts`, fixture `packages/content-fixtures/quick-add.json`):
+
+- Chỉ **dòng đầu** chứa phần đầu (`head`). Dấu tách là `:` đầu tiên trên dòng đầu **không** đứng ngay trước `//` (giữ tinh thần `(?!//)` cũ để URL trong body như `link: https://a.b/c` không bị tách sai). Không có `:` → chế độ tìm kiếm (dưới). Input bắt đầu bằng `#` → chế độ lọc tag, không phải add. Full-width colon `：` không phải dấu tách.
+- `:` sát chữ vẫn hợp lệ (`wifi:Abc123` → name `wifi`); `10:30 họp` thành add với name `10` — preview "Sẽ lưu vào …" hiện trước Enter nên người dùng thấy.
+- `body` = mọi thứ sau `:` (kể cả các dòng sau), bỏ khoảng trắng đầu và cuối, giữ nguyên khoảng trắng/xuống dòng ở giữa. `body` rỗng → chưa phải add mode.
+- `head` = phần name rồi các token tag. Token tag bắt đầu `#`, kết thúc ở khoảng trắng, không chứa `#`/`:` — tag có khoảng trắng gắn bằng chip trên trang mục, không có cú pháp trích dẫn. Sau token tag đầu tiên, mọi token phải là tag (chữ thường xen giữa → preview báo lỗi, Enter bị chặn). Name rỗng → không add. Tag trùng sau chuẩn hoá (`#Nhà #nhà`) gộp thành một; quá 20 tag → không add.
+- Entry tạo từ quick-add lưu xuống dòng **LF** (ô omnibox đã chuẩn hoá xuống dòng thành LF).
+
+**Ranh giới gửi** ([ADR 0005](adr/0005-content-lossless-va-concurrency.md)): chuỗi đang gõ chưa phân loại có thể là body tương lai (dán body trước, gõ `name:` sau), nên ô omnibox **không gửi gì trước Enter** ở mọi chế độ, kể cả lookup tên ở add mode (advisor-dec-098: `root:hunter2` hay `Sup3rSecret:backup` dán vào đã là add mode, phần trước `:` là mảnh body):
+
+- Chế độ tìm kiếm (không có `:`): không request nào khi gõ; dòng gợi ý cố định báo chữ đã gõ sẽ gửi tới máy chủ, không mã hoá. **Enter** = người dùng chủ động tìm → `GET /items?q=` chỉ khi input một dòng và ≤ 200 rune (nhiều dòng hoặc dài hơn → không gửi, gợi ý thêm `tên:`); kết quả hiện dưới ô, không đưa từ khoá vào URL/history. Gợi ý theo từng phím (§3.5) thuộc P05 và phải giữ ranh giới này.
+- Chế độ lọc tag (`#…`): lọc phía client trên danh sách tag đã có trong cache; chỉ khi không có trong cache, Enter mới gửi `GET /tags?q=<token>` (một token ≤ 50 rune).
+- Add mode: **không request nào trước Enter**. Preview "Sẽ lưu vào …" dựng từ `name` và tag parse cục bộ (thấy ngay `10:30 họp` thành name `10`), không có số mục trùng. Enter → `GET /items/lookup?name=` chỉ với `name`; name không hợp lệ (rỗng sau chuẩn hoá, ký tự cấm) hoặc dài hơn 200 rune → không gửi, preview báo lỗi. Body không bao giờ rời client ngoài ciphertext.
+- **Ba dòng cố định** (en/vi, mỗi dòng chỉ hiện ở đúng chế độ của nó): chế độ tìm `content.omnibox.searchHint` "Enter: tìm theo đầu tên · Ctrl+Enter: tạo mục tên này — chữ đã gõ gửi tới máy chủ, không mã hoá. Để lưu nội dung, gõ `tên: nội dung`"; chế độ `#…` `content.omnibox.tagHint` "Enter: lọc theo tag — chữ đã gõ gửi tới máy chủ, không mã hoá"; add mode `content.privacy.*` "Tên mục, tag và gợi ý không được mã hoá; chỉ nội dung được mã hoá đầu-cuối" (máy chủ vẫn thấy độ dài gần đúng của nội dung, §10.4).
+- Test (Task 18): dán `a:SECRET`, chờ ≥ 1 giây, không request nào (URL, header, body) chứa `a` hay `SECRET` trước Enter; cùng các ca dán body không có `:` rồi gõ `name:` phía trước.
+
+**Luồng lưu** (một "kế hoạch quick-add" giữ trong memory của phiên, không persist):
+
+1. Khi Enter (vault phải unlocked), exact lookup `GET /items/lookup?name=` (server chuẩn hoá, trả **mọi** item sống trùng `name_normalized` kèm `total`; không dùng `/suggest` top-K):
+   - **0** → sẽ tạo mục mới.
    - **1** → append entry vào mục đó.
-   - **nhiều** → dialog: liệt kê từng item (name + tag chips + `created_at`) + hành động **Tạo mục mới cùng tên**. Không đoán.
-4. Tag trong cú pháp: `POST /tags` upsert theo `normalized`, rồi `PUT` item tags (hợp với tag đã có, trần 20).
-5. Client sinh `entry_id` UUID v4 trước khi encrypt. Tạo envelope đủ 5 field theo §5.5 (`ct_enc="utf8"`), nonce mới 24 B; encrypt UTF-8 text với AAD JCS + ID theo đúng byte contract tại §5.5.
-6. `POST /items/{id}/entries` `{id:entry_id, type:"text", envelope, ciphertext, …}` + `Idempotency-Key`. Server giữ nguyên ID; retry dùng lại ID, ciphertext và idempotency key, không sinh ID khác sau khi seal.
-7. Server tăng `entry_count`, `last_used_at`; enqueue embed nếu item mới / name mới.
-8. UI optimistic + toast "Đã lưu vào **wifi**" + Undo 5 s.
+   - **nhiều** → Enter mở picker: từng item (name + tối đa 3 chip tag + `created_at` + `entry_count`, "Xem thêm" khi `total` lớn hơn số đã tải) + **Tạo mục mới cùng tên**. Picker trả **item ID**. Không đoán.
+2. Sau lookup (0 hoặc 1 khớp) hoặc khi picker trả item ID: kiểm trước trần tag (tag đã có của mục đích + tag mới > 20 → chặn). Dựng kế hoạch: `itemId` (UUID mới nếu tạo), các tag cần upsert, `entry_id` UUID v4, seal **một lần** (envelope đủ 5 field §5.5, nonce mới 24 B, AAD JCS + ID), mỗi bước một `Idempotency-Key` sinh trước.
+3. Chạy tuần tự: `POST /items {id, name}` (nếu tạo) → `POST /tags {display}` cho từng tag (upsert theo `normalized`) → `POST /items/{id}/tags {tag_ids}` (**cộng dồn**, không thay cả bộ; trần 20) → `POST /items/{id}/entries {id:entry_id, type:"text", envelope, ciphertext, plaintext_len_bucket}`. Bước lỗi giữ draft + kế hoạch; "Thử lại" chạy tiếp từ bước lỗi với đúng key và byte cũ, nên timeout ở bất kỳ bước nào không tạo bản sao. Không seal lại dưới cùng key.
+   - **Khi nào giữ nguyên key và byte:** chỉ khi kết quả chưa rõ hoặc tạm thời: lỗi mạng, timeout, `5xx`, `429`, `409 idempotency_in_progress`. Mọi `4xx` khác do handler trả là kết quả xác định: kế hoạch kết thúc, draft giữ nguyên, UI báo theo mã lỗi; Enter kế tiếp dựng **kế hoạch mới** với key mới (lookup lại, upsert tag lại; bước đã commit được lookup/upsert tìm thấy lại nên không tạo bản sao).
+   - `404 not_found` ở bước gán tag hoặc tạo entry là mục hoặc tag đã bị xoá ở thiết bị khác: client gọi `GET /items/{id}` để phân biệt (404 → mục mất, kế hoạch mới tạo lại mục; 200 → tag mất, kế hoạch mới upsert lại tag). `409 item_tag_limit`/`item_entry_limit` → báo trần, giữ draft. `409 entry_key_mismatch` (vault reset hoặc đổi khoá ở thiết bị khác) → xử lý như `vault_key_id` đổi (bước 6), không gửi lại ciphertext cũ.
+   - **Lỗi trước lookup không chốt lần gửi trước** (CBE2-1): `401` (`access_expired`, `unauthenticated`, `session_invalid`) và `403` (`csrf_invalid`, `forbidden`) bị middleware trả **trước** bước idempotency lookup, nên chỉ nói lần gửi này không tới lookup, không nói gì về lần gửi trước có kết quả chưa rõ (mất response). Khi bước đó đã từng có kết quả chưa rõ: (a) `401 access_expired` (refresh trong phiên), `403 csrf_invalid` (đọc lại token CSRF) và `401 unauthenticated` khi phục hồi có điều kiện của §9.1 (cookie CSRF loại session còn, refresh trong Web Lock) **thành công** khôi phục được **trong phiên** → giữ nguyên ID, byte và key rồi gửi lại **đúng** request đó (server replay response gốc nếu đã commit) trước khi cho dựng kế hoạch mới hay một `PUT` khác; (b) `401 unauthenticated` khi không được thử refresh hoặc refresh thất bại, `session_invalid` và `403 forbidden` chỉ khôi phục được bằng đăng nhập lại, tức ranh giới logout của bước 6: kế hoạch và draft bị bỏ, **không** replay; UI hiện một dòng cố định `content.omnibox.saveUnconfirmed` "Lần lưu trước vào **<name>** chưa xác nhận; kiểm tra mục trước khi lưu lại" trên màn người dùng tới sau ranh giới (đăng nhập hoặc mở khoá), đọc từ store cấp app trong memory; tải lại toàn trang thì mất dòng này (mặc định an toàn: không lưu storage, không thêm plaintext bền) (name đã là plaintext trên server). Mục trong store mang `user_id` đã tạo nó; dòng chỉ hiện khi đúng user đó đăng nhập hoặc mở khoá, và bị xoá khi đổi sang user khác, khi người dùng chủ động đăng xuất, khi bấm đóng và khi tải lại toàn trang (advisor-dec-120). Chỉ response từ handler (mã nghiệp vụ) hoặc replay mới chốt kết quả. Trong lúc chờ khôi phục, nút lưu bị khoá nhưng luôn có "Bỏ bản nháp" để người dùng không bị kẹt. Phân loại (a)/(b) nằm trong helper `contentMutate` của Task 11 (test đơn vị cho từng mã). Test Task 18: mất response rồi `session_invalid` → không replay, dòng `saveUnconfirmed` hiện; mất response rồi `csrf_invalid`, và mất response rồi `unauthenticated` với refresh thành công → replay đúng key, đúng một entry.
+4. Server tăng `entry_count`, `last_used_at`; giữ chỗ enqueue embed (P05) khi item/name mới.
+5. Toast "Đã lưu vào **wifi**" chỉ hiện **sau khi** entry commit (201), kèm Undo (§3.8). Undo quick-add **chỉ xoá entry vừa lưu** (`DELETE /entries/{id}`); mục, tag và cặp gán mà kế hoạch đã tạo được giữ (thiết bị khác có thể đã dùng chúng; phase doc cho phép dọn mục/tag rỗng, P04 chọn không dọn). Toast nói rõ phạm vi này. Mục rỗng còn lại xoá được bằng menu của mục.
+6. Lock, logout, đổi user, reset vault hoặc `vault_key_id` đổi → bỏ draft và kế hoạch (bước đã commit vẫn còn); không bao giờ gửi lại ciphertext cũ sau unlock.
 
-Quick-add **chỉ** tạo `type=text`. JSON đi qua modal import (§3.6) hoặc type picker trên trang mục. Nếu clipboard/paste trong ô add là JSON hợp lệ, hiện banner "Phát hiện JSON — [Lưu như bảng]" — không tự đổi type.
+Quick-add **chỉ** tạo `type=text`. JSON đi qua modal import (§3.6) hoặc nút thêm JSON trên trang mục. Nếu body là JSON hợp lệ (bắt đầu bằng `{` hoặc `[`), hiện banner "Phát hiện JSON — [Lưu như bảng]" mở import với text đó — không tự đổi type.
 
-`Ctrl+Enter` khi không có `:` → tạo **item mới** với `name` = text đang gõ (kể cả khi đã có item trùng tên).
+`Ctrl+Enter` có hai chế độ: không có `:` (một dòng, ≤ 200 rune) → tạo **mục mới không entry** với `name` = text đang gõ; có `:` (add mode) → **luôn tạo mục mới** kèm entry, kể cả khi đã có mục trùng tên. Ở chế độ `#…`, `Ctrl+Enter` bị bỏ qua.
+
+Import bằng **file** giữ nguyên byte UTF-8 của file (sau khi bỏ đúng một BOM); import bằng **dán** giữ đúng chuỗi `text/plain` mà trình duyệt trả về, không hứa gì về byte CR trước khi qua trình duyệt (§3.6).
 
 ### 3.5 Flow: Search & suggest
+
+> **P04:** mục này là thiết kế **P05**. P04 **không** có `GET /suggest` theo từng phím, không `Tab` điền, không dropdown nhóm Items/Tags/Gần đây/Gần nghĩa; hành vi P04 của ô omnibox là §3.4 (không request nào trước Enter). Khi P05 làm gợi ý theo phím, nó phải giữ ranh giới gửi của §3.4 và [ADR 0005](adr/0005-content-lossless-va-concurrency.md) §10: chuỗi chưa phân loại (có thể là body tương lai) không được rời client.
 
 Gõ → debounce 120 ms → `GET /suggest?q=` → dropdown hỗn hợp item + tag.
 
@@ -462,32 +502,36 @@ Chi tiết ranking §6, UI §7.
 
 ### 3.6 Flow: Import JSON thành entry bảng
 
-1. Từ trang mục (hoặc command "Import JSON"): modal dán **hoặc** chọn file `.json`.
-2. Client đọc UTF-8 strict (từ chối byte UTF-8 lỗi, không âm thầm thay bằng U+FFFD); parse thành cây cú pháp có source span bằng `jsonc-parser` hoặc tương đương, cấu hình strict JSON: không comment, không trailing comma, không nội dung thừa. Từ chối nếu sai cú pháp hoặc text UTF-8 > 256 KiB. Không round-trip qua `JSON.parse`/`JSON.stringify` để validate hoặc đo size.
+1. Từ trang mục (nút Import JSON) hoặc từ banner "Phát hiện JSON" của quick-add: modal dán **hoặc** chọn file `.json`.
+2. Client đọc UTF-8 strict (từ chối byte UTF-8 lỗi, không âm thầm thay bằng U+FFFD); file có BOM UTF-8 → bỏ **đúng một** BOM rồi parse (BOM không thuộc JSON). Parse thành cây cú pháp có source span bằng parser riêng `apps/web/lib/json` (không dependency `jsonc-parser`), strict JSON: không comment, không trailing comma, không nội dung thừa. Từ chối nếu sai cú pháp hoặc text UTF-8 > 256 KiB. Không round-trip qua `JSON.parse`/`JSON.stringify` để validate hoặc đo size.
+   - Import bằng **file** giữ nguyên byte UTF-8 của file (sau khi bỏ đúng một BOM) — đây là đường byte-exact được hứa.
+   - Import bằng **dán** giữ đúng chuỗi `text/plain` mà trình duyệt trả về (`clipboardData.getData`), không hứa gì về byte CR trước khi qua trình duyệt; dialog ghi "Cần giữ nguyên 100% nội dung file? Dùng Chọn file.".
 3. Preview: renderer bảng lồng (§7.4) + tab "JSON gốc".
-4. User xác nhận item đích (mặc định mục đang mở) + tag tuỳ chọn.
-5. Plaintext = **chuỗi JSON gốc** (paste/file). "Format trước khi lưu" chỉ sửa whitespace ngoài string bằng token edits; vẫn giữ key order, key trùng và lexeme số. Đo lại size sau format.
-6. Sinh UUID trước khi encrypt giống text; `POST /items/{id}/entries` `{id, type:"json", envelope, ciphertext, plaintext_len_bucket}`.
+4. Mục đích: P04 không có dropdown chọn mục hay tag trong dialog — đích là mục đang mở (import từ trang mục) hoặc mục quick-add đã resolve (từ banner). Gắn tag dùng chip trên trang mục.
+5. Plaintext = **chuỗi JSON gốc** (paste/file) là mặc định. Tuỳ chọn "Định dạng trước khi lưu" (mặc định **tắt**) chỉ sửa whitespace ngoài string bằng token edits; vẫn giữ key order, key trùng và lexeme số. Đo lại size sau format.
+6. Sinh UUID trước khi encrypt giống text; `POST /items/{id}/entries/import-json` `{id, type:"json", envelope, ciphertext, plaintext_len_bucket, source:"paste"|"file"}` + `Idempotency-Key`. **Không** gửi `filename` (field lạ → `400 invalid_request`); audit chỉ ghi `import_source`.
 7. Server **không** parse JSON; chỉ check `type`, envelope, size.
 
 Một lần import = **một** entry chứa cả document (kể cả array 500 object). Không tách phần tử thành nhiều entry.
 
 ### 3.7 Flow: Sửa bảng JSON lồng nhau
 
-1. Client đã decrypt → giữ **text gốc + cây cú pháp có source span** trong Worker/memory của card. Numeric cell đọc lexeme từ text, không convert sang JS `Number` rồi ghi ngược.
+1. Client đã decrypt → giữ **text gốc + cây cú pháp có source span** trong memory của card; parser chạy trên main thread, text plaintext không ra khỏi tab (chỉ ở state của card đang mở, không cache khác, không storage). Numeric cell đọc lexeme từ text, không convert sang JS `Number` rồi ghi ngược.
 2. Table-edit dùng định danh node/property occurrence và source span trên revision hiện tại. JSON Pointer chỉ dùng khi không mơ hồ; object có key trùng hiện từng occurrence theo thứ tự gốc với nhãn phân biệt, không gộp thành JS object. Array-of-object có key trùng dùng bảng field/value cho hàng đó.
-3. Sửa ô / thêm hàng / thêm field / xoá hàng → tạo text edits `{offset, length, content}` rồi apply splice (ví dụ `jsonc-parser.applyEdits`). Offset là UTF-16 code-unit của chuỗi hiện tại, theo contract của parser; sau splice phải encode lại UTF-8 để đo/encrypt, không dùng offset byte cũ sau khi text thay đổi. Chỉ thay token được sửa và dấu phẩy/whitespace cấu trúc cần thiết; byte ngoài các span đó giữ nguyên. Không gọi `JSON.stringify(document)`; không mặc định pretty-print cả document.
+3. Sửa ô / thêm hàng / thêm field / xoá hàng → tạo text edits `{offset, length, content}` rồi apply splice bằng edit engine riêng `lib/json`. Offset là UTF-16 code-unit của chuỗi hiện tại, theo contract của parser; sau splice phải encode lại UTF-8 để đo/encrypt, không dùng offset byte cũ sau khi text thay đổi. Chỉ thay token được sửa và dấu phẩy/whitespace cấu trúc cần thiết; byte ngoài các span đó giữ nguyên. Không gọi `JSON.stringify(document)`; không mặc định pretty-print cả document.
 4. Raw-edit giữ đúng text user; format explicit chỉ sửa whitespace ngoài string. Sau mỗi edit, parse strict lại text và dựng lại span; không áp span cũ lên revision mới. Giá trị số mới validate bằng grammar JSON number, giữ nguyên lexeme hợp lệ kể cả ngoài miền số JS.
-5. Đo UTF-8 text kết quả ≤ 256 KiB; encrypt nonce mới với cùng entry ID và envelope §5.5; `PUT /entries/:id` + `If-Match: updated_at`.
+5. Đo UTF-8 text kết quả ≤ 256 KiB; encrypt nonce mới với cùng entry ID và envelope §5.5; `PUT /entries/{id}` + `If-Match: "<version>"` (`version` của entry, tăng mỗi lần body đổi; không dùng `updated_at` làm validator) + `Idempotency-Key`. Retry mất response gửi lại đúng byte + key cũ; mỗi entry chỉ có một lần lưu chưa rõ kết quả tại một thời điểm. Giữ nguyên byte + key chỉ khi lỗi mạng, timeout, `5xx`, `429`, `409 idempotency_in_progress` (như §3.4); `400 entry_nonce_reused` → seal lại draft với nonce mới và `Idempotency-Key` mới; `409 entry_key_mismatch` → vault đã đổi khoá ở thiết bị khác, xử lý như lock (§7.3); `404 not_found` → entry đã bị xoá ở thiết bị khác, giữ draft với nút "Lưu thành entry mới". `401`/`403` trước lookup sau một lần lưu chưa rõ kết quả không chốt lần đó, chia như §3.4: `access_expired`/`csrf_invalid`/`unauthenticated` đã refresh thành công → giữ byte + key, khôi phục trong phiên rồi gửi lại đúng request (nút lưu khoá, có "Bỏ bản nháp"); `unauthenticated` không refresh được/`session_invalid`/`forbidden` → ranh giới logout, bỏ draft, không replay, hiện dòng `content.entry.saveUnconfirmed` cho mục đó như §3.4, cùng quy tắc `user_id` của §3.4 (CBE2-1, CFE3-1, CFE4-1, CFE5-1). Test ở Task 15 (text) và Task 16 (JSON).
+   - `412 version_mismatch` (thiết bị khác đã sửa): card giữ draft, hiện "Đã được sửa ở thiết bị khác" với ba nút **Tải bản mới** (bỏ draft sau một xác nhận inline), **Giữ bản của tôi** (tải version mới nhất, seal lại draft với nonce mới, `PUT` với `If-Match` mới và `Idempotency-Key` mới) và **Chép bản của tôi** (Clipboard để tự gộp). Không có màn so sánh/diff. Client không bao giờ tự lấy version mới rồi ghi đè (không last-write-wins).
+   - Xuống dòng: nguồn sự thật là chuỗi đã giải mã, không phải `.value` của `textarea` (luôn LF). Nguồn thuần LF hoặc thuần CRLF được giữ byte-exact cho phần không sửa; nguồn hỗn hợp/CR lẻ → cảnh báo trước khi lưu từ ô raw; sửa qua bảng không đi qua `textarea` nên luôn byte-exact ([ADR 0005](adr/0005-content-lossless-va-concurrency.md)).
 6. Field không hiện trên bảng, key trùng, key số nguyên, `null`, `9007199254740993`, `1e400`, `-0` và cách viết escape **không đổi** khi sửa một ô khác. Fixture bắt buộc kiểm tra byte ngoài span, không chỉ so sánh object sau parse.
 
 ### 3.8 Flow: View / edit / delete
 
-- Trang item: entries theo `position` tăng (user kéo thả để reorder → `PATCH /items/{id}/entries/reorder`).
-- Decrypt lazy khi render.
-- Text: edit inline. JSON: bảng hoặc raw.
-- Xoá: soft delete 30 ngày, Undo; purge job.
-- Gán tag: mini-omnibox trên chip `+`, cùng engine suggest tag; trần 20 → tooltip, không thêm chip 21.
+- Trang item: entries theo `(position, id)` tăng. Reorder bằng kéo thả **và** nút lên/xuống dùng được bằng bàn phím; nhiều lần bấm gộp thành **một** `PATCH /items/{id}/entries/reorder` sau lần bấm cuối. Reorder không tăng `version` entry.
+- Decrypt lazy khi card vào viewport.
+- Text: edit inline. JSON: bảng hoặc raw. Entry không có tiêu đề.
+- Xoá entry / item / tag: soft delete 30 ngày, **không** hộp thoại xác nhận — toast **Undo** (5 giây, 10 giây nếu thao tác gần nhất bằng bàn phím; dừng đếm khi hover/focus; xếp chồng tối đa 3 + nút "+N"; `Ctrl+Z`/`⌘Z`, §7.8) gọi đúng endpoint restore. Hết giờ không còn nút; API restore vẫn dùng được 30 ngày nhưng P04 **không** có màn thùng rác. Purge job sau 30 ngày.
+- Gán tag: ô gắn tag trên chip `+` (P04 lọc prefix `GET /tags?q=` khi người dùng nhập; mini-suggest fuzzy/semantic thuộc P05); `POST /items/{id}/tags` cộng dồn; trần 20 → chip `+` disabled kèm giải thích, không thêm chip 21.
 
 ### 3.9 Flow: Đổi passphrase (rewrap only)
 
@@ -548,6 +592,38 @@ Import backup UI ở P07: không chép lại các RK/passkey wrap từ snapshot 
 
 Settings: danh sách name / aaguid / ngày. `DELETE /vault/passkeys/{id}` cần re-auth tài khoản, xoá `cred_id` + wrap trên live server. Audit `passkey.revoke`. Các passkey khác và RK không đổi. Thao tác này không xoá credential khỏi authenticator và không vô hiệu hoá bản `vk_wrap` đã copy: credential còn thực hiện được PRF vẫn có thể mở bản wrap đó để lấy VK. Giới hạn giống consume/rotate RK (§5.9); rotate VK là P07.
 
+### 3.16 Flow: Quên mật khẩu tài khoản (Account password reset — [ADR 0006](adr/0006-account-password-reset.md))
+
+**Ranh giới bảo mật bắt buộc (`user-dec-016`):** Đặt lại mật khẩu tài khoản (`auth_identity.password_hash`) chỉ khôi phục quyền đăng nhập vào tài khoản để nhận session mới, **tuyệt đối không** mở khoá, tạo lại khoá (re-key) hay xoá (reset) vault. Không một bảng hay bản bọc nào của vault (`vault`, `vault_recovery_key`, `vault_passkey`, `entry`) và không một passkey hay `DevKey` nào bị xoá/sửa trực tiếp trên DB. Kẻ tấn công chiếm được hộp thư email hoặc toàn bộ server vẫn không giải mã được thân entry nếu không có bí mật mở vault phía người dùng (encryption passphrase, recovery key, passkey PRF hoặc trình duyệt vẫn đang nhớ `DevKey`).
+
+1. **Yêu cầu đặt lại (`POST /auth/password/forgot` `{email, captcha_token?, locale?}` trên `/app/auth/forgot-password`):**
+   - Unauthenticated (`OptionalSession` + `AttachAnon`), bắt buộc `Origin == APP_ORIGIN` + `Content-Type: application/json` + `X-CSRF-Token`. Trường tuỳ chọn `locale` (`"en" | "vi"`, mặc định `"en"`) quyết định ngôn ngữ của email đặt lại mật khẩu và email nhắc OAuth-only.
+   - **Kiểm tra khả năng gửi thư thực tế (`mail_delivery_available` — `advisor-dec-140` D1, `AU2-FE2-4`, `AU2-FE2-7`):** `GET /auth/config` trả trường boolean bắt buộc `mail_delivery_available` (`true` chỉ khi có adapter gửi thư thực sự ra ngoài, hoặc khi dùng sink/capture adapter trong môi trường kiểm thử kèm cờ `AUTH_MAIL_CAPTURE_AS_DELIVERY=true` vốn mặc định `false` và bị từ chối khởi động khi `APP_ENV=production`/`staging`). Khi `mail_delivery_available == false` (bao gồm VPS production hiện đang dùng sink theo `advisor-dec-086`), `POST /auth/password/forgot` trả ngay **`503 mail_delivery_unavailable`** đồng nhất cho mọi email hợp lệ cú pháp **trước** khi kiểm tra CAPTCHA, đếm quota hay tra cứu DB. Trên giao diện `/app/auth/forgot-password`, client chỉ coi dịch vụ gửi mail khả dụng khi `config?.mail_delivery_available === true` (hiện skeleton/disabled khi `config === null`, hiện thẻ lỗi mạng khi tải `/auth/config` thất bại, và hiện khung tĩnh không khả dụng — không hứa hẹn *"kiểm tra hộp thư của bạn"*, không có nút retry chết, không mount script/widget Turnstile, trỏ tới kênh liên hệ `/legal#contact` và chỉ gợi ý OAuth nếu `config.oauth_providers.length > 0` — khi `mail_delivery_available !== true` hoặc khi nhận `503 mail_delivery_unavailable`). (Các luồng P02 verify/enroll giữ nguyên, theo dõi ở follow-up `MAIL-CAP-P02`).
+   - **Turnstile CAPTCHA đồng nhất & Làm mới sau mỗi lần gửi (`AU2-BE1-11`, `AU2-FE1-8`, `AU2-FE2-6`):** Khi `config?.mail_delivery_available === true` và Turnstile được bật (`config.captcha_site_key != null`), biểu mẫu `/app/auth/forgot-password` **luôn luôn hiển thị** widget Turnstile, reset lại widget (`captchaResetSignal++`) sau mọi kết quả submit (`403`, `429`, `503`, lỗi mạng, và khi bấm *"Thử địa chỉ khác"* sau `202`), và server xác minh `captcha_token` đồng nhất trước khi tra cứu tài khoản (dùng chung hostname và action, đóng an toàn `403 captcha_required` nếu thiếu/sai hoặc khi nhà cung cấp Turnstile lỗi); khi Turnstile tắt thì bỏ qua. Biểu mẫu `/app/auth/reset-password` không dùng CAPTCHA.
+   - **Rate limit (trước khi tra cứu DB):** **5 yêu cầu / phút / IP** (`credLimit`, dùng chung với login/signup) và **1 yêu cầu / phút + 3 yêu cầu / giờ / HMAC email đã chuẩn hoá** (đếm đồng bộ cho mọi email hợp lệ cú pháp trước khi đẩy vào worker nền để chống dò tài khoản qua ngưỡng `429 rate_limited`).
+   - **Một ranh giới chấp nhận bất đồng bộ duy nhất (`AU2-BE1-2`, `AU2-BE1-5`):** Sau khi qua cú pháp, `mail_delivery_available`, IP quota, CAPTCHA và email quota, handler đẩy `{email, locale}` vào hàng đợi có giới hạn trong bộ nhớ (`forgotQueueSize = 128`, nếu đầy vẫn trả `202` và ghi log/metric đã scrub không kèm email) rồi trả về ngay **`202 Accepted` không có body** (`Cache-Control: no-store`). Mọi bước tra cứu `app_user`, phát hành token và gửi mail đều diễn ra bên trong worker trong bộ nhớ; token thô 32 byte chỉ tồn tại trong RAM (không bao giờ lưu vào `river_job`, DB hay log).
+   - **Tài khoản có password** (kể cả khi `email_verified_at IS NULL`): bên trong worker, mở một transaction duy nhất khoá `app_user FOR UPDATE` (`GetUserByIDForUpdate`), đọc bản chụp `password_hash` và `email` hiện tại, vô hiệu hoá mọi token reset đang chờ trước đó (`ExpirePendingPasswordResetTokensByUser`), sinh token CSPRNG 32 byte (`base64url` đúng 43 ký tự), lưu `token_hash = SHA-256(raw)` (32 B), `password_hash_sha256 = SHA-256(password_hash)` (32 B) và **bắt buộc ghi bản chụp `was_email_unverified = !u.EmailVerifiedAt.Valid`** (`AU2-BE2-3`) vào bảng `password_reset_token` với `TTL = 30 phút`, rồi gửi link `{APP_ORIGIN}/app/auth/reset-password#token=<base64url>` (purpose `password_reset`, ngôn ngữ `locale`).
+   - **Tài khoản OAuth-only** (chưa có `provider = 'password'`): **không** sinh reset token và **không** biến luồng quên mật khẩu thành đường enrollment thứ hai; worker gửi email thông báo (purpose `password_reset_oauth_only`, ngôn ngữ `locale`) nhắc người dùng đăng nhập bằng Google/GitHub rồi đặt mật khẩu lần đầu trong **Settings › Tài khoản** theo **US1b**.
+2. **Mở link và đặt mật khẩu mới (`POST /auth/password/reset` `{token, new_password}` trên `/app/auth/reset-password`):**
+   - **Route guard, Vòng đời URL Fragment tương thích Strict Mode & Điều hướng cứng (`AU2-BE1-8`, `AU2-FE1-2`, `AU2-FE1-5`, `AU2-FE1-11`, `AU2-FE1-12`, `AU2-FE2-1`, `AU2-FE2-5`):** Cả `/app/auth/forgot-password` và `/app/auth/reset-password` đều truy cập được khi đã đăng xuất lẫn khi đang đăng nhập ở mọi trạng thái (`needsEmailVerify`, `authenticated_without_vault`, `authenticated_with_vault` đang khoá hoặc đang mở), và được giữ mount trong lúc `status === 'loading'` (`keepAuthFormMountedWhileLoading`). Route `/app/auth/reset-password` có quy tắc header riêng trong `next.config.ts` (`Cache-Control: no-store`, `Referrer-Policy: no-referrer`, base CSP không có Turnstile) và `metadata.referrer = 'no-referrer'`. Ngay trong `useLayoutEffect`, component chỉ đọc `#token=` khi `window.location.hash` không rỗng (`if (hash)`) vào **component state cục bộ** (tuyệt đối không lưu biến cấp module, storage, URL, `MutationCache` hay log), gọi `history.replaceState` xoá ngay fragment, đặt `fragmentHandled = true`, và hàm cleanup của effect chỉ gỡ listener `hashchange` (để không làm mất token ở lần chạy thứ hai của React Strict Mode). Chỉ sau khi `fragmentHandled === true` mà `token === null` (thiếu/rỗng/sai định dạng 43 ký tự base64url hoặc sau khi reload trang), UI mới hiển thị khung link thiếu/hết hạn mà không gọi mạng. Vì `/app/auth/reset-password` dùng base CSP hẹp, **mọi lối thoát khỏi trang reset** (nút yêu cầu link mới sang `/app/auth/forgot-password`, điều hướng sau `204` sang `/app/auth/login?reset=done`, và nút quay lại `/app/auth/login`) **bắt buộc dùng điều hướng cứng (hard navigation: `window.location.assign` hoặc `<a href>` thuần)** để trình duyệt tải lại document với `turnstileCsp`.
+   - **Submit và Kiểm tra biên JSON có nhận biết sự hiện diện của trường (`AU2-BE1-12`, `AU2-BE2-4`):** Submit gửi `POST /auth/password/reset` `{token, new_password}` (unauthenticated + `Origin` + `X-CSRF-Token`, rate limit **5 yêu cầu / phút / IP**). Handler dùng DTO có nhận biết sự hiện diện của trường (`*string` / `json.RawMessage`): thiếu `token`/`new_password`, giá trị `null` hoặc sai kiểu JSON trả `400 invalid_request`; chuỗi `token` rỗng hoặc sai định dạng 43 ký tự base64url trả `400 reset_token_invalid`; `new_password` < 12 ký tự Unicode hoặc > 1024 byte UTF-8 trả `400 password_weak`.
+   - **Thứ tự khoá của Reset, Tuần tự hoá với `Login` / `oauth.Service.Complete` và Retry khi Deadlock (`advisor-dec-140` D2, `advisor-dec-146` E1 A & E2 B, `AU2-BE1-3`, `AU2-BE1-6`, `AU2-BE1-7`, `AU2-BE2-1`, `AU2-BE2-2`):** Trong `ResetPassword`, server đọc không khoá `user_id` theo `token_hash`, sau đó mở transaction và khoá theo thứ tự **`GetUserByIDForUpdate(user_id)` → `RevokeAllUserSessions(user_id)` (thu hồi toàn bộ phiên ngay dưới khoá user) → `GetPasswordResetTokenByHashForUpdate(token_hash)`**, kiểm tra: token tồn tại, `consumed_at IS NULL`, `expires_at > now`, `target_email` khớp `app_user.email`, và `password_hash_sha256` khớp `SHA-256(auth_identity.password_hash)` hiện tại (nếu lệch thì rollback toàn bộ, kể cả lệnh thu hồi phiên, và trả `400 reset_token_invalid`). Mọi giao dịch đổi email (`ConfirmEmailToken`), đổi mật khẩu (`ChangePassword`) hoặc gỡ password identity (`UnlinkIdentity`) đều gọi `ExpirePendingPasswordResetTokensByUser` dưới khoá user (chặn hồi sinh token khi đổi email A → B → A). Đồng thời, `Service.Login` bằng mật khẩu (D2) và `oauth.Service.Complete` cho tài khoản đã tồn tại (`advisor-dec-146` E1 A, sau bước khám phá chủ sở hữu không khoá) đều **bắt buộc lấy khoá `GetUserByIDForUpdate` trước và kiểm tra lại thông tin xác thực (`password_hash` hoặc ánh xạ `(provider, uid)` + trạng thái flow `ready`) dưới khoá user** trước khi cấp session. Các luồng bắt đầu từ session của P02 (`Logout`, `Refresh` reuse) không viết lại thứ tự khoá (follow-up `AUTH-DEADLOCK-MAP`); nếu `ResetPassword` gặp SQLSTATE `40P01`/`55P03` thì rollback và tự động retry 1 lần, nếu vẫn lỗi thì trả **`503 dependency_unavailable`** kèm `Retry-After: 1` (không bao giờ trả `500` hay áp dụng dở dang).
+   - **Bảo vệ chống Pre-Registration & Hoàn tất trong một transaction (`advisor-dec-140` D3, `advisor-dec-146` E1 A, `AU2-BE1-4`, `AU2-BE1-10`, `AU2-BE2-1`, `AU2-BE2-3`):** Hệ thống từ chối liên kết OAuth mới (`POST /auth/oauth/{provider}/link` trả `403 email_not_verified` và `Callback` nhánh `link` trả `"invalid_flow"`) khi tài khoản hiện tại chưa xác minh email (`email_verified_at IS NULL`; OAuth signup tạo tài khoản mới không bị ảnh hưởng). Khi tiêu thụ token reset thành công: cập nhật `auth_identity.password_hash` (Argon2id `m=64MiB, t=3, p=1`, salt 16 B mới), đánh dấu `consumed_at = now`, huỷ mọi proof email/reset đang chờ, reset `auth_throttle`, thu hồi toàn bộ session (`RevokeAllUserSessions`); nếu tài khoản chưa xác minh email lúc phát hành token hoặc lúc tiêu thụ (**`row.WasEmailUnverified || !u.EmailVerifiedAt.Valid`** — `AU2-BE2-3`) thì đồng thời đặt `email_verified_at = now`, **huỷ mọi giao dịch OAuth `login` ở trạng thái `'ready'` khớp `(identity_provider, identity_provider_uid)` của các danh tính bị gỡ cùng mọi giao dịch `link`/`reauth` và `oauth_reauth_receipt` đang chờ của user**, **và gỡ (unlink) toàn bộ OAuth identity** (`google`/`github`) của user đó trong cùng transaction (ghi secevent `auth.identity.unlink` với `reason = "unverified"`). Ghi `audit_log` (`auth.password.reset`) và gửi thông báo bảo mật với purpose chuyên biệt **`password_reset_notice`** theo `app_user.locale` (nêu rõ mật khẩu vừa được đặt lại và liệt kê các OAuth provider bị gỡ nếu có).
+   - **Response `204 No Content`, dọn phiên và điều hướng cứng sang `/app/auth/login?reset=done` (`AU2-BE1-9`, `AU2-FE2-1`, `AU2-FE2-2`, `AU2-FE2-7`):** Server gọi `ClearAuthCookies(w)` xoá toàn bộ cookie xác thực trên trình duyệt đang gọi; client phát `postSessionBroadcast({ type: 'signed_out', reason: 'logout' })` làm nguồn kích hoạt cleanup duy nhất kèm `await bootstrapCsrf()`, rồi điều hướng cứng (`window.location.assign('/app/auth/login?reset=done')`) về trang đăng nhập (không có khung hoàn tất riêng trên route reset). Trang `/app/auth/login` đọc `?reset=done`, hiển thị banner thành công (`auth.login.resetSuccessTitle` + `auth.login.resetSuccessBody`) và xoá ngay tham số `?reset=done` bằng `history.replaceState`.
+3. **Quy tắc copy bắt buộc song ngữ `vi` + `en` và cấm render raw problem (`user-dec-016`, `AU2-FE1-3`, `AU2-FE1-4`, `AU2-FE1-6`, `AU2-FE1-9`, `AU2-FE1-14`, `AU2-FE1-16`, `AU2-FE2-2`, `AU2-FE2-3`):**
+   - Không bao giờ hiển thị trực tiếp `problem.title` / `problem.detail` từ server trên các màn hình auth; mọi mã lỗi (`reset_token_invalid`, `mail_delivery_unavailable`, `dependency_unavailable`, `password_weak`, `rate_limited`, `captcha_required`, `csrf_invalid`, `invalid_request`, `email_not_verified`) phải ánh xạ sang khoá i18n `auth.*` / `settings.*` ([ADR 0006](adr/0006-account-password-reset.md) mục 9.2); trên màn hình quên/đặt lại mật khẩu dùng `auth.errors.rateLimitedTitle` trung tính cho `429` (cấm tái sử dụng `lockoutTitle`/`lockoutHint`/`captchaHint` của màn hình login).
+   - **Khi `mail_delivery_available == false` hoặc `503 mail_delivery_unavailable`:**
+     - VI: *"Tính năng gửi email đặt lại mật khẩu hiện chưa khả dụng trên máy chủ này. Chưa có email nào được gửi đi."*
+     - EN: *"Email delivery for password reset is not available on this server yet. No email was sent."*
+   - **Sau khi gửi yêu cầu (`202 Accepted` — không ghi cứng con số 30 phút, dùng "hướng dẫn tiếp theo" / "the next steps"):**
+     - VI: *"Nếu có tài khoản dùng địa chỉ email này, chúng tôi đã gửi hướng dẫn tiếp theo. Vui lòng kiểm tra hộp thư đến và thư rác."*
+     - EN: *"If an account uses this email address, we have sent the next steps. Please check your inbox and spam folder."*
+   - **Gợi ý dưới ô mật khẩu mới (cảnh báo không dùng passphrase vault):**
+     - VI: *"Ít nhất 12 ký tự (tối đa 1024 byte UTF-8). Không dùng passphrase của vault ở đây; mật khẩu này được gửi tới máy chủ của chúng tôi."*
+     - EN: *"At least 12 characters (up to 1024 UTF-8 bytes). Do not use your vault passphrase here; this password is sent to our server."*
+   - **Cảnh báo ranh giới vault và thu hồi phiên trên màn hình đặt mật khẩu mới và màn hình hoàn tất:**
+     - VI: *"Đặt lại mật khẩu đăng nhập không mở khoá được vault. Sau khi đăng nhập, bạn vẫn cần passphrase của vault, một recovery key hoặc passkey để mở nội dung đã mã hoá (hoặc trình duyệt này nếu trình duyệt vẫn còn nhớ thiết bị; việc đặt lại có thể xoá trạng thái nhớ thiết bị). Mọi phiên đăng nhập, kể cả trên trình duyệt này, sẽ bị / đã được đăng xuất."*
+     - EN: *"Resetting your login password does not open your vault. After signing in, you will still need your vault passphrase, a recovery key, or a passkey to decrypt entries (or this browser if it still remembers the device; a reset can clear remembered devices). All sessions, including this browser's, will be / were signed out."*
 ---
 
 ## 4. Kiến trúc tổng thể
@@ -635,7 +711,7 @@ Với `openai_compat`, chỉ `item.name` (+ hint), `tag.display` và query seman
 
 ### 4.3 Frontend stack
 
-Next.js **15** App Router, TypeScript, Tailwind + shadcn/ui (Radix), TanStack Query, `next-intl`, `libsodium-wrappers-sumo` trong Web Worker, `cmdk` cho omnibox, Zod. JSON table: renderer riêng + `jsonc-parser` cho cây cú pháp/source span và text edits (strict JSON, không dùng JS object làm source of truth); virtualize khi nhiều hàng.
+Next.js **15** App Router, TypeScript, Tailwind + shadcn/ui (Radix), TanStack Query, `next-intl`, `libsodium-wrappers-sumo` trong Web Worker, `cmdk` cho omnibox, Zod. JSON table: renderer riêng + parser/edit engine riêng `apps/web/lib/json` cho cây cú pháp/source span và text edits (strict JSON, không dùng JS object làm source of truth; không dependency `jsonc-parser`); mảng lớn phân trang 50 hàng + mở nút con lazy, không thư viện virtualize (không thêm dependency npm).
 
 ### 4.4 Embedding provider abstraction
 
@@ -749,7 +825,7 @@ JSON plaintext = UTF-8 của document. **Không nén** ở MVP; envelope v1 luô
 - **Canonical** = RFC 8785 JSON Canonicalization Scheme (**JCS**). **AAD bytes** = `UTF8("sabk.entry.v1") || 0x00 || UTF8(JCS(envelope)) || 0x00 || ASCII(entry_id)`, với `entry_id` UUID lowercase dạng có hyphen (`8-4-4-4-12`). Không gồm ciphertext. Client sinh UUID v4 **trước** encrypt; server validate và giữ nguyên ID đó, không tự cấp ID mới.
 - `jsonb` được phép đổi thứ tự field khi lưu/trả; cả hai phía luôn validate schema rồi JCS lại object để có cùng AAD. Không dùng `JSON.stringify` theo insertion order hoặc raw JSON bytes làm canonical. `ct_enc` luôn được lưu/trả, không loại khỏi response.
 - Test vector bắt buộc: ID, envelope, JCS bytes, AAD hex, VK, nonce, plaintext, ciphertext; round-trip qua Postgres `jsonb` và đảo thứ tự field vẫn decrypt được. Đổi ID hoặc bất kỳ field envelope nào phải fail validation/AEAD; thiếu `ct_enc` không được tự chữa. JCS chỉ áp dụng envelope, **không** áp dụng body JSON (§3.7).
-- `plaintext_len_bucket` = `ceil(len/256)*256` — hiển thị "~1 KB", giảm rò rỉ size.
+- `plaintext_len_bucket` = `ceil(len/256)*256` (bội số 256, `256…262144`) chỉ là **metadata làm tròn** để hiển thị "~1 KB"; server kiểm bucket bằng đúng `ceil((octet_length(ciphertext) − 16) / 256) × 256`. Bucket **không** che kích thước: envelope v1 không padding nên độ dài ciphertext vẫn lộ độ dài plaintext chính xác (`octet_length(ciphertext) − 16`, threat model P-1/L-9). Padding là việc của envelope v2 (P07, gate crypto).
 - Trần plaintext 256 KiB; server: `plaintext_len_bucket ≤ 262144` và `octet_length(ciphertext) ≤ 263168` (slack AEAD).
 - Client đọc mọi `v` cũ, ghi `v` mới nhất khi edit.
 
@@ -1041,10 +1117,11 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 | Màn | File | Mục spec |
 |---|---|---|
 | Landing | `mockups/landing.html` | §11.1 (marketing route) |
-| Tìm kiếm / vỏ app | `mockups/index.html` | §7.2 |
-| Chi tiết mục | `mockups/item.html` | §7.3, §7.4, §7.5 |
+| Tìm kiếm / vỏ app (`#omni`, `#omni-state-seg`, `#rail-tags`, `#tagRenameDlg`, `#dupDialog` do `SAK.openDupDialog` tạo, `#recent-grid`) | `mockups/index.html` | §7.2 |
+| Chi tiết mục (`default`, `editing`, `saving`, `conflict`, `crypto-err`, `limits`, `#importDlg`) | `mockups/item.html` | §7.3, §7.4, §7.5 |
 | Cài đặt (tài khoản P02; `#baomat` P03: `#passDlg`, `#rkDlg`, `#rotateDlg`, `#passkeyAddDlg`, `#resetDlg`; tìm kiếm P05) | `mockups/settings.html` | §7.6 |
-| Đăng ký / đăng nhập / OAuth return / re-auth / password-enroll | `mockups/auth.html` | §3.1, §10.2 |
+| Đăng ký / đăng nhập / quên & đặt lại mật khẩu (`/app/auth/forgot-password`, `/app/auth/reset-password`) / OAuth return / re-auth / password-enroll | `mockups/auth.html` | §3.1, §3.16, §10.2 |
+| Điều khoản sử dụng & Chính sách quyền riêng tư (`/terms`, `/privacy`, `/vi/terms`, `/vi/privacy`) | `mockups/legal.html` | §3.1, §5.1, §11.1 |
 | Onboarding vault (`pp`, `pp-oom` → 10 RK `rk`, `rk-exists` → passkey `pk`) | `mockups/onboarding.html` | §3.2, §5.2 |
 | Mở khoá vault (`new`, `pk`, `known`, `err`, `err-pk`) | `mockups/unlock.html` | §3.3, §3.14 |
 | Quên passphrase / recovery key (`s1`, `s2`, `s3`, `s3-err`, `s4-reauth`, `s4`) | `mockups/recovery.html` | §3.10 |
@@ -1058,6 +1135,13 @@ Thư mục [`mockups/`](../mockups/README.md) là **tiêu chuẩn thiết kế r
 - `recovery.html`: `s1` (`#recovery-reauth-start`), `s2` (`#s2-err-invalid`, `#s2-err-rate`, `#s2-err-aead`), `s3` (`#s3-recovering-note`), `s3-err` (`#s3-reauth-expired-password`, `#s3-reauth-expired-oauth`, `#s3-err-oom`, `#s3-err-version`, `#s3-err-rate`), `s4-reauth` (`#s4-regenerate-reauth`), `s4` (`#s4-replacement-card`).
 - `states.html` (`vault`): `#vault-version-mismatch`, `#vault-reauth-expired-password`, `#vault-reauth-expired-oauth`, `#vault-rate-limited`, `#vault-mutations-disabled`, `#vault-locked-broadcast`, `#vault-insufficient-memory`.
 - `settings.html#baomat` dialogs: `#passDlg` (`pass-form`, `pass-oauth`, `pass-oom`, `pass-reauth-expired`, `pass-mismatch`, `pass-ratelimit`, `pass-done`); `#rkDlg` (`rk-reauth`, `rk-keys` / `#rkRegenSaved` / `#rkRegenDoneBtn`, `rk-reauth-expired`, `rk-mismatch`, `rk-ratelimit`, `rk-done`); `#rotateDlg` (`rot-reauth`, `rot-keys` / `#rkRotateSaved` / `#rkRotateConfirmBtn`, `rot-reauth-expired`, `rot-mismatch`, `rot-ratelimit`, `rot-done`); `#passkeyAddDlg` (`pk-start`, `pk-prf-unsupported`, `pk-cancelled`, `pk-prf-missing`, `pk-orphan`, `pk-reauth-expired`); `#resetDlg` (`rst-s1`, `rst-s2`, `rst-s3`, `rst-s4` / `#rst-confirm-word` / `#rstConfirmBtn`, `rst-s5`, `rst-reauth-expired`, `rst-mismatch`).
+
+**Neo trạng thái & bước dialog chi tiết (P04 content — U8–U14, U18):**
+
+- `index.html`: `#omni` (ô nhập một dòng tự nở `<textarea rows="1">` theo advisor-dec-152, giữ role `textbox` ngầm định theo advisor-dec-156 với `aria-controls="omni-listbox"` khi mở listbox, `aria-activedescendant`, `aria-describedby="omni-hint"`, không đặt `role="combobox"` hay `aria-expanded`; `#omni-pop` chứa `#omni-listbox`, `#omni-state-seg` chuyển 16 trạng thái tìm/quick-add/lưu nhiều bước/khoá gồm `4a`/`4b` và `12a`/`12`; các phần tử `#omni-hint`, `#omni-live`, `#omni-guard-alert`, `#omni-lock-cleared-notice`, `#omni-add-preview` kèm `#omni-add-error`, `#omni-json-banner`, `#omni-save-plan`, `#omni-unlock-to-save-btn`, `#omni-add-privacy` do `SAK.initOmnibox` tạo), `#rail-tags` (`#rail-tag-list`, `#rail-clear-filter`, menu tag `⋯` Đổi tên / Xoá có Undo), `#tagRenameDlg` (`#tagRenameInput`, `#tagRenameConflict` `409 tag_conflict`), `#dupDialog` (picker trùng tên U9 do `SAK.openDupDialog` tạo động: `#dupListbox`, `#dup-opt-new`, phân trang `Xem thêm`), `#recent-items-header`, `#recent-grid` (danh sách gần đây duy nhất, không preview body).
+- `item.html`: `default` (`#item-default`: `#item-name-input`, `#item-hint-input`, `#item-privacy-note`, `#tag-add-chip`, `#tag-add-popover`, `#tag-suggest-input`, `#entry-composer`, `#card-menu-pop`, thẻ JSON `#card-json-1` `#cfgTable`/`#cfgRaw` với `#cfg-format-btn`, `#cfg-raw-save-btn`, `#cfg-raw-textarea`, `#cfg-eol-warning`, `#cfg-format-msg`, `#cfg-raw-error` kèm `[data-json-raw-goto]`, thẻ `#card-json-2` `#guestTable`/`#guestRaw`, thẻ `#card-json-edge` `#edgeTable` kèm `#edgeTable-ro-note` / `#edgeRaw` kèm `#json-edge-switcher`), `editing` (`#item-editing`: `#card-text-editing`, `#entry-edit-textarea`, `#entry-byte-counter`, `#entry-discard-confirm`), `saving` (`#item-saving`: `#card-saving`, `#card-saved`, `#card-save-error`), `conflict` (`#item-conflict`: `#card-conflict-412`, `#conflict-reload-confirm`, `#item-header-conflict-412`), `crypto-err` (`#item-crypto-err`: `#card-key-mismatch`, `#card-decrypt-fail`), `limits` (`#item-limits`: `#item-tag-limit-20`, `#item-entry-limit-200`), `#importDlg` (`#importDestination`, `#importPasteExactHint`, `#importStateBar`, `#importLimitBanner`, `#importUtf8Error`, `#importParseError`, `#importSaveAsTextBtn`, `#importSrc`, `#importChooseFileBtn`, `#importClearFileBtn`, `#importFormatBeforeSave`, `#importPreview`, `#importSubmitBtn`).
+- `states.html` (`empty`, `err`, `off`): `#empty-search-no-match` (không có mục bắt đầu bằng từ khoá), `#err-version-mismatch` (`412 version_mismatch` ba nút + `#err-conflict-confirm`), `#err-entry-too-large` (`413 entry_too_large` 256 KiB), `#err-json-invalid` (kèm nút `Đi tới lỗi` và `Lưu dạng văn bản`), `#err-import-utf8` (từ chối byte UTF-8 lỗi không thay bằng `U+FFFD`), `#err-json-format-refused` (từ chối định dạng vượt 256 KiB / 1.000 cấp), `#err-dup-name-picker` (mở U9 `#dupDialog`), `#err-decrypt-fail` (kèm nút Thử lại), `#err-entry-key-mismatch` (`entry_key_mismatch`), `#off-save-deferred` (giữ trong ô soạn thảo cho tới khi vault khoá).
+- `mock.js`: `SAK.initOmnibox` (P04 omnibox: không gửi trước Enter, `searchHint`/`tagHint`, listbox sau Enter, quick-add preview cục bộ + dòng privacy, lưu nhiều bước `item → tags → assign → entry` có Thử lại, banner phát hiện JSON, khoá xoá nháp; giữ `opts.demo` cho `landing.html`), `SAK.parseJsonStrict` / `SAK.formatJsonStrict` / `SAK.initJsonEntryCard` (bảng/sửa JSON không mất mát: sửa splice trên chuỗi nguồn giữ nguyên khoá trùng `⁽²⁾`/số lớn/escape, gán `.value` qua DOM API giữ xuống dòng đầu chuỗi, đổi kiểu qua menu `Kiểu` gồm `object`/`array`, phân trang 50 hàng, chevron lazy, cảnh báo EOL hỗn hợp nêu kiểu đa số `LF`/`CRLF` và chuyển tab áp lại EOL, định dạng bản nháp kiểm trước 256 KiB & 1.000 cấp, khoá/mở vault tách riêng khỏi `hidden` của tab qua `[data-secret][data-locked]` + màn che không xoá listener, đồng thời xoá DOM bảng và bỏ nháp ô (chuột)/raw khi khoá), `#toastStack` / `#toastLiveRegion` (do `SAK.initChrome` / `SAK.toast` tạo: một `role="status"` chung, xếp chồng tối đa 3 + nút `+N` `[data-toast-expand]`, dừng đếm khi hover/focus, ≥ 10 s sau focus, `Ctrl+Z` / `⌘Z`), `SAK.openDupDialog` (tạo `#dupDialog`).
 
 **Phân vai khi mockup và spec lệch nhau:**
 
@@ -1074,12 +1158,13 @@ Khi lên code thật, token phải port sang biến CSS/shadcn theo đúng tên 
 
 **Mockup có chủ đích thể hiện các quyết định trong spec**, không phải minh hoạ suông — đây là những chỗ implementation dễ làm sai:
 
-- Nhóm **"Gần nghĩa" nằm riêng, dưới các nhóm lexical**; bật/tắt semantic không xáo trộn thứ tự lexical (§6.4).
-- **Trùng tên mục là hợp lệ** — quick-add hỏi chọn mục nào, kèm lựa chọn tạo mục mới cùng tên (§3.4).
-- **Bảng JSON không mất mát**: cột theo thứ tự khoá trong nguồn; hàng có khoá trùng rơi về bảng field/value; số lớn hiện nguyên văn (§7.4).
-- **Khoá vault chỉ che nội dung entry** — tên mục, tag, số entry vẫn đọc được (§5.1).
+- **Omnibox không gửi gì trước Enter (Q17, advisor-dec-098, advisor-dec-152, advisor-dec-156)**: ở P04, ô omnibox (`index.html`, `item.html`) là ô nhập một dòng tự nở `<textarea rows="1">` (giữ role `textbox` ngầm định, nối `aria-controls` tới `#omni-listbox` khi mở, `aria-activedescendant` khi chọn dòng, `aria-describedby` tới dòng gợi ý, không đặt `role="combobox"` hay `aria-expanded`; số kết quả / câu rỗng phát qua `#omni-live`), hiển thị dòng gợi ý cố định (`searchHint` khi tìm, `tagHint` khi lọc `#…`, ẩn khi rỗng hoặc khi hiện cảnh báo chặn) và chỉ mở listbox kết quả sau khi nhấn `Enter` (chặn tìm kiếm với chuỗi nhiều dòng hoặc > 200 ký tự). Ở chế độ thêm nhanh (`tên #tag: nội dung`), xem trước đích và tag dựng cục bộ kèm dòng privacy, số mục trùng tên chỉ kiểm tra sau `Enter` (§3.4, §7.2; nhóm "Gần nghĩa" theo từng phím thuộc P05, chỉ giữ trong demo marketing `landing.html` qua `opts.demo`).
+- **Trùng tên mục là hợp lệ** — quick-add mở picker U9 (`#dupDialog`: mỗi dòng hiện tên, tối đa 3 chip tag, `created_at`, `entry_count`, nút "Xem thêm" khi còn trang, và dòng cuối "Tạo mục mới cùng tên") trả về đúng item ID (§3.4).
+- **Bảng JSON không mất mát (U13, U14)**: cột theo thứ tự khoá trong nguồn (tối đa 20 cột, phân trang 50 hàng, chevron lazy chỉ dựng DOM khi mở); hàng có khoá trùng rơi về bảng field/value kèm nhãn thứ tự `⁽²⁾` để sửa đúng từng occurrence; ô chứa `\r` hoặc lone surrogate là ô chỉ đọc trong Bảng (sửa ở tab **"JSON gốc"**); sửa ô giữ nguyên kiểu hiện tại (đổi kiểu qua menu `Kiểu`, commit không đổi = không chạm chuỗi nguồn để giữ escape); số lớn (`9007199254740993`, `-0`) hiện và lưu nguyên văn chữ số nguồn; nút **Định dạng** chỉ đổi khoảng trắng ngoài chuỗi và từ chối khi > 256 KiB hoặc > 1.000 cấp lồng; modal nhập JSON (`#importDlg`) chỉ nhận **dán hoặc chọn file `.json`** (kiểm UTF-8 nghiêm ngặt không dùng `U+FFFD`, kèm dòng `#importPasteExactHint`, chặn khi mục đạt 200 entry, và luôn nhập thành **1 entry JSON**) (§3.6, §7.4, §7.5).
+- **Khoá vault chỉ che nội dung entry; tên mục, tag và gợi ý không được mã hoá** — tên mục, tag, số entry vẫn đọc được; lưới mục gần đây trên trang chủ là danh sách gần đây duy nhất và không tải hay preview nội dung entry (§5.1, §7.3).
 - **Đổi passphrase không cần passphrase cũ**; "Đặt lại vault" nằm sau danh sách đường mở khoá phải thử trước (§3.9, §3.10).
 - **Tạo lại (regenerate) recovery key chỉ hiện key mới cho các slot đang trống** (theo thứ tự slot nhỏ nhất trước); **"Xoay cả 10" (`#rotateDlg`) thay cho nút thu hồi cũ** để cấp bộ 10 key mới trên live server; **đổi passphrase chỉ bọc lại `wrapK` nên các recovery key, bản in cũ và passkey vẫn mở được vault** (§3.9, §3.12, §5.9).
+- **Một header ứng dụng thống nhất & ngôn ngữ phổ thông (UIA-9, UIA-17, UIA-18, advisor-dec-186)**: mọi màn ứng dụng (`index.html`, `item.html`, `states.html`, `settings.html`, `unlock.html`, `recovery.html`, `onboarding.html`) hiển thị cùng một header cao `68px` theo đúng thứ tự và kích thước (`btn btn-tertiary`): `vault-pill`, `Cài đặt` (`Xong` trên `settings.html`), nút đổi giao diện (`btn-icon`) và `Đăng xuất` (không còn nút Đăng xuất thứ hai dưới thẻ mở khoá ở `unlock.html`). Câu chữ người dùng nhìn thấy (vi + `lang="en"`) đồng bộ với `apps/web/messages/{vi,en}.json` (UI3 `phase04/uipolish`), dùng ngôn ngữ phổ thông (không hiện `vault.recover grant`, `BLAKE2b`, `AEAD`, `zxcvbn`, `Web Worker`, `unwrapped key`, `wrapK`, `Retry-After` trong copy hiển thị; giữ các nhãn mã chẩn đoán `429 rate_limited`, `412 version_mismatch`, … và thuật ngữ `PRF` của WebAuthn).
 
 **Ngoài phạm vi bộ mockup hiện tại** — phải thiết kế thêm trước khi implement: share dialog/recipient status/shared-with-me (P08-A), extension popup/options/unlock (P08-B), màn quản lý API token (P08-C). Mockup mới bổ sung vào đúng thư mục này và cập nhật bảng trên.
 
@@ -1096,6 +1181,8 @@ Mockup dùng dữ liệu giả và **không có mã hoá thật** — mọi th�
 - Tên trùng: **luôn** kèm tag + ngày, không bắt user nhớ id.
 
 ### 7.2 Omnibox
+
+> **P04:** dropdown theo từng phím dưới đây (nhóm Tags/Items/Gần nghĩa, `Tab`, công tắc `[≈]`, hàng "Gần đây") và dòng "3 mục tên … — chọn bên dưới trước khi Enter" là thiết kế **P05**. P04 dùng §3.4: dòng gợi ý cố định theo chế độ, listbox kết quả chỉ hiện **sau Enter**, lọc `#…` phía client trên cache tag, preview add mode chỉ từ phần parse cục bộ (số mục trùng biết sau Enter). P05 phải giữ ranh giới gửi §3.4.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -1170,10 +1257,13 @@ Khi nhiều khớp tên: Enter không lưu ngay — list chọn + "Tạo mục m
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-- Chip tag: click → filter toàn app theo tag; `×` gỡ; `+` mini-suggest (prefix/fuzzy/semantic như omnibox, `scope=tag`).
-- Kéo ☰ đổi `position`.
-- Text card: markdown-lite (autolink, inline code).
+- Chip tag: click → filter toàn app theo tag; `×` gỡ; `+` ô gắn tag (P04: prefix `GET /tags?q=`; fuzzy/semantic `scope=tag` thuộc P05). Cạnh name/hint và trong ô gắn tag có một dòng cố định: tên mục, tag và hint **không** được mã hoá; chỉ nội dung entry được mã hoá đầu-cuối.
+- Kéo ☰ hoặc nút lên/xuống (bàn phím) đổi `position` (§3.8).
+- Entry **không có tiêu đề**: card nhận diện bằng badge `type` và dòng đầu của body sau khi giải mã (mockup bỏ tiêu đề entry). Trong khung trên, dòng `guests` của card JSON không phải tiêu đề và dòng `hôm nay 09:12` không có ở P04: card không hiện ngày sửa (reorder cũng đổi `updated_at`).
+- Text card: chữ thuần, giữ xuống dòng; **không** autolink hay markdown-lite trong P04 (autolink đưa body vào thuộc tính `href`).
 - JSON card: §7.4.
+- Body decrypt **lazy** khi card vào viewport: loader tải `GET /entries/{id}` (envelope + ciphertext) cho từng card, mở một lần rồi bỏ; trước khi mở so `envelope.key_id` với `vault_key_id` hiện tại (lệch → "Entry này mã hoá bằng khoá cũ", không gọi Worker).
+- 📋 Copy chép plaintext vào clipboard của hệ điều hành; app **không** tự xoá clipboard sau một khoảng thời gian (không đáng tin trên trình duyệt và có thể xoá nội dung khác của người dùng). Plaintext ở lại clipboard và lịch sử clipboard của hệ điều hành (threat model).
 - Vault locked: cards `🔒 ••••••`; name + tag vẫn đọc được; nhớ thiết bị → tương tác sau tự mở; không nhớ → passkey hoặc passphrase.
 
 ### 7.4 JSON table renderer (nested / expandable)
@@ -1187,7 +1277,9 @@ Luôn giữ document gốc trong memory sau decrypt. Hai tab: **Bảng** | **JSO
 | Array of primitive | Một cột `#` + `Giá trị` |
 | Array of array | Mỗi hàng là ô expandable "Array (n)" |
 | Primitive gốc (`42`, `"ok"`, `null`) | Bảng 1 ô; vẫn là JSON hợp lệ |
-| Lồng sâu | Chevron; không giới hạn độ sâu; > 50 hàng / array → trang 50 + virtualize |
+| Lồng sâu | Chevron; không giới hạn độ sâu; nút con mở **lazy** (không render đệ quy sẵn); > 50 hàng / array → trang 50 hàng, **không** virtualize |
+| Nhiều key | Tối đa 20 cột; key thừa gộp vào ô "+N field" của hàng |
+| Ô có xuống dòng | String có `\n` (không `\r`) sửa bằng `textarea` (Shift+Enter xuống dòng, Enter lưu), ghi lại thành escape `\n`; string có `\r` hoặc surrogate lẻ → ô **chỉ đọc** (`aria-readonly`), sửa qua tab JSON gốc; không xuống dòng → `<input>` một dòng |
 
 - Sửa ô primitive: commit blur / `Enter`; `Esc` huỷ.
 - Thêm hàng / thêm field / xoá hàng: menu cạnh bảng. Xoá = mutate JSON, không "giấu".
@@ -1206,13 +1298,19 @@ Luôn giữ document gốc trong memory sau decrypt. Hai tab: **Bảng** | **JSO
 │  │ { "vlans": [ { "id": 10, "name": "iot" } ] }           │ │
 │  └────────────────────────────────────────────────────────┘ │
 │  Preview: bảng lồng · 1 object · ~120 B                     │
-│  Lưu vào mục: [ wifi ▾ ]   (hoặc tạo mục)                   │
-│  [x] Giữ nguyên định dạng gốc                               │
+│  Lưu vào: wifi  (mục đang mở)                               │
+│  [ ] Định dạng trước khi lưu                                │
+│  Cần giữ nguyên 100% nội dung file? Dùng Chọn file.         │
 │           [ Huỷ ]  [ Mã hoá và lưu ]                        │
 └────────────────────────────────────────────────────────────┘
 ```
 
-Lỗi: JSON invalid (pointer dòng), quá 256 KiB, item đã đủ 200 entry.
+- Đích cố định (mục đang mở, hoặc mục quick-add đã resolve khi mở từ banner "Phát hiện JSON"); không có dropdown chọn mục hay tag trong dialog (§3.6 bước 4).
+- Mặc định giữ text gốc; "Định dạng trước khi lưu" là tuỳ chọn, mặc định **tắt** (thay checkbox "Giữ nguyên định dạng gốc" cũ).
+- Không hỏi và không gửi tên file (`filename`); request chỉ có `source: paste|file`.
+- File giữ nguyên byte UTF-8 (đọc `TextDecoder` `fatal: true`, bỏ đúng một BOM; byte UTF-8 lỗi bị từ chối, không thay bằng `U+FFFD`); dán lấy `clipboardData.getData("text/plain")`, giữ đúng chuỗi trình duyệt trả về, không hứa byte CR (§3.6).
+
+Lỗi: UTF-8 không hợp lệ, JSON invalid (dòng/cột + nút Lưu dạng văn bản), quá 256 KiB, item đã đủ 200 entry.
 
 ### 7.6 Unlock / onboarding / Settings
 
@@ -1257,7 +1355,7 @@ Copy rút gọn: Settings › Bảo mật và màn quên passphrase. Passkey / D
 
 | Nhóm Settings | Mục |
 |---------------|-----|
-| Tài khoản | Email, locale en/vi, theme, link Google/GitHub, đổi password đăng nhập. OAuth-only đặt password lần đầu qua enrollment (email đã verified) hoặc Google re-auth nếu freshness bật — không gọi đó là phục hồi dữ liệu. Notification in-app + audit trên U7. |
+| Tài khoản | Email, locale en/vi, theme, link Google/GitHub (yêu cầu email hiện tại đã xác minh — `403 email_not_verified` nếu chưa xác minh, [ADR 0006](adr/0006-account-password-reset.md) D3), đổi password đăng nhập. OAuth-only đặt password lần đầu qua enrollment (email đã verified) hoặc Google re-auth nếu freshness bật — không gọi đó là phục hồi dữ liệu. Notification in-app + audit trên U7. |
 | Bảo mật | Đổi passphrase (VK + re-auth tài khoản; không cần passphrase cũ; RK/passkey vẫn mở) · **Recovery keys: còn N/10** (không hiện bí mật) · Regenerate slot thiếu · Xoay cả 10 · **Passkeys** (thêm / đổi tên / thu hồi) · Auto-lock 5/**15**/60/Never · Thiết bị này đã nhớ? · Quên thiết bị · Phiên · Audit · Reset vault |
 | Tìm kiếm | Gợi ý gần nghĩa on/off. Ẩn nếu server tắt |
 | Dữ liệu | Export encrypted · Export decrypted (cảnh báo + re-auth) · Xoá tài khoản |
@@ -1277,16 +1375,26 @@ Copy rút gọn: Settings › Bảo mật và màn quên passphrase. Passkey / D
 | Vault locked | Overlay entry; name/tag/search sống; nhớ thiết bị → tự mở lại; không → passkey hoặc passphrase |
 | PRF không hỗ trợ | Toast `passkey.prf_unsupported`; onboarding vẫn xong (passphrase + RK) |
 | Recover RK xong | Bắt buộc form passphrase mới; rồi banner "còn N/10 — [Tạo key thay thế]" |
-| Offline | Banner vàng; **không** queue offline |
-| Decrypt fail | Card đỏ + trợ giúp |
+| Offline | Banner vàng; **không** queue offline; draft giữ trong memory của phiên + nút "Thử lại" (gửi lại đúng byte + `Idempotency-Key` cũ) |
+| Decrypt fail | Card đỏ "Không giải mã được" + nút Thử lại (khác lỗi sai passphrase của unlock) |
+| Entry mã hoá bằng khoá cũ | Card "Entry này mã hoá bằng khoá cũ" (`key_id` khác `vault_key_id` hiện tại), không gọi Worker |
+| Xung đột sửa (412) | Card giữ draft: "Đã được sửa ở thiết bị khác" · Tải bản mới · Giữ bản của tôi · Chép bản của tôi (§3.7); không màn so sánh |
+| Lock khi đang có draft | Lock **xoá** draft chưa lưu và kế hoạch quick-add đang dở; sau unlock hiện một dòng "Bản nháp chưa lưu đã bị xoá khi khoá vault" (mục/tag đã tạo vẫn còn); không tự gửi lại |
+| Xoá có Undo | Toast Undo §3.8; Undo quick-add chỉ xoá entry vừa lưu |
 | JSON invalid lúc edit raw | Không lưu, underline parse error |
+
+Ghi chú P04 (UI content):
+
+- Một danh sách "gần đây" duy nhất: lưới mục gần đây ở trang chủ (`GET /items?sort=recent`); bỏ list "Gần đây" và công tắc "Gần nghĩa" demo trong rail (semantic là P05).
+- Lưới gần đây **không** preview body (không tải, không giải mã entry); card chỉ có name, tag, số entry.
+- Plaintext body chỉ sống ở Worker lúc seal/open, cache body `vaultBodyQueryKey`, state của card/editor đang mở, DOM text node đang hiển thị và ô đang sửa có `data-vault-secret`; không ở thuộc tính DOM, URL, storage, cache khác hay `MutationCache` ([ADR 0005](adr/0005-content-lossless-va-concurrency.md)).
 
 ### 7.8 Theme, responsive, a11y, shortcuts
 
 - Dark/light: `prefers-color-scheme` + override per-user; token shadcn.
 - ≥ 1024 px: cột trái recent items/tags, phải nội dung. < 768 px: một cột, omnibox sticky, dropdown full-width.
-- a11y: `combobox`+`listbox`, contrast ≥ 4.5:1, `prefers-reduced-motion`, axe trong CI. Bảng JSON: keyboard vào ô, chevron `Enter`. Accent thương hiệu đã đo đạt ngưỡng ở cả hai theme (§7.0) — đổi accent phải đo lại, không ước lượng.
-- Shortcuts: `/` hoặc `Ctrl/⌘+K` · `Esc` · `↑↓ Enter Tab` · `Ctrl+Enter` tạo item · `Ctrl+S` lưu · `L` lock · `?`.
+- a11y: omnibox là `<textarea>` một dòng tự nở (advisor-dec-152) giữ role `textbox` ngầm định với `aria-controls` → `listbox` khi mở, `aria-activedescendant` cho option đang sáng, `aria-describedby` → `searchHint`, số kết quả trong một live region duy nhất, không đặt `role="combobox"` hay `aria-expanded` (advisor-dec-156, advisor-dec-157); contrast ≥ 4.5:1, `prefers-reduced-motion`, axe trong CI. Bảng JSON: keyboard vào ô, chevron `Enter`. Accent thương hiệu đã đo đạt ngưỡng ở cả hai theme (§7.0) — đổi accent phải đo lại, không ước lượng.
+- Shortcuts: `/` hoặc `Ctrl/⌘+K` · `Esc` · `↑↓ Enter Tab` · `Ctrl+Enter` tạo item · `Ctrl+S` lưu · `L` lock · `?` · `Ctrl+Z` (`⌘Z` trên Apple) = Undo toast mới nhất khi focus không nằm trong ô nhập, hoặc nằm trong ô omnibox vừa được chính lần lưu đó xoá trống mà chưa gõ thêm; trong ô nhập có nội dung phím giữ undo gốc của trình duyệt; có `Shift` (redo) → không Undo. Không thêm phím `N`.
 - i18n: `next-intl`; marketing `/(marketing)/[locale]/…`, `en` mặc định (`/` = en, `/vi/...`); app `/app/*` không gắn locale trên URL — `user.locale` ← cookie `sabk_locale` đã validate ← `Accept-Language` ← `en`. Cookie `sabk_locale` / `sabk_theme` path `/`, HttpOnly=false, không secret; chỉ cache render, không là nguồn quyền. Messages `en.json` / `vi.json`; CI fail thiếu key.
 
 ---
@@ -1374,6 +1482,23 @@ CREATE TABLE email_verification (
   consumed_at            timestamptz,
   created_at             timestamptz NOT NULL DEFAULT now()
 );
+
+-- P04 (ADR 0006, migration 0007): token đặt lại mật khẩu tài khoản (hash-only, TTL 30m, gắn trạng thái password_hash và trạng thái unverified hiện tại).
+CREATE TABLE password_reset_token (
+  id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id              uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  target_email         citext NOT NULL,
+  token_hash           bytea NOT NULL UNIQUE CHECK (octet_length(token_hash) = 32),
+  password_hash_sha256 bytea NOT NULL CHECK (octet_length(password_hash_sha256) = 32),
+  was_email_unverified boolean NOT NULL DEFAULT false,
+  expires_at           timestamptz NOT NULL,
+  consumed_at          timestamptz,
+  created_at           timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX password_reset_token_pending_idx
+  ON password_reset_token (user_id) WHERE consumed_at IS NULL;
+CREATE INDEX password_reset_token_expires_idx
+  ON password_reset_token (expires_at);
 
 CREATE TABLE oauth_transaction (
   id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1474,24 +1599,29 @@ CREATE TABLE webauthn_challenge (
 CREATE INDEX webauthn_challenge_expires_idx ON webauthn_challenge (expires_at);
 
 CREATE TABLE item (
-  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- client có thể gửi id (quick-add, §9.2)
   user_id          uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
   name             text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 200),
   name_normalized  text NOT NULL CHECK (char_length(name_normalized) BETWEEN 1 AND 200),
   name_unaccent    text GENERATED ALWAYS AS (immutable_unaccent(name_normalized)) STORED,
   hint             text CHECK (hint IS NULL OR char_length(hint) <= 120),
-  entry_count      int  NOT NULL DEFAULT 0,
+  entry_count      int  NOT NULL DEFAULT 0,      -- số entry sống
+  version          int  NOT NULL DEFAULT 1,      -- P04: tăng khi name/hint đổi (If-Match)
   last_used_at     timestamptz NOT NULL DEFAULT now(),
   created_at       timestamptz NOT NULL DEFAULT now(),
   updated_at       timestamptz NOT NULL DEFAULT now(),
   deleted_at       timestamptz,
-  UNIQUE (user_id, id) -- FK embedding xác minh tenant của item
+  delete_batch     uuid,                         -- P04: lô xoá item (provenance restore)
+  UNIQUE (user_id, id) -- FK embedding và FK entry xác minh tenant của item
 );
 CREATE INDEX item_user_name_prefix ON item (user_id, name_normalized text_pattern_ops)
   WHERE deleted_at IS NULL;
 CREATE INDEX item_name_trgm ON item USING gin (name_unaccent gin_trgm_ops);
 CREATE INDEX item_user_recent ON item (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX item_user_created ON item (user_id, created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX item_user_name_exact ON item (user_id, name_normalized, created_at, id)
+  WHERE deleted_at IS NULL;                      -- P04: exact lookup quick-add
+CREATE INDEX item_purge_idx ON item (deleted_at) WHERE deleted_at IS NOT NULL;
 
 CREATE TABLE tag (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1499,7 +1629,7 @@ CREATE TABLE tag (
   display       text NOT NULL CHECK (char_length(display) BETWEEN 1 AND 50),
   normalized    text NOT NULL CHECK (char_length(normalized) BETWEEN 1 AND 50),
   tag_unaccent  text GENERATED ALWAYS AS (immutable_unaccent(normalized)) STORED,
-  item_count    int  NOT NULL DEFAULT 0,
+  item_count    int  NOT NULL DEFAULT 0, -- số item sống gắn tag, kể cả khi tag đã soft-delete
   last_used_at  timestamptz NOT NULL DEFAULT now(),
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
@@ -1511,30 +1641,38 @@ CREATE INDEX tag_user_norm_prefix ON tag (user_id, normalized text_pattern_ops)
   WHERE deleted_at IS NULL;
 CREATE INDEX tag_norm_trgm ON tag USING gin (tag_unaccent gin_trgm_ops);
 CREATE INDEX tag_user_recent ON tag (user_id, last_used_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX tag_purge_idx ON tag (deleted_at) WHERE deleted_at IS NOT NULL; -- P04
 
-CREATE TABLE item_tag (
+CREATE TABLE item_tag ( -- không có user_id: handler luôn join qua item.user_id và tag.user_id
   item_id    uuid NOT NULL REFERENCES item(id) ON DELETE CASCADE,
   tag_id     uuid NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
   created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (item_id, tag_id)
+  PRIMARY KEY (item_id, tag_id) -- giữ nguyên khi item/tag soft-delete; chỉ purge mới xoá
 );
 CREATE INDEX item_tag_tag_idx ON item_tag (tag_id, item_id);
 
 CREATE TABLE entry (
   id                   uuid PRIMARY KEY, -- UUID v4 do client sinh trước encrypt; không server default
   user_id              uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
-  item_id              uuid NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  item_id              uuid NOT NULL,
   type                 text NOT NULL CHECK (type IN ('text','json','link','file','image')),
   position             int  NOT NULL DEFAULT 0,
   envelope             jsonb NOT NULL,
-  ciphertext           bytea NOT NULL CHECK (octet_length(ciphertext) <= 263168),
-  plaintext_len_bucket int  NOT NULL CHECK (plaintext_len_bucket <= 262144),
+  ciphertext           bytea NOT NULL CHECK (octet_length(ciphertext) BETWEEN 17 AND 263168),
+  plaintext_len_bucket int  NOT NULL CHECK (plaintext_len_bucket BETWEEN 256 AND 262144
+                                            AND plaintext_len_bucket % 256 = 0),
+  version              int  NOT NULL DEFAULT 1, -- P04: chỉ tăng khi body đổi (PUT)
   created_at           timestamptz NOT NULL DEFAULT now(),
-  updated_at           timestamptz NOT NULL DEFAULT now(),
-  deleted_at           timestamptz
+  updated_at           timestamptz NOT NULL DEFAULT now(), -- đổi trên mọi thay đổi, clock_timestamp()
+  deleted_at           timestamptz,
+  deleted_via          text CHECK (deleted_via IN ('entry','item')), -- P04: provenance xoá
+  delete_batch         uuid,                                         -- P04: = item.delete_batch khi xoá theo item
+  CHECK ((deleted_at IS NULL) = (deleted_via IS NULL)),
+  FOREIGN KEY (user_id, item_id) REFERENCES item(user_id, id) ON DELETE CASCADE -- P04: thay FK đơn item_id
 );
-CREATE INDEX entry_item_pos_idx ON entry (item_id, position) WHERE deleted_at IS NULL;
+CREATE INDEX entry_item_live_pos_idx ON entry (item_id, position, id) WHERE deleted_at IS NULL; -- P04: thay entry_item_pos_idx
 CREATE INDEX entry_user_updated_idx ON entry (user_id, updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX entry_user_changes_idx ON entry (user_id, updated_at, id); -- P04: feed, gồm tombstone
 CREATE INDEX entry_purge_idx ON entry (deleted_at) WHERE deleted_at IS NOT NULL;
 
 CREATE TABLE item_embedding (
@@ -1641,16 +1779,19 @@ CREATE INDEX rate_event_at_idx ON rate_event (at);
 Ghi chú:
 
 - **Nguyên tắc bí mật trên DB:** Server không bao giờ nhận hoặc lưu passphrase (ở bất kỳ dạng nào), KEK, VK, plaintext RK, PWK hay private key chưa wrap; các cột `vault_key_wrapped_by_kek`, `private_keys_wrapped`, `vault_recovery_key.wrap` và `vault_passkey.vk_wrap` chỉ chứa các bản wrap AEAD opaque có byte đầu `version = 0x01`, còn `vault_recovery_key.lookup_hash` và `webauthn_challenge.challenge_hash` chỉ chứa giá trị băm một chiều (xem [ADR 0002](adr/0002-vault-crypto-layout.md), [ADR 0003](adr/0003-webauthn-prf-va-devkey.md)).
-- `entry_count` / `item_count`: trigger hoặc cập nhật trong cùng tx API. Trần 200 entry / 20 tag enforce ở API (`409 ITEM_ENTRY_LIMIT` / `ITEM_TAG_LIMIT`).
+- `entry_count` / `item_count`: cập nhật trong cùng transaction API, dưới khoá nội dung theo user (§9.1). `entry_count` = số entry **sống** của item. `tag.item_count` = số item **sống** gắn tag qua `item_tag`, **bất kể tag đang sống hay đã soft-delete**: xoá/restore item cập nhật counter của mọi tag gắn với item (kể cả tag đã xoá), nên restore tag không phải tính lại. Số tag sống của một item (trần 20) không có cột counter: đếm `item_tag ⨝ tag WHERE tag.deleted_at IS NULL` dưới khoá. Trần 200 entry / 20 tag enforce ở API (`409 item_entry_limit` / `409 item_tag_limit`).
+- `position` của entry mới = `max(position) + 1` tính trên **mọi** hàng của item kể cả tombstone, nên entry restore (giữ `position` cũ) không trùng vị trí; thứ tự hiển thị luôn `(position, id)`.
+- `entry.updated_at` đổi trên **mọi** thay đổi (tạo, sửa body, reorder, xoá, restore) bằng `clock_timestamp()` để feed `/entries/changes` thấy; `entry.version` chỉ tăng khi body đổi (`PUT`). `item.version` tăng khi `name`/`hint` đổi; gán/gỡ tag không tăng.
 - `last_used_at`: khi tạo entry, mở item, gán tag; throttle 5 phút.
-- `entry.user_id` phải khớp `item.user_id` (check trong API hoặc constraint trigger).
-- Entry ID do client sinh trước encrypt, UUID canonical trong AAD; API không bỏ qua hay thay ID. Duplicate ID khác request trả `409 ENTRY_ID_CONFLICT`; retry idempotent trả response gốc. Envelope validate strict trước khi lưu `jsonb`, JCS theo §5.5.
+- `entry.user_id` phải khớp `item.user_id`: kiểm trong handler (query luôn kèm `user_id`) **và** bằng FK composite `(user_id, item_id) → item(user_id, id)` (dựa trên `UNIQUE (user_id, id)`), thay FK đơn `item_id`. `item_tag` không có `user_id`; handler join qua `item.user_id` và `tag.user_id`, assign kiểm cả hai cùng user dưới khoá.
+- Provenance xoá: `entry.deleted_via` (`entry` = xoá riêng, `item` = xoá theo item) và `delete_batch` (bằng `item.delete_batch` của lần xoá item); CHECK `(deleted_at IS NULL) = (deleted_via IS NULL)`. Restore item chỉ khôi phục entry `deleted_via='item' AND delete_batch = item.delete_batch` ([ADR 0005](adr/0005-content-lossless-va-concurrency.md)).
+- Entry ID do client sinh trước encrypt, UUID canonical trong AAD; API không bỏ qua hay thay ID. Duplicate ID (của user này hoặc user khác, sống hay đã xoá) khác request trả `409 entry_id_conflict` (không lộ chủ sở hữu); retry idempotent trả response gốc. Envelope validate strict trước khi lưu `jsonb`, JCS theo §5.5.
 - Hai bảng embedding là **một generation/model/revision duy nhất**; 16 hash partitions là cấu hình khởi đầu, điều chỉnh bằng migration/benchmark. PK `(user_id, target_id)` phục vụ tenant lookup/exact scan; composite FK chặn gắn vector sai tenant. Shadow tables giữ cùng cấu trúc với index riêng; không dùng PK `(target_id, model)` để chứa nhiều không gian vector trong một HNSW.
 - River job args/unique key chứa `generation_id` và tenant; hai job cho generation active/pending không được deduplicate thành một. Cấu hình generation, active pointer và tập generation nhận mutation được quản lý nhất quán theo §6.6; worker không suy generation từ env đã đổi giữa lúc claim và commit.
 +- **Quy ước tăng `vault.version`, `vault_key_id` và tham số `vault.kdf` khi rewrap/recover:** `vault.version` là revision concurrency của live vault: các thao tác **rewrap** (`PUT /vault/kek`), **recover** (`POST /vault/recover/complete`), **regenerate RK** (`POST /vault/recovery-keys/regenerate`) và **rotate RK** (`POST /vault/recovery-keys/rotate`) làm tăng `vault.version`; ngược lại, các thao tác **passkey register** (`POST /vault/passkeys`), **passkey rename** (`PATCH /vault/passkeys/{id}`) và **passkey revoke** (`DELETE /vault/passkeys/{id}`) **không** làm tăng `vault.version` (vì không ảnh hưởng các bản wrap khác). `PUT /vault/kek` không làm thay đổi passkeys, recovery keys (RK) hay `vault_key_id`. Không dùng `vault.version` một mình làm điều kiện xoá `DevKey`: rewrap/recover/regenerate/rotate không đổi `VK`, chỉ đối chiếu `(user_id, vault_key_id)` mới quyết định wrap thiết bị trong IndexedDB `sabk.device` còn phù hợp ([ADR 0003](adr/0003-webauthn-prf-va-devkey.md)). Về `vault.kdf` (làm rõ `advisor-dec-004` đã được chủ repo xác nhận cùng lô ký duyệt 2026-10-29 (decisions batch-1, plan mục 5), không phải điểm lệch thứ 5): tạo vault mới (`POST /vault`) luôn dùng mức cơ sở `{ops: 3, mem: 67108864 (64 MiB), parallelism: 1}`; khi rewrap/recover, client P03 tái sử dụng nguyên vẹn `(ops, mem, parallelism)` hợp lệ hiện tại của `vault.kdf` với `salt` 16 B mới (không bao giờ hạ, P03 không nâng và không có UI nâng), còn server từ chối mọi rewrap/recover có `ops` hoặc `mem` thấp hơn `vault.kdf` hiện tại và chấp nhận bằng hoặc cao hơn trong ngưỡng `3…10` / `64…256 MiB` (thoả mãn đồng thời hai câu trong plan mục 2.1: *"không hạ ops/mem so với kdf hiện tại"* và *"P03 luôn tạo và rewrap ở mức tối thiểu"*).
 - MVP API chỉ chấp `type` ∈ {`text`,`json`}; `link`/`file`/`image` giữ CHECK cho migration sau.
 - Không RLS ở MVP; P07 cân nhắc `SET LOCAL app.user_id`.
-- Purge: `DELETE FROM entry WHERE deleted_at < now() - interval '30 days'`.
+- Purge (job River `content_purge`, mỗi giờ, lô 500, P04): entry `deleted_at < cutoff`; item `deleted_at < cutoff` (cascade entry, `item_tag`); tag `deleted_at < cutoff` (cascade `item_tag`, item sống còn nguyên); `cutoff = now − 30 days` do job truyền vào SQL. Mỗi lô lấy khoá nội dung của user tương ứng; idempotent, không đụng hàng sống. Feed thay đổi từ chối `since` cũ hơn 29 ngày (`410 changes_window_expired`) để client không dựa vào tombstone đã purge.
 - `vault_recovery_key`: lưu `slot` (`1…10`, `UNIQUE (vault_id, slot)`) và `lookup_hash` (`UNIQUE` toàn cục); **không** có cột `used_at` và không có partial index theo `used_at`. Khi consume RK trong `POST /vault/recover/complete`, server **DELETE** hàng RK đó trong cùng transaction; mọi hàng hiện có trong bảng đều là RK chưa dùng (tối đa 10 hàng / vault).
 - `vault_passkey` & `webauthn_challenge`: `vault_passkey.pubkey` lưu từ MVP (để P07 mở rộng login-with-passkey), tự trích xuất cùng `cred_id` và `aaguid` từ `attestation_object` đã verify ở server (bỏ qua nếu client tự gửi các trường này); unlock MVP chỉ cần `cred_id` + `prf_salt` + `vk_wrap`. Bảng `webauthn_challenge` chỉ dùng cho đăng ký passkey (`POST /vault/passkeys/register/options` → `POST /vault/passkeys`), chỉ lưu `challenge_hash = SHA-256(challenge)` gắn với `user_id`, `session_id`, `vault_key_id` và `prf_salt` (TTL 5 phút, dùng một lần); bước mở khoá (`POST /vault/unlock/passkey/options`) không lưu challenge vào DB.
 - `idempotency_key` & `rate_event` (migration `0005_vault`): `idempotency_key` có thêm `method`, `path` (concrete path), `status` (`in_progress` \| `done`), `owner_token`, `claimed_at`, `status_code`, `expires_at` (24 giờ) và cho phép `response` nhận `NULL` (khi đang `in_progress` hoặc response không có body như `204`); index `(user_id, path)` phục vụ xoá nhanh các bản ghi idempotency khác trên `/api/v1/vault%` khi `DELETE /vault`. `rate_event` lưu sự kiện giới hạn tốc độ cửa sổ trượt theo `(scope, user_id, at)` trên PostgreSQL (kết hợp `pg_advisory_xact_lock` theo `(scope, user_id)`).
@@ -1672,9 +1813,12 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 - Client xử lý access cookie bị browser xoá bằng phục hồi có điều kiện: route cần session nhận `unauthenticated` và có CSRF cookie loại session mới được thử refresh trong Web Lock, sau khi đọc lại Me. Cookie CSRF chỉ là dấu hiệu điều phối phía client; API refresh vẫn kiểm proof/session đầy đủ. Lỗi mạng/5xx không được coi là logout hoặc tự retry refresh.
 +- **Re-auth tài khoản và ngữ nghĩa grant:** `POST /auth/reauth` bằng password đăng nhập hoặc OAuth flow kiểm tra lại danh tính; server phát grant HMAC stateless (`auth.Grants`), TTL 5 phút, gắn `user_id + session_id + action`, gửi trong `X-Reauth-Token`. Không dùng encryption passphrase hoặc chỉ trạng thái "vault unlocked" làm re-auth. Grant **không** có trạng thái đã dùng trên server: trong cửa sổ TTL 5 phút, một grant cho phép nhiều mutation cùng `action` (các mutation có `If-Match` không lặp lại ngầm được vì `version` đổi sau lần đầu; riêng đăng ký và thu hồi passkey không có `If-Match` nên một grant có thể thực hiện nhiều thao tác passkey cùng action trong TTL — điểm lệch gate 1, **đã được chủ repo ký duyệt 2026-10-29 (decisions batch-1, plan mục 5)**, xem [ADR 0002](adr/0002-vault-crypto-layout.md), [ADR 0003](adr/0003-webauthn-prf-va-devkey.md), [docs/threat-model.md](threat-model.md)). Trong mọi luồng giữ secret (đổi passphrase, recovery, regenerate, rotate, reset, đăng ký/thu hồi passkey), client lấy grant **khi bắt đầu luồng** (trước khi thu thập secret mới vào Worker hoặc gọi `navigator.credentials`; nếu OAuth re-auth chuyển trang toàn bộ làm huỷ Worker cũ thì khi quay lại kèm grant, luồng nào cần `VK` bắt buộc khởi tạo lại Worker mới và mở khoá lại vault trước khi thu thập secret mới hay gọi WebAuthn — tuyệt đối không lưu `VK` qua điều hướng). Trước khi gửi request cuối **lần đầu tiên**, client kiểm tra grant còn hạn ít nhất 60 giây (nếu dưới 60 giây trước lần gửi đầu: user có password re-auth tại chỗ, user OAuth-only báo hết thời gian và bắt đầu lại; nếu request đã được gửi đi nhưng mất phản hồi mạng thì client ưu tiên replay lại đúng request với cùng `Idempotency-Key` và cùng byte body trước mà không áp quy tắc bắt đầu lại của kiểm tra 60 giây). Server kiểm tra grant + session chưa revoke + CSRF cho rewrap (`vault.rewrap`), recover (`vault.recover`), regenerate RK (`vault.recovery_keys_regenerate`), rotate RK (`vault.recovery_keys_rotate`), register passkey (`vault.passkey_register`), revoke passkey (`vault.passkey_revoke`), export decrypted, reset (`vault.reset`) và xoá tài khoản. Audit mutation; rewrap/recover/rotate/reset/passkey register tạo thông báo trong app và email nếu có địa chỉ verified (passkey revoke tạo audit + thông báo trong app), không đưa bí mật vào thông báo. `AUTH_REQUIRE_EMAIL_VERIFICATION=false` không bị biến thành điều kiện phải verify để recovery; không có email verified thì vẫn có in-app notice/audit.
 - OAuth-only đặt password lần đầu: `POST /auth/password/enroll/send` + `POST /me/password` với `enrollment_token`, **hoặc** grant `account.password_change`. Hai proof loại trừ. Password đã có luôn cần grant. Enrollment không phải reset và không mở vault.
-- `GET /auth/config` trả provider public, cờ verification, CAPTCHA site key. `GET /auth/me` cùng shape `Me` với signup/login/settings/password (gồm `features.semantic_available`, `vault.status`: `absent` \| `present`).
-- **Concurrency (`If-Match`) và `GET /vault` không ETag:** `GET /vault` trả `vault_key_id` và `version` trong body kèm `Cache-Control: no-store, no-transform`, **không** có header `ETag` (vì danh sách `passkeys` trong body thay đổi mà không tăng `vault.version`). Mọi mutation trên vault (trừ `POST /vault`, `POST /vault/unlock/*` và các route passkey) bắt buộc gửi **`If-Match: "<vault_key_id>:<version>"`** (strong tag đặt trong ngoặc kép, thay cho `If-Match: version`). Parser chung (`httpx/ifmatch.go`) chỉ nhận đúng một strong tag `"…"` (thiếu header, `*`, weak tag `W/"…"` hoặc danh sách → `428 precondition_required`; P04 dùng lại parser này với `updated_at` của entry). Handler vault tách chuỗi ở dấu `:` **cuối cùng**: phần trước khớp `^vk:[A-Za-z0-9_-]{22}$`, phần sau là số thập phân không có số `0` đứng đầu (sai dạng → `428 precondition_required`). Server khoá hàng `vault` (`SELECT … FOR UPDATE`) rồi mới so: chưa có hàng vault → `404 vault_absent` (ưu tiên hơn `412`); lệch `vault_key_id` hoặc `version` → `412 version_mismatch` kèm `current_version` trong problem extension.
-- **Idempotency và thứ tự middleware 8 bước:** Header `Idempotency-Key` (chuỗi 16–128 ký tự `[A-Za-z0-9_-]`, giữ 24 giờ) bắt buộc cho `POST /vault`, **`PUT /vault/kek`**, **`DELETE /vault`**, `POST /vault/passkeys`, `POST /vault/recover/complete`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate`, `POST /items`, `POST /tags`, `POST /items/{id}/entries`, `POST /items/{id}/entries/import-json`.
+- Đặt lại mật khẩu tài khoản khi quên ([ADR 0006](adr/0006-account-password-reset.md), `advisor-dec-140`, `advisor-dec-146`): `POST /auth/password/forgot` (`{email, captcha_token?, locale?}` → `202` qua một ranh giới bất đồng bộ duy nhất chống dò tài khoản, hoặc `503 mail_delivery_unavailable` đồng nhất trước khi tra DB khi `mail_delivery_available == false`) và `POST /auth/password/reset` (`{token, new_password}` với DTO nhận biết sự hiện diện của trường và `token` 43 ký tự base64url → `204`, xoá cookie bằng `ClearAuthCookies`, không tự đăng nhập, thu hồi mọi session/refresh token ngay dưới khoá user, ghi `auth.password.reset` + gửi notice mail chuyên biệt `password_reset_notice` theo `user.locale`; nếu gặp SQLSTATE `40P01`/`55P03` thì rollback và retry 1 lần, nếu vẫn lỗi trả `503 dependency_unavailable` kèm `Retry-After: 1`). Token 32 B CSPRNG trong fragment `#token=` (chỉ tồn tại trong RAM của worker lúc gửi và trong component state của trình duyệt), DB chỉ lưu `SHA-256(token)` + `SHA-256(password_hash)` + bản chụp bắt buộc `was_email_unverified` (TTL 30 phút, dùng một lần, tuần tự hoá phát hành/tiêu thụ/password `Login`/`oauth.Service.Complete`/đổi mật khẩu/đổi email/gỡ identity dưới khoá gốc `app_user FOR UPDATE`). Liên kết OAuth mới bị từ chối với `403 email_not_verified` khi email tài khoản chưa xác minh; đặt lại mật khẩu của tài khoản có `was_email_unverified || email_verified_at IS NULL` đồng thời xác minh email, huỷ mọi giao dịch OAuth `login` `ready` của các danh tính bị gỡ cùng các giao dịch `link`/`reauth`, và gỡ mọi OAuth identity trong cùng transaction (D3, E1 A). Tài khoản OAuth-only không sinh token reset (chỉ gửi mail nhắc dùng US1b). Không đụng trạng thái vault, passkeys hay `DevKey` (`user-dec-016`).
+- `GET /auth/config` trả provider public, cờ verification, CAPTCHA site key và `mail_delivery_available` (boolean). `GET /auth/me` cùng shape `Me` với signup/login/settings/password (gồm `features.semantic_available`, `vault.status`: `absent` \| `present`).
+- **Concurrency (`If-Match`) và `GET /vault` không ETag:** `GET /vault` trả `vault_key_id` và `version` trong body kèm `Cache-Control: no-store, no-transform`, **không** có header `ETag` (vì danh sách `passkeys` trong body thay đổi mà không tăng `vault.version`). Mọi mutation trên vault (trừ `POST /vault`, `POST /vault/unlock/*` và các route passkey) bắt buộc gửi **`If-Match: "<vault_key_id>:<version>"`** (strong tag đặt trong ngoặc kép, thay cho `If-Match: version`). Parser chung (`httpx/ifmatch.go`) chỉ nhận đúng một strong tag `"…"` (thiếu header, `*`, weak tag `W/"…"` hoặc danh sách → `428 precondition_required`; P04 dùng lại phần chung `RequireIfMatch`/`ParseStrongETag` với parser version riêng, xem bullet kế). Handler vault tách chuỗi ở dấu `:` **cuối cùng**: phần trước khớp `^vk:[A-Za-z0-9_-]{22}$`, phần sau là số thập phân không có số `0` đứng đầu (sai dạng → `428 precondition_required`). Server khoá hàng `vault` (`SELECT … FOR UPDATE`) rồi mới so: chưa có hàng vault → `404 vault_absent` (ưu tiên hơn `412`); lệch `vault_key_id` hoặc `version` → `412 version_mismatch` kèm `current_version` trong problem extension.
+- **Concurrency content (P04, [ADR 0005](adr/0005-content-lossless-va-concurrency.md)):** `PUT /entries/{id}` và `PATCH /items/{id}` bắt buộc **`If-Match: "<version>"`** (strong tag, số thập phân không có số `0` đứng đầu) với `version` trả trong mọi response entry/item — thay cho `If-Match: updated_at` (timestamp không phải validator đáng tin: độ chính xác serialize, hai thay đổi cùng micro-giây, reorder đổi `updated_at`). Parser riêng `httpx.ParseVersionIfMatch`, không dùng pattern vault; thiếu, `*`, weak, danh sách hoặc sai dạng → `428 precondition_required`. Handler khoá hàng (`SELECT … FOR UPDATE`) rồi mới so: không tồn tại/không thuộc user/đã xoá → `404 not_found` (ưu tiên hơn `412`); lệch → `412 version_mismatch` kèm `current_version`; thành công → `version + 1`. Không có last-write-wins cho body.
+- **Idempotency và thứ tự middleware 8 bước:** Header `Idempotency-Key` (chuỗi 16–128 ký tự `[A-Za-z0-9_-]`, giữ 24 giờ) bắt buộc cho `POST /vault`, **`PUT /vault/kek`**, **`DELETE /vault`**, `POST /vault/passkeys`, `POST /vault/recover/complete`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate` và **mọi** mutation content của P04: `POST /items`, `PATCH /items/{id}`, `DELETE /items/{id}`, `POST /items/{id}/restore`, `POST /items/{id}/tags`, `DELETE /items/{id}/tags/{tag_id}`, `PATCH /items/{id}/entries/reorder`, `POST /items/{id}/entries`, `POST /items/{id}/entries/import-json`, `PUT /entries/{id}`, `DELETE /entries/{id}`, `POST /entries/{id}/restore`, `POST /tags`, `PATCH /tags/{id}`, `DELETE /tags/{id}`, `POST /tags/{id}/restore` (retry `PUT` mất response không tự gây `412`; delete/restore/reorder/assign retry trả đúng response gốc; client chỉ có một helper).
+  - **Trần body content trước bước 2 (P04):** route entry ≤ 400 KiB (`413 entry_too_large`, kể cả request > 512 KiB), route item/tag ≤ 16 KiB (`413 invalid_request`); chặn bằng `IdempotencyRouteConfig.BodyLimit{Bytes, Code}` chạy sau `RequireJSONContent` và **trước** idempotency lookup: đọc trước tối đa `Bytes + 1` byte bất kể có `Content-Length` hay không, vượt → trả ngay, không claim, không ghi; không vượt → trả lại đúng các byte đã đọc vào `r.Body`. Lỗi đọc thường giữ `400 invalid_request`.
   - **Fingerprint:** `SHA-256(method ‖ 0x00 ‖ path ‖ 0x00 ‖ body_bytes)`, trong đó `path` là **concrete path** đúng như server nhận (percent-encoded, không decode, không kèm query string), không dùng route pattern.
   - **Thứ tự middleware** cho route có idempotency:
     1. `RequireOrigin` → `RequireSession` → `RequireCSRF` → `RequireJSONContent` (bỏ qua với `DELETE` không có body).
@@ -1687,36 +1831,41 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
     8. **Release:** chỉ khi biết chắc transaction mutation chưa commit (lỗi trước `COMMIT` hoặc rollback thành công) mới `DELETE FROM idempotency_key WHERE user_id=$u AND key=$k AND owner_token=$tok AND status='in_progress'`; lỗi ngay lúc `COMMIT` thì giữ nguyên hàng; lỗi sau `COMMIT` không đụng tới hàng `done`.
   - **Quy tắc retry idempotent ở phía Client:** Retry của mutation đã commit yêu cầu `Session` + `CSRF` hợp lệ nhưng **không cần grant re-auth còn hạn (khi grant đã hết hạn)**; mutation không bao giờ chạy hai lần. Client sinh UUID v4 `Idempotency-Key` **một lần cho mỗi ý định thao tác của người dùng** và giữ cố định cả `Idempotency-Key` lẫn **mảng byte JSON body nguyên bản** (gồm bản wrap với nonce 24 B và `kdf.salt` đã sinh) cho đến khi nhận `2xx` hoặc lỗi `4xx` xác định. Khi gặp lỗi mạng/timeout hoặc sau khi chờ **1 giây** theo `Retry-After: 1` (hoặc backoff cố định 1 giây) của mã `409 idempotency_in_progress`, client gửi lại **đúng `Idempotency-Key` và đúng từng byte body cũ** kèm lại header `X-Reauth-Token` ban đầu (kể cả khi token đó đã hết hạn, để thoả mãn schema header trong khi bước 2 trả về response `done` trước khi bước 3 kiểm tra grant); tuyệt đối **không** chạy lại Worker `seal`/KDF sinh nonce hoặc salt mới dưới cùng một `Idempotency-Key`. Mỗi thao tác mới (hoặc chuẩn bị lại sau `412 version_mismatch`) phải dùng một `Idempotency-Key` mới; nếu gặp `409 idempotency_conflict` hoặc vừa reload trang làm mất trạng thái trong RAM, client gọi `GET /vault` (hoặc `GET /vault/recovery-keys`, `GET /vault/passkeys`) để đối chiếu `version`/`kdf.salt` trước khi khởi tạo thao tác mới. Khi `DELETE /vault`, server xoá các bản ghi idempotency khác của user trên `/api/v1/vault%` trong cùng transaction (`key <> $k`).
 - **Rate limit:**
-  - P02 (cửa sổ cố định 60 giây, in-memory có TTL/cap): Auth credential 5/phút/IP (signup, login, refresh, OAuth start/link/reauth start, re-auth, confirm token; GET me/config/csrf/lists và logout không tiêu quota này); OAuth callback + complete 20/phút/IP; gửi verification/enrollment 3/giờ/user và 1/phút/user.
+  - P02 (cửa sổ cố định 60 giây, in-memory có TTL/cap): Auth credential 5/phút/IP (signup, login, refresh, OAuth start/link/reauth start, re-auth, confirm token, password forgot/reset; GET me/config/csrf/lists và logout không tiêu quota này); OAuth callback + complete 20/phút/IP; gửi verification/enrollment 3/giờ/user và 1/phút/user; gửi password forgot 3/giờ/email và 1/phút/email (theo HMAC email chuẩn hoá, áp cho mọi email hợp lệ cú pháp trước khi tra cứu DB).
   - P03 (cửa sổ **trượt** theo `user_id` trên bảng PostgreSQL `rate_event(scope, user_id, at)` có `pg_advisory_xact_lock` theo `(scope, user_id)`, đặt sau idempotency replay và sau re-auth; request bị chặn trả `429 rate_limited` + `Retry-After` và không ghi thêm event; body không tiết lộ số RK còn lại hay passphrase đúng/sai một phần):
     - `vault_recovery_lookup` (`POST /vault/unlock/recovery`): **5 yêu cầu / 15 phút / user** (đếm **mọi** request, kể cả lần tra cứu trúng).
     - `vault_recovery_complete` (`POST /vault/recover/complete`): **5 yêu cầu / 15 phút / user** (bucket riêng, tách khỏi lookup để lần lookup trúng không làm cạn quota hoàn tất).
     - `vault_passkey_options` (`POST /vault/unlock/passkey/options`, `POST /vault/passkeys/register/options`): **20 yêu cầu / phút / user** (dùng chung một bucket).
     - `vault_sensitive` (`PUT /vault/kek`, `DELETE /vault`, `POST /vault/recovery-keys/regenerate`, `POST /vault/recovery-keys/rotate`, `POST /vault/passkeys`, `PATCH /vault/passkeys/{id}`, `DELETE /vault/passkeys/{id}`): **10 yêu cầu / phút / user**.
     - Mở khoá bằng passphrase diễn ra hoàn toàn offline trong Web Worker sau khi tải `GET /vault` nên **không có rate limit server thực sự** (`GET /vault` chỉ chịu read limit chung, không áp mức 5/15 phút để tránh khoá người dùng khi reload trang; phạm vi P03-B8 chỉ gồm recovery và passkey options kèm yêu cầu threat model nêu rõ rủi ro dò offline kể cả lộ độ dài ciphertext và passphrase ≥ 12 ký tự, `zxcvbn ≥ 3` — điểm lệch gate 2, **đã được chủ repo ký duyệt 2026-10-29 (decisions batch-1, plan mục 5)**, xem [ADR 0002](adr/0002-vault-crypto-layout.md)).
-  - Phase khác: suggest 20 rps burst 40; write chung 10 rps; export 3/giờ.
+  - P04 `content_write` (mọi mutation `/items*`, `/tags*`, `/entries*`): **10 request / 1 giây / user**, cùng cơ chế cửa sổ trượt `rate_event` của P03 (đây là "write chung 10 rps"); replay idempotent và request bị từ chối trước bước 4 không bị đếm; vượt → `429 rate_limited` + `Retry-After`, retry cùng key sau đó chạy đúng một lần.
+  - Phase khác: suggest 20 rps burst 40; export 3/giờ.
+- **Khoá nội dung theo user và thứ tự khoá (P04):** mọi transaction ghi content, reset hook và job purge lấy `pg_advisory_xact_lock(hashtext('engram.content'), hashtext(user_id::text))` nên chỉ một transaction ghi content của user chạy tại một thời điểm (trần 20/200, counter, upsert tag, restore, reorder không đua). Thứ tự khoá toàn cục, không ngoại lệ: (1) `vault` — `FOR SHARE` cho route ghi ciphertext mới (tạo, import, `PUT` entry: so `envelope.key_id` với `vault_key_id`, lệch → `409 entry_key_mismatch`, chưa có vault → `404 vault_absent`), `FOR UPDATE` cho reset; (2) khoá nội dung theo user; (3) hàng `item` theo `id` tăng dần; (4) hàng `tag` theo `id` tăng dần; (5) hàng `entry`. Không transaction nào lấy khoá vault sau bước (2). Deadlock (`40P01`) và lock timeout (`55P03`) map `503 dependency_unavailable` + `Retry-After: 1`; claim được release nên retry cùng key chạy lại.
 - **Lỗi (RFC 9457 `application/problem+json`):** Code `snake_case`; catalog Go + TS + OpenAPI cập nhật trong cùng thay đổi. `429` có header `Retry-After` và body `retry_after`. CAPTCHA: extension `captcha_required`. Các mã lỗi bổ sung ở P03:
   - Vault & Concurrency/Idempotency: `vault_exists` (`409`, `POST /vault` khi đã có vault), `vault_absent` (`404`, route vault khi chưa có vault, kể cả mutation có `If-Match`), `vault_kdf_invalid` (`400`, KDF params sai quy cách, hạ `ops`/`mem` hoặc dùng lại `salt` khi rewrap/recover), `vault_wrap_invalid` (`400`, wrap sai độ dài, sai byte `version` hoặc base64url hỏng), `vault_mutations_disabled` (`503`, khi công tắc `VAULT_KEY_MUTATIONS_DISABLED` bật), `precondition_required` (`428`, thiếu `If-Match` hợp lệ), `version_mismatch` (`412`, `If-Match` lệch `vault_key_id` hoặc `version`, kèm `current_version`), `idempotency_conflict` (`409`, cùng key nhưng fingerprint khác), `idempotency_in_progress` (`409`, cùng key đang chạy, kèm `Retry-After: 1`), `email_not_verified` (`403`, dùng lại từ P02 khi `POST /vault` lúc `AUTH_REQUIRE_EMAIL_VERIFICATION` bật).
   - Recovery key: `recovery_keys_count` (`400`, số RK khác 10 khi create/rotate hoặc vượt số slot trống khi regenerate), `recovery_key_slot_taken` (`409`, regenerate ghi vào slot đang có key hoặc ngoài `1…10`), `recovery_key_invalid` (`401`, chung cho RK không tồn tại, đã dùng hoặc của vault khác), `recovery_key_conflict` (`409`, trùng `lookup_hash` ở create/regenerate/rotate).
+  - P04 content (thêm cuối catalog, thứ tự cố định): `name_invalid` (`400`, name hoặc `q`/`name` của list/lookup rỗng sau chuẩn hoá, quá 200 rune, ký tự cấm), `hint_invalid` (`400`), `tag_display_invalid` (`400`), `item_id_conflict` (`409`), `item_deleted` (`409`, restore entry khi item đã xoá), `item_tag_limit` (`409`), `item_entry_limit` (`409`), `tag_conflict` (`409`), `entry_invalid` (`400`, type/envelope/base64url/bucket/ID sai), `entry_too_large` (`413`), `entry_id_conflict` (`409`), `entry_key_mismatch` (`409`), `entry_nonce_reused` (`400`, `PUT` dùng lại nonce đang lưu), `entry_restore_via_item` (`409`), `reorder_mismatch` (`409`), `changes_window_expired` (`410`). Dùng lại: `not_found`, `invalid_request`, `rate_limited`, `precondition_required`, `version_mismatch`, `idempotency_conflict`, `idempotency_in_progress`, `vault_absent`, `dependency_unavailable`. Status cố định trong `httpx.ContentProblemStatus`.
   - Passkey WebAuthn: `passkey_challenge_invalid` (`400`, challenge hết hạn, đã dùng, sai session, sai `vault_key_id` hoặc `prf_salt` không khớp), `passkey_attestation_invalid` (`400`, attestation/clientData/rpIdHash/origin/flags `UP`+`UV` sai), `passkey_name_invalid` (`400`, tên sau trim ngoài 1–64 rune hoặc có ký tự điều khiển / bidi override), `passkey_exists` (`409`, `cred_id` đã đăng ký), `passkey_not_found` (`404`, passkey không tồn tại / của user khác, hoặc gọi unlock options khi user chưa có passkey).
-- Pagination: cursor `?cursor=&limit=` 1..100 (mặc định 50); `{items, next_cursor}`; keyset `(created_at, id)`. ID audit/notification là decimal string.
-- Response auth và `GET /vault` đặt `Cache-Control: no-store` (`GET /vault` dùng `no-store, no-transform`). Access log chỉ method, route pattern, status, latency, request ID.
+  - Password reset ([ADR 0006](adr/0006-account-password-reset.md), thêm cuối catalog sau `changes_window_expired`): `reset_token_invalid` (`400`, chung cho chuỗi token đặt lại mật khẩu rỗng hoặc sai định dạng base64url 43 ký tự, không tồn tại, đã dùng, hết hạn 30 phút, hoặc không còn khớp email / `password_hash` hiện tại). Dùng lại: `invalid_request` (`400`, gồm thiếu trường, `null` hoặc sai kiểu JSON), `password_weak` (`400`), `csrf_invalid` (`403`), `captcha_required` (`403`), `email_not_verified` (`403`, khi liên kết OAuth mới lúc email tài khoản chưa xác minh theo D3), `rate_limited` (`429`), `mail_delivery_unavailable` (`503`), `dependency_unavailable` (`503` kèm `Retry-After: 1` khi `POST /auth/password/reset` vẫn gặp `40P01`/`55P03` sau 1 lần retry theo `advisor-dec-146` E2 B).
+- Pagination: cursor `?cursor=&limit=` 1..100 (mặc định 50); `{items, next_cursor}`; keyset `(created_at, id)`. ID audit/notification là decimal string. Content P04: cursor opaque base64url, keyset theo cột sort + `id` và gắn với tham số lọc (`sort`/`tag_id`/`q`; lệch → `400 invalid_request`); `GET /items/{id}/entries` limit 1…200 (mặc định 200, chỉ metadata); feed `limit` 1…200 (mặc định 100). Mảng bắt buộc trong response luôn là `[]` khi rỗng, không bao giờ `null`.
+- Response auth, content và `GET /vault` đặt `Cache-Control: no-store` (`GET /vault` dùng `no-store, no-transform`). Access log chỉ method, route pattern, status, latency, request ID.
 
 ### 9.2 Endpoints
 
 | Nhóm | Method & path | Mô tả |
 |------|---------------|-------|
-| Auth | `GET /auth/config` | public providers / verification / CAPTCHA site key |
+| Auth | `GET /auth/config` | public providers / verification / CAPTCHA site key / `mail_delivery_available` |
 | | `GET /auth/csrf` | 204 + cookie bootstrap |
-| | `POST /auth/signup` · `POST /auth/login` | email+password; 201/200 `Me` + cookie |
+| | `POST /auth/signup` · `POST /auth/login` | email+password; 201/200 `Me` + cookie (login khoá `app_user FOR UPDATE` và kiểm tra lại `password_hash` trong tx cấp session theo D2) |
 | | `GET /auth/oauth/{google\|github}/start` | login-only, 302 |
-| | `POST /auth/oauth/{google\|github}/link` · `/reauth` | POST + CSRF (+ grant khi link) |
+| | `POST /auth/oauth/{google\|github}/link` · `/reauth` | POST + CSRF (+ grant khi link; link yêu cầu `email_verified` → `403 email_not_verified` theo D3) |
 | | `GET /auth/oauth/{google\|github}/callback` | 303 status allowlist; không set session cookie |
-| | `POST /auth/oauth/complete` | binding + CSRF; 200 `Me` + cookie |
+| | `POST /auth/oauth/complete` | binding + CSRF; 200 `Me` + cookie (với identity đã tồn tại: khám phá chủ sở hữu không khoá rồi lấy `app_user FOR UPDATE` và kiểm tra lại ánh xạ `(provider, uid)` + flow `ready` trước khi cấp session theo `advisor-dec-146` E1 A) |
 | | `POST /auth/refresh` · `POST /auth/logout` · `GET /auth/me` | `me` gồm `settings`, `features`, `vault.status` |
 | | `POST /auth/reauth` | password hoặc receipt Google; grant theo §9.1 |
 | | `POST /auth/verify-email/send` · `/confirm` | |
 | | `POST /auth/password/enroll/send` | OAuth-only + email verified |
+| | `POST /auth/password/forgot` · `/reset` | quên/đặt lại password tài khoản ([ADR 0006](adr/0006-account-password-reset.md)); 202 / 204; không mở vault |
 | | `GET /auth/sessions` · `DELETE /auth/sessions/{id}` · `POST /auth/sessions/revoke-others` | revoke-others cần grant |
 | | `DELETE /auth/identities/{provider}` | kể cả password; không gỡ phương thức cuối |
 | | `GET /auth/audit` | `{items,next_cursor}` |
@@ -1739,26 +1888,39 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 | | `PATCH /vault/passkeys/{id}` (`vaultPasskeyRename`) | **S+C+R(`vault_sensitive`)**, owner; `{name}` (trim, 1–64 rune, không control/bidi); không tăng `vault.version`; `200 {id, name, aaguid, created_at}`; `400 passkey_name_invalid`; `404 passkey_not_found` |
 | | `DELETE /vault/passkeys/{id}` (`vaultPasskeyRevoke`) | **S+C+A(`vault.passkey_revoke`)+R(`vault_sensitive`)**, owner; không tăng `vault.version`; `204`; thu hồi trên live server; audit + notice |
 | | `POST /vault/unlock/passkey/options` (`vaultPasskeyUnlockOptions`) | **S+C+R(`vault_passkey_options`)**; `200 {public_key: RequestOptions, credentials: [{id, prf_salt, vk_wrap}]}` (challenge ngẫu nhiên không lưu DB, `allowCredentials` + `prf.evalByCredential`, UV required); `404 passkey_not_found` khi user chưa có passkey |
-| Items | `GET /items?tag_id&q&cursor&limit&sort=recent\|alpha\|created` | `tag_id` = filter; `q` lexical nhẹ (trang list) |
-| | `POST /items` `{name, hint?, tag_ids?}` | **không** upsert theo name — luôn tạo trừ khi client gửi id. Trùng name = 201 mới |
-| | `GET /items/{id}` · `PATCH /items/{id}` `{name?, hint?}` · `DELETE /items/{id}` | đổi name → re-embed job |
-| | `PUT /items/{id}/tags` `{tag_ids[]}` | thay bộ tag; max 20 |
-| | `POST /items/{id}/tags` `{tag_id}` · `DELETE /items/{id}/tags/{tag_id}` | |
-| | `PATCH /items/{id}/entries/reorder` `{entry_ids[]}` | permutation đủ entries chưa xoá |
-| Tags | `GET /tags?cursor&limit&sort=recent\|alpha` | catalog |
-| | `POST /tags` `{display}` | 200 nếu `normalized` đã có (upsert) |
-| | `GET /tags/{id}` · `PATCH /tags/{id}` `{display}` · `DELETE /tags/{id}` | 409 `TAG_CONFLICT` nếu normalize trùng tag khác |
-| Suggest | `GET /suggest?q=&limit=8&scope=all\|item\|tag&semantic=0\|1` | hai corpus; `semantic=0` ép lexical, `1` chỉ chạy khi env/user/breaker cho phép (default 1); `#` → `scope=tag`. Thứ tự ổn định §6.4 |
-| | `GET /search?q=&cursor&limit&scope=&semantic=` | cùng thứ tự theo tier, nhiều kết quả hơn; cursor gắn query/generation |
-| Entries | `GET /items/{id}/entries?cursor&limit` | ciphertext + `type` + `position`; theo position |
-| | `POST /items/{id}/entries` | `{id, type, envelope, ciphertext, plaintext_len_bucket}` — client UUID v4 đã dùng trong AAD; `text`\|`json`; server giữ nguyên ID |
-| | `POST /items/{id}/entries/import-json` | **cùng body mã hoá** như POST entries, `type` buộc `json`; field thêm `source: paste\|file`, `filename?` (plaintext meta). Không nhận raw JSON |
-| | `GET /entries/{id}` · `PUT /entries/{id}` (`If-Match`) · `DELETE` · `POST …/restore` | không đổi `item_id` ở MVP (không move) |
-| | `GET /entries/changes?since=` | delta multi-device; MVP = mọi đổi sau timestamp |
+| Items | `GET /items` (`itemsList`) | **S**; `?tag_id&q&cursor&limit&sort=recent\|alpha` (`recent` mặc định cho lưới trang chủ, `alpha` cho kết quả tìm; không có `created`); `q` prefix trên `name_normalized` ≤ 200 rune; `200 {items:[ItemSummary], next_cursor}`; `400 name_invalid`; `tag_id` lạ → `404 not_found` |
+| | `GET /items/lookup` (`itemsLookupExact`) | **S**; `?name&cursor&limit`; exact trên `name_normalized`, mọi item sống trùng, `created_at DESC, id`; `200 {items:[ItemSummary], total, next_cursor}` (`total` chính xác); `400 name_invalid` |
+| | `POST /items` (`itemCreate`) | **S+C+I+R**; `{id?, name, hint?}`; **không** upsert theo name — trùng name = mục mới; `201 ItemSummary`; `409 item_id_conflict` khi `id` đã tồn tại với request khác |
+| | `GET /items/{id}` (`itemGet`) | **S**; `200 ItemSummary`; cập nhật `last_used_at` (throttle 5 phút) |
+| | `PATCH /items/{id}` (`itemUpdate`) | **S+C+I+R+M**; `{name?, hint?}` (`hint: null` xoá); `200 ItemSummary` (`version + 1`); `412`/`428`; đổi name → giữ chỗ re-embed (P05) |
+| | `DELETE /items/{id}` (`itemDelete`) | **S+C+I+R**; `204`; soft-delete item + entry sống cùng `delete_batch`, giữ `item_tag` |
+| | `POST /items/{id}/restore` (`itemRestore`) | **S+C+I+R**; `200 ItemSummary`; chỉ khôi phục entry cùng lô; `409 item_tag_limit` |
+| | `POST /items/{id}/tags` (`itemTagsAdd`) | **S+C+I+R**; `{tag_ids:[…]}` 1…20, không trùng; **cộng dồn**; tag phải sống, cùng user (sai → `404 not_found`, không ghi gì); `200 ItemSummary`; `409 item_tag_limit` |
+| | `DELETE /items/{id}/tags/{tag_id}` (`itemTagRemove`) | **S+C+I+R**; `200 ItemSummary` (cặp không có → vẫn `200`, không đổi gì) |
+| | `PATCH /items/{id}/entries/reorder` (`itemEntriesReorder`) | **S+C+I+R**; `{entry_ids}` = hoán vị đúng tập entry sống (khác tập, kể cả ID của user khác hoặc `[]` khi mục còn entry → `409 reorder_mismatch`; mục không có entry sống + `[]` → `200 {entries:[]}`); server đánh lại `position` 0…n−1; `200 {entries:[{id, position}]}` |
+| Tags | `GET /tags` (`tagsList`) | **S**; `?q&cursor&limit&sort=recent\|alpha` (`q` prefix trên `normalized`, ≤ 50 rune); `200 {items:[Tag], next_cursor}`; `Tag = {id, display, item_count, last_used_at, created_at}` |
+| | `POST /tags` (`tagUpsert`) | **S+C+I+R**; `{display}`; upsert theo `normalized` trong tag sống: `201` mới / `200` có sẵn (không đổi `display`), body `Tag` |
+| | `PATCH /tags/{id}` (`tagRename`) | **S+C+I+R**; `{display}`; `200 Tag`; `409 tag_conflict` nếu `normalized` trùng tag sống khác |
+| | `DELETE /tags/{id}` (`tagDelete`) | **S+C+I+R**; `204`; soft-delete, `item_tag` giữ nguyên |
+| | `POST /tags/{id}/restore` (`tagRestore`) | **S+C+I+R**; `200 Tag`; `409 tag_conflict` / `item_tag_limit` (không restore một phần) |
+| Suggest (P05) | `GET /suggest?q=&limit=8&scope=all\|item\|tag&semantic=0\|1` | **P05, chưa có ở P04**; client chỉ gọi khi giữ ranh giới gửi §3.4; hai corpus; `semantic=0` ép lexical, `1` chỉ chạy khi env/user/breaker cho phép (default 1); `#` → `scope=tag`. Thứ tự ổn định §6.4 |
+| | `GET /search?q=&cursor&limit&scope=&semantic=` | **P05**; cùng thứ tự theo tier, nhiều kết quả hơn; cursor gắn query/generation |
+| Entries | `GET /items/{id}/entries` (`itemEntriesList`) | **S**; `?cursor&limit` (1…200, mặc định 200); `200 {items:[EntryMeta], next_cursor}` theo `(position, id)`; `EntryMeta = {id, item_id, type, position, version, plaintext_len_bucket, created_at, updated_at}` — **không** envelope/ciphertext |
+| | `POST /items/{id}/entries` (`entryCreate`) | **S+C+I+R**; `{id, type, envelope, ciphertext, plaintext_len_bucket}` — client UUID v4 đã dùng trong AAD; `text`\|`json`; server giữ nguyên ID; `201 EntryMeta`; `404 vault_absent`/`not_found`; `409 entry_key_mismatch`/`entry_id_conflict`/`item_entry_limit`; `400 entry_invalid`; `413 entry_too_large` |
+| | `POST /items/{id}/entries/import-json` (`entryImportJson`) | như `entryCreate`, `type` buộc `json` (khác → `400 entry_invalid`), thêm `source: paste\|file`; **không** `filename` (field lạ → `400 invalid_request`); audit `entry.import` với meta `import_source`; không nhận raw JSON |
+| | `GET /entries/{id}` (`entryGet`) | **S**; `200 Entry` = `EntryMeta` + `envelope` + `ciphertext` (loader tải theo từng card) |
+| | `PUT /entries/{id}` (`entryUpdate`) | **S+C+I+R+M**; `{envelope, ciphertext, plaintext_len_bucket}` (`type` không đổi được); `200 EntryMeta` (`version + 1`); `412`/`428`; `400 entry_nonce_reused`; không đổi `item_id` ở MVP (không move) |
+| | `DELETE /entries/{id}` (`entryDelete`) | **S+C+I+R**; `204`; `deleted_via='entry'` |
+| | `POST /entries/{id}/restore` (`entryRestore`) | **S+C+I+R**; `200 EntryMeta`; `409 entry_restore_via_item` / `item_deleted` / `item_entry_limit` |
+| | `GET /entries/changes` (`entriesChanges`) | **S**; `?since&cursor&limit`; không có `since` → bootstrap `{changes:[], next_cursor:null, watermark}` (client mới lấy watermark đầu tiên, không dựa vào đồng hồ client; client lưu watermark nguyên chuỗi; lấy watermark **trước** rồi mới refetch nguồn, lưu watermark sau khi refetch xong); `200 {changes:[EntryChange], next_cursor, watermark}` gồm tombstone, sắp `(updated_at, id)`; `EntryChange` = `EntryMeta` + `deleted_at`, không envelope/ciphertext; `410 changes_window_expired` khi `since` cũ hơn 29 ngày. Best effort delta, không phải sync bền (cursor bền/SSE = P07) |
 | Export | `POST /exports` `{kind:"encrypted"}` → 202 · `GET /exports/{id}` | decrypted: client-side + `POST /audit/export-decrypted` |
 | Meta | `GET /healthz` · `GET /readyz` · `GET /metrics` | |
 
 **Chú giải điều kiện bảng Vault / Recovery / Passkey (15 operations của P03):** `S` = yêu cầu session (`sabk_session`), `C` = `Origin == APP_ORIGIN` + `X-CSRF-Token`, `A(action)` = grant re-auth `X-Reauth-Token` đúng `action`, `M` = `If-Match: "<vault_key_id>:<version>"`, `I` = `Idempotency-Key`, `R(scope)` = rate limit theo user (§9.1), `K` = bị công tắc `VAULT_KEY_MUTATIONS_DISABLED` chặn (`503 vault_mutations_disabled`). **Không có:** `/keywords`, `PUT /entries/{id}/keywords`, merge-keyword. **Không** endpoint nào nhận passphrase, KEK, VK, plaintext RK, PWK hay private key chưa wrap. **Không** login-with-passkey ở MVP (`POST /auth/passkey/*` = P07).
+
+**Chú giải bảng Items / Tags / Entries (23 operations của P04, [plan P04](plans/2026-11-01-P04-content.md) mục 3):** `S`, `C`, `I` như trên; `R` = rate limit `content_write` (10 request/giây/user); `M` = `If-Match: "<version>"` của item/entry (§9.1). Mọi route kiểm ownership theo `user_id` của principal; ID của user khác trả như không tồn tại (`404 not_found`). Đối tượng đã soft-delete không xuất hiện ở list/lookup/get (`404`), trừ feed và restore; xoá/restore lặp lại trả `204`/`200` như lần đầu, không đổi gì. Response mọi mutation item/tag trả trạng thái mới để client cập nhật cache. Không route P04 nào cần grant re-auth (`A`) hay công tắc `K`. **Đã bỏ khỏi MVP:** `PUT /items/{id}/tags` (thay cả bộ = ghi đè snapshot), `GET /tags/{id}`, `sort=created`, field `filename` của import, field `tag_ids` của `POST /items`. Deep link `/app?tag=<id>` vì vậy gọi `GET /items?tag_id=` **trước**: `404 not_found` (tag đã xoá/không tồn tại) → ngay trạng thái "Tag này không còn" kèm nút bỏ lọc, không phân trang tag; `200` → display lấy từ cache tag của rail, chưa có thì phân trang `GET /tags` ở nền (tối đa 10 trang), trong lúc đó và khi không thấy hiện nhãn trung tính `content.home.tagFallback` "Tag đã chọn". Lọc và danh sách mục chạy theo `tag_id`, nhãn chỉ để hiển thị; không thấy sau 10 trang thì giữ nhãn trung tính tới khi cache tag của rail có tag đó. Trạng thái tag mất dùng `content.home.tagGone` "Tag này không còn" (block `content.home.*`, Task 19).
+
+**Content-Type và trần body cho mọi mutation P04:** POST/PUT/PATCH bắt buộc `Content-Type: application/json`, kể cả POST restore không có body (gửi `{}`; thiếu header → `415 invalid_request`); DELETE body rỗng không cần header. Trần body chặn trước idempotency lookup trên **cả 16** mutation: route có body entry (`entryCreate`, `entryImportJson`, `entryUpdate`) và `entryDelete`/`entryRestore` 400 KiB → `413 entry_too_large`; mọi route item/tag (kể cả reorder, delete, restore, gỡ tag) 16 KiB → `413 invalid_request`. Lỗi map một code → một khoá `content.errors.<code>`, có thể override theo operation (ví dụ `item_tag_limit` ở `tagRestore` khác `itemTagsAdd`); title ở `problem.go` không phải copy UI.
 
 ### 9.3 Ví dụ
 
@@ -1817,7 +1979,7 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
   "envelope": {
     "v": 1,
     "alg": "xchacha20poly1305-ietf",
-    "key_id": "vk:7f3a1c9e02b4d6f8",
+    "key_id": "vk:0FAKE00000000000000001",
     "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
     "ct_enc": "utf8"
   },
@@ -1826,9 +1988,19 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 }
 ```
 
-`201`: `{id, type, position, created_at, updated_at, item_id}` — `id` đúng ID client gửi; không có plaintext. Nonce tuần tự trong ví dụ chỉ minh hoạ 24 B, production dùng CSPRNG mỗi lần seal.
+`201` (`EntryMeta`): `{"id":"b0d89f3c-a1e4-4c3d-9c47-2cf5f067ef17","item_id":"…","type":"json","position":3,"version":1,"plaintext_len_bucket":512,"created_at":"…","updated_at":"…"}` — `id` đúng ID client gửi; không có envelope, ciphertext hay plaintext. `key_id` phải bằng `vault_key_id` hiện tại (`409 entry_key_mismatch`), `plaintext_len_bucket` phải bằng đúng `ceil((octet_length(ciphertext) − 16) / 256) × 256` (`400 entry_invalid`). Nonce tuần tự trong ví dụ chỉ minh hoạ 24 B, production dùng CSPRNG mỗi lần seal.
 
-**`POST /api/v1/items/{id}/entries/import-json`** — cùng `envelope`/`ciphertext`, thêm `{"source":"file","filename":"vlans.json"}`. Server ghi audit meta, vẫn không parse body.
+**`POST /api/v1/items/{id}/entries/import-json`** (`Idempotency-Key`) — cùng `id`/`envelope`/`ciphertext`/`plaintext_len_bucket`, `"type":"json"` và thêm `{"source":"file"}` (**không** có `filename`; field lạ → `400 invalid_request`). Server ghi audit `entry.import` với meta `import_source: "file"`, vẫn không parse body.
+
+**`PUT /api/v1/entries/{id}`** (`If-Match: "3"`, `Idempotency-Key`, `X-CSRF-Token`)
+
+```json
+{"envelope":{"v":1,"alg":"xchacha20poly1305-ietf","key_id":"vk:0FAKE00000000000000001","nonce":"GBkaGxwdHh8gISIjJCUmJygpKissLS4v","ct_enc":"utf8"},"ciphertext":"base64url…","plaintext_len_bucket":768}
+```
+
+→ `200` `EntryMeta` với `"version":4`; `412 version_mismatch` kèm `current_version` nếu thiết bị khác đã ghi; `428 precondition_required` nếu thiếu/sai `If-Match`; `400 entry_nonce_reused` nếu nonce trùng nonce đang lưu.
+
+**`GET /api/v1/items/lookup?name=wifi`** → `200 {"items":[ItemSummary, ItemSummary],"total":2,"next_cursor":null}`; không có mục → `{"items":[],"total":0,"next_cursor":null}` (mảng rỗng, không `null`).
 
 **`PUT /api/v1/vault/kek`** (`If-Match: "vk:0FAKE00000000000000001:3"`, `X-Reauth-Token`, `Idempotency-Key`, `X-CSRF-Token`)
 
@@ -1885,11 +2057,12 @@ REST + JSON, base `/api/v1`. OpenAPI 3.1 → `openapi-typescript`. ConnectRPC c�
 
 ```json
 {
-  "type": "https://sabk.app/errors/conflict",
-  "title": "Too many entries on this item",
+  "type": "https://engram.zone17.click/problems/item_entry_limit",
+  "title": "Mục đã đủ số entry tối đa",
   "status": 409,
-  "code": "ITEM_ENTRY_LIMIT",
-  "detail": "Maximum 200 entries per item"
+  "code": "item_entry_limit",
+  "detail": "Mục đã đủ số entry tối đa.",
+  "instance": "req_01J…"
 }
 ```
 
@@ -1932,7 +2105,7 @@ Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; lib
 
 ### 10.4 Privacy statement (docs / marketing)
 
-> Chúng tôi **không đọc được nội dung** bạn lưu trong entry: text và JSON được mã hoá trên thiết bị bằng khoá chỉ bạn có. Chúng tôi **thấy** tên mục (`name`), tag, hint (nếu nhập), kiểu entry (`text` / `json`), thời điểm, số lượng và kích thước xấp xỉ. Khi bạn bật gợi ý "gần nghĩa", tên mục, tag, hint và từ khoá tìm kiếm được gửi tới **dịch vụ embedding bên thứ ba** (qua OpenRouter) để tạo vector; nội dung entry không bao giờ được gửi. Tắt gợi ý "gần nghĩa" trong Settings hoặc bằng nút `≈` sẽ ngừng gửi mọi dữ liệu của bạn tới dịch vụ đó và xoá vector đã tạo. Bạn mở vault bằng encryption passphrase, **passkey** (WebAuthn PRF), **một recovery key** còn dùng được, hoặc thiết bị đã nhớ. Nếu quên passphrase nhưng vẫn mở được vault, bạn có thể đặt passphrase mới sau khi xác thực lại tài khoản. Chỉ khi không còn đường lấy lại khoá, kể cả qua backup mở được, mới không đọc lại được nội dung; reset vault xoá entry trên server, giữ lại mục và tag.
+> Chúng tôi **không đọc được nội dung** bạn lưu trong entry: text và JSON được mã hoá trên thiết bị bằng khoá chỉ bạn có. Chúng tôi **thấy** tên mục (`name`), tag, hint (nếu nhập), kiểu entry (`text` / `json`), thời điểm, số lượng và kích thước của từng entry (độ dài nội dung đã mã hoá cho biết độ dài nội dung gốc; chúng tôi không che kích thước). Khi bạn bật gợi ý "gần nghĩa", tên mục, tag, hint và từ khoá tìm kiếm được gửi tới **dịch vụ embedding bên thứ ba** (qua OpenRouter) để tạo vector; nội dung entry không bao giờ được gửi. Tắt gợi ý "gần nghĩa" trong Settings hoặc bằng nút `≈` sẽ ngừng gửi mọi dữ liệu của bạn tới dịch vụ đó và xoá vector đã tạo. Bạn mở vault bằng encryption passphrase, **passkey** (WebAuthn PRF), **một recovery key** còn dùng được, hoặc thiết bị đã nhớ. Nếu quên passphrase nhưng vẫn mở được vault, bạn có thể đặt passphrase mới sau khi xác thực lại tài khoản. Chỉ khi không còn đường lấy lại khoá, kể cả qua backup mở được, mới không đọc lại được nội dung; reset vault xoá entry trên server, giữ lại mục và tag.
 
 ### 10.5 Backup & DR
 
@@ -1948,7 +2121,7 @@ Xem §6.9. Thêm: TTFB landing (SSG) < 200 ms; app shell LCP < 2 s trên 4G; lib
 ### 11.1 Monorepo layout
 
 ```
-save-all-by-keyword/
+engram/
 ├─ apps/
 │  ├─ web/                      # Next.js 15 (App Router)
 │  │  ├─ app/
@@ -2028,11 +2201,16 @@ Dev mặc định `EMBEDDING_PROVIDER=noop` — không cần TEI. `make dev` = c
 
 ### 11.3 CI outline
 
-| Workflow | Bước |
+CI thật là một workflow `.github/workflows/ci.yml`, chạy trên PR vào `develop` (không có `api.yml`/`web.yml`/`e2e.yml` riêng). Test chỉ chạy trên cloud runner; bằng chứng là run URL + job + conclusion + head SHA.
+
+| Job trong `ci.yml` | Bước |
 |----------|------|
-| `api.yml` | `go vet`, `staticcheck`, `govulncheck`, `sqlc diff`, unit, testcontainers pgvector, build |
-| `web.yml` | `pnpm lint`, `tsc --noEmit`, Vitest `lib/crypto` (test vector cố định) + json-table fixtures, i18n key parity, build, Lighthouse marketing |
-| `e2e.yml` | Compose → Playwright: signup → passphrase → lưới 10 RK + checkbox → (skip hoặc mock passkey) → item + text entry → import JSON → unlock context mới (passphrase) → suggest name/tag → `#tag` filter; axe |
+| `Go checks` | gofmt, short tests, `go vet`, golangci-lint, govulncheck, sqlc drift, build, integration tests (testcontainers pgvector) |
+| `Compose migration` | Compose config + chạy migration trên image DB đã ghim |
+| `Web checks` | sinh lại `packages/shared-types` từ OpenAPI và `git diff --exit-code`, lint, typecheck, Vitest (crypto vectors, `lib/json` fixtures, i18n parity), build |
+| `Browser smoke and accessibility`, `Auth e2e (email verification required)`, `Vault journey e2e (email verification required)` | Compose → Playwright theo project (`playwright.config.ts`), axe, artifact đã sanitize |
+| `Content e2e` (P04, Task 11) | Compose → Playwright project `content`: quick-add, item/tag, text + JSON import/sửa, Undo, nhiều thiết bị, lock/reset; artifact qua allowlist `scripts/sanitize-e2e-artifacts.mjs` |
+| `Content perf` (P04, Task 21b) | đo tạo entry p95 phía server (build tag `perf`) |
 | release | Tag `v*` trên `main` → images, SBOM, bundle hashes |
 
 Acceptance/regression bắt buộc cho các contract v0.5:
@@ -2101,7 +2279,7 @@ Mockup thắng về thị giác, spec thắng hành vi/dữ liệu (§7.0). Mọ
 | U16 | Settings · Tìm kiếm | `settings.html` | §6.10, §7.6 | P05 |
 | U17 | Export và xoá tài khoản | `settings.html` + encrypted/progress/confirm cần bổ sung | §3.11, §7.6 | P06 |
 | U18 | Empty/error/offline/degraded/conflict | `states.html` | §7.7, §6.8 | P02–P05 theo tính năng; P06 rà đủ |
-| U19 | Signup/login/OAuth return/re-auth | `auth.html` | §3.2, §9.1 | P02 |
+| U19 | Signup/login/forgot & reset password/OAuth return/re-auth + Terms/Privacy | `auth.html`, `legal.html` | §3.1, §3.2, §3.16, §9.1 | P02; hoàn thiện authui & forgot/reset P04 |
 | U20 | Docs/privacy/help | `docs.html` | §10.4, §11.1 | P06 |
 
 P07/P08 thiết kế màn mới ở đầu từng mốc; không lấy mockup MVP làm bằng chứng UI sharing/media/extension đã được chốt.
@@ -2116,7 +2294,7 @@ Mỗi file phase có phạm vi trong/ngoài, dependencies, API/schema cần đó
 
 Các quyết định sau **đã chốt**, không hỏi lại: web online-only; Next 15 + Go (chi, pgx, sqlc, River) + Postgres 16 + pgvector + pg_trgm; multi-user server-first; E2E chỉ body; **10 recovery key** high-entropy (không BIP39), mỗi key bọc VK, single-use + regenerate; **passkey = vault unlock MVP** qua PRF (không fallback, không largeBlob); **login-with-passkey = P07** (lưu `pubkey` từ MVP); `AUTH_REQUIRE_EMAIL_VERIFICATION` default false; không private name; TEI + `bge-m3` 1024; provider `tei`\|`noop`; semantic hai tầng + `≈`; 256 KiB/entry; miễn phí; domain `engram.zone17.click`; nhớ thiết bị MVP opt-in default off; auto-lock 15 phút (5/15/60/never), silent DevKey nếu nhớ, WebAuthn nếu có passkey; Argon2id 64 MiB / t=3 / p=1 không fallback; i18n en+vi; auth email/password + Google + GitHub; passphrase riêng; libsodium Worker; XChaCha20-Poly1305; envelope versioned; X25519/Ed25519 lúc tạo vault.
 
-**Chốt v0.6:** tên sản phẩm là `engram`, viết thường, repo giữ `save-all-by-keyword`; domain và nhãn hiệu **chưa tra**. `mockups/` là tiêu chuẩn thiết kế ràng buộc cho §7 — mockup thắng về thị giác, spec thắng về hành vi và dữ liệu (§7.0). Tầng token chức năng giữ nguyên ClickUp, chỉ tầng thương hiệu là của engram.
+**Chốt v0.6:** tên sản phẩm là `engram`, viết thường, repo là `zone17th/engram`; domain và nhãn hiệu **chưa tra**. `mockups/` là tiêu chuẩn thiết kế ràng buộc cho §7 — mockup thắng về thị giác, spec thắng về hành vi và dữ liệu (§7.0). Tầng token chức năng giữ nguyên ClickUp, chỉ tầng thương hiệu là của engram.
 
 **Chốt v0.7:** roadmap triển khai dùng P01–P08, MVP là P01–P06; [spec từng phase](phases/README.md) phân công dependency, UI/missing mockup, contract cần bổ sung và acceptance. P07/P08 kế thừa phạm vi hậu MVP, các quyết định chưa có API/ADR/mockup được ghi rõ trước khi triển khai; không coi thời gian ước lượng cũ là cam kết lịch giao.
 
@@ -2138,7 +2316,7 @@ Không còn câu hỏi về "có recovery không", OpenAI, pricing, private keyw
 
 | Thuật ngữ | Nghĩa |
 |-----------|-------|
-| **engram** | Tên sản phẩm. Trong thần kinh học: dấu vết vật lý một ký ức để lại. Luôn viết thường. Repo vẫn tên `save-all-by-keyword` |
+| **engram** | Tên sản phẩm. Trong thần kinh học: dấu vết vật lý một ký ức để lại. Luôn viết thường. Repo cũng tên `engram` (`zone17th/engram`) |
 | **Mockup** | Bộ HTML tĩnh trong `mockups/`; **tiêu chuẩn thiết kế** cho §7, không phải bản demo dùng một lần (§7.0) |
 | **Tầng chức năng / tầng thương hiệu** | Hai nhóm token trong `mockups/tokens.css`: nhóm đầu lấy từ ClickUp và không đổi khi làm brand, nhóm sau là accent + logo của engram |
 | **Item** (mục) | Thực thể chính: có `name` (title/mô tả, **trùng được**, plaintext), tag, và nhiều entry. Khuyến nghị EN trong spec |

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/auth"
 )
 
 // Fake là provider in-process: kiểm PKCE/nonce thật, không bỏ qua challenge.
@@ -24,6 +24,7 @@ type Fake struct {
 	Now           func() time.Time
 	DropAuthTime  bool
 	StaleAuthTime bool
+	onExchange    func(in ExchangeRequest)
 }
 
 type pendingAuth struct {
@@ -49,6 +50,12 @@ func NewFake(name string, reauth bool, identity Identity) *Fake {
 func (f *Fake) Name() string              { return f.name }
 func (f *Fake) SupportsReauth() bool      { return f.reauth }
 func (f *Fake) SetAuthorizeBase(u string) { f.base = u }
+
+func (f *Fake) SetOnExchange(fn func(in ExchangeRequest)) {
+	f.mu.Lock()
+	f.onExchange = fn
+	f.mu.Unlock()
+}
 
 func (f *Fake) AuthorizationURL(in AuthRequest) (string, error) {
 	f.mu.Lock()
@@ -84,6 +91,12 @@ func (f *Fake) IssueCode(state, challenge, nonce string) string {
 }
 
 func (f *Fake) Exchange(_ context.Context, in ExchangeRequest) (Identity, error) {
+	f.mu.Lock()
+	onEx := f.onExchange
+	f.mu.Unlock()
+	if onEx != nil {
+		onEx(in)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	state := ""

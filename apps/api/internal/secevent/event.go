@@ -43,6 +43,11 @@ const (
 	ReasonLastMethod = "last_method"
 	ReasonCollision  = "collision"
 	ReasonUnverified = "unverified"
+
+	EventEntryImport = "entry.import"
+
+	ImportSourcePaste = "paste"
+	ImportSourceFile  = "file"
 )
 
 var providers = map[string]struct{}{
@@ -58,12 +63,20 @@ var reasons = map[string]struct{}{
 	ReasonLastMethod: {}, ReasonCollision: {}, ReasonUnverified: {},
 }
 
+var importSources = map[string]struct{}{
+	ImportSourcePaste: {}, ImportSourceFile: {},
+}
+
 // Meta chỉ chứa enum đã whitelist — không map tự do.
 type Meta struct {
 	Provider string   `json:"provider,omitempty"`
 	Reason   string   `json:"reason,omitempty"`
 	Fields   []string `json:"fields,omitempty"`
 	Count    int      `json:"count,omitempty"`
+
+	ImportSource      string   `json:"import_source,omitempty"`
+	Event             string   `json:"event,omitempty"`
+	UnlinkedProviders []string `json:"unlinked_providers,omitempty"`
 }
 
 func (m Meta) Sanitize() Meta {
@@ -79,6 +92,11 @@ func (m Meta) Sanitize() Meta {
 			out.Fields = append(out.Fields, f)
 		}
 	}
+	if _, ok := importSources[m.ImportSource]; ok {
+		out.ImportSource = m.ImportSource
+	}
+	out.Event = sanitizeEvent(m.Event)
+	out.UnlinkedProviders = sanitizeUnlinkedProviders(m.UnlinkedProviders)
 	return out
 }
 
@@ -98,4 +116,40 @@ type Notice struct {
 	Kind         string
 	Meta         Meta
 	EmailTargets []string
+}
+
+const (
+	EventPasswordReset = "auth.password.reset"
+)
+
+var noticeEvents = map[string]struct{}{
+	EventPasswordReset: {},
+}
+
+var unlinkedProviders = map[string]struct{}{
+	ProviderGoogle: {},
+	ProviderGitHub: {},
+}
+
+func sanitizeEvent(ev string) string {
+	if _, ok := noticeEvents[ev]; ok {
+		return ev
+	}
+	return ""
+}
+
+func sanitizeUnlinkedProviders(in []string) []string {
+	var out []string
+	seen := make(map[string]struct{}, len(in))
+	for _, p := range in {
+		if _, ok := unlinkedProviders[p]; !ok {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
 }

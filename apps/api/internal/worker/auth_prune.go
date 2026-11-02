@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/clock"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
 )
 
 type AuthPruneArgs struct {
@@ -47,6 +47,9 @@ func (w *AuthPruneWorker) Work(ctx context.Context, job *river.Job[AuthPruneArgs
 		return err
 	}
 	if _, err := q.DeleteExpiredVerifications(ctx, expired); err != nil {
+		return err
+	}
+	if _, err := q.DeleteExpiredPasswordResetTokens(ctx, expired); err != nil {
 		return err
 	}
 	if _, err := q.DeleteExpiredOAuthTransactions(ctx, expired); err != nil {

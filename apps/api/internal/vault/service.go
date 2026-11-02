@@ -11,13 +11,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/secevent"
+	"github.com/zone17th/engram/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/authctx"
+	"github.com/zone17th/engram/apps/api/internal/clock"
+	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
 
 // Tên sự kiện audit cho các thao tác vault (SPEC §3.9–§3.15, §8, plan Task 8–12).

@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/kelseyhightower/envconfig"
+	"golang.org/x/net/publicsuffix"
 )
 
 const minSecretLen = 32
@@ -51,7 +52,8 @@ type Config struct {
 	TurnstileSiteKey string `envconfig:"TURNSTILE_SITE_KEY"`
 	TurnstileSecret  string `envconfig:"TURNSTILE_SECRET"`
 
-	MailSinkDir string `envconfig:"AUTH_MAIL_SINK_DIR"`
+	MailSinkDir           string `envconfig:"AUTH_MAIL_SINK_DIR"`
+	MailCaptureAsDelivery bool   `envconfig:"AUTH_MAIL_CAPTURE_AS_DELIVERY" default:"false"`
 
 	TrustedProxyCIDRs []net.IPNet `ignored:"true"`
 
@@ -222,6 +224,9 @@ func (c *Config) validateAuthPolicy() error {
 		if c.MailSinkDir != "" {
 			return fmt.Errorf("AUTH_MAIL_SINK_DIR không dùng được ở %s", c.Env)
 		}
+		if c.MailCaptureAsDelivery {
+			return fmt.Errorf("AUTH_MAIL_CAPTURE_AS_DELIVERY không dùng được ở %s", c.Env)
+		}
 	}
 	if c.GoogleReauthEnabled && !c.GoogleLoginEnabled() && !c.FakeOAuth {
 		return fmt.Errorf("AUTH_GOOGLE_REAUTH_ENABLED cần đủ cặp OAuth Google")
@@ -274,7 +279,7 @@ func (c *Config) validateWebAuthnPolicy() error {
 		return fmt.Errorf("WEBAUTHN_RP_ID (%q) không hợp lệ", c.WebAuthnRPID)
 	}
 	if !isRPIDMatchOrRegistrableSuffix(rpID, originHost) {
-		return fmt.Errorf("WEBAUTHN_RP_ID (%q) không khớp với host của APP_ORIGIN (%q)", rpID, originHost)
+		return fmt.Errorf("WEBAUTHN_RP_ID (%q) không khớp với host của APP_ORIGIN (%q) hoặc là public suffix", rpID, originHost)
 	}
 
 	c.WebAuthnRPID = rpID
@@ -338,12 +343,21 @@ func isValidRPIDHost(rpID string) bool {
 	return true
 }
 
+// isRPIDMatchOrRegistrableSuffix nhận rpID khi nó bằng host của origin hoặc là hậu tố domain đăng ký được của host
+// đó. RP ID là public suffix bị từ chối (KS-PSL, P04 Task 9): xét cả phần ICANN lẫn phần private của Public Suffix
+// List (`github.io` là suffix private) nên không lọc theo cờ icann. Ngoại lệ tường minh duy nhất là `localhost`
+// (dev). IP chỉ được nhận khi trùng chính xác host của origin, không qua tra PSL.
 func isRPIDMatchOrRegistrableSuffix(rpID, originHost string) bool {
+	if net.ParseIP(originHost) != nil || net.ParseIP(rpID) != nil {
+		return rpID == originHost
+	}
+	if rpID != "localhost" {
+		if suffix, _ := publicsuffix.PublicSuffix(rpID); suffix == rpID {
+			return false
+		}
+	}
 	if rpID == originHost {
 		return true
-	}
-	if net.ParseIP(originHost) != nil || net.ParseIP(rpID) != nil {
-		return false
 	}
 	if strings.Count(rpID, ".") < 1 {
 		return false
@@ -503,6 +517,7 @@ func (c *Config) Redacted() map[string]any {
 		"auth_fake_oauth":                 c.FakeOAuth,
 		"turnstile":                       c.TurnstileEnabled(),
 		"mail_sink_configured":            c.MailSinkDir != "",
+		"auth_mail_capture_as_delivery":   c.MailCaptureAsDelivery,
 		"ephemeral_secrets":               c.EphemeralSecrets,
 		"audit_retention_days":            c.AuditRetentionDays,
 		"trusted_proxy_cidrs":             len(c.TrustedProxyCIDRs),

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 )
 
 var p02OperationIDs = []string{
@@ -193,11 +193,336 @@ func TestOpenAPIP03ContractInvariants(t *testing.T) {
 		t.Errorf("phải có đúng 7 operation có A ghi nhận reauth_required, reauth_invalid dưới 401, tìm thấy %d", got)
 	}
 
-	if got := strings.Count(spec, "$ref: '#/components/responses/IdempotencyConflict'"); got != 7 {
-		t.Errorf("phải có đúng 7 operation có I tham chiếu IdempotencyConflict cho 409, tìm thấy %d", got)
-	}
+	// Số operation có I tham chiếu IdempotencyConflict (P03 7 + P04 16) kiểm ở TestOpenAPIP04ContractInvariants.
 	reIdemRetry := regexp.MustCompile(`(?s)IdempotencyConflict:.*?headers:.*?Retry-After:`)
 	if !reIdemRetry.MatchString(spec) {
 		t.Error("IdempotencyConflict phải khai báo header Retry-After")
+	}
+}
+
+var p04OperationIDs = []string{
+	"itemsList",
+	"itemsLookupExact",
+	"itemCreate",
+	"itemGet",
+	"itemUpdate",
+	"itemDelete",
+	"itemRestore",
+	"itemTagsAdd",
+	"itemTagRemove",
+	"itemEntriesReorder",
+	"tagsList",
+	"tagUpsert",
+	"tagRename",
+	"tagDelete",
+	"tagRestore",
+	"itemEntriesList",
+	"entryCreate",
+	"entryImportJson",
+	"entryGet",
+	"entryUpdate",
+	"entryDelete",
+	"entryRestore",
+	"entriesChanges",
+}
+
+// p04AuthUIOperationIDs là các operation đặt lại mật khẩu tài khoản của ADR 0006 (lane authui).
+var p04AuthUIOperationIDs = []string{
+	"authPasswordForgot",
+	"authPasswordReset",
+}
+
+// p04ProblemStatus là bảng mã lỗi mới của plan P04 mục 3, đúng thứ tự thêm cuối catalog.
+var p04ProblemStatus = []struct {
+	code   string
+	status int
+}{
+	{"name_invalid", 400},
+	{"hint_invalid", 400},
+	{"tag_display_invalid", 400},
+	{"item_id_conflict", 409},
+	{"item_deleted", 409},
+	{"item_tag_limit", 409},
+	{"item_entry_limit", 409},
+	{"tag_conflict", 409},
+	{"entry_invalid", 400},
+	{"entry_too_large", 413},
+	{"entry_id_conflict", 409},
+	{"entry_key_mismatch", 409},
+	{"entry_nonce_reused", 400},
+	{"entry_restore_via_item", 409},
+	{"reorder_mismatch", 409},
+	{"changes_window_expired", 410},
+}
+
+// openAPIBlock trả block YAML bắt đầu ở dòng `header` (đúng indent) tới trước dòng kế tiếp
+// có indent nhỏ hơn hoặc bằng. Chuẩn hoá CRLF để test chạy được trên checkout Windows.
+func openAPIBlock(t *testing.T, spec, header string) string {
+	t.Helper()
+	spec = strings.ReplaceAll(spec, "\r\n", "\n")
+	start := strings.Index(spec, "\n"+header+"\n")
+	if start < 0 {
+		t.Fatalf("openapi.yaml thiếu block %q", strings.TrimSpace(header))
+	}
+	indent := len(header) - len(strings.TrimLeft(header, " "))
+	rest := spec[start+1+len(header)+1:]
+	var b strings.Builder
+	for _, line := range strings.Split(rest, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if trimmed != "" && len(line)-len(trimmed) <= indent {
+			break
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func TestOpenAPIHasUniqueP04OperationIDs(t *testing.T) {
+	spec := readOpenAPI(t)
+	seen := map[string]int{}
+	re := regexp.MustCompile(`(?m)^[ \t]*operationId: ([A-Za-z][A-Za-z0-9]+)\s*$`)
+	for _, m := range re.FindAllStringSubmatch(spec, -1) {
+		seen[m[1]]++
+	}
+	for _, id := range p04OperationIDs {
+		if seen[id] == 0 {
+			t.Errorf("thiếu operationId %s", id)
+		}
+		if seen[id] > 1 {
+			t.Errorf("operationId %s bị trùng (%d)", id, seen[id])
+		}
+	}
+	if len(p04OperationIDs) != 23 {
+		t.Fatalf("catalog test phải đủ 23 operation P04 (plan P04 mục 3), có %d", len(p04OperationIDs))
+	}
+	for _, id := range p04AuthUIOperationIDs {
+		if seen[id] == 0 {
+			t.Errorf("thiếu operationId %s", id)
+		}
+		if seen[id] > 1 {
+			t.Errorf("operationId %s bị trùng (%d)", id, seen[id])
+		}
+	}
+	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + len(p04AuthUIOperationIDs) + 3; len(seen) != total {
+		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04 + authui) có %d", len(seen), total)
+	}
+}
+
+func TestProblemCatalogP04AppendedAtEnd(t *testing.T) {
+	n := len(p04ProblemStatus)
+	const authUITail = 1 // reset_token_invalid (ADR 0006) nối sau khối P04 content.
+	if len(httpx.ProblemCodes) < n+authUITail {
+		t.Fatalf("catalog quá ngắn: %d", len(httpx.ProblemCodes))
+	}
+	if got := httpx.ProblemCodes[len(httpx.ProblemCodes)-1]; got != "reset_token_invalid" {
+		t.Errorf("mã cuối catalog phải là reset_token_invalid (ADR 0006), có %s", got)
+	}
+	p04Start := len(httpx.ProblemCodes) - n - authUITail
+	tail := httpx.ProblemCodes[p04Start : p04Start+n]
+	for i, want := range p04ProblemStatus {
+		if tail[i] != want.code {
+			t.Errorf("mã P04 thứ %d phải là %s, có %s", i, want.code, tail[i])
+		}
+	}
+	if httpx.ProblemCodes[p04Start-1] != "passkey_not_found" {
+		t.Error("mã P04 phải nối ngay sau passkey_not_found (mã cuối của P03), không chèn giữa catalog")
+	}
+}
+
+func TestContentProblemStatusMatchesPlan(t *testing.T) {
+	for _, want := range p04ProblemStatus {
+		if got := httpx.ContentProblemStatus(want.code); got != want.status {
+			t.Errorf("ContentProblemStatus(%s) = %d, plan P04 mục 3 = %d", want.code, got, want.status)
+		}
+	}
+	reused := map[string]int{
+		"not_found":               404,
+		"invalid_request":         400,
+		"rate_limited":            429,
+		"precondition_required":   428,
+		"version_mismatch":        412,
+		"idempotency_conflict":    409,
+		"idempotency_in_progress": 409,
+		"vault_absent":            404,
+		"dependency_unavailable":  503,
+	}
+	for code, status := range reused {
+		if got := httpx.ContentProblemStatus(code); got != status {
+			t.Errorf("ContentProblemStatus(%s) = %d, muốn %d", code, got, status)
+		}
+	}
+	if got := httpx.ContentProblemStatus("passkey_exists"); got != 500 {
+		t.Errorf("code ngoài API content phải trả 500, có %d", got)
+	}
+}
+
+func TestOpenAPIP04ContractInvariants(t *testing.T) {
+	spec := readOpenAPI(t)
+
+	// Mọi operation có Idempotency-Key (P03 7 + P04 16) khai báo 409 qua IdempotencyConflict.
+	keyRefs := strings.Count(spec, "$ref: '#/components/parameters/IdempotencyKey'")
+	conflictRefs := strings.Count(spec, "$ref: '#/components/responses/IdempotencyConflict'")
+	if keyRefs != 23 || conflictRefs != 23 {
+		t.Errorf("phải có đúng 23 operation có I (P03 7 + P04 16) tham chiếu IdempotencyKey và IdempotencyConflict, có %d / %d", keyRefs, conflictRefs)
+	}
+
+	// If-Match version của content tách khỏi pattern vault.
+	versionIfMatch := openAPIBlock(t, spec, "    VersionIfMatch:")
+	if !strings.Contains(versionIfMatch, `pattern: '^"[1-9][0-9]{0,9}"$'`) {
+		t.Error(`VersionIfMatch phải có pattern '^"[1-9][0-9]{0,9}"$'`)
+	}
+	if got := strings.Count(spec, "$ref: '#/components/parameters/VersionIfMatch'"); got != 2 {
+		t.Errorf("chỉ itemUpdate và entryUpdate dùng VersionIfMatch, có %d tham chiếu", got)
+	}
+
+	// Mảng bắt buộc không bao giờ nullable (bài học HOTFIX-OAUTH-NULL, advisor-dec-089).
+	arrays := map[string][]string{
+		"ItemSummary":                {"tags"},
+		"ItemList":                   {"items"},
+		"ItemLookupResult":           {"items"},
+		"TagList":                    {"items"},
+		"EntryMetaList":              {"items"},
+		"EntryChangesPage":           {"changes"},
+		"ItemEntriesReorderResponse": {"entries"},
+		"ItemTagsAddRequest":         {"tag_ids"},
+		"ItemEntriesReorderRequest":  {"entry_ids"},
+	}
+	for schema, fields := range arrays {
+		block := openAPIBlock(t, spec, "    "+schema+":")
+		required := regexp.MustCompile(`(?m)^      required: \[([^\]]*)\]`).FindStringSubmatch(block)
+		if required == nil {
+			t.Errorf("%s thiếu required", schema)
+			continue
+		}
+		for _, field := range fields {
+			if !slices.Contains(strings.Split(strings.ReplaceAll(required[1], " ", ""), ","), field) {
+				t.Errorf("%s.%s phải nằm trong required", schema, field)
+			}
+			prop := openAPIBlock(t, block, "        "+field+":")
+			if !strings.Contains(prop, "          type: array\n") {
+				t.Errorf("%s.%s phải là `type: array` không nullable", schema, field)
+			}
+		}
+		if strings.Contains(block, "array, 'null'") || strings.Contains(block, "'null', array") {
+			t.Errorf("%s có mảng nullable", schema)
+		}
+	}
+
+	// Metadata entry (list, feed, response ghi) không mang envelope/ciphertext.
+	for _, schema := range []string{"EntryMeta", "EntryChange"} {
+		block := openAPIBlock(t, spec, "    "+schema+":")
+		if strings.Contains(block, "\n        envelope:") || strings.Contains(block, "\n        ciphertext:") {
+			t.Errorf("%s không được có envelope/ciphertext", schema)
+		}
+	}
+
+	// Import không nhận filename; không có PUT thay cả bộ tag.
+	// Kiểm key property (thụt 8 dấu cách), không kiểm chữ "filename" trong description.
+	if block := openAPIBlock(t, spec, "    EntryImportJsonRequest:"); strings.Contains(block, "\n        filename:") ||
+		!strings.Contains(block, "\n      additionalProperties: false\n") {
+		t.Error("EntryImportJsonRequest không được có property filename và phải additionalProperties: false (Q7)")
+	}
+	if block := openAPIBlock(t, spec, "  /items/{id}/tags:"); strings.Contains(block, "\n    put:") {
+		t.Error("không được có PUT /items/{id}/tags (Q3)")
+	}
+}
+
+// openAPIOperation trả block của operation có operationId `id` (từ dòng method tới trước
+// method hoặc path kế tiếp).
+func openAPIOperation(t *testing.T, spec, id string) string {
+	t.Helper()
+	spec = strings.ReplaceAll(spec, "\r\n", "\n")
+	at := strings.Index(spec, "\n      operationId: "+id+"\n")
+	if at < 0 {
+		t.Fatalf("openapi.yaml thiếu operationId %s", id)
+	}
+	start := strings.LastIndex(spec[:at], "\n    ")
+	end := len(spec)
+	if m := regexp.MustCompile(`\n(    (get|post|put|patch|delete):|  /|[a-z])`).FindStringIndex(spec[at+1:]); m != nil {
+		end = at + 1 + m[0]
+	}
+	return spec[start:end]
+}
+
+// TestOpenAPIP04PerOperationContract ghim đúng operation nào mang Idempotency-Key, If-Match,
+// 413/415, và các field nullable mà UI dựa vào (CFE1-12, CBE1-3).
+func TestOpenAPIP04PerOperationContract(t *testing.T) {
+	spec := readOpenAPI(t)
+	mutations := map[string]bool{
+		"itemCreate": true, "itemUpdate": true, "itemDelete": true, "itemRestore": true, "itemTagsAdd": true,
+		"itemTagRemove": true, "itemEntriesReorder": true, "tagUpsert": true, "tagRename": true, "tagDelete": true,
+		"tagRestore": true, "entryCreate": true, "entryImportJson": true, "entryUpdate": true, "entryDelete": true,
+		"entryRestore": true,
+	}
+	if len(mutations) != 16 {
+		t.Fatalf("plan P04 có 16 mutation, bảng test có %d", len(mutations))
+	}
+	entryBody := map[string]bool{"entryCreate": true, "entryImportJson": true, "entryUpdate": true, "entryDelete": true, "entryRestore": true}
+	for _, id := range p04OperationIDs {
+		op := openAPIOperation(t, spec, id)
+		hasKey := strings.Contains(op, "$ref: '#/components/parameters/IdempotencyKey'")
+		if hasKey != mutations[id] {
+			t.Errorf("%s: Idempotency-Key = %v, plan muốn %v", id, hasKey, mutations[id])
+		}
+		hasIfMatch := strings.Contains(op, "$ref: '#/components/parameters/VersionIfMatch'")
+		if want := id == "itemUpdate" || id == "entryUpdate"; hasIfMatch != want {
+			t.Errorf("%s: VersionIfMatch = %v, plan muốn %v", id, hasIfMatch, want)
+		}
+		if !mutations[id] {
+			if strings.Contains(op, "\n        '415':") {
+				t.Errorf("%s là GET, không được khai báo 415", id)
+			}
+			continue
+		}
+		if !strings.Contains(op, "\n        '415':") {
+			t.Errorf("%s: thiếu 415 (RequireJSONContent)", id)
+		}
+		want413 := "(invalid_request)"
+		if entryBody[id] {
+			want413 = "(entry_too_large)"
+		}
+		if r := openAPIBlock(t, op, "        '413':"); !strings.Contains(r, want413) {
+			t.Errorf("%s: 413 phải là %s", id, want413)
+		}
+		if !strings.Contains(op, "\n        '429':") {
+			t.Errorf("%s: thiếu 429 (content_write)", id)
+		}
+	}
+	for _, id := range []string{"itemRestore", "tagRestore", "entryRestore"} {
+		op := openAPIOperation(t, spec, id)
+		if !strings.Contains(op, "$ref: '#/components/schemas/EmptyObject'") ||
+			!strings.Contains(op, "\n      requestBody:\n        required: true\n") {
+			t.Errorf("%s: requestBody phải required là EmptyObject (gửi {} với Content-Type JSON, CFE2-2)", id)
+		}
+	}
+	if !strings.Contains(openAPIOperation(t, spec, "tagUpsert"), "\n        '201':") ||
+		!strings.Contains(openAPIOperation(t, spec, "tagUpsert"), "\n        '200':") {
+		t.Error("tagUpsert phải có cả 200 (đã có) và 201 (tạo mới)")
+	}
+
+	// Field nullable/required mà UI dựa vào.
+	nullable := map[string]string{"ItemSummary": "hint", "ItemList": "next_cursor", "EntryChange": "deleted_at", "EntryChangesPage": "next_cursor"}
+	for schema, field := range nullable {
+		prop := openAPIBlock(t, openAPIBlock(t, spec, "    "+schema+":"), "        "+field+":")
+		if ref := regexp.MustCompile(`\$ref: '#/components/schemas/(\w+)'`).FindStringSubmatch(prop); ref != nil {
+			prop = openAPIBlock(t, spec, "    "+ref[1]+":")
+		}
+		if !strings.Contains(prop, "'null'") {
+			t.Errorf("%s.%s phải nullable", schema, field)
+		}
+	}
+	page := openAPIBlock(t, spec, "    EntryChangesPage:")
+	if !regexp.MustCompile(`(?m)^      required: \[[^\]]*\bwatermark\b`).MatchString(page) {
+		t.Error("EntryChangesPage.watermark phải required")
+	}
+	if strings.Contains(openAPIBlock(t, page, "        watermark:"), "'null'") {
+		t.Error("EntryChangesPage.watermark không được nullable")
+	}
+	if since := openAPIBlock(t, spec, "    ChangesSince:"); !strings.Contains(since, "\n      required: false\n") {
+		t.Error("since phải optional (bootstrap watermark, CFE1-5)")
+	}
+	if reorder := openAPIBlock(t, spec, "    ItemEntriesReorderRequest:"); strings.Contains(reorder, "minItems") {
+		t.Error("entry_ids không có minItems: [] là hoán vị hợp lệ của tập rỗng (CBE1-2)")
 	}
 }

@@ -5,28 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mở khoá vault — engram</title>
 <link rel="stylesheet" href="tokens.css">
+<link rel="icon" href="../apps/web/app/icon.svg" type="image/svg+xml">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="tw.js"></script>
 </head>
 <body class="bg-canvas">
 
-<header class="max-w-container mx-auto px-5 pt-6 flex items-center gap-4">
-  <a href="landing.html" class="flex items-center gap-2.5 no-underline">
-    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-      <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
-        <stop offset="0%" stop-color="var(--logo-magenta)"/>
-        <stop offset="100%" stop-color="var(--logo-cyan)"/>
-      </linearGradient></defs>
-      <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
-      <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
-      <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
-            stroke-width="2.6" stroke-linecap="round"
-            stroke-dasharray="0.1 5.2 0.1 4 20"/>
-    </svg>
-    <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
-  </a>
-  <span class="vault-pill vault-shut">🔒 Vault đã khoá</span>
-  <button class="btn btn-tertiary !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+<header class="sticky top-0 z-40" style="background:color-mix(in srgb, var(--canvas) 88%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 h-[68px] flex items-center gap-2 sm:gap-4">
+    <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink hidden min-[480px]:inline">engram</span>
+    </a>
+    <div class="ml-auto flex items-center gap-1 sm:gap-2">
+      <span class="vault-pill vault-shut !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3" aria-label="Vault đã khoá · Vault locked"><span aria-hidden="true">🔒</span><span class="hidden sm:inline">Vault đã khoá</span></span>
+      <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
+      <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+      <a href="landing.html" class="btn btn-tertiary no-underline !text-body">Đăng xuất</a>
+    </div>
+  </div>
 </header>
 
 <main class="max-w-[560px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
@@ -68,15 +75,14 @@
       </label>
 
       <button class="btn btn-primary w-full !justify-center"
-              onclick="SAK.toast('Đang tính khoá… (Argon2id 64 MiB)')">Mở khoá</button>
+              onclick="SAK.toast('Đang mở khoá…')">Mở khoá</button>
       <p class="t-caption text-center mt-3 mb-0" style="color:var(--muted)">
         Máy chậm có thể mất vài giây. Việc này chạy hẳn trong trình duyệt.
       </p>
     </div>
 
     <div class="flex items-center justify-between gap-4 flex-wrap">
-      <a href="recovery.html" class="text-[14px]" style="color:var(--link)">Tôi quên passphrase</a>
-      <a href="landing.html" class="text-[14px]" style="color:var(--muted)">Đăng xuất</a>
+      <a href="recovery.html" class="text-[14px] text-[color:var(--link-ink)] underline">Tôi quên passphrase</a>
     </div>
   </section>
 
@@ -110,7 +116,7 @@
       </p>
     </div>
 
-    <a href="recovery.html" class="text-[14px]" style="color:var(--link)">Tôi quên passphrase</a>
+    <a href="recovery.html" class="text-[14px] text-[color:var(--link-ink)] underline">Tôi quên passphrase</a>
   </section>
 
   <!-- ============================================================= -->
@@ -140,7 +146,7 @@
   <section data-view="err" hidden class="flex flex-col gap-3">
     <div class="card p-5" id="err-passphrase-aead" style="border-color:var(--error)">
       <div class="flex items-center gap-2 mb-2">
-        <span class="badge-type" style="background:var(--pale-orange);color:var(--error)">passphrase sai · AEAD fail</span>
+        <span class="badge-type badge-error">sai passphrase</span>
       </div>
       <div role="alert" class="mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1">Passphrase không đúng · <span lang="en" class="font-normal" style="color:var(--muted)">Incorrect passphrase</span></p>
@@ -155,16 +161,16 @@
     </div>
 
     <div class="card p-5" id="err-insufficient-memory" style="border-color:var(--error)">
-      <p class="t-label mb-2" style="color:var(--muted)">Argon2id 64 MiB · derive failed</p>
+      <p class="t-label mb-2" style="color:var(--muted)">Giới hạn bộ nhớ · 64 MiB · <span lang="en">Memory limit · 64 MiB</span></p>
       <div role="alert" class="auth-alert mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để mở vault</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ trong Web Worker để dẫn xuất khoá từ passphrase.
+          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ để tính khoá từ passphrase.
           <strong>Đây không phải lỗi sai passphrase.</strong> Hãy mở bằng passkey hoặc thiết bị đã nhớ, đóng bớt tab, hoặc chuyển sang thiết bị khác.
         </p>
       </div>
       <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
-        <strong style="color:var(--body)">Not enough memory to unlock your vault.</strong> This device could not allocate 64 MiB in a Web Worker to derive the passphrase key — this does not mean your passphrase is wrong. Unlock with a passkey or remembered device, close other tabs, or try another device.
+        <strong style="color:var(--body)">Not enough memory to unlock your vault.</strong> This browser could not set aside the 64 MiB of memory needed to derive the key from your passphrase. This does not mean your passphrase is wrong. Unlock with a passkey or remembered device, close other tabs, or try another device.
       </p>
     </div>
 
@@ -227,11 +233,11 @@
     </div>
 
     <div class="card p-5" id="err-pk-aead" style="border-color:var(--error)">
-      <p class="t-label mb-2" style="color:var(--muted)">passkey.unlock_failed · AEAD wrap fail</p>
+      <p class="t-label mb-2" style="color:var(--muted)">passkey.unlock_failed</p>
       <div role="alert" class="mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Không mở vault bằng passkey này. Dùng passphrase hoặc recovery key.</p>
         <p class="text-[13px] m-0" style="color:var(--muted)">
-          Bản wrap trên máy chủ không giải mã được bằng khoá dẫn xuất từ passkey này. Đừng đặt lại vault vội — hãy dùng passphrase, recovery key hoặc một passkey khác.
+          Không mở được khoá vault bằng passkey này. Đừng đặt lại vault vội — hãy dùng passphrase, recovery key hoặc một passkey khác.
         </p>
       </div>
       <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
@@ -240,15 +246,15 @@
     </div>
 
     <div class="card p-5" id="err-rate-limited" style="border-color:var(--warning)">
-      <p class="t-label mb-2" style="color:var(--muted)">429 rate_limited · vault_passkey_options (20 / min) · Retry-After: 42</p>
+      <p class="t-label mb-2" style="color:var(--muted)">429 rate_limited · vault_passkey_options (20 / min)</p>
       <div role="alert" class="mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1">Yêu cầu passkey quá nhanh — vui lòng đợi</p>
         <p class="text-[13px] m-0" style="color:var(--muted)">
-          Lấy tuỳ chọn mở khoá bằng passkey giới hạn <span class="mono">20 lần / phút</span> cho mỗi tài khoản. Vui lòng đợi <span class="mono">42 giây</span> (<span class="mono">Retry-After: 42</span>) rồi thử lại, hoặc nhập passphrase để mở ngay.
+          Lấy tuỳ chọn mở khoá bằng passkey giới hạn <span class="mono">20 lần / phút</span> cho mỗi tài khoản. Vui lòng đợi <span class="mono">42 giây</span> rồi thử lại, hoặc nhập passphrase để mở ngay.
         </p>
       </div>
       <p class="text-[13px] m-0 pt-2" lang="en" style="color:var(--muted);border-top:1px solid var(--border)">
-        <strong style="color:var(--body)">Too many passkey requests.</strong> Passkey unlock options are limited to <span class="mono">20 requests per minute</span>. Please wait <span class="mono">42</span> seconds (<span class="mono">Retry-After: 42</span>) before trying again, or enter your vault passphrase.
+        <strong style="color:var(--body)">Too many passkey requests.</strong> Passkey unlock options are limited to <span class="mono">20 requests per minute</span>. Please wait <span class="mono">42</span> seconds before trying again, or enter your vault passphrase.
       </p>
     </div>
 

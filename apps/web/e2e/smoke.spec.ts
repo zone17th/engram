@@ -117,11 +117,13 @@ test.describe('P01 browser smoke', () => {
 
     await page.goto('/');
     const input = page.getByRole('combobox', { name: 'Search sample notes' });
-    await input.fill('ghi');
+    // P04 uipolish UIA-5/24: the hero searches the landing-local en fixture (mockup seed "wif");
+    // the first option is the tag row of the Tags group.
+    await input.fill('wif');
     await input.press('ArrowDown');
     await expect(page.getByRole('option').first()).toHaveAttribute('aria-selected', 'true');
     await input.press('Enter');
-    await expect(page.getByRole('status')).toContainText('Ghi chú họp thứ Ba');
+    await expect(page.getByRole('status')).toContainText('Selected #wifi-guest');
     expect(outbound).toEqual([]);
   });
 

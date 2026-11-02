@@ -10,6 +10,8 @@ import {
   resultMessageKey,
   sanitizeAuditMeta,
 } from '@/lib/auth/audit-catalog';
+import enMessages from '../messages/en.json';
+import viMessages from '../messages/vi.json';
 
 describe('audit catalog', () => {
   it('maps known events and unknown leftovers to i18n keys', () => {
@@ -17,6 +19,29 @@ describe('audit catalog', () => {
     expect(eventMessageKey('auth.login.success')).toBe('audit.events.auth_login_success');
     expect(eventMessageKey('not.a.real.event')).toBe('audit.events.unknown');
     expect(AUDIT_EVENTS).toContain('auth.reauth');
+    expect(AUDIT_EVENTS).toContain('auth.password.reset');
+    expect(eventMessageKey('auth.password.reset')).toBe('audit.events.auth_password_reset');
+  });
+
+  it('labels every vault service audit event instead of the generic fallback', () => {
+    const vaultEvents = [
+      'vault.create',
+      'vault.rewrap',
+      'vault.recover',
+      'vault.reset',
+      'recovery_key.consume',
+      'recovery_key.regenerate',
+      'recovery_key.rotate',
+      'passkey.register',
+      'passkey.revoke',
+    ];
+    for (const event of vaultEvents) {
+      const key = eventMessageKey(event);
+      expect(key).toBe(`audit.events.${event.replace(/\./g, '_')}`);
+      const leaf = key.replace('audit.events.', '');
+      expect((enMessages.settings.audit.events as Record<string, string>)[leaf]).toBeTruthy();
+      expect((viMessages.settings.audit.events as Record<string, string>)[leaf]).toBeTruthy();
+    }
   });
 
   it('maps notice kinds and results', () => {

@@ -30,6 +30,7 @@ import {
 } from '@/lib/api/auth-fetch';
 import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
 import { hasWebLocks } from '@/lib/auth/session-lock';
+import { commitAuthenticatedUser } from '@/lib/auth/user-changed';
 import { useReauth, type UseReauthReturn } from '@/features/auth/use-reauth';
 import {
   getKnownDeviceSessionUserId,
@@ -48,6 +49,8 @@ export type SessionState = {
   status: SessionStatus;
   me: Me | null;
   config: Awaited<ReturnType<typeof fetchAuthConfig>> | null;
+  configLoading: boolean;
+  configError: boolean;
   bootstrapComplete: boolean;
   sessionEpoch: number;
   webLocksAvailable: boolean;
@@ -122,6 +125,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (me?.user.id) {
       setKnownDeviceSessionUserId(me.user.id);
+      commitAuthenticatedUser(me.user.id);
     }
   }, [me?.user.id]);
 
@@ -174,6 +178,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const signup = useCallback(
     async (...args: Parameters<typeof apiSignup>) => {
       const result = await apiSignup(...args);
+      commitAuthenticatedUser(result.user.id);
       setKnownDeviceSessionUserId(result.user.id);
       bumpSessionEpoch();
       setSessionEpochState(getSessionEpoch());
@@ -187,6 +192,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (...args: Parameters<typeof apiLogin>) => {
       const result = await apiLogin(...args);
+      commitAuthenticatedUser(result.user.id);
       setKnownDeviceSessionUserId(result.user.id);
       bumpSessionEpoch();
       setSessionEpochState(getSessionEpoch());
@@ -199,6 +205,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const completeOAuthLogin = useCallback(async () => {
     const result = await oauthComplete();
+    commitAuthenticatedUser(result.user.id);
     bumpSessionEpoch();
     setKnownDeviceSessionUserId(result.user.id);
     setSessionEpochState(getSessionEpoch());
@@ -206,7 +213,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     queryClient.setQueryData(['auth', 'me', getSessionEpoch()], result);
     return result;
   }, [clearPrivateCache, queryClient]);
-
   useEffect(() => {
     return subscribeSessionBroadcast((message, origin) => {
       if (message.type === 'session_changed') {
@@ -275,6 +281,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       status,
       me,
       config: configQuery.data ?? null,
+      configLoading: configQuery.isLoading,
+      configError: configQuery.isError,
       bootstrapComplete,
       sessionEpoch,
       webLocksAvailable: hasWebLocks(),
@@ -291,6 +299,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       status,
       me,
       configQuery.data,
+      configQuery.isLoading,
+      configQuery.isError,
       bootstrapComplete,
       sessionEpoch,
       lastSessionEndReason,
@@ -309,6 +319,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
 export function useSession() {
   const ctx = useContext(SessionContext);
-  if (!ctx) throw new Error('useSession phải nằm trong SessionProvider');
+  if (!ctx) throw new Error('useSession must be used within SessionProvider');
   return ctx;
 }

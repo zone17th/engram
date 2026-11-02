@@ -105,6 +105,30 @@ describe('problem', () => {
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
   });
 
+  it('nối đủ code P04 content và reset_token_invalid ở cuối catalog, đúng thứ tự plan P04 mục 3 và ADR 0006', () => {
+    const p04 = [
+      'name_invalid',
+      'hint_invalid',
+      'tag_display_invalid',
+      'item_id_conflict',
+      'item_deleted',
+      'item_tag_limit',
+      'item_entry_limit',
+      'tag_conflict',
+      'entry_invalid',
+      'entry_too_large',
+      'entry_id_conflict',
+      'entry_key_mismatch',
+      'entry_nonce_reused',
+      'entry_restore_via_item',
+      'reorder_mismatch',
+      'changes_window_expired',
+    ] as const;
+    const tail = [...p04, 'reset_token_invalid'] as const;
+    expect(ERROR_CODES.slice(-tail.length)).toEqual([...tail]);
+    expect(ERROR_CODES[ERROR_CODES.length - tail.length - 1]).toBe('passkey_not_found');
+  });
+
   it('đồng bộ hai chiều giữa ERROR_CODES và danh sách ProblemCode trong openapi.yaml', () => {
     const openApiCodes = readOpenApiProblemCodes();
     for (const code of ERROR_CODES) {

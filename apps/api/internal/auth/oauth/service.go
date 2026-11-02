@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,12 +12,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/clock"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/secevent"
+	"github.com/zone17th/engram/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/authctx"
+	"github.com/zone17th/engram/apps/api/internal/clock"
+	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
 
 const (
@@ -28,13 +29,15 @@ const (
 )
 
 type Service struct {
-	cfg       *config.Config
-	pool      *pgxpool.Pool
-	q         *gen.Queries
-	sessions  *auth.SessionStore
-	audit     auth.Auditor
-	clk       clock.Clock
-	providers map[string]Provider
+	cfg               *config.Config
+	pool              *pgxpool.Pool
+	q                 *gen.Queries
+	sessions          *auth.SessionStore
+	audit             auth.Auditor
+	clk               clock.Clock
+	providers         map[string]Provider
+	hooksMu           sync.RWMutex
+	onOwnerDiscovered func()
 }
 
 func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *auth.SessionStore, audit auth.Auditor, clk clock.Clock, providers []Provider) *Service {
@@ -48,6 +51,18 @@ func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *auth.SessionSt
 		}
 	}
 	return &Service{cfg: cfg, pool: pool, q: gen.New(pool), sessions: sessions, audit: audit, clk: clk, providers: m}
+}
+
+func (s *Service) SetOnOwnerDiscovered(fn func()) {
+	s.hooksMu.Lock()
+	s.onOwnerDiscovered = fn
+	s.hooksMu.Unlock()
+}
+
+func (s *Service) getOnOwnerDiscovered() func() {
+	s.hooksMu.RLock()
+	defer s.hooksMu.RUnlock()
+	return s.onOwnerDiscovered
 }
 
 func (s *Service) Provider(name string) (Provider, bool) {
@@ -84,6 +99,16 @@ func (s *Service) StartLogin(ctx context.Context, provider, existingBinding stri
 }
 
 func (s *Service) StartLink(ctx context.Context, p authctx.Principal, provider, existingBinding string, grantDeadline time.Time) (StartResult, error) {
+	u, err := s.q.GetUserByID(ctx, p.UserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return StartResult{}, auth.SessionInvalid("invalid")
+		}
+		return StartResult{}, err
+	}
+	if !u.EmailVerifiedAt.Valid {
+		return StartResult{}, auth.ErrEmailNotVerified
+	}
 	return s.start(ctx, provider, "link", existingBinding, &p, "account.identity_link", false, grantDeadline)
 }
 
@@ -292,8 +317,11 @@ func (s *Service) Callback(ctx context.Context, provider, code, state, binding, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q = s.q.WithTx(tx)
+	var linkedUser gen.AppUser
 	if linked {
-		if _, err := q.GetUserByIDForUpdate(ctx, expected.UserID); err != nil {
+		var err error
+		linkedUser, err = q.GetUserByIDForUpdate(ctx, expected.UserID)
+		if err != nil {
 			return "invalid_flow", "", time.Time{}, nil
 		}
 		if err := s.sessions.EnsureLiveTx(ctx, q, expected); err != nil {
@@ -331,6 +359,9 @@ func (s *Service) Callback(ctx context.Context, provider, code, state, binding, 
 		return "login_ready", "", time.Time{}, nil
 	case "link":
 		if claimed.ExpectedUserID == nil || claimed.ExpectedSessionID == nil {
+			return "invalid_flow", "", time.Time{}, nil
+		}
+		if !linkedUser.EmailVerifiedAt.Valid {
 			return "invalid_flow", "", time.Time{}, nil
 		}
 		if existing, err := q.GetIdentityByProviderUID(ctx, gen.GetIdentityByProviderUIDParams{Provider: id.Provider, ProviderUid: &id.UID}); err == nil {
@@ -423,13 +454,7 @@ func (s *Service) Complete(ctx context.Context, binding, ip, ua string) (auth.Me
 	if err != nil {
 		return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return auth.Me{}, auth.IssueResult{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := s.q.WithTx(tx)
-	row, err := q.GetLatestOAuthTxByBinding(ctx, auth.SHA256Bytes(bindRaw))
+	row, err := s.q.GetLatestOAuthTxByBinding(ctx, auth.SHA256Bytes(bindRaw))
 	if err != nil {
 		return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
 	}
@@ -440,42 +465,119 @@ func (s *Service) Complete(ctx context.Context, binding, ip, ua string) (auth.Me
 	if !row.CompletionDeadline.Valid || !row.CompletionDeadline.Time.After(now) || !row.ExpiresAt.Time.After(now) {
 		return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
 	}
+	if row.IdentityProvider == nil || row.IdentityProviderUid == nil || row.IdentityEmail == nil {
+		return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
+	}
+	provider, uid := *row.IdentityProvider, *row.IdentityProviderUid
+
+	ident, identErr := s.q.GetIdentityByProviderUID(ctx, gen.GetIdentityByProviderUIDParams{Provider: provider, ProviderUid: &uid})
+	if identErr != nil && !errors.Is(identErr, pgx.ErrNoRows) {
+		return auth.Me{}, auth.IssueResult{}, identErr
+	}
+	if fn := s.getOnOwnerDiscovered(); fn != nil {
+		fn()
+	}
+
+	if identErr == nil {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return auth.Me{}, auth.IssueResult{}, err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		q := s.q.WithTx(tx)
+		uLocked, err := q.GetUserByIDForUpdate(ctx, ident.UserID)
+		if err != nil {
+			return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
+		}
+		identNow, err := q.GetIdentityByProviderUID(ctx, gen.GetIdentityByProviderUIDParams{Provider: provider, ProviderUid: &uid})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
+			}
+			return auth.Me{}, auth.IssueResult{}, err
+		}
+		if identNow.UserID != uLocked.ID {
+			return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
+		}
+		locked, err := q.GetOAuthTxByIDForUpdate(ctx, row.ID)
+		if err != nil {
+			return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
+		}
+		now = s.clk.Now()
+		if locked.Mode != "login" || locked.Status != "ready" || locked.ConsumedAt.Valid {
+			return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
+		}
+		if !locked.CompletionDeadline.Valid || !locked.CompletionDeadline.Time.After(now) || !locked.ExpiresAt.Time.After(now) {
+			return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
+		}
+		if locked.IdentityProvider == nil || locked.IdentityProviderUid == nil || *locked.IdentityProvider != provider || *locked.IdentityProviderUid != uid {
+			return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
+		}
+		issued, err := s.sessions.Issue(ctx, tx, auth.IssueParams{UserID: uLocked.ID, IPHash: auth.HashIP(s.cfg.AuthIPPepper, ip), UserAgent: ua})
+		if err != nil {
+			return auth.Me{}, auth.IssueResult{}, err
+		}
+		if _, err := q.CompleteOAuthTransaction(ctx, gen.CompleteOAuthTransactionParams{ID: locked.ID, ConsumedAt: timestamptz(now)}); err != nil {
+			return auth.Me{}, auth.IssueResult{}, err
+		}
+		uidu, sid := uLocked.ID, issued.Principal.SessionID
+		if s.audit != nil {
+			if err := s.audit.Record(ctx, tx, secevent.Record{
+				UserID: &uidu, SessionID: &sid, Event: secevent.EventOAuthLogin, Result: secevent.ResultSuccess,
+				Actor: "user", Meta: secevent.Meta{Provider: provider},
+			}); err != nil {
+				return auth.Me{}, auth.IssueResult{}, err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return auth.Me{}, auth.IssueResult{}, err
+		}
+		return auth.Me{}, issued, nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return auth.Me{}, auth.IssueResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
 	locked, err := q.GetOAuthTxByIDForUpdate(ctx, row.ID)
-	if err != nil || locked.Status != "ready" {
+	if err != nil || locked.Status != "ready" || locked.ConsumedAt.Valid {
+		return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
+	}
+	now = s.clk.Now()
+	if !locked.CompletionDeadline.Valid || !locked.CompletionDeadline.Time.After(now) || !locked.ExpiresAt.Time.After(now) {
 		return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
 	}
 	if locked.IdentityProvider == nil || locked.IdentityProviderUid == nil || locked.IdentityEmail == nil {
 		return auth.Me{}, auth.IssueResult{}, auth.ErrOAuthStateInvalid
 	}
 	provider, uid, email := *locked.IdentityProvider, *locked.IdentityProviderUid, *locked.IdentityEmail
-
-	var userID uuid.UUID
-	if ident, err := q.GetIdentityByProviderUID(ctx, gen.GetIdentityByProviderUIDParams{Provider: provider, ProviderUid: &uid}); err == nil {
-		userID = ident.UserID
+	if _, err := q.GetIdentityByProviderUID(ctx, gen.GetIdentityByProviderUIDParams{Provider: provider, ProviderUid: &uid}); err == nil {
+		return auth.Me{}, auth.IssueResult{}, auth.ErrIdentityConflict
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return auth.Me{}, auth.IssueResult{}, err
-	} else {
-		if _, err := q.GetUserByEmail(ctx, email); err == nil {
+	}
+	if _, err := q.GetUserByEmail(ctx, email); err == nil {
+		return auth.Me{}, auth.IssueResult{}, auth.ErrEmailTaken
+	}
+	u, err := q.InsertUser(ctx, gen.InsertUserParams{Email: email, Locale: "en"})
+	if err != nil {
+		if authUnique(err) {
 			return auth.Me{}, auth.IssueResult{}, auth.ErrEmailTaken
 		}
-		u, err := q.InsertUser(ctx, gen.InsertUserParams{Email: email, Locale: "en"})
-		if err != nil {
-			if authUnique(err) {
-				return auth.Me{}, auth.IssueResult{}, auth.ErrEmailTaken
-			}
-			return auth.Me{}, auth.IssueResult{}, err
-		}
-		if _, err := q.UpdateUserEmailVerified(ctx, gen.UpdateUserEmailVerifiedParams{ID: u.ID, EmailVerifiedAt: timestamptz(now)}); err != nil {
-			return auth.Me{}, auth.IssueResult{}, err
-		}
-		if _, err := q.InsertOAuthIdentity(ctx, gen.InsertOAuthIdentityParams{UserID: u.ID, Provider: provider, ProviderUid: &uid}); err != nil {
-			if authUnique(err) {
-				return auth.Me{}, auth.IssueResult{}, auth.ErrIdentityConflict
-			}
-			return auth.Me{}, auth.IssueResult{}, err
-		}
-		userID = u.ID
+		return auth.Me{}, auth.IssueResult{}, err
 	}
+	if _, err := q.UpdateUserEmailVerified(ctx, gen.UpdateUserEmailVerifiedParams{ID: u.ID, EmailVerifiedAt: timestamptz(now)}); err != nil {
+		return auth.Me{}, auth.IssueResult{}, err
+	}
+	if _, err := q.InsertOAuthIdentity(ctx, gen.InsertOAuthIdentityParams{UserID: u.ID, Provider: provider, ProviderUid: &uid}); err != nil {
+		if authUnique(err) {
+			return auth.Me{}, auth.IssueResult{}, auth.ErrIdentityConflict
+		}
+		return auth.Me{}, auth.IssueResult{}, err
+	}
+	userID := u.ID
 	issued, err := s.sessions.Issue(ctx, tx, auth.IssueParams{UserID: userID, IPHash: auth.HashIP(s.cfg.AuthIPPepper, ip), UserAgent: ua})
 	if err != nil {
 		return auth.Me{}, auth.IssueResult{}, err

@@ -12,6 +12,7 @@ import { useOptionalVault } from '@/features/vault/vault-provider';
  */
 export function LockedBanner() {
   const t = useTranslations('vault.locked');
+  const tItem = useTranslations('content.item');
   const vault = useOptionalVault();
   const pathname = usePathname();
   const mode = vault?.state;
@@ -21,11 +22,17 @@ export function LockedBanner() {
     <div
       role="status"
       data-testid="vault-locked-banner"
-      className="vault-shut border-b border-line"
+      className="locked-banner"
     >
       <div className="mx-auto flex max-w-container flex-wrap items-center gap-3 px-5 py-3">
         <p className="t-body m-0 min-w-0 flex-1">
-          <strong>{t('bannerTitle')}.</strong> {t('bannerBody')}
+          <strong>{t('bannerTitle')}.</strong>{' '}
+          <span className="sm:hidden" data-testid="vault-locked-banner-body-short">
+            {tItem('lockedBannerBodyShort')}
+          </span>
+          <span className="hidden sm:inline" data-testid="vault-locked-banner-body-full">
+            {t('bannerBody')}
+          </span>
         </p>
         <Link
           href={unlockUrl(pathname ?? '/app')}

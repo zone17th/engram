@@ -58,6 +58,7 @@ services:
       AUTH_REQUIRE_EMAIL_VERIFICATION: ${AUTH_REQUIRE_EMAIL_VERIFICATION:-false}
       AUTH_FAKE_OAUTH: ${AUTH_FAKE_OAUTH:-true}
       AUTH_MAIL_SINK_DIR: /tmp/engram-mail
+      AUTH_MAIL_CAPTURE_AS_DELIVERY: ${AUTH_MAIL_CAPTURE_AS_DELIVERY:-false}
       AUTH_TRUSTED_PROXY_CIDRS: 172.16.0.0/12,10.0.0.0/8,127.0.0.1/32
     volumes:
       - ../.data/mail-sink:/tmp/engram-mail
@@ -100,9 +101,11 @@ services:
       args:
         NODE_IMAGE: ${NODE_IMAGE}
         API_UPSTREAM: ${COMPOSE_API_UPSTREAM:-http://api:8080}
+        NEXT_PUBLIC_CONTENT_ENABLED: ${NEXT_PUBLIC_CONTENT_ENABLED:-false}
     environment:
       # Browser vẫn chỉ nói chuyện với web trên một origin; Next proxy tiếp sang api.
       API_UPSTREAM: ${COMPOSE_API_UPSTREAM:-http://api:8080}
+      NEXT_PUBLIC_CONTENT_ENABLED: ${NEXT_PUBLIC_CONTENT_ENABLED:-false}
     ports: ['3000:3000']
     depends_on: [api]
 

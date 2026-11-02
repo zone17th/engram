@@ -1,0 +1,275 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "duplicate-keys",
+      "file": "duplicate-keys.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 31,
+      "description": "Object with duplicate keys {\"a\":1,\"a\":2} preserving both occurrences"
+    },
+    {
+      "id": "integer-keys-order",
+      "file": "integer-keys-order.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 61,
+      "description": "Object with integer-like keys \"10\" before \"2\" before \"1\" in source order"
+    },
+    {
+      "id": "exact-numbers",
+      "file": "exact-numbers.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 126,
+      "description": "Exact number lexemes: 9007199254740993, 1e400, -0, 0.10"
+    },
+    {
+      "id": "escapes-and-unicode",
+      "file": "escapes-and-unicode.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 187,
+      "description": "Escaped and literal Unicode characters: é, \\u00e9, 😀, \\ud83d\\ude00, \\/"
+    },
+    {
+      "id": "whitespace-crlf-tab",
+      "file": "whitespace-crlf-tab.json",
+      "kind": "valid",
+      "eol": "crlf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 81,
+      "description": "CRLF line endings and tab indentation in structural whitespace"
+    },
+    {
+      "id": "root-crlf",
+      "file": "root-crlf.json",
+      "kind": "valid",
+      "eol": "crlf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 64,
+      "description": "Root object formatted with pure CRLF line endings"
+    },
+    {
+      "id": "mixed-eol",
+      "file": "mixed-eol.json",
+      "kind": "valid",
+      "eol": "mixed",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 98,
+      "description": "Mixed CRLF and LF line endings (first break CRLF, tie-breaker / majority test)"
+    },
+    {
+      "id": "lone-cr-eol",
+      "file": "lone-cr-eol.json",
+      "kind": "valid",
+      "eol": "cr",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 37,
+      "description": "JSON whitespace containing lone CR (\\r) line breaks"
+    },
+    {
+      "id": "root-number",
+      "file": "root-number.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 2,
+      "description": "Root primitive number 42"
+    },
+    {
+      "id": "root-string",
+      "file": "root-string.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 4,
+      "description": "Root primitive string \"ok\""
+    },
+    {
+      "id": "root-null",
+      "file": "root-null.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 4,
+      "description": "Root primitive null"
+    },
+    {
+      "id": "root-true",
+      "file": "root-true.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 4,
+      "description": "Root primitive boolean true"
+    },
+    {
+      "id": "empty-array",
+      "file": "empty-array.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 2,
+      "description": "Single-line empty array []"
+    },
+    {
+      "id": "empty-object",
+      "file": "empty-object.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 2,
+      "description": "Single-line empty object {}"
+    },
+    {
+      "id": "mixed-array",
+      "file": "mixed-array.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 76,
+      "description": "Mixed array containing primitives, object, and nested array"
+    },
+    {
+      "id": "array-of-arrays",
+      "file": "array-of-arrays.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 36,
+      "description": "Array of arrays rendered as expandable \"Array (n)\" rows"
+    },
+    {
+      "id": "array-of-objects-dup-row",
+      "file": "array-of-objects-dup-row.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 110,
+      "description": "Array of objects where row 1 has duplicate key \"id\" and falls back to field/value view"
+    },
+    {
+      "id": "array-of-objects-25-cols",
+      "file": "array-of-objects-25-cols.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 536,
+      "description": "Array of objects with 25 distinct keys across rows (first 20 become columns, 21..25 become +5 field)"
+    },
+    {
+      "id": "lone-surrogate-string",
+      "file": "lone-surrogate-string.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 87,
+      "description": "Valid JSON containing lone surrogate escape \"\\ud800\" (marked read-only in table view)"
+    },
+    {
+      "id": "string-control-escapes",
+      "file": "string-control-escapes.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 120,
+      "description": "Strings containing escaped \\n (multiline), \\r\\n (read-only in table), and \\t"
+    },
+    {
+      "id": "proto-keys",
+      "file": "proto-keys.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 231,
+      "description": "Object and array-of-objects using __proto__, constructor, and hasOwnProperty as keys"
+    },
+    {
+      "id": "deep-10000-array",
+      "file": "deep-10000-array.json",
+      "kind": "valid",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": true,
+      "byteLength": 20001,
+      "description": "10000-level nested array [[[...]]] (~20 KB) testing iterative parser and lazy model without stack overflow"
+    },
+    {
+      "id": "single-bom-crlf",
+      "file": "single-bom-crlf.json",
+      "kind": "valid-bom",
+      "eol": "crlf",
+      "expectedBomStripped": true,
+      "expectedValidJson": true,
+      "byteLength": 39,
+      "description": "UTF-8 file with single leading BOM and CRLF; BOM stripped once, remaining bytes preserved verbatim"
+    },
+    {
+      "id": "two-bom",
+      "file": "two-bom.json",
+      "kind": "invalid-json-second-bom",
+      "eol": "lf",
+      "expectedBomStripped": true,
+      "expectedValidJson": false,
+      "byteLength": 13,
+      "description": "Two leading UTF-8 BOMs: first stripped, second U+FEFF rejected as JSON whitespace and kept for Save as text"
+    },
+    {
+      "id": "invalid-utf8-c3-28",
+      "file": "invalid-utf8-c3-28.bin",
+      "kind": "invalid-utf8",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": false,
+      "byteLength": 10,
+      "description": "Invalid 2-byte UTF-8 sequence 0xC3 0x28 inside JSON string"
+    },
+    {
+      "id": "invalid-utf8-overlong",
+      "file": "invalid-utf8-overlong.bin",
+      "kind": "invalid-utf8",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": false,
+      "byteLength": 10,
+      "description": "Overlong UTF-8 encoding 0xC0 0xAF for slash"
+    },
+    {
+      "id": "invalid-utf8-surrogate",
+      "file": "invalid-utf8-surrogate.bin",
+      "kind": "invalid-utf8",
+      "eol": "lf",
+      "expectedBomStripped": false,
+      "expectedValidJson": false,
+      "byteLength": 11,
+      "description": "CESU-8 encoded UTF-16 high surrogate 0xED 0xA0 0x80 (U+D800)"
+    }
+  ]
+}

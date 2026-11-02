@@ -46,6 +46,23 @@ export const ERROR_CODES = [
   'passkey_name_invalid',
   'passkey_exists',
   'passkey_not_found',
+  'name_invalid',
+  'hint_invalid',
+  'tag_display_invalid',
+  'item_id_conflict',
+  'item_deleted',
+  'item_tag_limit',
+  'item_entry_limit',
+  'tag_conflict',
+  'entry_invalid',
+  'entry_too_large',
+  'entry_id_conflict',
+  'entry_key_mismatch',
+  'entry_nonce_reused',
+  'entry_restore_via_item',
+  'reorder_mismatch',
+  'changes_window_expired',
+  'reset_token_invalid',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -67,7 +84,7 @@ export interface ProblemDetails {
   /** Chỉ khi code = session_invalid; token lạ dùng invalid. */
   reason?: SessionInvalidReason;
   captcha_required?: boolean;
-  /** Phiên bản hiện tại của vault khi code = version_mismatch (412). */
+  /** Phiên bản hiện tại của vault, mục hoặc entry khi code = version_mismatch (412). */
   current_version?: number;
 }
 

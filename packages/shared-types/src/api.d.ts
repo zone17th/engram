@@ -64,7 +64,7 @@ export interface paths {
         };
         /**
          * Cấu hình auth công khai
-         * @description Provider đang bật, cờ verification, site key CAPTCHA. Không lộ secret.
+         * @description Provider đang bật, cờ verification, site key CAPTCHA, khả năng gửi mail thực tế (mail_delivery_available). Không lộ secret.
          */
         get: operations["authConfig"];
         put?: never;
@@ -216,7 +216,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Bắt đầu liên kết provider */
+        /**
+         * Bắt đầu liên kết provider
+         * @description Yêu cầu session + CSRF + re-auth grant account.identity_link và email tài khoản hiện tại đã xác minh (chưa xác minh trả 403 email_not_verified, ADR 0006 / advisor-dec-140 D3).
+         */
         post: operations["authOauthLinkStart"];
         delete?: never;
         options?: never;
@@ -353,6 +356,64 @@ export interface paths {
          * @description Chỉ khi chưa có password và email hiện tại đã verified. Không phải reset.
          */
         post: operations["authPasswordEnrollSend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password/forgot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Yêu cầu đặt lại mật khẩu tài khoản qua email
+         * @description Chống dò tài khoản (anti-enumeration, ADR 0006, advisor-dec-140): khi mail_delivery_available == false,
+         *     trả ngay 503 mail_delivery_unavailable trước khi kiểm tra CAPTCHA/quota hay tra cứu DB để UI không hứa hẹn
+         *     kiểm tra hộp thư (advisor-dec-086). Khi mail_delivery_available == true, sau cú pháp, IP quota, Turnstile
+         *     CAPTCHA đồng nhất (khi bật) và HMAC email quota (1/phút, 3/giờ đếm trước khi tra DB), handler đưa yêu cầu
+         *     vào hàng đợi worker có giới hạn trong bộ nhớ (forgotQueueSize = 128) và trả ngay 202 (body rỗng, cùng lớp
+         *     thời gian phản hồi). Tài khoản OAuth-only không sinh reset token (chỉ gửi mail nhắc dùng US1b theo locale).
+         *     Không mở khoá hay đụng tới vault (user-dec-016).
+         */
+        post: operations["authPasswordForgot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Đặt lại mật khẩu tài khoản bằng token từ email
+         * @description Tiêu thụ token một lần (43 ký tự base64url = 32 byte CSPRNG, TTL 30 phút, gắn với user_id, target_email,
+         *     SHA-256 của password_hash hiện tại và bản chụp was_email_unverified; khoá theo thứ tự app_user FOR UPDATE ->
+         *     RevokeAllUserSessions trên session -> password_reset_token FOR UPDATE), cập nhật password_hash mới, thu hồi
+         *     toàn bộ session và refresh token, ghi secevent auth.password.reset và gửi notice mail chuyên biệt
+         *     password_reset_notice theo locale của tài khoản (ADR 0006, advisor-dec-140, advisor-dec-146). Nếu tài khoản
+         *     chưa xác minh email lúc phát hành token (was_email_unverified) hoặc hiện tại, đồng thời đánh dấu email đã xác
+         *     minh, huỷ các luồng OAuth login ready của các danh tính bị gỡ cùng các luồng link/reauth đang chờ, và gỡ toàn
+         *     bộ danh tính OAuth trong cùng transaction (D3, E1 A). Không tự động đăng nhập (trả 204 và xoá toàn bộ cookie
+         *     auth bằng ClearAuthCookies). Tuyệt đối không mở khoá, re-key hay reset vault (user-dec-016). Thiếu trường,
+         *     giá trị null hoặc sai kiểu JSON trả 400 invalid_request; mọi lỗi giá trị chuỗi token (rỗng, sai định dạng
+         *     base64url/độ dài, không tồn tại, đã dùng, hết hạn, lệch trạng thái) đều trả 400 reset_token_invalid. Khi gặp
+         *     SQLSTATE 40P01/55P03, server rollback và tự động retry 1 lần; nếu vẫn xung đột khoá thì trả 503
+         *     dependency_unavailable kèm Retry-After: 1 (E2 B).
+         */
+        post: operations["authPasswordReset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -797,12 +858,381 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Danh sách mục sống của user (lưới gần đây hoặc kết quả tìm theo đầu tên)
+         * @description `sort=recent` (mặc định) sắp `last_used_at DESC, id` cho lưới trang chủ; `sort=alpha` sắp `name_normalized, id`
+         *     cho kết quả tìm. `q` là prefix trên `name_normalized` (cùng chuẩn hoá với name, `%`/`_` được escape; fuzzy thuộc P05),
+         *     tối đa 200 rune sau trim. Cursor keyset opaque gắn với `sort`/`tag_id`/`q`; dùng cursor với tham số khác → `400 invalid_request`.
+         *     `tag_id` không tồn tại, của user khác hoặc đã xoá → `404 not_found`. Client chỉ gửi `q` khi người dùng chủ động tìm (Enter).
+         */
+        get: operations["itemsList"];
+        put?: never;
+        /**
+         * Tạo mục mới (không upsert theo name)
+         * @description Luôn tạo mục mới, kể cả khi đã có mục trùng tên (SPEC §2.4). Client có thể gửi `id` UUID để retry nhiều bước của
+         *     quick-add không tạo bản sao; `id` đã tồn tại (của bất kỳ user nào, sống hay đã xoá) với request khác → `409 item_id_conflict`.
+         *     Body tối đa 16 KiB, chặn trước bước idempotency (`413 invalid_request`).
+         */
+        post: operations["itemCreate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tra cứu chính xác mọi mục sống có cùng tên đã chuẩn hoá (quick-add)
+         * @description Server chuẩn hoá `name` (plan P04 mục 2.2) và trả **mọi** mục sống có `name_normalized` bằng đúng giá trị đó,
+         *     sắp `created_at DESC, id`; `total` là `count(*)` chính xác trong cùng snapshot. Không dùng `/suggest` top-K.
+         *     Không có mục nào → `{items: [], total: 0, next_cursor: null}`. Chỉ `name` đi lên, không bao giờ body entry.
+         */
+        get: operations["itemsLookupExact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Đọc một mục sống
+         * @description Cập nhật `last_used_at` (throttle 5 phút). Mục đã xoá, không tồn tại hoặc của user khác → `404 not_found`.
+         */
+        get: operations["itemGet"];
+        put?: never;
+        post?: never;
+        /**
+         * Xoá mềm mục (Undo bằng itemRestore trong 30 ngày)
+         * @description Sinh `delete_batch`; mục và mọi entry **sống** của mục bị xoá mềm cùng batch (`deleted_via='item'`); `entry_count = 0`;
+         *     `item_count − 1` trên mọi tag gắn với mục; `item_tag` giữ nguyên để restore. Mục đã xoá → `204` không đổi gì.
+         *     Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
+         */
+        delete: operations["itemDelete"];
+        options?: never;
+        head?: never;
+        /**
+         * Đổi tên hoặc hint của mục (If-Match theo version)
+         * @description Bắt buộc `If-Match: "<version>"` của mục. Server khoá hàng rồi so: không tồn tại/không thuộc user/đã xoá → `404 not_found`
+         *     (ưu tiên hơn 412); lệch → `412 version_mismatch` kèm `current_version`. Thành công → `version + 1`. `hint: null` xoá hint.
+         *     Gán/gỡ tag không tăng version.
+         */
+        patch: operations["itemUpdate"];
+        trace?: never;
+    };
+    "/items/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Khôi phục mục đã xoá mềm
+         * @description Khôi phục mục và **chỉ** entry có `deleted_via='item'` cùng `delete_batch` của lần xoá mục; entry user đã xoá riêng trước đó
+         *     vẫn xoá. `item_count + 1` cho mọi tag gắn với mục. Số tag sống của mục sau restore > 20 → `409 item_tag_limit`, không restore gì.
+         *     Mục đang sống → `200` không đổi gì. Client gửi `{}` với `Content-Type: application/json` như mọi POST (thiếu header → `415 invalid_request`); server vẫn nhận body rỗng.
+         */
+        post: operations["itemRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}/tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gán thêm tag cho mục (cộng dồn, không thay cả bộ)
+         * @description Thêm các cặp chưa có (`ON CONFLICT DO NOTHING`). Mọi `tag_id` phải là tag sống của cùng user, không thì `404 not_found`
+         *     cho cả request và không ghi gì. Tổng tag sống sau hợp > 20 → `409 item_tag_limit`. Cập nhật `tag.item_count` và `last_used_at`.
+         *     Không tăng `version` của mục. Không có `PUT /items/{id}/tags` (ghi đè snapshot, Q3).
+         */
+        post: operations["itemTagsAdd"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}/tags/{tag_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Gỡ một tag khỏi mục
+         * @description Gỡ đúng một cặp; cặp không tồn tại → vẫn `200` với trạng thái hiện tại, không đổi gì. Trả `ItemSummary` để client cập nhật cache.
+         *     Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
+         */
+        delete: operations["itemTagRemove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Danh sách metadata entry sống của mục
+         * @description Sắp `(position, id)`. **Chỉ metadata** (`EntryMeta`): không envelope, không ciphertext; client tải body từng card bằng `entryGet`.
+         */
+        get: operations["itemEntriesList"];
+        put?: never;
+        /**
+         * Tạo entry đã mã hoá (text hoặc json) trong mục
+         * @description Client sinh `id` UUID v4 một lần trước khi seal và giữ nguyên byte body + `Idempotency-Key` qua retry. Server kiểm `id`,
+         *     `type ∈ {text, json}`, envelope strict trên byte thô (§5.5), base64url strict, `plaintext_len_bucket` bằng đúng
+         *     `ceil((octet_length(ciphertext) − 16) / 256) × 256`. Trong transaction khoá `vault FOR SHARE`: chưa có vault → `404 vault_absent`;
+         *     `envelope.key_id` khác `vault_key_id` hiện tại → `409 entry_key_mismatch`. Body route entry tối đa 400 KiB, chặn trước
+         *     bước idempotency (`413 entry_too_large`). Server không nhận, không parse, không log body plaintext.
+         */
+        post: operations["entryCreate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}/entries/import-json": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import JSON thành một entry bảng đã mã hoá
+         * @description Cùng body mã hoá như `entryCreate`; `type` buộc `json` (khác → `400 entry_invalid`), thêm `source: paste|file`.
+         *     Không nhận raw JSON, không nhận `filename` (field lạ → `400 invalid_request`). Audit `entry.import` chỉ với meta
+         *     `import_source` ∈ {`paste`, `file`}; không filename, body hay ciphertext.
+         */
+        post: operations["entryImportJson"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/items/{id}/entries/reorder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Sắp lại thứ tự entry sống của mục
+         * @description `entry_ids` phải là hoán vị đúng tập entry sống của mục (thiếu, thừa, ID đã xoá hoặc của user khác → `409 reorder_mismatch`).
+         *     Server đánh lại `position` 0…n−1, đổi `updated_at` nhưng **không** tăng `version` entry (không gây 412 cho thiết bị đang sửa).
+         */
+        patch: operations["itemEntriesReorder"];
+        trace?: never;
+    };
+    "/tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Danh sách tag sống của user (rail, ô gắn tag)
+         * @description `q` là prefix trên `normalized` (≤ 50 rune sau trim, cùng chuẩn hoá với display). `sort=recent` (mặc định) sắp
+         *     `last_used_at DESC, id`; `sort=alpha` sắp `normalized, id`. Cursor keyset opaque gắn với `sort`/`q`.
+         */
+        get: operations["tagsList"];
+        put?: never;
+        /**
+         * Tạo tag hoặc trả tag sống đã có cùng normalized
+         * @description Upsert theo `normalized` trong số tag sống, dưới khoá nội dung của user: đã có → `200` + tag hiện có (không đổi `display`);
+         *     chưa có → `201`. Vi phạm unique index lưới an toàn → `503 dependency_unavailable` + `Retry-After: 1`, không bao giờ trả tag đã xoá.
+         */
+        post: operations["tagUpsert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tags/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Xoá mềm tag (không xoá mục)
+         * @description Tag `deleted_at`; `item_tag` giữ nguyên nhưng không còn tính vào tag sống của mục. Tag đã xoá → `204` không đổi gì.
+         *     Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
+         */
+        delete: operations["tagDelete"];
+        options?: never;
+        head?: never;
+        /**
+         * Đổi display của tag
+         * @description Normalized mới trùng một tag sống khác → `409 tag_conflict` (merge tag thuộc P07).
+         */
+        patch: operations["tagRename"];
+        trace?: never;
+    };
+    "/tags/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Khôi phục tag đã xoá mềm
+         * @description `normalized` đã bị tag sống khác chiếm → `409 tag_conflict`; một mục sống gắn tag đã có 20 tag sống → `409 item_tag_limit`
+         *     và không restore gì. Tag đang sống → `200` không đổi gì. Client gửi `{}` với `Content-Type: application/json` như mọi POST (thiếu header → `415 invalid_request`); server vẫn nhận body rỗng.
+         */
+        post: operations["tagRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entries/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Feed thay đổi entry (best effort delta, gồm tombstone)
+         * @description Trả entry có `updated_at >= since` (gồm tombstone `deleted_at` khác null), sắp `(updated_at, id)` với cursor keyset trên đúng cặp đó.
+         *     `watermark` là `clock_timestamp()` của server ở đầu trang đầu của chuỗi (gắn trong cursor). Client chỉ lưu watermark sau
+         *     khi đọc hết trang cuối, lần sau gửi `since = watermark − 120 s` và dedup theo `(id, updated_at)`; mỗi lần thức dậy vẫn bắt
+         *     buộc refetch nguồn chuẩn (overlap chỉ là heuristic, ADR 0005). `since` cũ hơn `now() − 29 ngày` → `410 changes_window_expired`.
+         *     Client mới (thiết bị mới, storage trống, sau `410`) gọi không có `since` để lấy watermark đầu tiên, không phụ thuộc đồng hồ
+         *     client. Client lưu `watermark` nguyên chuỗi; khi trừ 120 giây thì làm tròn xuống (lệch về phía sớm hơn là an toàn).
+         *     Thứ tự bootstrap: lấy watermark trước, rồi refetch nguồn chuẩn; chỉ lưu watermark sau khi refetch xong (thay đổi chen giữa hai bước nằm sau watermark nên lần feed kế tiếp thấy).
+         *     Không có envelope/ciphertext trong feed.
+         */
+        get: operations["entriesChanges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entries/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Đọc một entry sống kèm envelope và ciphertext (loader của card) */
+        get: operations["entryGet"];
+        /**
+         * Ghi body mới đã mã hoá cho entry (If-Match theo version)
+         * @description Bắt buộc `If-Match: "<version>"` của entry. `type` không đổi được (gửi `type` → `400 invalid_request`). Server khoá
+         *     `vault FOR SHARE` (kiểm `key_id` như `entryCreate`), rồi hàng entry: không tồn tại/không thuộc user/đã xoá → `404 not_found`
+         *     (ưu tiên hơn 412); lệch → `412 version_mismatch` kèm `current_version`; nonce trùng nonce đang lưu → `400 entry_nonce_reused`.
+         *     Thành công → `version + 1`. Không có last-write-wins.
+         */
+        put: operations["entryUpdate"];
+        post?: never;
+        /**
+         * Xoá mềm entry (Undo bằng entryRestore trong 30 ngày)
+         * @description `deleted_at = clock_timestamp()`, `deleted_via='entry'`, `entry_count − 1`; không tăng `version`. Entry đã xoá → `204` không
+         *     đổi gì. Không có request body; DELETE body rỗng không cần `Content-Type` (có body thì phải là `application/json`, không thì `415`).
+         */
+        delete: operations["entryDelete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entries/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Khôi phục entry đã xoá riêng
+         * @description Entry phải `deleted_via='entry'` (`'item'` → `409 entry_restore_via_item`: restore mục thay vì entry); mục phải sống
+         *     (`409 item_deleted`); `entry_count < 200` (`409 item_entry_limit`). Giữ nguyên `position` cũ; không tăng `version`.
+         *     Entry đang sống → `200` không đổi gì. Client gửi `{}` với `Content-Type: application/json` như mọi POST (thiếu header → `415 invalid_request`); server vẫn nhận body rỗng.
+         */
+        post: operations["entryRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        ProblemCode: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found" | "unauthenticated" | "access_expired" | "session_invalid" | "invalid_credentials" | "csrf_invalid" | "forbidden" | "reauth_required" | "reauth_invalid" | "reauth_unsupported_provider" | "rate_limited" | "captcha_required" | "email_not_verified" | "email_taken" | "identity_conflict" | "identity_last_method" | "oauth_state_invalid" | "oauth_provider_error" | "verification_invalid" | "password_weak" | "semantic_unavailable" | "mail_delivery_unavailable" | "vault_exists" | "vault_absent" | "vault_kdf_invalid" | "vault_wrap_invalid" | "vault_mutations_disabled" | "recovery_keys_count" | "recovery_key_slot_taken" | "recovery_key_invalid" | "recovery_key_conflict" | "precondition_required" | "version_mismatch" | "idempotency_conflict" | "idempotency_in_progress" | "passkey_challenge_invalid" | "passkey_attestation_invalid" | "passkey_name_invalid" | "passkey_exists" | "passkey_not_found";
+        ProblemCode: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found" | "unauthenticated" | "access_expired" | "session_invalid" | "invalid_credentials" | "csrf_invalid" | "forbidden" | "reauth_required" | "reauth_invalid" | "reauth_unsupported_provider" | "rate_limited" | "captcha_required" | "email_not_verified" | "email_taken" | "identity_conflict" | "identity_last_method" | "oauth_state_invalid" | "oauth_provider_error" | "verification_invalid" | "password_weak" | "semantic_unavailable" | "mail_delivery_unavailable" | "vault_exists" | "vault_absent" | "vault_kdf_invalid" | "vault_wrap_invalid" | "vault_mutations_disabled" | "recovery_keys_count" | "recovery_key_slot_taken" | "recovery_key_invalid" | "recovery_key_conflict" | "precondition_required" | "version_mismatch" | "idempotency_conflict" | "idempotency_in_progress" | "passkey_challenge_invalid" | "passkey_attestation_invalid" | "passkey_name_invalid" | "passkey_exists" | "passkey_not_found" | "name_invalid" | "hint_invalid" | "tag_display_invalid" | "item_id_conflict" | "item_deleted" | "item_tag_limit" | "item_entry_limit" | "tag_conflict" | "entry_invalid" | "entry_too_large" | "entry_id_conflict" | "entry_key_mismatch" | "entry_nonce_reused" | "entry_restore_via_item" | "reorder_mismatch" | "changes_window_expired" | "reset_token_invalid";
         Problem: {
             /**
              * Format: uri
@@ -815,7 +1245,7 @@ export interface components {
             /** @description Request ID, không phải URL. */
             instance?: string;
             code: components["schemas"]["ProblemCode"];
-            /** @description Giây; khớp header Retry-After (trên 429 rate_limited hoặc 409 idempotency_in_progress với giá trị 1). */
+            /** @description Giây; khớp header Retry-After (trên 429 rate_limited, 409 idempotency_in_progress hoặc 503 dependency_unavailable với giá trị 1). */
             retry_after?: number;
             /**
              * @description Chỉ khi code=session_invalid. Token lạ dùng invalid.
@@ -823,7 +1253,7 @@ export interface components {
              */
             reason?: "revoked" | "expired" | "invalid";
             captcha_required?: boolean;
-            /** @description Phiên bản hiện tại của vault khi code=version_mismatch (412). */
+            /** @description Phiên bản hiện tại của vault, mục hoặc entry khi code=version_mismatch (412). */
             current_version?: number;
         };
         /** @enum {string} */
@@ -844,6 +1274,8 @@ export interface components {
             oauth_providers: components["schemas"]["OauthProvider"][];
             email_verification_required: boolean;
             captcha_site_key: string | null;
+            /** @description True chỉ khi máy chủ cấu hình adapter gửi thư ra ngoài thực sự (hoặc sink kèm cờ chỉ dùng cho test AUTH_MAIL_CAPTURE_AS_DELIVERY=true bị cấm ở production, advisor-dec-140 D1). */
+            mail_delivery_available: boolean;
         };
         Me: {
             user: {
@@ -930,6 +1362,18 @@ export interface components {
         } | {
             new_password: string;
             enrollment_token: string;
+        };
+        PasswordForgotRequest: {
+            /** Format: email */
+            email: string;
+            captcha_token?: string;
+            locale?: components["schemas"]["Locale"];
+        };
+        PasswordResetRequest: {
+            /** @description Token 32 byte CSPRNG mã hoá base64url không padding (đúng 43 ký tự) đọc từ URL fragment (#token=...). Giá trị chuỗi token sai quy cách trả 400 reset_token_invalid. */
+            token: string;
+            /** @description Không trim/normalize. Tối thiểu 12 ký tự Unicode; tối đa 1024 byte UTF-8. */
+            new_password: string;
         };
         SessionList: {
             items: components["schemas"]["SessionItem"][];
@@ -1236,6 +1680,225 @@ export interface components {
             public_key: components["schemas"]["PublicKeyCredentialRequestOptionsJSON"];
             credentials: components["schemas"]["PasskeyUnlockCredentialItem"][];
         };
+        /**
+         * @description Tên mục, plaintext trên server (không mã hoá). 1–200 rune sau trim; server chuẩn hoá (plan P04 mục 2.2) và từ chối
+         *     ký tự điều khiển, bidi override hoặc kết quả chuẩn hoá rỗng (`name_invalid`). Trùng tên được phép.
+         */
+        ItemName: string;
+        /** @description Gợi ý tuỳ chọn, plaintext máy chủ đọc được; 0–120 rune; `null` = không có hoặc xoá hint. */
+        ItemHint: string | null;
+        /** @description Tên hiển thị của tag, plaintext; 1–50 rune sau trim (`tag_display_invalid`). Unique theo dạng chuẩn hoá trong số tag sống. */
+        TagDisplay: string;
+        TagRef: {
+            /** Format: uuid */
+            id: string;
+            display: components["schemas"]["TagDisplay"];
+        };
+        ItemSummary: {
+            /** Format: uuid */
+            id: string;
+            name: components["schemas"]["ItemName"];
+            hint: components["schemas"]["ItemHint"];
+            /** @description Tag **sống** gắn với mục, sắp theo `display`. Luôn là mảng (rỗng `[]` khi chưa có tag), không bao giờ `null`. */
+            tags: components["schemas"]["TagRef"][];
+            /** @description Số entry sống của mục. */
+            entry_count: number;
+            /** @description Tăng khi `name` hoặc `hint` đổi; dùng cho `If-Match` của `itemUpdate`. */
+            version: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            last_used_at: string;
+        };
+        ItemList: {
+            /** @description Luôn là mảng, rỗng `[]` khi không có kết quả. */
+            items: components["schemas"]["ItemSummary"][];
+            next_cursor: string | null;
+        };
+        ItemLookupResult: {
+            /** @description Luôn là mảng, rỗng `[]` khi không có mục trùng tên. */
+            items: components["schemas"]["ItemSummary"][];
+            /** @description Tổng số mục sống trùng tên chính xác (count trong cùng snapshot), không chỉ số mục của trang này. */
+            total: number;
+            next_cursor: string | null;
+        };
+        ItemCreateRequest: {
+            /**
+             * Format: uuid
+             * @description UUID do client sinh một lần (quick-add) để retry không tạo bản sao; bỏ trống thì server sinh.
+             */
+            id?: string;
+            name: components["schemas"]["ItemName"];
+            hint?: components["schemas"]["ItemHint"];
+        };
+        ItemUpdateRequest: {
+            name?: components["schemas"]["ItemName"];
+            hint?: components["schemas"]["ItemHint"];
+        };
+        ItemTagsAddRequest: {
+            tag_ids: string[];
+        };
+        ItemEntriesReorderRequest: {
+            /**
+             * @description Hoán vị đúng tập entry sống của mục, theo thứ tự mới. Mục không có entry sống → `[]` hợp lệ (200 `{entries: []}`);
+             *     `[]` khi mục còn entry sống là lệch tập → `409 reorder_mismatch`, không phải 400.
+             */
+            entry_ids: components["schemas"]["EntryIdValue"][];
+        };
+        EntryPosition: {
+            id: components["schemas"]["EntryIdValue"];
+            position: number;
+        };
+        ItemEntriesReorderResponse: {
+            /** @description Mọi entry sống của mục với `position` mới 0…n−1, theo thứ tự mới. Luôn là mảng. */
+            entries: components["schemas"]["EntryPosition"][];
+        };
+        Tag: {
+            /** Format: uuid */
+            id: string;
+            display: components["schemas"]["TagDisplay"];
+            /** @description Số mục sống gắn tag này. */
+            item_count: number;
+            /** Format: date-time */
+            last_used_at: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        TagList: {
+            /** @description Luôn là mảng, rỗng `[]` khi không có tag. */
+            items: components["schemas"]["Tag"][];
+            next_cursor: string | null;
+        };
+        TagUpsertRequest: {
+            display: components["schemas"]["TagDisplay"];
+        };
+        TagRenameRequest: {
+            display: components["schemas"]["TagDisplay"];
+        };
+        /**
+         * @description Kiểu entry, plaintext (chọn renderer trước khi giải mã); không nằm trong envelope/AAD.
+         * @enum {string}
+         */
+        EntryType: "text" | "json";
+        /** @description UUID v4 chữ thường do client sinh trước khi seal; nằm trong AAD nên server giữ nguyên. */
+        EntryIdValue: string;
+        /**
+         * @description Envelope v1 đúng 5 field (SPEC §5.5). Server kiểm strict trên byte thô của request (field thiếu/thừa, key trùng kể cả qua
+         *     escape, kiểu sai, UTF-8 lỗi → `entry_invalid`), rồi so `key_id` với `vault_key_id` hiện tại (`entry_key_mismatch`).
+         */
+        EntryEnvelopeV1: {
+            /** @constant */
+            v: 1;
+            /** @constant */
+            alg: "xchacha20poly1305-ietf";
+            /** @description Định dạng cho phép `sk:` (P08) nhưng MVP chỉ nhận đúng `vault_key_id` hiện tại. */
+            key_id: string;
+            /** @description 24 byte ngẫu nhiên, base64url không padding; mỗi lần seal một nonce mới. */
+            nonce: string;
+            /** @constant */
+            ct_enc: "utf8";
+        };
+        /** @description AEAD body ‖ tag 16 B, base64url không padding; 17…263168 byte sau khi giải mã strict. */
+        EntryCiphertext: string;
+        /**
+         * @description Metadata làm tròn, bằng đúng `ceil((octet_length(ciphertext) − 16) / 256) × 256` (server kiểm). Không che độ dài thật:
+         *     độ dài ciphertext vẫn lộ độ dài plaintext chính xác (ADR 0005, threat model P-1/L-9).
+         */
+        PlaintextLenBucket: number;
+        /** @description Metadata entry, không envelope, không ciphertext, không plaintext. */
+        EntryMeta: {
+            id: components["schemas"]["EntryIdValue"];
+            /** Format: uuid */
+            item_id: string;
+            type: components["schemas"]["EntryType"];
+            position: number;
+            /** @description Chỉ tăng khi body đổi (`entryUpdate`); reorder/xoá/restore không tăng. Dùng cho `If-Match`. */
+            version: number;
+            plaintext_len_bucket: components["schemas"]["PlaintextLenBucket"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description `EntryMeta` kèm `envelope` và `ciphertext` để client giải mã một lần rồi bỏ. */
+        Entry: {
+            id: components["schemas"]["EntryIdValue"];
+            /** Format: uuid */
+            item_id: string;
+            type: components["schemas"]["EntryType"];
+            position: number;
+            version: number;
+            plaintext_len_bucket: components["schemas"]["PlaintextLenBucket"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            envelope: components["schemas"]["EntryEnvelopeV1"];
+            ciphertext: components["schemas"]["EntryCiphertext"];
+        };
+        EntryMetaList: {
+            /** @description Luôn là mảng, rỗng `[]` khi mục chưa có entry. */
+            items: components["schemas"]["EntryMeta"][];
+            next_cursor: string | null;
+        };
+        EntryCreateRequest: {
+            id: components["schemas"]["EntryIdValue"];
+            type: components["schemas"]["EntryType"];
+            envelope: components["schemas"]["EntryEnvelopeV1"];
+            ciphertext: components["schemas"]["EntryCiphertext"];
+            plaintext_len_bucket: components["schemas"]["PlaintextLenBucket"];
+        };
+        EntryImportJsonRequest: {
+            id: components["schemas"]["EntryIdValue"];
+            /** @constant */
+            type: "json";
+            envelope: components["schemas"]["EntryEnvelopeV1"];
+            ciphertext: components["schemas"]["EntryCiphertext"];
+            plaintext_len_bucket: components["schemas"]["PlaintextLenBucket"];
+            /**
+             * @description Nguồn import, chỉ dùng cho audit (`import_source`). Không có `filename`.
+             * @enum {string}
+             */
+            source: "paste" | "file";
+        };
+        EntryUpdateRequest: {
+            envelope: components["schemas"]["EntryEnvelopeV1"];
+            ciphertext: components["schemas"]["EntryCiphertext"];
+            plaintext_len_bucket: components["schemas"]["PlaintextLenBucket"];
+        };
+        /** @description Thay đổi của một entry (gồm tombstone); không envelope, không ciphertext. */
+        EntryChange: {
+            id: components["schemas"]["EntryIdValue"];
+            /** Format: uuid */
+            item_id: string;
+            type: components["schemas"]["EntryType"];
+            position: number;
+            version: number;
+            plaintext_len_bucket: components["schemas"]["PlaintextLenBucket"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /**
+             * Format: date-time
+             * @description Khác `null` khi entry đã bị xoá mềm (tombstone).
+             */
+            deleted_at: string | null;
+        };
+        EntryChangesPage: {
+            /** @description Luôn là mảng, rỗng `[]` khi không có thay đổi. */
+            changes: components["schemas"]["EntryChange"][];
+            next_cursor: string | null;
+            /**
+             * Format: date-time
+             * @description Thời điểm server ở đầu trang đầu của chuỗi; client chỉ lưu sau khi đọc hết trang cuối.
+             */
+            watermark: string;
+        };
+        /** @description Body `{}` của các POST restore (vẫn cần `Content-Type: application/json`). */
+        EmptyObject: Record<string, never>;
     };
     responses: {
         /** @description Lỗi RFC 9457 */
@@ -1271,6 +1934,18 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
+        /** @description Deadlock, lock timeout hoặc xung đột unique lưới an toàn; transaction chưa commit và claim idempotency đã release, client thử lại cùng Idempotency-Key và byte body sau Retry-After: 1 (dependency_unavailable) */
+        ContentUnavailable: {
+            headers: {
+                "Cache-Control": components["headers"]["NoStore"];
+                /** @description Giây nguyên dương chờ trước khi thử lại (giá trị 1). */
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
     };
     parameters: {
         OauthProvider: components["schemas"]["OauthProvider"];
@@ -1291,6 +1966,38 @@ export interface components {
         ReauthToken: string;
         /** @description UUID bản ghi passkey trên vault của người dùng hiện tại (VaultPasskeyItem.id, không phải WebAuthn cred_id). */
         PasskeyId: string;
+        /**
+         * @description Strong tag điều kiện dạng `"<version>"` (bao gồm dấu ngoặc kép) với `version` của entry hoặc mục trả trong mọi response
+         *     (số thập phân không có số 0 đứng đầu, 1…2147483647; pattern cho tới 10 chữ số, số vượt int32 trả `428`). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
+         *     danh sách hoặc sai định dạng trả `428 precondition_required`; lệch trả `412 version_mismatch` kèm `current_version`.
+         */
+        VersionIfMatch: string;
+        /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+        ItemId: string;
+        /** @description UUID của tag cần gỡ khỏi mục. */
+        ItemTagId: string;
+        /** @description UUID của tag thuộc user hiện tại. */
+        TagId: string;
+        /** @description UUID chữ thường của entry (ID do client sinh, nằm trong AAD). */
+        EntryId: string;
+        /** @description `recent` = `last_used_at DESC, id`; `alpha` = theo tên đã chuẩn hoá, `id`. */
+        ContentSort: "recent" | "alpha";
+        /** @description Chỉ trả mục đang gắn tag này (tag sống của user hiện tại). */
+        ItemsTagFilter: string;
+        /** @description Prefix trên `name_normalized`, tối đa 200 rune sau trim; chỉ gửi khi người dùng chủ động tìm. */
+        ItemsQuery: string;
+        /** @description Prefix trên `tag.normalized`, tối đa 50 rune sau trim. */
+        TagsQuery: string;
+        /** @description Tên mục cần tra cứu chính xác (server chuẩn hoá; 1–200 rune sau trim). Không bao giờ chứa body entry. */
+        LookupName: string;
+        EntriesLimit: number;
+        ChangesLimit: number;
+        /**
+         * @description Mốc RFC 3339 (độ chính xác nano giây được giữ); trang tiếp theo gửi lại đúng giá trị của trang đầu cùng cursor. Không có
+         *     `since` (và không có cursor) → bootstrap: `{changes: [], next_cursor: null, watermark}`, không quét bảng; có cursor mà
+         *     thiếu `since` → `400 invalid_request`.
+         */
+        ChangesSince: string;
     };
     requestBodies: never;
     headers: {
@@ -1771,6 +2478,70 @@ export interface operations {
             403: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["Problem"];
+        };
+    };
+    authPasswordForgot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordForgotRequest"];
+            };
+        };
+        responses: {
+            /** @description Đã tiếp nhận yêu cầu (nếu tài khoản tồn tại, hướng dẫn sẽ được gửi qua email) */
+            202: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["Problem"];
+        };
+    };
+    authPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Đã đặt lại mật khẩu tài khoản và thu hồi mọi phiên đăng nhập; người dùng đăng nhập lại */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            /** @description Deadlock hoặc lock timeout tạm thời sau khi đã tự động retry 1 lần (40P01/55P03); transaction đã rollback sạch sẽ, client thử lại sau Retry-After: 1 (dependency_unavailable) */
+            503: {
+                headers: {
+                    "Retry-After": components["headers"]["RetryAfter"];
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     authSessionsList: {
@@ -2634,6 +3405,1033 @@ export interface operations {
             /** @description Chưa có vault hoặc chưa đăng ký passkey (vault_absent, passkey_not_found) */
             404: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
+        };
+    };
+    itemsList: {
+        parameters: {
+            query?: {
+                /** @description Chỉ trả mục đang gắn tag này (tag sống của user hiện tại). */
+                tag_id?: components["parameters"]["ItemsTagFilter"];
+                /** @description Prefix trên `name_normalized`, tối đa 200 rune sau trim; chỉ gửi khi người dùng chủ động tìm. */
+                q?: components["parameters"]["ItemsQuery"];
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+                /** @description `recent` = `last_used_at DESC, id`; `alpha` = theo tên đã chuẩn hoá, `id`. */
+                sort?: components["parameters"]["ContentSort"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Một trang mục */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemList"];
+                };
+            };
+            /** @description Tham số sai, cursor lệch tham số hoặc q quá 200 rune / rỗng sau chuẩn hoá (invalid_request, name_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description tag_id không tồn tại, của user khác hoặc đã xoá (not_found) */
+            404: components["responses"]["Problem"];
+        };
+    };
+    itemCreate: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Mục đã tạo */
+            201: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemSummary"];
+                };
+            };
+            /** @description Body sai, name hoặc hint không hợp lệ (invalid_request, name_invalid, hint_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description ID mục đã dùng hoặc xung đột idempotency (item_id_conflict, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    itemsLookupExact: {
+        parameters: {
+            query: {
+                /** @description Tên mục cần tra cứu chính xác (server chuẩn hoá; 1–200 rune sau trim). Không bao giờ chứa body entry. */
+                name: components["parameters"]["LookupName"];
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Các mục trùng tên chính xác */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemLookupResult"];
+                };
+            };
+            /** @description Tham số sai hoặc name rỗng / quá 200 rune / ký tự cấm (invalid_request, name_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+        };
+    };
+    itemGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mục */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemSummary"];
+                };
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Không tìm thấy mục (not_found) */
+            404: components["responses"]["Problem"];
+        };
+    };
+    itemDelete: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Đã xoá mềm (hoặc đã ở trạng thái xoá) */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy mục (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Có body nhưng không phải `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    itemUpdate: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Strong tag điều kiện dạng `"<version>"` (bao gồm dấu ngoặc kép) với `version` của entry hoặc mục trả trong mọi response
+                 *     (số thập phân không có số 0 đứng đầu, 1…2147483647; pattern cho tới 10 chữ số, số vượt int32 trả `428`). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
+                 *     danh sách hoặc sai định dạng trả `428 precondition_required`; lệch trả `412 version_mismatch` kèm `current_version`.
+                 */
+                "If-Match": components["parameters"]["VersionIfMatch"];
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Mục sau khi sửa (version mới) */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemSummary"];
+                };
+            };
+            /** @description Body sai, name hoặc hint không hợp lệ (invalid_request, name_invalid, hint_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy mục (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Lệch version mục (version_mismatch, kèm current_version) */
+            412: components["responses"]["Problem"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai định dạng If-Match (precondition_required) */
+            428: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    itemRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
+        responses: {
+            /** @description Mục sau khi khôi phục */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemSummary"];
+                };
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy mục (đã purge, không tồn tại hoặc của user khác) (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Quá 20 tag sống hoặc xung đột idempotency (item_tag_limit, item_entry_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    itemTagsAdd: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemTagsAddRequest"];
+            };
+        };
+        responses: {
+            /** @description Mục sau khi gán tag */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemSummary"];
+                };
+            };
+            /** @description Body sai, tag_ids rỗng, quá 20 phần tử hoặc trùng (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Mục hoặc một tag không tồn tại, của user khác hoặc đã xoá (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Quá 20 tag sống hoặc xung đột idempotency (item_tag_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    itemTagRemove: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+                /** @description UUID của tag cần gỡ khỏi mục. */
+                tag_id: components["parameters"]["ItemTagId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mục sau khi gỡ tag */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemSummary"];
+                };
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy mục (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Có body nhưng không phải `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    itemEntriesList: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["EntriesLimit"];
+            };
+            header?: never;
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Một trang metadata entry */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryMetaList"];
+                };
+            };
+            /** @description Tham số hoặc cursor sai (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Không tìm thấy mục (not_found) */
+            404: components["responses"]["Problem"];
+        };
+    };
+    entryCreate: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntryCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Entry đã tạo (chỉ metadata, không envelope/ciphertext) */
+            201: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryMeta"];
+                };
+            };
+            /** @description Body sai hoặc entry không hợp lệ (type/envelope/base64url/bucket/ID, ciphertext < 17 B) (invalid_request, entry_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy mục hoặc chưa có vault (not_found, vault_absent) */
+            404: components["responses"]["Problem"];
+            /** @description Khoá lệch, ID trùng, quá 200 entry hoặc xung đột idempotency (entry_key_mismatch, entry_id_conflict, item_entry_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Ciphertext > 263168 B hoặc body > 400 KiB (entry_too_large) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    entryImportJson: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntryImportJsonRequest"];
+            };
+        };
+        responses: {
+            /** @description Entry json đã tạo (chỉ metadata) */
+            201: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryMeta"];
+                };
+            };
+            /** @description Body sai, field lạ, source sai hoặc entry không hợp lệ (invalid_request, entry_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy mục hoặc chưa có vault (not_found, vault_absent) */
+            404: components["responses"]["Problem"];
+            /** @description Khoá lệch, ID trùng, quá 200 entry hoặc xung đột idempotency (entry_key_mismatch, entry_id_conflict, item_entry_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Ciphertext > 263168 B hoặc body > 400 KiB (entry_too_large) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    itemEntriesReorder: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của mục thuộc user hiện tại (ID của user khác trả như không tồn tại). */
+                id: components["parameters"]["ItemId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemEntriesReorderRequest"];
+            };
+        };
+        responses: {
+            /** @description Vị trí mới của từng entry */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemEntriesReorderResponse"];
+                };
+            };
+            /** @description Body sai hoặc entry_ids trùng (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy mục (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Danh sách không khớp tập entry sống hoặc xung đột idempotency (reorder_mismatch, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    tagsList: {
+        parameters: {
+            query?: {
+                /** @description Prefix trên `tag.normalized`, tối đa 50 rune sau trim. */
+                q?: components["parameters"]["TagsQuery"];
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+                /** @description `recent` = `last_used_at DESC, id`; `alpha` = theo tên đã chuẩn hoá, `id`. */
+                sort?: components["parameters"]["ContentSort"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Một trang tag */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TagList"];
+                };
+            };
+            /** @description Tham số sai, cursor lệch tham số hoặc q quá 50 rune / rỗng sau chuẩn hoá (invalid_request, tag_display_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+        };
+    };
+    tagUpsert: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TagUpsertRequest"];
+            };
+        };
+        responses: {
+            /** @description Tag sống đã có cùng normalized */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tag"];
+                };
+            };
+            /** @description Tag mới */
+            201: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tag"];
+                };
+            };
+            /** @description Body sai hoặc display không hợp lệ (invalid_request, tag_display_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    tagDelete: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của tag thuộc user hiện tại. */
+                id: components["parameters"]["TagId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Đã xoá mềm (hoặc đã ở trạng thái xoá) */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy tag (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Có body nhưng không phải `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    tagRename: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của tag thuộc user hiện tại. */
+                id: components["parameters"]["TagId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TagRenameRequest"];
+            };
+        };
+        responses: {
+            /** @description Tag sau khi đổi tên */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tag"];
+                };
+            };
+            /** @description Body sai hoặc display không hợp lệ (invalid_request, tag_display_invalid) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy tag (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Trùng normalized với tag sống khác hoặc xung đột idempotency (tag_conflict, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    tagRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của tag thuộc user hiện tại. */
+                id: components["parameters"]["TagId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
+        responses: {
+            /** @description Tag sau khi khôi phục */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tag"];
+                };
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy tag (đã purge, không tồn tại hoặc của user khác) (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Trùng tag sống, mục sẽ quá 20 tag hoặc xung đột idempotency (tag_conflict, item_tag_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    entriesChanges: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Mốc RFC 3339 (độ chính xác nano giây được giữ); trang tiếp theo gửi lại đúng giá trị của trang đầu cùng cursor. Không có
+                 *     `since` (và không có cursor) → bootstrap: `{changes: [], next_cursor: null, watermark}`, không quét bảng; có cursor mà
+                 *     thiếu `since` → `400 invalid_request`.
+                 */
+                since?: components["parameters"]["ChangesSince"];
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["ChangesLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Một trang thay đổi */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryChangesPage"];
+                };
+            };
+            /** @description since sai dạng, tham số hoặc cursor sai (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description since quá cửa sổ giữ tombstone; client bỏ watermark và refetch toàn bộ (changes_window_expired) */
+            410: components["responses"]["Problem"];
+        };
+    };
+    entryGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID chữ thường của entry (ID do client sinh, nằm trong AAD). */
+                id: components["parameters"]["EntryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Entry kèm envelope và ciphertext */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Entry"];
+                };
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Không tìm thấy entry (not_found) */
+            404: components["responses"]["Problem"];
+        };
+    };
+    entryUpdate: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Strong tag điều kiện dạng `"<version>"` (bao gồm dấu ngoặc kép) với `version` của entry hoặc mục trả trong mọi response
+                 *     (số thập phân không có số 0 đứng đầu, 1…2147483647; pattern cho tới 10 chữ số, số vượt int32 trả `428`). Khác pattern `IfMatch` của vault. Thiếu header, `*`, weak tag,
+                 *     danh sách hoặc sai định dạng trả `428 precondition_required`; lệch trả `412 version_mismatch` kèm `current_version`.
+                 */
+                "If-Match": components["parameters"]["VersionIfMatch"];
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID chữ thường của entry (ID do client sinh, nằm trong AAD). */
+                id: components["parameters"]["EntryId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntryUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Metadata entry sau khi ghi (version mới) */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryMeta"];
+                };
+            };
+            /** @description Body sai, entry không hợp lệ hoặc nonce dùng lại (invalid_request, entry_invalid, entry_nonce_reused) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy entry hoặc chưa có vault (not_found, vault_absent) */
+            404: components["responses"]["Problem"];
+            /** @description Khoá lệch hoặc xung đột idempotency (entry_key_mismatch, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Lệch version entry (version_mismatch, kèm current_version) */
+            412: components["responses"]["Problem"];
+            /** @description Ciphertext > 263168 B hoặc body > 400 KiB (entry_too_large) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai định dạng If-Match (precondition_required) */
+            428: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    entryDelete: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID chữ thường của entry (ID do client sinh, nằm trong AAD). */
+                id: components["parameters"]["EntryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Đã xoá mềm (hoặc đã ở trạng thái xoá) */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy entry (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 400 KiB (entry_too_large) */
+            413: components["responses"]["Problem"];
+            /** @description Có body nhưng không phải `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
+        };
+    };
+    entryRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID chữ thường của entry (ID do client sinh, nằm trong AAD). */
+                id: components["parameters"]["EntryId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
+        responses: {
+            /** @description Metadata entry sau khi khôi phục */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryMeta"];
+                };
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy entry (đã purge, không tồn tại hoặc của user khác) (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Xoá theo mục, mục đã xoá, quá 200 entry hoặc xung đột idempotency (entry_restore_via_item, item_deleted, item_entry_limit, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 400 KiB (entry_too_large) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["ContentUnavailable"];
         };
     };
 }

@@ -44,6 +44,8 @@ var (
 	ErrVerificationInvalid       = errCode("verification_invalid")
 	ErrSemanticUnavailable       = errCode("semantic_unavailable")
 	ErrMailDeliveryUnavailable   = errCode("mail_delivery_unavailable")
+	ErrResetTokenInvalid         = errCode("reset_token_invalid")
+	ErrDependencyUnavailable     = errCode("dependency_unavailable")
 )
 
 func SessionInvalid(reason string) *Error {

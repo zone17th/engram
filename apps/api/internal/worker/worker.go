@@ -14,9 +14,10 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/config"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db"
+	"github.com/zone17th/engram/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/config"
+	"github.com/zone17th/engram/apps/api/internal/db"
+	"github.com/zone17th/engram/apps/api/internal/entry"
 )
 
 // New dựng River client với queue mặc định. P01 Noop + P02 prune/notice.
@@ -43,6 +44,9 @@ func NewWithMail(pool *pgxpool.Pool, logger *slog.Logger, retentionDays int, mai
 	}
 	if err := river.AddWorkerSafely(workers, NewWebAuthnChallengePruneWorker(pool, nil)); err != nil {
 		return nil, fmt.Errorf("đăng ký webauthn_challenge prune: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, entry.NewContentPurgeWorker(pool, nil)); err != nil {
+		return nil, fmt.Errorf("đăng ký content purge: %w", err)
 	}
 	if mail != nil {
 		if err := river.AddWorkerSafely(workers, NewSecurityNoticeWorker(pool, mailAdapter{mail}, logger)); err != nil {
@@ -76,6 +80,13 @@ func NewWithMail(pool *pgxpool.Pool, logger *slog.Logger, retentionDays int, mai
 			river.PeriodicInterval(15*time.Minute),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return WebAuthnChallengePruneArgs{}, nil
+			},
+			nil,
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return entry.ContentPurgeArgs{}, nil
 			},
 			nil,
 		),

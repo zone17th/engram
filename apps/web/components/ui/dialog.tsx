@@ -10,8 +10,21 @@ import {
 import { cn } from '@/lib/cn';
 
 export const Dialog = DialogPrimitive.Root;
-export const DialogTrigger = DialogPrimitive.Trigger;
-export const DialogClose = DialogPrimitive.Close;
+export const DialogTrigger = forwardRef<
+  ElementRef<typeof DialogPrimitive.Trigger>,
+  ComponentPropsWithoutRef<typeof DialogPrimitive.Trigger>
+>(function DialogTrigger({ className, ...props }, ref) {
+  return <DialogPrimitive.Trigger ref={ref} className={cn('touch-target', className)} {...props} />;
+});
+DialogTrigger.displayName = 'DialogTrigger';
+
+export const DialogClose = forwardRef<
+  ElementRef<typeof DialogPrimitive.Close>,
+  ComponentPropsWithoutRef<typeof DialogPrimitive.Close>
+>(function DialogClose({ className, ...props }, ref) {
+  return <DialogPrimitive.Close ref={ref} className={cn('touch-target', className)} {...props} />;
+});
+DialogClose.displayName = 'DialogClose';
 export const DialogPortal = DialogPrimitive.Portal;
 
 export const DialogOverlay = forwardRef<
@@ -58,7 +71,7 @@ export function DialogHeader({
     <header className={className}>
       <DialogPrimitive.Title className="t-title-sm mb-1">{title}</DialogPrimitive.Title>
       {description != null && (
-        <DialogPrimitive.Description className="t-body mb-0" style={{ color: 'var(--muted)' }}>
+        <DialogPrimitive.Description className="t-body mb-0 text-muted">
           {description}
         </DialogPrimitive.Description>
       )}

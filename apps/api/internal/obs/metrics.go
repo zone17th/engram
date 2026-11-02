@@ -12,6 +12,7 @@ type Metrics struct {
 	RequestDuration          *prometheus.HistogramVec
 	VaultRecoverTotal        prometheus.Counter
 	VaultUnlockFailuresTotal *prometheus.CounterVec
+	EntriesCreatedTotal      *prometheus.CounterVec
 }
 
 // NewRegistry tạo registry riêng (không dùng DefaultRegisterer) để test cô lập được.
@@ -36,9 +37,16 @@ func NewRegistry() (*prometheus.Registry, *Metrics) {
 			Name: "vault_unlock_failures_total",
 			Help: "Tổng số lần mở khoá vault thất bại mà server quan sát được theo phương thức (không chứa user_id).",
 		}, []string{"method"}),
+		EntriesCreatedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "entries_created_total",
+			Help: "Tổng số entry đã tạo thành công theo kiểu nội dung (text hoặc json; không chứa dữ liệu người dùng).",
+		}, []string{"type"}),
 	}
-	reg.MustRegister(m.RequestDuration, m.VaultRecoverTotal, m.VaultUnlockFailuresTotal)
+	reg.MustRegister(m.RequestDuration, m.VaultRecoverTotal, m.VaultUnlockFailuresTotal, m.EntriesCreatedTotal)
 	// Khởi tạo trước nhãn method="recovery" để counter xuất hiện trên /metrics ngay từ lúc boot.
 	m.VaultUnlockFailuresTotal.WithLabelValues("recovery")
+	// Khởi tạo trước nhãn type="text" và type="json" (plan mục 4, Task 6a, advisor-dec-149).
+	m.EntriesCreatedTotal.WithLabelValues("text")
+	m.EntriesCreatedTotal.WithLabelValues("json")
 	return reg, m
 }

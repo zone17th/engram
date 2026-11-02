@@ -2,7 +2,10 @@ import Link from 'next/link';
 import { getTranslations } from 'next-intl/server';
 import { Logo } from '@/components/landing/logo';
 
-/** Footer tối của landing — layout theo mockups/landing.html. */
+/**
+ * Footer tối của landing — layout theo mockups/landing.html.
+ * Không đặt nhãn cột: mỗi nhãn chỉ lặp lại đúng link bên dưới nó (audit UIA-24).
+ */
 export async function SiteFooter() {
   const tNav = await getTranslations('nav');
   const tFooter = await getTranslations('footer');
@@ -21,7 +24,6 @@ export async function SiteFooter() {
 
           <div className="flex flex-wrap gap-12">
             <div>
-              <p className="t-label mb-3 text-white/50">{tNav('how')}</p>
               <div className="flex flex-col gap-2 text-[15px]">
                 <a href="#cachdung" className="no-underline text-white/85">
                   {tNav('how')}
@@ -35,7 +37,6 @@ export async function SiteFooter() {
               </div>
             </div>
             <div>
-              <p className="t-label mb-3 text-white/50">{tNav('openApp')}</p>
               <div className="flex flex-col gap-2 text-[15px]">
                 <Link href="/app" className="no-underline text-white/85">
                   {tNav('openApp')}
@@ -45,7 +46,7 @@ export async function SiteFooter() {
           </div>
         </div>
         <hr className="my-8 mb-5 h-px border-0 bg-white/12" />
-        <p className="t-legal m-0 text-white/45">{tFooter('legal')}</p>
+        <p className="t-legal m-0 text-white/55">{tFooter('legal')}</p>
       </div>
     </footer>
   );

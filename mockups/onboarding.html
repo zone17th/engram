@@ -5,29 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tạo vault — engram</title>
 <link rel="stylesheet" href="tokens.css">
+<link rel="icon" href="../apps/web/app/icon.svg" type="image/svg+xml">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="tw.js"></script>
 </head>
 <body class="bg-canvas">
 
-<!-- ================= header mỏng: chưa có vault nên không có vault pill ================= -->
-<header class="max-w-container mx-auto px-5 pt-6 flex items-center gap-4">
-  <a href="landing.html" class="flex items-center gap-2.5 no-underline">
-    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-      <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
-        <stop offset="0%" stop-color="var(--logo-magenta)"/>
-        <stop offset="100%" stop-color="var(--logo-cyan)"/>
-      </linearGradient></defs>
-      <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
-      <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
-      <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
-            stroke-width="2.6" stroke-linecap="round"
-            stroke-dasharray="0.1 5.2 0.1 4 20"/>
-    </svg>
-    <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
-  </a>
-  <span class="mono text-[12px] hidden sm:inline" style="color:var(--muted)">minh@zone17th.click</span>
-  <button class="btn btn-tertiary !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+<header class="sticky top-0 z-40" style="background:color-mix(in srgb, var(--canvas) 88%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 h-[68px] flex items-center gap-2 sm:gap-4">
+    <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink hidden min-[480px]:inline">engram</span>
+    </a>
+    <div class="ml-auto flex items-center gap-1 sm:gap-2">
+      <span class="vault-pill vault-shut !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3" aria-disabled="true" aria-label="Chưa tạo vault · No vault yet"><span aria-hidden="true">🔒</span><span class="hidden sm:inline">Chưa tạo vault</span></span>
+      <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
+      <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+      <a href="landing.html" class="btn btn-tertiary no-underline !text-body">Đăng xuất</a>
+    </div>
+  </div>
 </header>
 
 <main class="max-w-[640px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
@@ -77,7 +83,7 @@
       <ul class="flex flex-col gap-1.5 text-[13px] m-0 p-0 list-none" style="color:var(--muted)">
         <li><span style="color:var(--body)">✓</span> Từ 12 ký tự trở lên</li>
         <li><span style="color:var(--body)">✓</span> Không dùng lại mật khẩu đăng nhập hay mật khẩu ở nơi khác</li>
-        <li><span style="color:var(--body)">✓</span> Đủ khó đoán (zxcvbn ≥ 3)</li>
+        <li><span style="color:var(--body)">✓</span> Khó đoán · <span lang="en">Hard to guess</span></li>
       </ul>
     </div>
 
@@ -100,24 +106,24 @@
   <section data-view="pp-oom" id="onboard-oom" hidden>
     <h1 class="t-title-lg mb-2">Đặt passphrase cho vault · <span lang="en" class="text-[22px] font-normal" style="color:var(--muted)">Set your vault passphrase</span></h1>
     <p class="t-body-lg mb-2" style="color:var(--muted)">
-      Trạng thái lỗi khi thiết bị không cấp phát đủ bộ nhớ cho Argon2id 64 MiB trong Web Worker lúc tạo vault.
+      Trạng thái lỗi khi thiết bị không cấp phát đủ 64 MiB bộ nhớ để tính khoá mã hoá lúc tạo vault.
     </p>
     <p class="text-[13px] mt-0 mb-6" lang="en" style="color:var(--muted)">
-      Error state when this device cannot allocate 64 MiB for Argon2id in the Web Worker while creating a vault.
+      Error state when this device cannot set aside the 64 MiB of memory needed to derive the encryption key while creating a vault.
     </p>
 
     <div class="card p-5 mb-4" style="border-color:var(--error)">
-      <p class="t-label mb-2" style="color:var(--muted)">Argon2id 64 MiB · Worker OOM</p>
+      <p class="t-label mb-2" style="color:var(--muted)">Giới hạn bộ nhớ · 64 MiB · <span lang="en">Memory limit · 64 MiB</span></p>
       <div role="alert" class="auth-alert mb-3">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để tạo vault</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Trình duyệt không cấp phát đủ 64 MiB trong Web Worker để dẫn xuất khoá mã hoá (Argon2id).
-          Thiết bị này không thể tạo vault tại đây — hãy thử trên trình duyệt hoặc thiết bị khác. Chưa có gì được gửi lên máy chủ.
+          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ để tính khoá mã hoá.
+          Thiết bị này không thể tạo vault tại đây — hãy đóng bớt tab hoặc thử trên trình duyệt hay thiết bị khác. Chưa có gì được gửi lên máy chủ.
         </p>
       </div>
       <div class="rounded-md p-3 text-[13px]" lang="en" style="background:var(--surface);color:var(--muted)">
         <strong style="color:var(--body)">Not enough memory to create your vault.</strong>
-        This device cannot allocate 64 MiB in a Web Worker for Argon2id key derivation. Try another browser or device — nothing was sent to the server.
+        This browser could not set aside the 64 MiB of memory needed to derive your encryption key. This device cannot create a vault right now — close other tabs or try another browser or device. Nothing was sent to the server.
       </div>
     </div>
   </section>
@@ -229,8 +235,8 @@
             Cần khoá bảo mật hỗ trợ PRF. Chúng tôi kiểm tra ngay lúc đăng ký; không hỗ trợ thì báo luôn, không lưu nửa vời.
           </p>
           <p class="text-[12px] m-0" style="color:var(--muted)">
-            Bấm <strong>Thêm passkey</strong> sẽ yêu cầu xác thực lại tài khoản (bằng <strong>mật khẩu đăng nhập</strong> hoặc OAuth/Google) ở đầu luồng trước khi gọi WebAuthn (<span class="mono">vault.passkey_register</span>).
-            <span lang="en" class="block mt-0.5">Clicking “Add passkey” prompts account re-authentication (login password or OAuth/Google) at the start of the flow before starting WebAuthn.</span>
+            Bấm <strong>Thêm passkey</strong> sẽ yêu cầu xác thực lại tài khoản (bằng mật khẩu đăng nhập hoặc Google) trước khi trình duyệt hiện hộp thoại passkey.
+            <span lang="en" class="block mt-0.5">Clicking Add passkey first asks you to confirm your account (login password or Google) before your browser shows the passkey prompt.</span>
           </p>
         </div>
         <button class="btn btn-secondary" onclick="SAK.toast('Chạm vào khoá bảo mật để đăng ký…')">Thêm passkey</button>

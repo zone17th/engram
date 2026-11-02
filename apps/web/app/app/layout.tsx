@@ -5,9 +5,12 @@ import type { ReactNode } from 'react';
 import { fontVariables } from '@/app/fonts';
 import { QueryProvider } from '@/components/query-provider';
 import { ThemeProvider } from '@/components/theme-provider';
+import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { LocaleThemeSync } from '@/features/auth/locale-sync';
+import { ContentChangesSync } from '@/features/entries/changes-sync';
 import { RouteGuard } from '@/features/auth/route-guard';
 import { SessionProvider } from '@/features/auth/session-provider';
+import { ReauthMessagesProvider } from '@/features/auth/use-reauth';
 import { VaultProvider } from '@/features/vault/vault-provider';
 import { resolveAppLocale } from '@/i18n/app-locale';
 import { THEME_COOKIE, resolveInitialTheme, themeToDataAttribute } from '@/lib/preferences/cookies';
@@ -36,12 +39,17 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         <NextIntlClientProvider locale={locale} messages={messages}>
           <ThemeProvider initialTheme={themePref} initialLocale={locale}>
             <QueryProvider>
-              <SessionProvider>
-                <VaultProvider silentUnlockOnLoad>
-                  <LocaleThemeSync />
-                  <RouteGuard>{children}</RouteGuard>
-                </VaultProvider>
-              </SessionProvider>
+              <UndoToastProvider>
+                <ReauthMessagesProvider auth={messages.auth}>
+                  <SessionProvider>
+                    <VaultProvider silentUnlockOnLoad>
+                      <LocaleThemeSync />
+                      <ContentChangesSync />
+                      <RouteGuard>{children}</RouteGuard>
+                    </VaultProvider>
+                  </SessionProvider>
+                </ReauthMessagesProvider>
+              </UndoToastProvider>
             </QueryProvider>
           </ThemeProvider>
         </NextIntlClientProvider>

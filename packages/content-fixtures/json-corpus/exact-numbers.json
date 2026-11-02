@@ -1,0 +1,7 @@
+{
+  "bigInt": 9007199254740993,
+  "hugeExp": 1e400,
+  "negZero": -0,
+  "trailingZeroDecimal": 0.10,
+  "sciUpper": -2.50E-12
+}

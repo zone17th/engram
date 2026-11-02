@@ -1,8 +1,8 @@
-import { expect, test, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { expectSignedIn, patchSettingsViaPage } from './helpers';
+import { expect, test, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
+import { expectSignedIn, fillSecret, patchSettingsViaPage } from './helpers';
 
 const THEMES = ['light', 'dark'] as const;
 const LOCALES = ['en', 'vi'] as const;
@@ -192,7 +192,11 @@ async function createVisualAccount(page: Page, locale: Locale, theme: Theme): Pr
   await expect(page.getByRole('heading', { name: locale === 'vi' ? 'Tạo tài khoản' : 'Create account', exact: true })).toBeVisible();
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
   await page.getByRole('textbox', { name: 'Email', exact: true }).fill(email);
-  await page.getByLabel(locale === 'vi' ? 'Mật khẩu đăng nhập' : 'Login password').fill('visual-password-12');
+  await fillSecret(page.getByLabel(locale === 'vi' ? 'Mật khẩu đăng nhập' : 'Login password', { exact: true }), 'visual-password-12');
+  const confirmInput = page.getByLabel(locale === 'vi' ? 'Nhập lại mật khẩu' : 'Confirm password', { exact: true });
+  if ((await confirmInput.count()) > 0) {
+    await fillSecret(confirmInput, 'visual-password-12');
+  }
   await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: locale === 'vi' ? 'Tạo tài khoản' : 'Create account', exact: true }).click();
   await page.waitForURL(/\/app\/(onboarding|auth\/verify-email)/, { timeout: 30_000 });

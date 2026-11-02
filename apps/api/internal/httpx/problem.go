@@ -77,6 +77,71 @@ var problemTitles = map[string]string{
 	"passkey_name_invalid":        "Tên passkey không hợp lệ",
 	"passkey_exists":              "Passkey đã được đăng ký",
 	"passkey_not_found":           "Không tìm thấy passkey",
+	// P04 content (plan P04 mục 3).
+	"name_invalid":           "Tên mục không hợp lệ",
+	"hint_invalid":           "Gợi ý không hợp lệ",
+	"tag_display_invalid":    "Tên tag không hợp lệ",
+	"item_id_conflict":       "ID mục đã được dùng",
+	"item_deleted":           "Mục đã bị xoá",
+	"item_tag_limit":         "Mục đã đủ số tag tối đa",
+	"item_entry_limit":       "Mục đã đủ số entry tối đa",
+	"tag_conflict":           "Tag trùng với tag khác",
+	"entry_invalid":          "Entry không hợp lệ",
+	"entry_too_large":        "Entry quá lớn",
+	"entry_id_conflict":      "ID entry đã được dùng",
+	"entry_key_mismatch":     "Entry không mã hoá bằng khoá vault hiện tại",
+	"entry_nonce_reused":     "Nonce entry bị dùng lại",
+	"entry_restore_via_item": "Entry bị xoá theo mục; hãy khôi phục mục",
+	"reorder_mismatch":       "Danh sách sắp xếp không khớp entry hiện có",
+	"changes_window_expired": "Mốc thay đổi đã quá cửa sổ lưu",
+	// P04 authui (ADR 0006).
+	"reset_token_invalid": "Mã đặt lại mật khẩu không hợp lệ",
+}
+
+// contentProblemStatus là HTTP status cố định của mọi code mà API content P04
+// (/items*, /tags*, /entries*) trả từ handler (plan P04 mục 3). Code do middleware
+// chung trả (session, CSRF, JSON content, rate limit, idempotency, If-Match, trần
+// body) có status riêng của middleware và không đi qua bảng này: ví dụ trần body
+// item/tag trả 413 invalid_request và thiếu Content-Type trả 415 invalid_request,
+// nên BodyLimit mang status của nó (BodyLimit{Bytes, Code} + 413), không suy ra
+// từ ContentProblemStatus("invalid_request") = 400. Title ở problemTitles không
+// phải copy UI; web dùng content.errors.<code> (có thể override theo operation).
+var contentProblemStatus = map[string]int{
+	"invalid_request":         http.StatusBadRequest,
+	"not_found":               http.StatusNotFound,
+	"vault_absent":            http.StatusNotFound,
+	"precondition_required":   http.StatusPreconditionRequired,
+	"version_mismatch":        http.StatusPreconditionFailed,
+	"idempotency_conflict":    http.StatusConflict,
+	"idempotency_in_progress": http.StatusConflict,
+	"rate_limited":            http.StatusTooManyRequests,
+	"dependency_unavailable":  http.StatusServiceUnavailable,
+	"name_invalid":            http.StatusBadRequest,
+	"hint_invalid":            http.StatusBadRequest,
+	"tag_display_invalid":     http.StatusBadRequest,
+	"item_id_conflict":        http.StatusConflict,
+	"item_deleted":            http.StatusConflict,
+	"item_tag_limit":          http.StatusConflict,
+	"item_entry_limit":        http.StatusConflict,
+	"tag_conflict":            http.StatusConflict,
+	"entry_invalid":           http.StatusBadRequest,
+	"entry_too_large":         http.StatusRequestEntityTooLarge,
+	"entry_id_conflict":       http.StatusConflict,
+	"entry_key_mismatch":      http.StatusConflict,
+	"entry_nonce_reused":      http.StatusBadRequest,
+	"entry_restore_via_item":  http.StatusConflict,
+	"reorder_mismatch":        http.StatusConflict,
+	"changes_window_expired":  http.StatusGone,
+}
+
+// ContentProblemStatus trả HTTP status của một code lỗi API content P04 (plan P04
+// mục 3). Code ngoài bảng trả 500 để lỗi lập trình lộ ra trong test thay vì âm thầm
+// thành 4xx.
+func ContentProblemStatus(code string) int {
+	if status, ok := contentProblemStatus[code]; ok {
+		return status
+	}
+	return http.StatusInternalServerError
 }
 
 // ProblemTitle trả title ổn định; code lạ trả "Lỗi".

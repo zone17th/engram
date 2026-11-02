@@ -85,4 +85,13 @@ describe('ranh giới demo (P01-A5)', () => {
     expect(json).not.toMatch(/@gmail\.com|@yahoo\./i);
     expect(json).not.toMatch(/\b\d{9,}\b/);
   });
+
+  it('chỉ dùng cho landing: omnibox trong app không còn import demo-search hay demo-fixtures', () => {
+    const omniboxSource = readFileSync(
+      resolve(__dirname, '../components/app-shell/omnibox.tsx'),
+      'utf8',
+    );
+    expect(omniboxSource).not.toContain('demo-search');
+    expect(omniboxSource).not.toContain('demo-fixtures');
+  });
 });

@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/authctx"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/db/gen"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/secevent"
+	"github.com/zone17th/engram/apps/api/internal/authctx"
+	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
 
 // CreateVaultInput là đầu vào của `POST /vault` (`vaultCreate`, plan Task 8, SPEC §3.2, §8, §9.2).

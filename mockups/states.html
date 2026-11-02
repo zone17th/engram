@@ -5,28 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Trạng thái rỗng và lỗi — engram</title>
 <link rel="stylesheet" href="tokens.css">
+<link rel="icon" href="../apps/web/app/icon.svg" type="image/svg+xml">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="tw.js"></script>
 </head>
 <body class="bg-canvas">
 
-<header class="max-w-container mx-auto px-5 pt-6 flex items-center gap-4">
-  <a href="landing.html" class="flex items-center gap-2.5 no-underline">
-    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-      <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
-        <stop offset="0%" stop-color="var(--logo-magenta)"/>
-        <stop offset="100%" stop-color="var(--logo-cyan)"/>
-      </linearGradient></defs>
-      <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
-      <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
-      <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
-            stroke-width="2.6" stroke-linecap="round"
-            stroke-dasharray="0.1 5.2 0.1 4 20"/>
-    </svg>
-    <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
-  </a>
-  <span class="vault-pill vault-open" data-vault>🔓 Vault đang mở</span>
-  <button class="btn btn-tertiary !px-3 ml-auto" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
+<header class="sticky top-0 z-40" style="background:color-mix(in srgb, var(--canvas) 88%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)">
+  <div class="max-w-container mx-auto px-5 h-[68px] flex items-center gap-2 sm:gap-4">
+    <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
+          <stop offset="0%" stop-color="var(--logo-magenta)"/>
+          <stop offset="100%" stop-color="var(--logo-cyan)"/>
+        </linearGradient></defs>
+        <rect width="28" height="28" rx="9" fill="var(--logo-ink)"/>
+        <!-- dấu vết: mảnh rời tụ lại thành nét liền -->
+        <path d="M5.5 16C11 16 16.5 12 22.5 12" fill="none" stroke="url(#g)"
+              stroke-width="2.6" stroke-linecap="round"
+              stroke-dasharray="0.1 5.2 0.1 4 20"/>
+      </svg>
+      <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink hidden min-[480px]:inline">engram</span>
+    </a>
+    <div class="ml-auto flex items-center gap-1 sm:gap-2">
+      <button type="button" class="vault-pill vault-open btn-icon !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3 [@media(pointer:coarse)]:!h-[44px]" data-vault aria-label="Vault mở · 15 phút · Vault open · 15 min"><span aria-hidden="true">🔓</span><span class="hidden sm:inline">Vault mở · 15 phút</span></button>
+      <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
+      <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+      <a href="landing.html" class="btn btn-tertiary no-underline !text-body">Đăng xuất</a>
+    </div>
+  </div>
 </header>
 
 <main class="max-w-[840px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
@@ -50,7 +57,7 @@
   <!-- ============================================================= -->
   <!-- RỖNG                                                           -->
   <!-- ============================================================= -->
-  <section data-view="empty" class="flex flex-col gap-4">
+  <section data-view="empty" class="flex flex-col gap-4 scope-vault">
 
     <div class="panel p-8 text-center">
       <p class="t-label mb-3" style="color:var(--muted)">Vault trống · lần đầu</p>
@@ -60,18 +67,20 @@
         Đặt tên theo từ khoá bạn sẽ nhớ lúc cần tìm.
       </p>
       <button class="btn btn-primary" onclick="SAK.toast('Mở ô thêm nhanh')">Thêm mục đầu tiên</button>
-      <p class="t-caption mt-4 mb-0" style="color:var(--muted)">Hoặc nhấn <span class="kbd">N</span> ở bất cứ đâu.</p>
     </div>
 
-    <div class="card p-6 text-center">
-      <p class="t-label mb-2" style="color:var(--muted)">Tìm không ra</p>
-      <h2 class="t-title-sm mb-2">Không có mục nào khớp “thuế 2024”</h2>
-      <p class="t-body mb-4" style="color:var(--muted)">
-        Thử bớt từ, bỏ dấu, hoặc tìm theo tag. Tìm kiếm chỉ soi tên mục và tag — không soi nội dung entry.
+    <div class="card p-6 text-center" id="empty-search-no-match">
+      <p class="t-label mb-2 text-muted">Tìm không ra · <span lang="en">No prefix match</span></p>
+      <h2 class="t-title-sm mb-2">Không có mục bắt đầu bằng “thuế 2024”</h2>
+      <p class="t-body mb-1 text-muted">
+        Tìm kiếm theo tiền tố tên mục đã chuẩn hoá (<span class="mono">GET /items?q=</span>, chỉ gửi khi nhấn Enter). Tìm kiếm chỉ soi tên mục và tag — không soi nội dung entry.
+      </p>
+      <p class="text-[12px] text-muted m-0 mb-4" lang="en">
+        <strong>No items starting with “thuế 2024”.</strong> Prefix search runs only on Enter against normalized item names (<span class="mono">GET /items?q=</span>) and never inspects encrypted entry bodies.
       </p>
       <div class="flex gap-2 justify-center flex-wrap">
-        <button class="btn btn-secondary btn-sm">Tạo mục “thuế 2024”</button>
-        <button class="btn btn-tertiary btn-sm">Xoá bộ lọc</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đã tạo mục “thuế 2024” (chưa có entry) · Created item “thuế 2024” (no entries)','Hoàn tác')">Tạo mục “thuế 2024” · <span lang="en">Create item “thuế 2024”</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm">Xoá bộ lọc · <span lang="en">Clear filter</span></button>
       </div>
     </div>
 
@@ -96,7 +105,7 @@
   <!-- ============================================================= -->
   <!-- ĐANG TẢI                                                       -->
   <!-- ============================================================= -->
-  <section data-view="load" hidden class="flex flex-col gap-4">
+  <section data-view="load" hidden class="flex flex-col gap-4 scope-vault">
     <div class="card p-6">
       <p class="t-label mb-4" style="color:var(--muted)">Danh sách đang tải · khung xám, không nhảy layout</p>
       <div class="flex flex-col gap-3">
@@ -124,43 +133,92 @@
   <!-- ============================================================= -->
   <!-- LỖI                                                            -->
   <!-- ============================================================= -->
-  <section data-view="err" hidden class="flex flex-col gap-3">
+  <section data-view="err" hidden class="flex flex-col gap-3 scope-vault">
 
-    <div class="card p-5" style="border-color:var(--error)">
-      <span class="badge-type mb-2 inline-block" style="background:var(--pale-orange);color:var(--error)">409</span>
-      <p class="text-[14px] font-semibold m-0 mb-1">Mục này vừa được sửa ở nơi khác</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Bản bạn đang xem cũ hơn bản trên máy chủ. Tải lại để xem bản mới, phần bạn vừa gõ được giữ nguyên để chép sang.
+    <div class="card card-error p-5" id="err-version-mismatch">
+      <span class="badge-type badge-error mb-2 inline-block">412</span>
+      <div role="alert" class="auth-alert mb-2">
+        <p class="text-[14px] font-semibold m-0 mb-1 text-body">Đã được sửa ở thiết bị khác</p>
+        <p class="text-[13px] m-0 text-body">
+          Bản bạn đang sửa có phiên bản cũ hơn bản trên máy chủ (<span class="mono">412 version_mismatch</span>). Bản nháp trong ô vẫn giữ nguyên — ứng dụng không tự ghi đè. Chọn tải bản mới (bỏ nháp), chủ ý giữ bản của bạn để ghi đè với phiên bản mới nhất, hoặc chép bản của bạn để tự gộp.
+        </p>
+      </div>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        <strong>Modified on another device (412 version_mismatch).</strong> Your draft is kept in the editor — we never overwrite automatically. Load the latest version (discards your draft after confirmation), keep your version (deliberately seals and overwrites against the latest version), or copy your draft to merge manually.
       </p>
       <div class="flex gap-2 flex-wrap">
-        <button class="btn btn-secondary btn-sm">Tải bản mới</button>
-        <button class="btn btn-tertiary btn-sm">Giữ bản của tôi</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=false">Tải bản mới · <span lang="en">Load latest</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã ghi đè bằng bản của bạn (version mới) · Overwritten with your version')">Giữ bản của tôi · <span lang="en">Keep mine</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã chép bản nháp vào clipboard · Copied your draft to clipboard')">Chép bản của tôi · <span lang="en">Copy mine</span></button>
+      </div>
+      <div id="err-conflict-confirm" hidden class="rounded-md p-3 mt-3 bg-surface">
+        <p class="text-[13px] m-0 mb-1 text-body"><strong>Bỏ thay đổi đang gõ và tải bản mới?</strong></p>
+        <p class="text-[12px] text-muted m-0 mb-2" lang="en">Discard your current draft and load the latest version?</p>
+        <div class="flex gap-2 flex-wrap">
+          <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true;SAK.toast('Đã tải bản mới nhất · Loaded latest version')">Bỏ nháp và tải · <span lang="en">Discard &amp; load</span></button>
+          <button type="button" class="btn btn-tertiary btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true">Huỷ · <span lang="en">Cancel</span></button>
+        </div>
       </div>
     </div>
 
-    <div class="card p-5" style="border-color:var(--error)">
-      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Nội dung quá lớn</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Một entry tối đa 256 KiB sau khi bỏ khoảng trắng thừa. Tách bớt hoặc lưu thành nhiều entry.
+    <div class="card card-error p-5" id="err-entry-too-large">
+      <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">Nội dung quá lớn</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Một entry tối đa 256 KiB (262.144 byte UTF-8; <span class="mono">413 entry_too_large</span>). Tách bớt hoặc lưu thành nhiều entry.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        <strong>Entry too large (413 entry_too_large).</strong> An entry can be at most 256 KiB (262,144 UTF-8 bytes). Split the content into smaller entries.
       </p>
     </div>
 
-    <div class="card p-5" style="border-color:var(--error)">
-      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">JSON không hợp lệ</p>
-      <p class="text-[13px] m-0 mb-2" style="color:var(--muted)">Dòng 14, cột 3: thiếu dấu phẩy giữa hai khoá.</p>
-      <div class="rounded-md p-3 mono text-[12px]" style="background:var(--surface);color:var(--muted)">
+    <div class="card card-error p-5" id="err-json-invalid">
+      <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">JSON không hợp lệ</p>
+      <p class="text-[13px] m-0 mb-1 text-muted">
+        Dòng 14, cột 3 (offset 248): thiếu dấu phẩy giữa hai khoá. Khi sửa tab JSON gốc, nút <strong>Lưu</strong> bị khoá cho tới khi cú pháp hợp lệ và có nút <strong>Đi tới lỗi</strong> nhảy con trỏ tới đúng vị trí lỗi; khi nhập JSON mới, bạn có thể sửa lại hoặc chọn <strong>Lưu dạng văn bản</strong>.
+      </p>
+      <p class="text-[12px] text-muted m-0 mb-2" lang="en">
+        <strong>Invalid JSON — Line 14, column 3 (offset 248):</strong> Missing comma between two properties. In Raw JSON edit mode, Save is disabled until valid and <strong>Go to error</strong> moves the caret to the error offset; during JSON Import, you can fix the JSON or save verbatim as a plain text entry.
+      </p>
+      <div class="rounded-md p-3 mono text-[12px] bg-surface text-muted">
         "amount": 1200<br>"currency": "VND"
       </div>
-      <button class="btn btn-tertiary btn-sm mt-3">Lưu dạng văn bản</button>
+      <div class="flex flex-wrap gap-2 mt-3">
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã đưa con trỏ tới dòng 14, cột 3 · Moved caret to line 14, column 3')">Đi tới lỗi · <span lang="en">Go to error</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã lưu nguyên văn thành 1 entry văn bản · Saved verbatim as text entry','Hoàn tác')">Lưu dạng văn bản · <span lang="en">Save as text</span></button>
+      </div>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Trùng tên mục</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Đã có mục tên “hoá đơn điện”. Thêm entry vào mục cũ hay tạo mục mới?</p>
-      <div class="flex gap-2 flex-wrap">
-        <button class="btn btn-primary btn-sm">Thêm vào mục cũ</button>
-        <button class="btn btn-tertiary btn-sm">Tạo mục mới</button>
-      </div>
+    <div class="card card-error p-5" id="err-import-utf8">
+      <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">Tệp nhập vào không phải UTF-8 hợp lệ</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Phát hiện chuỗi byte không hợp lệ khi đọc tệp <span class="mono">.json</span> (<span class="mono">TextDecoder('utf-8', { fatal: true })</span>). Ứng dụng từ chối nhận thay vì âm thầm thay bằng ký tự thay thế <span class="mono">U+FFFD</span> làm hỏng dữ liệu. Hãy lưu lại tệp ở bảng mã UTF-8 rồi thử lại.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        <strong>Invalid UTF-8 file in JSON import.</strong> Strict UTF-8 decoding rejects invalid byte sequences instead of silently inserting <span class="mono">U+FFFD</span> replacement characters. Re-save the file as UTF-8 and try again.
+      </p>
+    </div>
+
+    <div class="card card-warning p-5" id="err-json-format-refused">
+      <span class="badge-type badge-warn mb-2 inline-block">BYTE_LIMIT_EXCEEDED / DEPTH_LIMIT_EXCEEDED</span>
+      <p class="text-[14px] font-semibold m-0 mb-1">Từ chối định dạng JSON (vượt 256 KiB hoặc quá 1.000 cấp lồng)</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Nút <strong>Định dạng</strong> chỉ đổi khoảng trắng ngoài chuỗi và kiểm tra trước độ sâu (&le; 1.000 cấp) cùng độ dài byte kết quả (&le; 262.144 B UTF-8) trước khi cấp phát chuỗi mới. Khi vượt ngưỡng, ứng dụng giữ nguyên nội dung gốc và báo lý do.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        <strong>JSON formatting refused (&gt; 256 KiB or &gt; 1,000 nesting depth).</strong> Format only modifies whitespace outside strings and pre-checks both depth and output byte length before allocating. When either limit is exceeded, the original source is kept intact.
+      </p>
+    </div>
+
+    <div class="card p-5" id="err-dup-name-picker">
+      <p class="t-label mb-1 text-muted">Trùng tên mục · U9 Picker</p>
+      <p class="text-[14px] font-semibold m-0 mb-1">Nhiều mục trùng tên khi thêm nhanh</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Trùng tên mục là hợp lệ. Khi có từ 2 mục cùng tên chuẩn hoá trở lên, nhấn <span class="kbd">Enter</span> mở hộp chọn mục đích (U9: tên + tối đa 3 chip tag + ngày tạo + số entry, nút “Xem thêm”, dòng cuối “Tạo mục mới cùng tên”) trả về đúng ID mục.
+      </p>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        <strong>Duplicate item names (U9 picker).</strong> Duplicate names are valid. When 2+ items match on Enter, the U9 picker opens (name, up to 3 tag chips, <span class="mono">created_at</span>, <span class="mono">entry_count</span>, “Load more”, and “Create new item with the same name”) and resolves to an item ID.
+      </p>
+      <button type="button" class="btn btn-primary btn-sm" data-open-dup-picker="wifi">Mở picker trùng tên “wifi” · <span lang="en">Open U9 picker</span></button>
     </div>
 
     <div class="card p-5">
@@ -170,11 +228,25 @@
       </p>
     </div>
 
-    <div class="card p-5" style="border-color:var(--error)">
-      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--error)">Không giải mã được entry này</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Dữ liệu có dấu hiệu sai lệch nên chúng tôi không hiển thị nội dung có thể sai.
-        Các entry khác vẫn mở bình thường. Thử bản backup nếu bạn có.
+    <div class="card card-error p-5" id="err-decrypt-fail">
+      <p class="text-[14px] font-semibold m-0 mb-1 text-error-ink">Không giải mã được entry này</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Dữ liệu xác thực không khớp nên chúng tôi không hiển thị nội dung có thể sai lệch. Các entry khác trong mục vẫn mở bình thường.
+      </p>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        <strong>Could not decrypt this entry.</strong> Authenticated decryption failed, so corrupted content is not shown. Other entries in this item still open normally.
+      </p>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang tải và giải mã lại entry… · Reloading and decrypting entry…')">Thử lại · <span lang="en">Retry</span></button>
+    </div>
+
+    <div class="card card-warning p-5" id="err-entry-key-mismatch">
+      <span class="badge-type badge-warn mb-2 inline-block">entry_key_mismatch</span>
+      <p class="text-[14px] font-semibold m-0 mb-1">Entry này mã hoá bằng khoá cũ</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Mã khoá trên entry (<span class="mono">key_id</span>) không khớp với khoá hiện tại của vault (<span class="mono">vault_key_id</span>) nên trình duyệt không gọi giải mã. Điều này xảy ra khi vault đã được đặt lại hoặc đổi khoá ở thiết bị khác.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        <strong>Encrypted with an older key (entry_key_mismatch).</strong> The encryption key on this entry (<span class="mono">key_id</span>) does not match your current vault key (<span class="mono">vault_key_id</span>), so decryption was skipped.
       </p>
     </div>
 
@@ -240,7 +312,7 @@
   <!-- VAULT / P03                                                    -->
   <!-- ============================================================= -->
   <!-- Danh sách tĩnh để review; khi port production chỉ hiển thị 1 role="alert" tại một thời điểm. -->
-  <section data-view="vault" hidden class="flex flex-col gap-3">
+  <section data-view="vault" hidden class="flex flex-col gap-3 scope-vault">
 
     <!-- 1. 412 version_mismatch -->
     <div class="card p-5" id="vault-version-mismatch" style="border-color:var(--error)">
@@ -263,11 +335,11 @@
       <div role="alert" class="auth-alert mb-3">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Xác thực lại đã hết hạn trước khi lưu</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Grant xác thực còn dưới 60 giây hoặc đã hết hạn. Nhập lại mật khẩu đăng nhập ngay tại đây để tiếp tục — các khoá đang tính trong Worker vẫn được giữ nguyên, không cần bắt đầu lại.
+          Xác thực tài khoản còn dưới 60 giây. Nhập lại mật khẩu đăng nhập ngay tại đây để lưu tiếp mà không mất bước đang làm.
         </p>
       </div>
       <p class="text-[12px] m-0 mb-4" style="color:var(--muted)" lang="en">
-        <strong>Re-authentication expired before saving (password account).</strong> Confirm your login password in place to continue; secrets already prepared in the Worker are kept without restarting the flow.
+        <strong>Re-authentication expired before saving (password account).</strong> Your account confirmation has less than 60 seconds left. Re-enter your login password here to finish saving without losing your current step.
       </p>
       <label class="field mb-3">
         <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal" style="color:var(--muted)">Login password (not vault passphrase)</span></span>
@@ -292,7 +364,7 @@
         </p>
       </div>
       <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
-        <strong>Time ran out (OAuth-only account).</strong> Re-authenticating with your OAuth provider navigates away from this page, so entered secrets were dropped and nothing was saved. Restart the flow to get a fresh grant first.
+        <strong>Time ran out (OAuth-only account).</strong> Because Google re-authentication redirects the page, temporary secrets were cleared and nothing was saved on the server. Restart the flow to re-authenticate with Google.
       </p>
       <button type="button" class="btn btn-secondary" onclick="SAK.toast('Bắt đầu lại thao tác từ bước xác thực')">Bắt đầu lại · <span lang="en">Start over</span></button>
     </div>
@@ -303,14 +375,14 @@
       <div role="alert" class="auth-alert mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thử quá nhiều lần cho thao tác vault này</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Thử lại sau <span class="mono">48</span> giây (<span class="mono">Retry-After: 48</span>). Chúng tôi không hiển thị số lần thử còn lại hay số recovery key còn dùng được.
+          Thử lại sau <span class="mono">48</span> giây. Chúng tôi không hiển thị số lần thử còn lại hay số recovery key còn dùng được.
         </p>
       </div>
       <p class="text-[12px] m-0 mb-2" style="color:var(--muted)">
         Giới hạn theo tài khoản: khôi phục bằng recovery key 5 lần / 15 phút; lấy tuỳ chọn passkey 20 lần / phút; thao tác đổi khoá nhạy cảm 10 lần / phút. Mở khoá bằng passphrase chạy ngoại tuyến trong trình duyệt nên không có giới hạn từ máy chủ.
       </p>
       <p class="text-[12px] m-0" style="color:var(--muted)" lang="en">
-        <strong>Too many vault requests (429 rate_limited).</strong> Please wait <span class="mono">48</span> seconds (<span class="mono">Retry-After: 48</span>) before trying again. Remaining attempts or remaining recovery keys are never shown. (Passphrase unlock runs offline in the browser and has no server rate limit.)
+        <strong>Too many vault requests (429 rate_limited).</strong> Please wait <span class="mono">48</span> seconds before trying again. Remaining attempts or remaining recovery keys are never shown. (Passphrase unlock runs offline in the browser and has no server rate limit.)
       </p>
     </div>
 
@@ -328,29 +400,29 @@
       </p>
     </div>
 
-    <!-- 5. Vault locked by another tab / auto-lock (BroadcastChannel lock) -->
+    <!-- 5. Vault locked by another tab / auto-lock (BroadcastChannel lock + Q15 draft cleared) -->
     <div class="rounded-md p-4" id="vault-locked-broadcast" role="status" style="background:var(--pale-accent)">
       <p class="t-label mb-1.5" style="color:var(--muted)">Đồng bộ đa tab / tự khoá · BroadcastChannel sabk.vault</p>
       <p class="text-[13px] m-0 mb-1.5" style="color:var(--body)">
-        <strong>Vault đã tự khoá hoặc vừa được khoá từ một tab khác.</strong> Khoá giải mã và nội dung entry trong bộ nhớ đã được xoá. Bạn vẫn duyệt và tìm được tên mục cùng tag; mở khoá lại để xem hoặc sửa nội dung entry.
+        <strong>Vault đã tự khoá hoặc vừa được khoá từ một tab khác.</strong> Khoá giải mã, nội dung entry trong bộ nhớ và bản nháp chưa lưu đã được xoá (sau khi mở khoá lại hiện thông báo “Bản nháp chưa lưu đã bị xoá khi khoá vault; mục/tag đã tạo vẫn còn”). Bạn vẫn duyệt và tìm được tên mục cùng tag.
       </p>
       <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
-        <strong>Vault locked by another tab or auto-lock.</strong> Decryption keys and cached entry contents in memory were cleared. You can still browse and search item names and tags; unlock again to view or edit entry contents.
+        <strong>Vault locked by another tab or auto-lock.</strong> Decryption keys, cached entry contents, and unsaved drafts/in-progress quick-add plans were cleared (unlocking shows “Unsaved draft was cleared when the vault locked; any item/tags already created were kept”).
       </p>
       <a href="unlock.html" class="btn btn-primary no-underline">Mở khoá lại · <span lang="en">Unlock vault</span></a>
     </div>
 
     <!-- 6. Insufficient memory to open the vault (Argon2id 64 MiB derive failure) -->
     <div class="card p-5" id="vault-insufficient-memory" style="border-color:var(--error)">
-      <p class="t-label mb-2" style="color:var(--muted)">Lỗi cấp phát bộ nhớ KDF · Argon2id 64 MiB</p>
+      <p class="t-label mb-2" style="color:var(--muted)">Giới hạn bộ nhớ · 64 MiB · <span lang="en">Memory limit · 64 MiB</span></p>
       <div role="alert" class="auth-alert mb-2">
         <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Thiết bị không đủ bộ nhớ để mở vault</p>
         <p class="text-[13px] m-0" style="color:var(--body)">
-          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ trong Web Worker để tính khoá từ passphrase. Đây không phải lỗi sai passphrase và chưa có dữ liệu nào bị thay đổi. Hãy đóng bớt tab/ứng dụng, dùng passkey hoặc thiết bị đã nhớ, hoặc mở trên một thiết bị khác.
+          Trình duyệt không cấp phát đủ 64 MiB bộ nhớ để tính khoá từ passphrase. Đây không phải lỗi sai passphrase và chưa có dữ liệu nào bị thay đổi. Hãy đóng bớt tab/ứng dụng, dùng passkey hoặc thiết bị đã nhớ, hoặc mở trên một thiết bị khác.
         </p>
       </div>
-      <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
-        <strong>Not enough memory to open the vault.</strong> Your browser could not allocate 64 MiB in the Web Worker to derive the key from your passphrase. This does not mean your passphrase is wrong. Close other tabs or apps, unlock with a passkey or remembered device, or try another device.
+      <p class="text-[12px] m-0 mb-3 text-muted" lang="en">
+        <strong>Not enough memory to open the vault.</strong> This browser could not set aside the 64 MiB of memory needed to derive the key from your passphrase. This does not mean your passphrase is wrong. Close other tabs or apps, unlock with a passkey or remembered device, or try another device.
       </p>
       <div class="flex gap-2 flex-wrap">
         <button type="button" class="btn btn-secondary" onclick="SAK.toast('Đang thử tính lại khoá…')">Thử lại · <span lang="en">Try again</span></button>
@@ -363,7 +435,7 @@
   <!-- ============================================================= -->
   <!-- NGOẠI TUYẾN                                                    -->
   <!-- ============================================================= -->
-  <section data-view="off" hidden class="flex flex-col gap-3">
+  <section data-view="off" hidden class="flex flex-col gap-3 scope-vault">
 
     <div class="rounded-md p-4" style="background:var(--pale-orange)">
       <p class="text-[13px] m-0" style="color:var(--body)">
@@ -371,12 +443,15 @@
       </p>
     </div>
 
-    <div class="card p-5">
+    <div class="card p-5" id="off-save-deferred">
       <p class="text-[14px] font-semibold m-0 mb-1">Không lưu được lúc này</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Nội dung bạn gõ vẫn nằm trong ô soạn thảo, chưa mất. Có mạng lại thì bấm lưu.
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Nội dung bạn gõ vẫn nằm trong ô soạn thảo cho tới khi vault khoá (khoá vault sẽ xoá bản nháp chưa lưu). Có mạng lại thì bấm lưu để gửi lại đúng yêu cầu cũ.
       </p>
-      <button class="btn btn-secondary btn-sm">Thử lưu lại</button>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        <strong>Cannot save right now.</strong> What you typed stays in the editor until the vault locks (locking the vault clears unsaved drafts). Retry once connectivity returns.
+      </p>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang thử lưu lại với cùng Idempotency-Key… · Retrying save with same Idempotency-Key…')">Thử lưu lại · <span lang="en">Retry save</span></button>
     </div>
 
     <div class="card p-5">
@@ -394,7 +469,7 @@
   <!-- ============================================================= -->
   <!-- GIẢM CHỨC NĂNG                                                 -->
   <!-- ============================================================= -->
-  <section data-view="degr" hidden class="flex flex-col gap-3">
+  <section data-view="degr" hidden class="flex flex-col gap-3 scope-vault">
 
     <div class="rounded-md p-4" style="background:var(--surface)">
       <p class="text-[13px] m-0 mb-1" style="color:var(--body)">

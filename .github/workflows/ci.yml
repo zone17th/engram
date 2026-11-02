@@ -177,6 +177,7 @@ jobs:
         env:
           AUTH_FAKE_OAUTH: 'true'
           AUTH_REQUIRE_EMAIL_VERIFICATION: 'false'
+          NEXT_PUBLIC_CONTENT_ENABLED: 'true'
         run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up --build --detach
 
       - name: Wait for the web proxy
@@ -199,6 +200,7 @@ jobs:
           BASE_URL: http://localhost:3000
           E2E_STACK: '1'
           E2E_VERIFY: 'false'
+          NEXT_PUBLIC_CONTENT_ENABLED: 'true'
           MAIL_SINK_DIR: /work/.data/mail-sink
         shell: bash
         run: |
@@ -212,12 +214,13 @@ jobs:
             --env APP_ORIGIN \
             --env E2E_STACK \
             --env E2E_VERIFY \
+            --env NEXT_PUBLIC_CONTENT_ENABLED \
             --env MAIL_SINK_DIR \
             --env CI \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             "$PLAYWRIGHT_IMAGE" \
-            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test
+            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test --project=auth --project=mobile-390 --project=tablet-768 --project=desktop-1440 --project=vault
           status=$?
           set -e
           echo "E2E_EXIT_STATUS=$status" >> "$GITHUB_ENV"
@@ -274,6 +277,7 @@ jobs:
       APP_ORIGIN: http://127.0.0.1:3000
       AUTH_FAKE_OAUTH: 'true'
       AUTH_REQUIRE_EMAIL_VERIFICATION: 'true'
+      AUTH_MAIL_CAPTURE_AS_DELIVERY: 'true'
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -471,3 +475,244 @@ jobs:
       - name: Tear down Compose resources
         if: always()
         run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans
+
+  e2e-content-verify-true:
+    name: Content e2e (email verification required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # WebAuthn RP ID = host of APP_ORIGIN; Chrome rejects an IP address, so this job uses a hostname (advisor-dec-050).
+      BASE_URL: http://localhost:3000
+      APP_ORIGIN: http://localhost:3000
+      AUTH_FAKE_OAUTH: 'false'
+      AUTH_REQUIRE_EMAIL_VERIFICATION: 'true'
+      NEXT_PUBLIC_CONTENT_ENABLED: 'true'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Compose and E2E harness configuration
+        run: |
+          node --test scripts/e2e-infra.test.mjs
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml config --quiet
+
+      - name: Prepare mail sink directory
+        run: mkdir -p .data/mail-sink
+
+      - name: Build and start the stack
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up --build --detach
+
+      - name: Wait for the web proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "$BASE_URL/api/v1/healthz" >/dev/null; then
+              exit 0
+            fi
+            sleep 3
+          done
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml ps
+          exit 1
+
+      - name: Run content Playwright (verification required)
+        env:
+          BASE_URL: http://localhost:3000
+          E2E_STACK: '1'
+          E2E_VERIFY: 'true'
+          NEXT_PUBLIC_CONTENT_ENABLED: 'true'
+          MAIL_SINK_DIR: /work/.data/mail-sink
+          PLAYWRIGHT_NO_COPY_PROMPT: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . infra/image-pins.env
+          set +a
+          set +e
+          docker run --rm --network host \
+            --env BASE_URL \
+            --env APP_ORIGIN \
+            --env E2E_STACK \
+            --env E2E_VERIFY \
+            --env NEXT_PUBLIC_CONTENT_ENABLED \
+            --env MAIL_SINK_DIR \
+            --env PLAYWRIGHT_NO_COPY_PROMPT \
+            --env CI \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            "$PLAYWRIGHT_IMAGE" \
+            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test --project content
+          status=$?
+          set -e
+          echo "E2E_EXIT_STATUS=$status" >> "$GITHUB_ENV"
+          exit "$status"
+
+      - name: Stage sanitized content artifacts
+        if: always()
+        run: node scripts/sanitize-e2e-artifacts.mjs
+
+      - name: Upload allowlisted content screenshots and metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-content-verify-true
+          path: .data/e2e-artifacts
+          if-no-files-found: ignore
+
+      - name: Show Compose logs on failure
+        if: failure()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml logs --no-color
+
+      - name: Tear down Compose resources
+        if: always()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans
+
+  # P04 lane acceptance (Task 21c, advisor pre-grant 2026-11-02): the a11y/visual sweep runs in its own job so the
+  # Content e2e job keeps its 30 min budget for the journey. content-a11y-*.spec.ts skip unless E2E_CONTENT_A11Y=1.
+  e2e-content-a11y:
+    name: Content a11y
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # WebAuthn RP ID = host of APP_ORIGIN; Chrome rejects an IP address, so this job uses a hostname (advisor-dec-050).
+      BASE_URL: http://localhost:3000
+      APP_ORIGIN: http://localhost:3000
+      AUTH_FAKE_OAUTH: 'false'
+      AUTH_REQUIRE_EMAIL_VERIFICATION: 'true'
+      NEXT_PUBLIC_CONTENT_ENABLED: 'true'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Compose and E2E harness configuration
+        run: |
+          node --test scripts/e2e-infra.test.mjs
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml config --quiet
+
+      - name: Prepare mail sink directory
+        run: mkdir -p .data/mail-sink
+
+      - name: Build and start the stack
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml up --build --detach
+
+      - name: Wait for the web proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "$BASE_URL/api/v1/healthz" >/dev/null; then
+              exit 0
+            fi
+            sleep 3
+          done
+          docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml ps
+          exit 1
+
+      - name: Run content a11y Playwright (verification required)
+        env:
+          E2E_CONTENT_A11Y: '1'
+          BASE_URL: http://localhost:3000
+          E2E_STACK: '1'
+          E2E_VERIFY: 'true'
+          NEXT_PUBLIC_CONTENT_ENABLED: 'true'
+          MAIL_SINK_DIR: /work/.data/mail-sink
+          PLAYWRIGHT_NO_COPY_PROMPT: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . infra/image-pins.env
+          set +a
+          set +e
+          docker run --rm --network host \
+            --env BASE_URL \
+            --env APP_ORIGIN \
+            --env E2E_STACK \
+            --env E2E_VERIFY \
+            --env NEXT_PUBLIC_CONTENT_ENABLED \
+            --env MAIL_SINK_DIR \
+            --env PLAYWRIGHT_NO_COPY_PROMPT \
+            --env E2E_CONTENT_A11Y \
+            --env CI \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            "$PLAYWRIGHT_IMAGE" \
+            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test e2e/content-a11y- --project=content
+          status=$?
+          set -e
+          echo "E2E_EXIT_STATUS=$status" >> "$GITHUB_ENV"
+          exit "$status"
+
+      - name: Stage sanitized content a11y artifacts
+        if: always()
+        run: node scripts/sanitize-e2e-artifacts.mjs
+
+      - name: Upload allowlisted content a11y screenshots and metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-content-a11y
+          path: .data/e2e-artifacts
+          if-no-files-found: ignore
+
+      - name: Show Compose logs on failure
+        if: failure()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml logs --no-color
+
+      - name: Tear down Compose resources
+        if: always()
+        run: docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans
+
+  content-perf:
+    name: Content perf
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: '1'
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Run content performance tests
+        run: go test -tags perf ./internal/perf/... -count=1 -timeout 18m -v

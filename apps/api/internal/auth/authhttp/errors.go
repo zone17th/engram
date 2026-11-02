@@ -4,8 +4,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/auth"
-	"github.com/zone17th/save-all-by-keyword/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/auth"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 )
 
 func mapDomainError(err error) error {
@@ -39,6 +39,10 @@ func WriteDomainError(w http.ResponseWriter, r *http.Request, err error) {
 			t := true
 			extra.CaptchaRequired = &t
 		}
+		if de.Code == "dependency_unavailable" {
+			retry := 1
+			extra.RetryAfter = &retry
+		}
 		httpx.WriteProblemExtra(w, r, statusFor(de.Code), de.Code, httpx.ProblemTitle(de.Code)+".", extra)
 		return
 	}
@@ -52,7 +56,7 @@ func WriteDomainError(w http.ResponseWriter, r *http.Request, err error) {
 
 func statusFor(code string) int {
 	switch code {
-	case "invalid_request", "password_weak", "verification_invalid", "oauth_state_invalid":
+	case "invalid_request", "password_weak", "verification_invalid", "reset_token_invalid", "oauth_state_invalid":
 		return http.StatusBadRequest
 	case "unauthenticated", "access_expired", "session_invalid", "invalid_credentials", "reauth_required", "reauth_invalid":
 		return http.StatusUnauthorized

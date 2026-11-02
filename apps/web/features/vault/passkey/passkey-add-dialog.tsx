@@ -151,13 +151,13 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
           }
         }}
       >
-        <div className="panel p-7" style={{ width: 'min(560px, 94vw)', maxHeight: '90vh', overflow: 'auto' }}>
+        <div className="panel max-h-[90vh] w-[min(560px,94vw)] overflow-auto p-7">
           <DialogHeader title={t('add.title')} description={t('add.description')} />
 
           <div className="card p-5 my-5">
             {reauthOpen && (
               <div className="mb-4">
-                <p className="t-label mb-2" style={{ color: 'var(--muted)' }}>
+                <p className="t-label mb-2 text-muted">
                   {t('add.reauthStep')}
                 </p>
                 {reauth.capabilities.hasPassword && (
@@ -187,7 +187,7 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
                 )}
                 {!reauth.capabilities.hasPassword && reauth.capabilities.passwordEnrollmentAvailable && (
                   <div className="mb-3">
-                    <p className="mb-3 text-[13px]" style={{ color: 'var(--body)' }}>
+                    <p className="mb-3 text-[13px] text-body">
                       {tAuth('reauth.oauthOnlyHint')}
                     </p>
                     <Link
@@ -210,13 +210,13 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
                     >
                       {oauthPending ? tAuth('reauth.submitting') : tAuth('reauth.google')}
                     </Button>
-                    <p className="text-[12px] m-0" style={{ color: 'var(--muted)' }}>
+                    <p className="text-[12px] m-0 text-muted">
                       {t('add.googleNote')}
                     </p>
                   </>
                 )}
                 {noMethodAtAll && (
-                  <p role="status" className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+                  <p role="status" className="m-0 text-[13px] text-muted">
                     {t('add.noReauthMethod')}
                   </p>
                 )}
@@ -245,17 +245,16 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
           {key && (
             <div
               role="alert"
-              className="card p-4 mb-4"
-              style={cancelledQuietly ? undefined : { borderColor: 'var(--error)' }}
+              className={`card mb-4 p-4${cancelledQuietly ? '' : ' card-error'}`}
             >
-              <p className="m-0 text-[14px] font-semibold" style={{ color: 'var(--body)' }}>
+              <p className="m-0 text-[14px] font-semibold text-body">
                 {t(key)}
               </p>
             </div>
           )}
           {failure?.orphan && (
             <div role="status" className="card p-4 mb-4">
-              <p className="m-0 text-[13px]" style={{ color: 'var(--muted)' }}>
+              <p className="m-0 text-[13px] text-muted">
                 {t('register.orphanNotice')}
               </p>
             </div>

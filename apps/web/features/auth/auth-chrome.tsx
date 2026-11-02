@@ -12,18 +12,33 @@ export function AuthChrome({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const t = useTranslations('auth');
   const showSwitch = pathname === '/app/auth/login' || pathname === '/app/auth/signup';
+  const isResetRoute = pathname === '/app/auth/reset-password';
+  const isWideLayout = showSwitch;
 
   return (
     <>
       <header className="mx-auto flex max-w-container items-center gap-4 px-5 pt-6">
-        <Link href="/" className="flex items-center gap-2.5 text-ink no-underline" aria-label="engram">
-          <Logo />
-        </Link>
+        {isResetRoute ? (
+          /* eslint-disable-next-line @next/next/no-html-link-for-pages -- ADR 0006 §6.2 requires hard navigation on /app/auth/reset-password */
+          <a href="/" className="flex items-center gap-2.5 text-ink no-underline" aria-label="engram">
+            <Logo />
+          </a>
+        ) : (
+          <Link href="/" className="flex items-center gap-2.5 text-ink no-underline" aria-label="engram">
+            <Logo />
+          </Link>
+        )}
         <div className="ml-auto">
           <ThemeToggle />
         </div>
       </header>
-      <main className="mx-auto max-w-[520px] px-5 pb-24 pt-10">
+      <main
+        className={
+          isWideLayout
+            ? 'mx-auto max-w-[960px] px-5 pb-24 pt-10'
+            : 'mx-auto max-w-[560px] px-5 pb-24 pt-10'
+        }
+      >
         {showSwitch && (
           <Segmented
             className="mb-7 flex-wrap"
