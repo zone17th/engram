@@ -982,7 +982,8 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
     min-width: 44px; min-height: 44px;
   }
   .json-cell-input { min-height: 44px; }
-  .json-col-idx { width: 68px; min-width: 68px; }
+  .json-col-idx, .json-table td.json-col-act { width: 68px; min-width: 68px; }
+  .json-table td.json-col-act .btn-sm { display: flex; margin-left: auto; min-width: 44px; min-height: 44px; }
   .json-cell-btn, .json-type-btn,
   .json-cell-edit-wrap .btn-sm, .json-table-toolbar .btn-sm { min-width: 44px; }
 }
