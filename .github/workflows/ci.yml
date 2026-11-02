@@ -716,3 +716,228 @@ jobs:
 
       - name: Run content performance tests
         run: go test -tags perf ./internal/perf/... -count=1 -timeout 18m -v
+
+  # --- search benchmark (P05 Task 10, plan 2.23) ---
+  # Smoke on every PR into develop. Full only on the draft "CI only: search-bench
+  # (never merge)" PR whose head branch starts with phase05/search-bench (ARM64
+  # runner, like the production host). Not a required check (repo setting) and no
+  # other job `needs:` it. Results are benchmark evidence only on the full profile.
+  search-bench:
+    name: Search bench
+    runs-on: ${{ startsWith(github.head_ref, 'phase05/search-bench') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: ${{ startsWith(github.head_ref, 'phase05/search-bench') && 150 || 25 }}
+    env:
+      # Free-disk floors in GB (protocol section 3): full = 1.5 x the ~10 GB
+      # estimate. Smoke: the Go formula (searchbench.EstimateDiskBytes) estimates
+      # 1 GB for the smoke profile, i.e. a 1.5 GB floor; the job keeps 4 GB as a
+      # conservative floor that also covers the Go build/module cache.
+      SEARCH_BENCH_MIN_FREE_GB_FULL: '15'
+      SEARCH_BENCH_MIN_FREE_GB_SMOKE: '4'
+      SEARCH_BENCH_PROFILE: ${{ startsWith(github.head_ref, 'phase05/search-bench') && 'full' || 'smoke' }}
+      SEARCH_BENCH_GO_TIMEOUT: ${{ startsWith(github.head_ref, 'phase05/search-bench') && '140m' || '20m' }}
+      SEARCH_BENCH_SELFCHECK_TIMEOUT: 20m
+      SEARCH_BENCH_SEED: '20261102'
+      SEARCH_BENCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      SEARCH_BENCH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # Throwaway CI database, published on 127.0.0.1 only (credentials equal the
+      # compose dev values, nothing here is a real secret).
+      SEARCH_BENCH_PG_CONTAINER: engram-search-bench-db
+      SEARCH_BENCH_PG_PORT: '55432'
+      SEARCH_BENCH_DATABASE_URL: postgres://engram:engram@127.0.0.1:55432/engram?sslmode=disable
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/api
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Runs before Postgres, Go and any allocation: fail early with the numbers
+      # when the filesystem that holds Docker data (the database) or the
+      # workspace has less free space than the floor.
+      - name: Precheck runner resources
+        working-directory: .
+        run: |
+          echo "profile=${SEARCH_BENCH_PROFILE} seed=${SEARCH_BENCH_SEED} head_ref=${GITHUB_HEAD_REF}"
+          df -h
+          free -m
+          nproc
+          uname -m
+
+          fs_free_kb() {
+            { df -Pk "$1" 2>/dev/null || sudo -n df -Pk "$1" 2>/dev/null; } | awk 'NR==2{print $4}'
+          }
+          docker_root="$(docker info --format '{{.DockerRootDir}}')"
+          docker_free_kb="$(fs_free_kb "$docker_root" || true)"
+          [ -n "$docker_free_kb" ] || docker_free_kb="$(fs_free_kb / || true)"
+          workspace_free_kb="$(fs_free_kb "$GITHUB_WORKSPACE" || true)"
+          workspace_used_kb="$(du -sk "$GITHUB_WORKSPACE" | cut -f1)"
+          echo "docker root dir: ${docker_root}"
+          echo "free on docker filesystem: ${docker_free_kb} KB"
+          echo "free on workspace filesystem: ${workspace_free_kb} KB"
+          echo "workspace used: ${workspace_used_kb} KB"
+
+          if [ "$SEARCH_BENCH_PROFILE" = "full" ]; then
+            floor_gb="$SEARCH_BENCH_MIN_FREE_GB_FULL"
+          else
+            floor_gb="$SEARCH_BENCH_MIN_FREE_GB_SMOKE"
+          fi
+          floor_kb=$((floor_gb * 1024 * 1024))
+          free_kb="$docker_free_kb"
+          if [ "$workspace_free_kb" -lt "$free_kb" ]; then free_kb="$workspace_free_kb"; fi
+          {
+            echo "### Search bench precheck (${SEARCH_BENCH_PROFILE})"
+            echo "- free on docker filesystem (${docker_root}): $((docker_free_kb / 1024)) MB"
+            echo "- free on workspace filesystem: $((workspace_free_kb / 1024)) MB"
+            echo "- workspace used: $((workspace_used_kb / 1024)) MB"
+            echo "- floor: ${floor_gb} GB"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$free_kb" -lt "$floor_kb" ]; then
+            echo "::error title=search-bench precheck::free disk $((free_kb / 1024)) MB is below the ${SEARCH_BENCH_PROFILE} floor of ${floor_gb} GB (docker fs $((docker_free_kb / 1024)) MB, workspace fs $((workspace_free_kb / 1024)) MB, workspace used $((workspace_used_kb / 1024)) MB)"
+            exit 1
+          fi
+
+          out_dir="${RUNNER_TEMP}/search-bench-results"
+          mkdir -p "$out_dir"
+          echo "SEARCH_BENCH_OUT_DIR=${out_dir}" >> "$GITHUB_ENV"
+
+      # The image comes from the pinned digest, never a hard-coded one. The
+      # compose db service sets no command or args (only POSTGRES_USER,
+      # POSTGRES_PASSWORD, POSTGRES_DB), so the stock server config is the
+      # production-like config; the report records the effective settings.
+      # --shm-size is CI-only: Docker's 64 MB /dev/shm is too small for parallel
+      # HNSW builds and would fail the run for a reason unrelated to the target.
+      - name: Start Postgres (pinned pgvector image)
+        working-directory: .
+        run: |
+          image="$(grep -E '^POSTGRES_IMAGE=' infra/image-pins.env | head -n1 | cut -d= -f2-)"
+          image="${image%$'\r'}"
+          case "$image" in
+            *@sha256:*) ;;
+            *) echo "::error::POSTGRES_IMAGE in infra/image-pins.env is missing or not digest-pinned: '${image}'"; exit 1 ;;
+          esac
+          echo "postgres image: ${image}"
+          docker run -d --name "$SEARCH_BENCH_PG_CONTAINER" \
+            --shm-size=1g \
+            -e POSTGRES_USER=engram \
+            -e POSTGRES_PASSWORD=engram \
+            -e POSTGRES_DB=engram \
+            -p "127.0.0.1:${SEARCH_BENCH_PG_PORT}:5432" \
+            "$image"
+          echo "SEARCH_BENCH_POSTGRES_IMAGE=${image}" >> "$GITHUB_ENV"
+
+          # -h 127.0.0.1: the entrypoint's temporary init server listens on the
+          # unix socket only, so a TCP probe is true only for the final server.
+          ready=0
+          for _ in $(seq 1 60); do
+            if docker exec "$SEARCH_BENCH_PG_CONTAINER" pg_isready -h 127.0.0.1 -U engram -d engram -q; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::Postgres did not become ready in 120 s"
+            docker logs --tail 100 "$SEARCH_BENCH_PG_CONTAINER" || true
+            exit 1
+          fi
+
+          psql_q() {
+            docker exec -e PGPASSWORD=engram "$SEARCH_BENCH_PG_CONTAINER" \
+              psql -h 127.0.0.1 -U engram -d engram -At -c "$1"
+          }
+          echo "container arch: $(docker exec "$SEARCH_BENCH_PG_CONTAINER" uname -m)"
+          psql_q 'select version()'
+          vector="$(psql_q "select name || ' default=' || default_version || ' installed=' || coalesce(installed_version, '-') from pg_available_extensions where name = 'vector'")"
+          if [ -z "$vector" ]; then
+            echo "::error::pgvector extension is not available in the pinned image"
+            exit 1
+          fi
+          echo "pgvector: ${vector}"
+          psql_q "select name || '=' || setting || coalesce(unit, '') from pg_settings where name in ('shared_buffers', 'work_mem', 'maintenance_work_mem', 'max_parallel_maintenance_workers', 'max_wal_size', 'effective_cache_size') order by name"
+          # The published port must answer on the host loopback for the Go tests.
+          timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/${SEARCH_BENCH_PG_PORT}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Run vet (searchbench tag)
+        run: go vet -tags searchbench ./internal/searchbench/
+
+      # Every tagged test except the benchmark itself: the three mandatory
+      # self-checks plus the pure tests (nearest-rank percentiles, latency
+      # boundaries, size estimate, query mix and determinism). TestSearchBench
+      # runs once, in its own step below.
+      - name: Run harness self-checks
+        run: >-
+          go test -tags searchbench ./internal/searchbench/ -count=1 -v
+          -skip '^TestSearchBench$'
+          -timeout "$SEARCH_BENCH_SELFCHECK_TIMEOUT"
+          2>&1 | tee "$SEARCH_BENCH_OUT_DIR/self-checks.log"
+
+      - name: Run search bench
+        env:
+          SEARCH_BENCH_REQUIRE: '1'
+        run: >-
+          go test -tags searchbench ./internal/searchbench/ -count=1 -v
+          -run '^TestSearchBench$'
+          -timeout "$SEARCH_BENCH_GO_TIMEOUT"
+          2>&1 | tee "$SEARCH_BENCH_OUT_DIR/bench.log"
+
+      # No empty green: a skipped or filtered-out test exits 0 without a PASS
+      # line, so require every PASS line, the dataset hash line and result files.
+      - name: Guard that the self-checks and the bench really ran
+        run: |
+          status=0
+          for name in \
+            TestRecallDefinitionEdgeCases TestHarnessCatchesSlowLexical TestHarnessCatchesLowRecall \
+            TestNearestRankPercentiles TestEvaluateLatencyBoundaries TestEstimateDiskBytes \
+            TestMixKindProportions TestQuerySetsAreDeterministic \
+            TestC2UnderfillIsOverEveryMeasuredQuery TestC2BranchLatencyCoversEveryRequest \
+            TestHybridScenarioRequiresEverySemanticSuccess TestMarkdownTablesEscapePipes \
+            TestParseANNPlan TestBenchHarnessUsesDefaultPlanner; do
+            if ! grep -Eq "^[[:space:]]*--- PASS: ${name} \(" "$SEARCH_BENCH_OUT_DIR/self-checks.log"; then
+              echo "::error::self-check ${name} has no '--- PASS:' line (skipped, filtered out or failed)"
+              status=1
+            fi
+          done
+          if ! grep -Eq '^[[:space:]]*--- PASS: TestSearchBench \(' "$SEARCH_BENCH_OUT_DIR/bench.log"; then
+            echo "::error::TestSearchBench has no '--- PASS:' line (skipped, filtered out or failed)"
+            status=1
+          fi
+          if ! grep -q 'search-bench: dataset_hash=' "$SEARCH_BENCH_OUT_DIR/bench.log"; then
+            echo "::error::bench log has no 'search-bench: dataset_hash=' line"
+            status=1
+          fi
+          for ext in json md; do
+            if ! compgen -G "$SEARCH_BENCH_OUT_DIR/*-${SEARCH_BENCH_PROFILE}-*.${ext}" > /dev/null; then
+              echo "::error::no *-${SEARCH_BENCH_PROFILE}-*.${ext} result file in ${SEARCH_BENCH_OUT_DIR}"
+              status=1
+            fi
+          done
+          ls -la "$SEARCH_BENCH_OUT_DIR"
+          exit "$status"
+
+      - name: Show Postgres logs on failure
+        if: failure()
+        run: docker logs --tail 200 "$SEARCH_BENCH_PG_CONTAINER" || true
+
+      - name: Tear down Postgres
+        if: always()
+        run: docker rm -f "$SEARCH_BENCH_PG_CONTAINER" || true
+
+      # Allowlist: only the report files (*.json, *.md). The .log files stay in
+      # the job log and are not uploaded.
+      - name: Upload search-bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-bench-results
+          path: |
+            ${{ runner.temp }}/search-bench-results/*.json
+            ${{ runner.temp }}/search-bench-results/*.md
+          if-no-files-found: warn
