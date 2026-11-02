@@ -931,6 +931,15 @@ func AppendStepSummary(path, md string) error {
 	return err
 }
 
+// mdCell escapes a string for use inside a Markdown table cell: an unescaped
+// pipe starts a new column (the `|E|>0` header shifted every later column), and
+// a line break ends the row. It is the one place table cells are sanitized.
+func mdCell(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "|", `\|`)
+}
+
 func gbStr(b int64) string  { return fmt.Sprintf("%.2f GB", float64(b)/float64(GB)) }
 func mibStr(b int64) string { return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20)) }
 
@@ -962,7 +971,7 @@ func RenderMarkdown(r *Report) string {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		w("| `%s` | %s |\n", k, h.PG.Settings[k])
+		w("| `%s` | %s |\n", mdCell(k), mdCell(h.PG.Settings[k]))
 	}
 	w("\n")
 
@@ -994,7 +1003,7 @@ func RenderMarkdown(r *Report) string {
 		if v.Note != "" {
 			note = " - " + v.Note
 		}
-		w("| %s | %s | %s | %s%s | **%s** |\n", v.ID, v.Metric, v.Target, v.Measured, note, strings.ToUpper(v.Status()))
+		w("| %s | %s | %s | %s | **%s** |\n", mdCell(v.ID), mdCell(v.Metric), mdCell(v.Target), mdCell(v.Measured+note), strings.ToUpper(v.Status()))
 	}
 	w("\n")
 	if len(r.Hard) > 0 {
@@ -1028,7 +1037,8 @@ func RenderMarkdown(r *Report) string {
 		c := r.C2
 		w("## C2 - recall / underfill / vector branch\n\n")
 		w("Default knob set: `%s`. %s\n\n", c.DefaultKnob, c.MatrixNote)
-		w("| Corpus | Class | Knob | Queries | ANN q. | |E|>0 | |E|=0 | recall@20 mean | recall>=0.8 | underfill after | underfill before (ANN cand.) | overlap | false+ | scan-cap suspect | fallback | timeout | cross-tenant | branch p95/p99 ms (ANN) | paths |\n")
+		w("| Corpus | Class | Knob | Queries | ANN q. | %s | %s | recall@20 mean | recall>=0.8 | underfill after | underfill before (ANN cand.) | overlap | false+ | scan-cap suspect | fallback | timeout | cross-tenant | branch p95/p99 ms (ANN) | paths |\n",
+			mdCell("|E|>0"), mdCell("|E|=0"))
 		w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, x := range c.Cells {
 			var paths []string

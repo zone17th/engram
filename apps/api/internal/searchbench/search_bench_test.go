@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,6 +229,77 @@ func TestRecallDefinitionEdgeCases(t *testing.T) {
 			t.Fatalf("C2-Q at 90%% must fail: %+v", v)
 		}
 	})
+}
+
+// mdColumns counts the cells of a Markdown table row, honouring `\|` escapes.
+func mdColumns(line string) int {
+	n, esc := 0, false
+	for _, r := range strings.TrimSpace(line) {
+		switch {
+		case esc:
+			esc = false
+		case r == '\\':
+			esc = true
+		case r == '|':
+			n++
+		}
+	}
+	return n - 1
+}
+
+// mdTableShapeErrors reports every table row whose cell count differs from its
+// header (an unescaped pipe in a cell shifts the columns). Fenced blocks are skipped.
+func mdTableShapeErrors(md string) []string {
+	var errs []string
+	fenced, want := false, -1
+	for i, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "```") {
+			fenced = !fenced
+			continue
+		}
+		if fenced || !strings.HasPrefix(line, "|") {
+			want = -1
+			continue
+		}
+		got := mdColumns(line)
+		if want < 0 {
+			want = got
+			continue
+		}
+		if got != want {
+			errs = append(errs, fmt.Sprintf("line %d: %d cells, header has %d: %.80s", i+1, got, want, line))
+		}
+	}
+	return errs
+}
+
+// TestMarkdownTablesEscapePipes: |E|>0, |E|=0 and metric strings that contain a
+// pipe must not add table columns (SBW3-1-6).
+func TestMarkdownTablesEscapePipes(t *testing.T) {
+	if got := mdCell("a|b\nc"); got != `a\|b c` {
+		t.Fatalf("mdCell = %q", got)
+	}
+	e := ids(20)
+	cell := AggregateCell("item", "whale", "k", []QueryOutcome{
+		annOutcome(e, e, "ann", false, false, 9000),
+		annOutcome(nil, e[:2], "ann", false, false, 9000), // |E| = 0 with rows: a false positive
+	})
+	r := &Report{
+		Label: "t", Run: RunInfo{Profile: string(ProfileSmoke)},
+		Verdicts: []Verdict{
+			EvaluateFalsePositives([]CellAgg{cell}, "k"), // metric text contains |E|
+			EvaluateC2R([]CellAgg{cell}, "k"),
+			{ID: "X", Metric: "m|n", Target: "t|u", Measured: "a|b", Note: "c|d", Applicable: true},
+		},
+		C2: &C2Report{DefaultKnob: "k", Cells: []CellAgg{cell}},
+	}
+	md := RenderMarkdown(r)
+	if errs := mdTableShapeErrors(md); len(errs) > 0 {
+		t.Fatalf("Markdown table rows with a wrong cell count:\n%s", strings.Join(errs, "\n"))
+	}
+	if !strings.Contains(md, `\|E\|>0`) || !strings.Contains(md, `rows returned when \|E\| = 0`) {
+		t.Fatal("|E| must be escaped in the C2 header and in the false-positive metric")
+	}
 }
 
 func TestNearestRankPercentiles(t *testing.T) {
