@@ -51,7 +51,8 @@ const (
 // AutoFlipOpts parameterises AutoFlipBootstrap.
 type AutoFlipOpts struct {
 	Logger *slog.Logger
-	// Now is an injectable clock (default time.Now).
+	// Now replaces the database clock at every decision (tests only; see
+	// clockNow). Default: the database clock read at the decision (GL-3).
 	Now func() time.Time
 	// Verify tunes the verification (zero value: defaults).
 	Verify VerifyOpts

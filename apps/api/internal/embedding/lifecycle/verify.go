@@ -45,7 +45,8 @@ const (
 
 // VerifyOpts tunes Verify. The zero value is production behaviour.
 type VerifyOpts struct {
-	// Now is an injectable clock (default time.Now), used for rollback checks.
+	// Now is a legacy injectable clock; verification itself reads the database
+	// clock (watermark) and does not use it.
 	Now func() time.Time
 	// RecallSampleSize overrides RecallSampleSize (0 = default). Recall is
 	// skipped when the generation holds fewer vectors than this.

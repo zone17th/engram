@@ -234,11 +234,22 @@ func beginExclusive(ctx context.Context, pool *pgxpool.Pool) (pgx.Tx, error) {
 	return tx, nil
 }
 
-func nowOr(fn func() time.Time) time.Time {
-	if fn != nil {
-		return fn()
+// clockNow returns the time a lifecycle decision is made at (GL-3). The
+// production source is the database clock (clock_timestamp(), the clock R uses
+// for "rollback_until > now()" and that stamps verified_at), so Go/DB skew can
+// never widen a window. Precedence: a non-nil inj (the Now option of
+// FlipOpts/RollbackOpts/DropOpts; tests only) replaces the database clock at
+// every call, entry check and final decision alike, so an injected clock must be
+// coherent with the stored timestamps it is compared against.
+func clockNow(ctx context.Context, db gen.DBTX, inj func() time.Time) (time.Time, error) {
+	if inj != nil {
+		return inj(), nil
 	}
-	return time.Now()
+	var t time.Time
+	if err := db.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&t); err != nil {
+		return time.Time{}, fmt.Errorf("lifecycle: read database clock failed: %w", sanitizeDBErr(err))
+	}
+	return t, nil
 }
 
 // getPending loads genID and requires state pending.
@@ -519,7 +530,8 @@ type FlipOpts struct {
 	// RollbackWindow is the rollback window of the retired old active
 	// generation. Zero means DefaultRollbackWindow.
 	RollbackWindow time.Duration
-	// Now is an injectable clock (default time.Now).
+	// Now replaces the database clock at every decision (tests only; see
+	// clockNow). Default: the database clock read at the decision (GL-3).
 	Now func() time.Time
 	// BeforeExclusive is a test-only hook called after the outside-lock checks
 	// (including the coverage dry run) and right before the exclusive
@@ -553,7 +565,6 @@ func flip(ctx context.Context, pool *pgxpool.Pool, genID int, opts FlipOpts, req
 	if pool == nil {
 		return generation.ErrNilTx
 	}
-	now := nowOr(opts.Now)
 	window := opts.RollbackWindow
 	if window <= 0 {
 		window = DefaultRollbackWindow
@@ -561,6 +572,12 @@ func flip(ctx context.Context, pool *pgxpool.Pool, genID int, opts FlipOpts, req
 	reason := flipReason(opts.Reason, "manual")
 
 	g, err := generation.GetByID(ctx, pool, genID)
+	if err != nil {
+		return err
+	}
+	// Fast-fail only: the authoritative checks and the replaced generation's
+	// window use the clock re-read at the decision inside the exclusive tx (GL-3).
+	now, err := clockNow(ctx, pool, opts.Now)
 	if err != nil {
 		return err
 	}
@@ -598,6 +615,10 @@ func flip(ctx context.Context, pool *pgxpool.Pool, genID int, opts FlipOpts, req
 	if err != nil {
 		return err
 	}
+	// Cheap precondition check before the (possibly long) in-lock scan.
+	if now, err = clockNow(ctx, tx, opts.Now); err != nil {
+		return err
+	}
 	if err := checkFlippable(g, now); err != nil {
 		return err
 	}
@@ -621,6 +642,15 @@ func flip(ctx context.Context, pool *pgxpool.Pool, genID int, opts FlipOpts, req
 	// Jobs only see target edits. Re-prove coverage itself under the lock so an
 	// eligibility change that created no embed job cannot slip through (GL-1).
 	if err := coverageInTx(ctx, tx, g); err != nil {
+		return err
+	}
+	// The decision: verification freshness is judged, and the replaced
+	// generation's rollback window starts, at this instant - not at the start of
+	// the operation, which may be long before (verification, scan, lock wait).
+	if now, err = clockNow(ctx, tx, opts.Now); err != nil {
+		return err
+	}
+	if err := checkFlippable(g, now); err != nil {
 		return err
 	}
 	if err := swapActive(ctx, tx, g, now, window, reason); err != nil {
@@ -718,7 +748,8 @@ type RollbackOpts struct {
 	// RollbackWindow is the window given to the generation being replaced.
 	// Zero means DefaultRollbackWindow.
 	RollbackWindow time.Duration
-	// Now is an injectable clock (default time.Now).
+	// Now replaces the database clock at every decision (tests only; see
+	// clockNow). Default: the database clock read at the decision (GL-3).
 	Now func() time.Time
 	// Verify tunes the catch-up verification (zero value: defaults).
 	Verify VerifyOpts
@@ -737,7 +768,6 @@ func Rollback(ctx context.Context, pool *pgxpool.Pool, toGenID int, opts Rollbac
 	if pool == nil {
 		return generation.ErrNilTx
 	}
-	now := nowOr(opts.Now)
 	window := opts.RollbackWindow
 	if window <= 0 {
 		window = DefaultRollbackWindow
@@ -745,6 +775,12 @@ func Rollback(ctx context.Context, pool *pgxpool.Pool, toGenID int, opts Rollbac
 	reason := flipReason(opts.Reason, "rollback")
 
 	g, err := generation.GetByID(ctx, pool, toGenID)
+	if err != nil {
+		return err
+	}
+	// Fast-fail only: the window is enforced again at the decision, after the
+	// verification and the lock wait, with a clock re-read then (GL-3).
+	now, err := clockNow(ctx, pool, opts.Now)
 	if err != nil {
 		return err
 	}
@@ -782,6 +818,9 @@ func Rollback(ctx context.Context, pool *pgxpool.Pool, toGenID int, opts Rollbac
 	if err != nil {
 		return err
 	}
+	if now, err = clockNow(ctx, tx, opts.Now); err != nil {
+		return err
+	}
 	if err := checkRollbackTarget(g, now); err != nil {
 		return err
 	}
@@ -796,6 +835,15 @@ func Rollback(ctx context.Context, pool *pgxpool.Pool, toGenID int, opts Rollbac
 		if errors.Is(err, ErrCoverageIncomplete) {
 			return fmt.Errorf("%w: %w", ErrGenerationNotCaughtUp, ErrCoverageIncomplete)
 		}
+		return err
+	}
+	// The decision: the rollback deadline is enforced, and the replaced
+	// generation's new window starts, at this instant (GL-3). MaxVerifyAge needs
+	// no check here: the catch-up proof above was made under this same lock.
+	if now, err = clockNow(ctx, tx, opts.Now); err != nil {
+		return err
+	}
+	if err := checkRollbackTarget(g, now); err != nil {
 		return err
 	}
 	if err := swapActive(ctx, tx, g, now, window, reason); err != nil {
@@ -816,7 +864,8 @@ func checkRollbackTarget(g generation.Generation, now time.Time) error {
 
 // RetireOpts parameterises Retire.
 type RetireOpts struct {
-	// Now is an injectable clock (default time.Now).
+	// Now replaces the database clock at every decision (tests only; see
+	// clockNow). Default: the database clock read at the decision (GL-3).
 	Now func() time.Time
 }
 
@@ -871,7 +920,8 @@ type DropOpts struct {
 	// AcceptedEvidence is the path of the accepted-evidence file (OQ-19). The
 	// CLI checks that the file exists; lifecycle only requires non-empty.
 	AcceptedEvidence string
-	// Now is an injectable clock (default time.Now).
+	// Now replaces the database clock at every decision (tests only; see
+	// clockNow). Default: the database clock read at the decision (GL-3).
 	Now func() time.Time
 }
 
@@ -886,7 +936,6 @@ func Drop(ctx context.Context, pool *pgxpool.Pool, genID int, opts DropOpts) err
 	if strings.TrimSpace(opts.AcceptedEvidence) == "" {
 		return fmt.Errorf("%w: accepted evidence is required", ErrDropGuard)
 	}
-	now := nowOr(opts.Now)
 
 	tx, err := beginExclusive(ctx, pool)
 	if err != nil {
@@ -911,6 +960,10 @@ func Drop(ctx context.Context, pool *pgxpool.Pool, genID int, opts DropOpts) err
 	}
 	if row.State != generation.StateRetired {
 		return fmt.Errorf("%w: %w", ErrDropGuard, ErrNotRetired)
+	}
+	now, err := clockNow(ctx, tx, opts.Now)
+	if err != nil {
+		return err
 	}
 	if row.RollbackUntil.Valid && row.RollbackUntil.Time.After(now) {
 		return fmt.Errorf("%w: inside the rollback window", ErrDropGuard)
