@@ -672,6 +672,7 @@ func (t *fakeTx) LargeObjects() pgx.LargeObjects                         { retur
 func (t *fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescription, error) {
 	return nil, nil
 }
+
 func (t *fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
 	return pgconn.CommandTag{}, nil
 }
@@ -683,18 +684,32 @@ type fakeVectorDB struct {
 	count int
 	txs   []*fakeTx
 	txIdx int
+
+	// waitBranchExpiry makes BeginTx block until the branch context handed to it
+	// is done, then records ctx.Err() in branchErr. This deterministically
+	// reproduces "the branch deadline expired before the error was classified"
+	// without sleeping a guessed duration or racing a timer.
+	waitBranchExpiry bool
+	branchErr        error
 }
 
 func (db *fakeVectorDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
 	return pgconn.CommandTag{}, nil
 }
+
 func (db *fakeVectorDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return nil, nil
 }
+
 func (db *fakeVectorDB) QueryRow(context.Context, string, ...any) pgx.Row {
 	return fakeCountRow{count: db.count}
 }
-func (db *fakeVectorDB) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) {
+
+func (db *fakeVectorDB) BeginTx(ctx context.Context, _ pgx.TxOptions) (pgx.Tx, error) {
+	if db.waitBranchExpiry {
+		<-ctx.Done()
+		db.branchErr = ctx.Err()
+	}
 	tx := db.txs[db.txIdx]
 	db.txIdx++
 	return tx, nil
@@ -971,5 +986,151 @@ func TestVectorSearchTimeoutPreservesPartialHits(t *testing.T) {
 		if !errors.As(err, &pgErr) || pgErr.Code != "42P01" {
 			t.Fatalf("unrelated SQL error = %v, want PgError 42P01", err)
 		}
+	}
+}
+
+// TestVectorSearchExpiredBranchErrorPrecedence pins the classifier order of
+// isTimeoutOrDeadline when the branch deadline has already expired by the time
+// the error is classified (VQ-2 remaining edge): an explicit PgError is judged
+// by its SQLSTATE only, and the branch-context fallback is limited to
+// otherwise-unclassified (transport-style) errors.
+func TestVectorSearchExpiredBranchErrorPrecedence(t *testing.T) {
+	pin := generation.Pin{
+		GenID: 1,
+		Identity: embedid.Identity{
+			Provider:      generation.ProviderTEI,
+			Model:         "tei/bge-m3",
+			ModelVersion:  "v1",
+			Dims:          3,
+			Preprocessing: "v1",
+		},
+		MinCos:    0.55,
+		ItemTable: "item_embedding_g1",
+		TagTable:  "tag_embedding_g1",
+	}
+	uid := uuid.New()
+	qvec := []float32{1, 0, 0}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	id1 := uuid.MustParse("00000000-0000-0000-0000-000000000010")
+	id2 := uuid.MustParse("00000000-0000-0000-0000-000000000020")
+	id3 := uuid.MustParse("00000000-0000-0000-0000-000000000030")
+
+	hitFar := store.Hit{ID: id3, Name: "far", Count: 1, LastUsedAt: now, CreatedAt: now, Dist: 0.25, Cos: 0.75}
+	hitTieHi := store.Hit{ID: id2, Name: "tie-hi", Count: 2, LastUsedAt: now, CreatedAt: now, Dist: 0.10, Cos: 0.90}
+	hitTieLo := store.Hit{ID: id1, Name: "tie-lo", Count: 3, LastUsedAt: now, CreatedAt: now, Dist: 0.10, Cos: 0.90}
+
+	timeout57014 := &pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"}
+	undefinedTable := &pgconn.PgError{Code: "42P01", Message: "undefined_table"}
+	adminShutdown := &pgconn.PgError{Code: "57P01", Message: "terminating connection due to administrator command"}
+
+	fixedNow := time.Now() // relative-elapsed clock only; never used as a context deadline
+
+	cases := []struct {
+		name        string
+		ann         bool
+		count       int
+		k           int
+		iterErr     error
+		wantErrCode string // non-empty: error must be a PgError with this SQLSTATE
+		wantErrText string // non-empty: error must contain this text (non-PgError)
+		wantIDs     []uuid.UUID
+		wantPath    store.VectorPath
+		wantCands   int
+		wantUnder   bool
+	}{
+		{
+			name: "exact expired branch + 42P01 stays error", count: 3, k: 5,
+			iterErr: undefinedTable, wantErrCode: "42P01",
+		},
+		{
+			name: "ann expired branch + 42P01 stays error", ann: true, count: 6, k: 5,
+			iterErr: undefinedTable, wantErrCode: "42P01",
+		},
+		{
+			name: "ann expired branch + 57P01 stays error", ann: true, count: 6, k: 5,
+			iterErr: adminShutdown, wantErrCode: "57P01",
+		},
+		{
+			name: "exact expired branch + 57014 is timeout with partial hits", count: 3, k: 5,
+			iterErr: timeout57014, wantIDs: []uuid.UUID{id1, id2, id3}, wantPath: store.VectorPathExact,
+		},
+		{
+			name: "ann expired branch + 57014 is timeout with partial hits", ann: true, count: 6, k: 5,
+			iterErr: timeout57014, wantIDs: []uuid.UUID{id1, id3}, wantPath: store.VectorPathANNShort,
+			wantCands: 2, wantUnder: true,
+		},
+		{
+			name: "exact expired branch + unclassified transport error is timeout", count: 3, k: 5,
+			iterErr: errors.New("connection reset"), wantIDs: []uuid.UUID{id1, id2, id3}, wantPath: store.VectorPathExact,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			knobs := store.DefaultVectorSearchKnobs()
+			knobs.ExactMaxVectors = 5
+			knobs.FallbackMaxVectors = 10
+			if tc.ann {
+				knobs.ExactMaxVectors = 2
+			}
+			// Real branch context expires after 50ms (BeginTx blocks until then);
+			// the injected fixed clock keeps the relative budget at the full 50ms so
+			// no scheduler stall can short-circuit the search before BeginTx.
+			knobs.BranchTimeout = 50 * time.Millisecond
+			knobs.FallbackMinBudget = 10 * time.Millisecond
+			knobs.Now = func() time.Time { return fixedNow }
+
+			hFar, hHi, hLo := hitFar, hitTieHi, hitTieLo
+			rows := &fakeVectorRows{corpus: generation.CorpusItem, isANN: tc.ann, iterErr: tc.iterErr}
+			if tc.ann {
+				rows.annRows = []fakeANNRowData{{candidates: 2, hit: &hFar}, {candidates: 2, hit: &hLo}}
+			} else {
+				rows.exRows = []store.Hit{hFar, hHi, hLo}
+			}
+			db := &fakeVectorDB{
+				count:            tc.count,
+				txs:              []*fakeTx{{br: &fakeBatchResults{rows: rows}}},
+				waitBranchExpiry: true,
+			}
+
+			hits, stats, err := store.VectorSearch(context.Background(), db, pin, uid, generation.CorpusItem, qvec, tc.k, time.Now().Add(time.Second), knobs)
+
+			// Guard against a vacuous test: the branch context really had expired.
+			if !errors.Is(db.branchErr, context.DeadlineExceeded) {
+				t.Fatalf("branch ctx err at BeginTx = %v, want context.DeadlineExceeded", db.branchErr)
+			}
+
+			if tc.wantErrCode != "" {
+				if err == nil {
+					t.Fatalf("expired branch + %s: got nil error (stats %+v), want PgError %s", tc.wantErrCode, stats, tc.wantErrCode)
+				}
+				var pgErr *pgconn.PgError
+				if !errors.As(err, &pgErr) || pgErr.Code != tc.wantErrCode {
+					t.Fatalf("err = %v, want PgError %s", err, tc.wantErrCode)
+				}
+				if hits != nil || stats.TimedOut {
+					t.Fatalf("error path returned hits=%v TimedOut=%v, want nil hits and TimedOut=false", hits, stats.TimedOut)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("err = %v, want nil (timeout with partial hits)", err)
+			}
+			if !stats.TimedOut || stats.Path != tc.wantPath || stats.Returned != len(tc.wantIDs) ||
+				stats.ANNCandidates != tc.wantCands || stats.Underfill != tc.wantUnder {
+				t.Fatalf("stats = %+v, want Path=%s TimedOut=true Returned=%d ANNCandidates=%d Underfill=%v",
+					stats, tc.wantPath, len(tc.wantIDs), tc.wantCands, tc.wantUnder)
+			}
+			if len(hits) != len(tc.wantIDs) {
+				t.Fatalf("hits = %+v, want ids %v", hits, tc.wantIDs)
+			}
+			for i, id := range tc.wantIDs {
+				if hits[i].ID != id {
+					t.Fatalf("hits[%d].ID = %s, want %s (all hits %+v)", i, hits[i].ID, id, hits)
+				}
+			}
+		})
 	}
 }

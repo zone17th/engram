@@ -526,18 +526,29 @@ func isCallerCanceled(callerCtx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) && !errors.Is(callerCtx.Err(), context.DeadlineExceeded)
 }
 
+// isTimeoutOrDeadline classifies err as a branch timeout (partial results, nil
+// error) or not (the error is returned to the caller). Order matters:
+//
+//  1. A genuine context.DeadlineExceeded is a timeout.
+//  2. An explicit *pgconn.PgError is classified by its SQLSTATE only: 57014
+//     (query_canceled / statement_timeout) is a timeout; every other code stays
+//     an error even when the branch deadline has already expired, so an
+//     unrelated SQL failure is never turned into a silent TimedOut success.
+//  3. Only otherwise-unclassified (transport-style) errors fall back to the
+//     branch context: an expired branch deadline means the failure is most
+//     likely the deadline tearing the connection down.
+//
+// Caller cancellation is handled earlier by isCallerCanceled and stays an error.
 func isTimeoutOrDeadline(branchCtx context.Context, err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(branchCtx.Err(), context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		// 57014 = query_canceled (statement_timeout)
-		if pgErr.Code == "57014" {
-			return true
-		}
+		return pgErr.Code == "57014"
 	}
-	return false
+	return errors.Is(branchCtx.Err(), context.DeadlineExceeded)
 }
 
 func recordVectorMetrics(m *obs.SearchMetrics, corpus generation.Corpus, path VectorPath, underfillShort bool) {
