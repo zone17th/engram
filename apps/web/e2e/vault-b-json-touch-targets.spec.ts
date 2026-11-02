@@ -171,6 +171,107 @@ async function probeCoarseControls(
       return { ok: false, hitDesc: describeNode(hit) };
     };
 
+    // FU11 diag (advisor-dec-238): structural hit-test detail for the miss message only.
+    // SECURITY: reads only tagName, the `data-testid` and `class` attributes, boxes, computed
+    // styles, table/row indices and scroll offsets. Never innerText, textContent, value, title,
+    // aria-label or any other attribute: entry bodies are plaintext in the DOM while unlocked.
+    const DIAG_STYLE_PROPS = [
+      'position',
+      'top',
+      'z-index',
+      'display',
+      'height',
+      'min-height',
+      'max-height',
+      'vertical-align',
+      'overflow',
+      'line-height',
+      'box-sizing',
+      'padding',
+    ] as const;
+
+    const diagRect = (node: Element | null): string => {
+      if (!node) return 'null';
+      const b = node.getBoundingClientRect();
+      return `[l${b.left.toFixed(2)} t${b.top.toFixed(2)} r${b.right.toFixed(2)} b${b.bottom.toFixed(2)} w${b.width.toFixed(2)} h${b.height.toFixed(2)}]`;
+    };
+
+    const diagNode = (node: Element | null): string => {
+      if (!node) return 'null';
+      const testId = node.getAttribute('data-testid');
+      const cls = node.getAttribute('class');
+      return `<${node.tagName.toLowerCase()}${testId ? ` testid="${testId}"` : ''}${cls ? ` class="${cls}"` : ''}>${diagRect(node)}`;
+    };
+
+    const diagStyle = (node: Element | null): string => {
+      if (!node) return 'null';
+      const cs = window.getComputedStyle(node);
+      return `{${DIAG_STYLE_PROPS.map((p) => `${p}:${cs.getPropertyValue(p)}`).join('; ')}}`;
+    };
+
+    const diagTestIdAncestor = (node: Element | null): string => {
+      const owner = node?.parentElement?.closest('[data-testid]') ?? null;
+      return owner ? (owner.getAttribute('data-testid') ?? 'null') : 'null';
+    };
+
+    const diagTableIndex = (table: Element | null): number =>
+      table ? Array.from(document.querySelectorAll('table')).indexOf(table as HTMLTableElement) : -1;
+
+    const diagScrollContainer = (node: Element): string => {
+      let cur: Element | null = node.parentElement;
+      while (cur && cur !== document.documentElement) {
+        const cs = window.getComputedStyle(cur);
+        if (/(auto|scroll|hidden|overlay|clip)/.test(`${cs.overflowX} ${cs.overflowY}`)) {
+          return `${diagNode(cur)} overflow-x:${cs.overflowX} overflow-y:${cs.overflowY} scrollTop:${cur.scrollTop} scrollLeft:${cur.scrollLeft} clientH:${cur.clientHeight} scrollH:${cur.scrollHeight}`;
+        }
+        cur = cur.parentElement;
+      }
+      return `none (window scrollX:${window.scrollX} scrollY:${window.scrollY})`;
+    };
+
+    const diagControl = (el: HTMLElement): string => {
+      const td = el.closest('td');
+      const tr = el.closest('tr');
+      const table = el.closest('table');
+      return [
+        `button=${diagNode(el)} style=${diagStyle(el)}`,
+        `buttonTd=${diagNode(td)} style=${diagStyle(td)} rowIndex=${tr ? tr.rowIndex : -1}`,
+        `buttonTr=${diagNode(tr)} style=${diagStyle(tr)}`,
+        `buttonTable=${diagNode(table)} tableIndex=${diagTableIndex(table)}/${document.querySelectorAll('table').length} testidAncestor=${diagTestIdAncestor(table)}`,
+        `scroller=${diagScrollContainer(el)}`,
+        `window scrollX:${window.scrollX} scrollY:${window.scrollY} innerW:${window.innerWidth} innerH:${window.innerHeight}`,
+      ].join(' | ');
+    };
+
+    const diagPoint = (el: HTMLElement, x: number, y: number): string => {
+      try {
+        const stack = document
+          .elementsFromPoint(x, y)
+          .map((n, i) => `#${i} ${diagNode(n)}`)
+          .join(' ; ');
+        const hit = document.elementFromPoint(x, y);
+        const hitTd = hit ? hit.closest('td') : null;
+        const ownTd = el.closest('td');
+        let hitTdDetail = 'hitTd=null';
+        if (hitTd) {
+          const hitTr = hitTd.closest('tr');
+          const hitTable = hitTd.closest('table');
+          hitTdDetail = [
+            `hitTd=${diagNode(hitTd)}`,
+            `hitTd.rowIndex=${hitTr ? hitTr.rowIndex : -1}`,
+            `hitTr=${diagNode(hitTr)}`,
+            `hitTable=${diagNode(hitTable)} tableIndex=${diagTableIndex(hitTable)} testidAncestor=${diagTestIdAncestor(hitTd)}`,
+            `hitTd.contains(button)=${hitTd.contains(el)}`,
+            `button.closest(td)===hitTd=${ownTd === hitTd}`,
+            ownTd === hitTd ? 'hitTdStyle=same-as-buttonTd' : `hitTdStyle=${diagStyle(hitTd)}`,
+          ].join(' | ');
+        }
+        return `{stack: ${stack} || ${hitTdDetail}}`;
+      } catch (err) {
+        return `{diag-error: ${err instanceof Error ? err.name : 'unknown'}}`;
+      }
+    };
+
     return items.map(({ name, selector }) => {
       const el = document.querySelector<HTMLElement>(selector);
       if (!el) {
@@ -218,9 +319,20 @@ async function probeCoarseControls(
         const res = hitsIntendedControl(el, px, py);
         hits[key] = res.ok;
         if (!res.ok) {
-          missDetails.push(`${key}(${px.toFixed(1)},${py.toFixed(1)})->${res.hitDesc}`);
+          missDetails.push(
+            `${key}(${px.toFixed(1)},${py.toFixed(1)})->${res.hitDesc} ${diagPoint(el, px, py)}`,
+          );
         }
       });
+      if (missDetails.length > 0) {
+        let controlDiag: string;
+        try {
+          controlDiag = diagControl(el);
+        } catch (err) {
+          controlDiag = `diag-error: ${err instanceof Error ? err.name : 'unknown'}`;
+        }
+        missDetails.push(`control{${controlDiag}}`);
+      }
 
       return {
         name,
