@@ -52,16 +52,26 @@ func WithTEIClock(now func() time.Time) TEIOption {
 	}
 }
 
+// teiBootInfo holds the /info-derived model metadata behind a pointer owned by
+// TEI so that even when Go's reflection-based fmt formatter reaches a TEI
+// value through an unexported struct field (where CanInterface() is false and
+// custom Format/String/GoString methods are bypassed), fmt prints only a
+// pointer address at depth > 0 and never enumerates the response-derived
+// strings (RV52-BE3-1).
+type teiBootInfo struct {
+	modelID      string
+	modelSHA     string
+	fullModel    string
+	modelVersion string
+}
+
 // TEI implements Provider over a Hugging Face Text Embeddings Inference server
 // (plan P05 mục 2.12, SPEC §4.4, §6.7).
 type TEI struct {
 	baseURL         Endpoint
 	infoURL         Endpoint
 	embedURL        Endpoint
-	modelID         string
-	modelSHA        string
-	fullModel       string
-	modelVersion    string
+	info            *teiBootInfo
 	dims            int
 	queryPrefix     string
 	docPrefix       string
@@ -187,10 +197,12 @@ func (p *TEI) fetchBootInfo(ctx context.Context) error {
 			Err:        ErrBadResponse,
 		}
 	}
-	p.modelID = modelID
-	p.modelSHA = modelSHA
-	p.fullModel = ProviderTEI + "/" + modelID
-	p.modelVersion = TEIModelVersion(modelSHA, p.queryPrefix, p.docPrefix)
+	p.info = &teiBootInfo{
+		modelID:      modelID,
+		modelSHA:     modelSHA,
+		fullModel:    ProviderTEI + "/" + modelID,
+		modelVersion: TEIModelVersion(modelSHA, p.queryPrefix, p.docPrefix),
+	}
 	return nil
 }
 
@@ -228,12 +240,18 @@ func (p *TEI) Name() string {
 
 // Model returns "tei/<model_id>".
 func (p *TEI) Model() string {
-	return p.fullModel
+	if p == nil || p.info == nil {
+		return ""
+	}
+	return p.info.fullModel
 }
 
 // ModelVersion returns "<model_sha>;qp=<sha8>;dp=<sha8>".
 func (p *TEI) ModelVersion() string {
-	return p.modelVersion
+	if p == nil || p.info == nil {
+		return ""
+	}
+	return p.info.modelVersion
 }
 
 // Dims returns the configured vector dimension.

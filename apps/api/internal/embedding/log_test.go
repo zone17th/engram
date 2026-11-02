@@ -228,7 +228,7 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 	const (
 		secretAPIKey       = "sk-live-value-format-sentinel-key-99887766"
 		secretPathSlug     = "/secret-gateway-marker-776655/v1"
-		sensitiveTEIModel  = "BAAI/bge-m3-sensitive-info-marker-445566"
+		sensitiveTEIModel  = "http://internal.example.invalid/private/secret/BAAI/bge-m3-marker-445566"
 		sensitiveTEISHA    = "sha-sensitive-revision-marker-778899"
 		sensitiveOpenAIMod = "openrouter/qwen/qwen3-embedding-8b-marker-112233"
 	)
@@ -407,41 +407,50 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 		}
 	}
 
-	// RV52B-BE2-2: Direct fmt and slog of TEI and OpenAICompat providers (value and pointer)
-	// must not publish /info response strings (model_id, model_sha) or raw model strings.
+	// RV52B-BE2-2 & RV52-BE3-1: Direct and unexported-field fmt, JSON, and slog of TEI
+	// and OpenAICompat providers (value and pointer) must not publish /info response
+	// strings (model_id, model_sha, including charset-valid URL markers).
 	providerDiagnosticSurfaces := map[string]string{
-		"openai_ptr_%v":   representations["openai_ptr_%v"],
-		"openai_ptr_%+v":  representations["openai_ptr_%+v"],
-		"openai_ptr_%#v":  representations["openai_ptr_%#v"],
-		"openai_ptr_%s":   representations["openai_ptr_%s"],
-		"openai_ptr_%q":   representations["openai_ptr_%q"],
-		"openai_val_%v":   representations["openai_val_%v"],
-		"openai_val_%+v":  representations["openai_val_%+v"],
-		"openai_val_%#v":  representations["openai_val_%#v"],
-		"openai_val_%s":   representations["openai_val_%s"],
-		"openai_val_%q":   representations["openai_val_%q"],
-		"tei_ptr_%v":      representations["tei_ptr_%v"],
-		"tei_ptr_%+v":     representations["tei_ptr_%+v"],
-		"tei_ptr_%#v":     representations["tei_ptr_%#v"],
-		"tei_ptr_%s":      representations["tei_ptr_%s"],
-		"tei_ptr_%q":      representations["tei_ptr_%q"],
-		"tei_val_%v":      representations["tei_val_%v"],
-		"tei_val_%+v":     representations["tei_val_%+v"],
-		"tei_val_%#v":     representations["tei_val_%#v"],
-		"tei_val_%s":      representations["tei_val_%s"],
-		"tei_val_%q":      representations["tei_val_%q"],
-		"json_openai_ptr": representations["json_openai_ptr"],
-		"json_openai_val": representations["json_openai_val"],
-		"json_tei_ptr":    representations["json_tei_ptr"],
-		"json_tei_val":    representations["json_tei_val"],
-		"slog_text":       representations["slog_text"],
-		"slog_json":       representations["slog_json"],
+		"openai_ptr_%v":       representations["openai_ptr_%v"],
+		"openai_ptr_%+v":      representations["openai_ptr_%+v"],
+		"openai_ptr_%#v":      representations["openai_ptr_%#v"],
+		"openai_ptr_%s":       representations["openai_ptr_%s"],
+		"openai_ptr_%q":       representations["openai_ptr_%q"],
+		"openai_val_%v":       representations["openai_val_%v"],
+		"openai_val_%+v":      representations["openai_val_%+v"],
+		"openai_val_%#v":      representations["openai_val_%#v"],
+		"openai_val_%s":       representations["openai_val_%s"],
+		"openai_val_%q":       representations["openai_val_%q"],
+		"tei_ptr_%v":          representations["tei_ptr_%v"],
+		"tei_ptr_%+v":         representations["tei_ptr_%+v"],
+		"tei_ptr_%#v":         representations["tei_ptr_%#v"],
+		"tei_ptr_%s":          representations["tei_ptr_%s"],
+		"tei_ptr_%q":          representations["tei_ptr_%q"],
+		"tei_val_%v":          representations["tei_val_%v"],
+		"tei_val_%+v":         representations["tei_val_%+v"],
+		"tei_val_%#v":         representations["tei_val_%#v"],
+		"tei_val_%s":          representations["tei_val_%s"],
+		"tei_val_%q":          representations["tei_val_%q"],
+		"unexported_tei_%v":   representations["unexported_tei_%v"],
+		"unexported_tei_%+v":  representations["unexported_tei_%+v"],
+		"unexported_tei_%#v":  representations["unexported_tei_%#v"],
+		"unexported_prov_%v":  representations["unexported_prov_%v"],
+		"unexported_prov_%+v": representations["unexported_prov_%+v"],
+		"unexported_prov_%#v": representations["unexported_prov_%#v"],
+		"json_openai_ptr":     representations["json_openai_ptr"],
+		"json_openai_val":     representations["json_openai_val"],
+		"json_tei_ptr":        representations["json_tei_ptr"],
+		"json_tei_val":        representations["json_tei_val"],
+		"slog_text":           representations["slog_text"],
+		"slog_json":           representations["slog_json"],
 	}
 	responseMarkers := []struct {
 		name  string
 		value string
 	}{
-		{name: "TEI /info model_id marker", value: sensitiveTEIModel},
+		{name: "TEI /info model_id full marker", value: sensitiveTEIModel},
+		{name: "TEI /info model_id URL marker", value: "http://internal.example.invalid/private/secret"},
+		{name: "TEI /info model_id leaf marker", value: "bge-m3-marker-445566"},
 		{name: "TEI /info model_sha marker", value: sensitiveTEISHA},
 	}
 	for label, repr := range providerDiagnosticSurfaces {
