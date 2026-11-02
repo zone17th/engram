@@ -343,8 +343,8 @@ export function SuggestList({
         onClick={() => onActivate(key)}
         className="sugg-row"
       >
-        <span className="omni-opt-main flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-          <span className="omni-opt-title font-semibold text-ink [overflow-wrap:anywhere]">
+        <span className="omni-opt-main">
+          <span className="omni-opt-title">
             <MarkedText
               text={row.name}
               query={markQuery}
@@ -352,10 +352,7 @@ export function SuggestList({
             />
           </span>
           {shownTags.map((tag) => (
-            <span
-              key={tag.id}
-              className="chip dup-chip inline-block max-w-full truncate !px-2 !py-0.5 !text-[12px]"
-            >
+            <span key={tag.id} className="chip dup-chip">
               #{tag.display}
             </span>
           ))}
@@ -508,7 +505,7 @@ export function SuggestList({
                   className="sugg-row omni-create-option"
                 >
                   <span aria-hidden="true" className="mono text-accent">
-                    +
+                    ＋
                   </span>
                   <span className="!overflow-visible !whitespace-normal">
                     <strong>{t('actions.createItem', { query: model.displayQuery })}</strong>
