@@ -143,8 +143,7 @@ func CheckCanary(
 				"embedding canary drift detected",
 				slog.String("generation", genLabel),
 				slog.String("provider", client.Provider.Name()),
-				slog.String("model", client.Provider.Model()),
-				slog.String("model_version", client.Provider.ModelVersion()),
+				slog.Int("count", CanaryCount),
 				slog.Float64("min_cos", minCos),
 				slog.Float64("threshold", CanaryThreshold),
 			)

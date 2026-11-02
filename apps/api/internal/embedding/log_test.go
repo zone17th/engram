@@ -3,6 +3,8 @@ package embedding_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -215,6 +217,139 @@ func TestProviderLogsAndErrorsContainNoSensitiveData(t *testing.T) {
 	} {
 		if !strings.Contains(allLogs, wantField) {
 			t.Fatalf("slog output missing expected structured field %s:\n%s", wantField, allLogs)
+		}
+	}
+}
+
+func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
+	const (
+		secretAPIKey   = "sk-live-value-format-sentinel-key-99887766"
+		secretPathSlug = "/secret-gateway-marker-776655/v1"
+	)
+
+	embedSrv := embedtest.NewServer(embedtest.Options{
+		Dims:     8,
+		ModelID:  "BAAI/bge-m3",
+		ModelSHA: "sha-redact-test",
+	})
+	defer embedSrv.Close()
+
+	muxSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = strings.TrimPrefix(r.URL.Path, secretPathSlug)
+		if r2.URL.Path == "" {
+			r2.URL.Path = "/"
+		}
+		embedSrv.ServeHTTP(w, r2)
+	}))
+	defer muxSrv.Close()
+
+	fullBaseURL := muxSrv.URL + secretPathSlug
+
+	openAICfg := embedding.ClientConfig{
+		Provider:         embedding.ProviderOpenAICompat,
+		BaseURL:          fullBaseURL,
+		APIKey:           embedding.Secret(secretAPIKey),
+		Model:            "openrouter/qwen/qwen3-embedding-8b",
+		Dims:             8,
+		QueryInstruction: "Retrieve matching items",
+	}
+	openAIPtr, err := embedding.NewOpenAICompat(openAICfg)
+	if err != nil {
+		t.Fatalf("NewOpenAICompat: %v", err)
+	}
+	openAIVal := *openAIPtr
+
+	teiCfg := embedding.ClientConfig{
+		Provider:    embedding.ProviderTEI,
+		BaseURL:     fullBaseURL,
+		Dims:        8,
+		QueryPrefix: "query: ",
+		DocPrefix:   "passage: ",
+	}
+	teiPtr, err := embedding.NewTEI(context.Background(), teiCfg)
+	if err != nil {
+		t.Fatalf("NewTEI: %v", err)
+	}
+	teiVal := *teiPtr
+
+	var textLogBuf, jsonLogBuf bytes.Buffer
+	textLogger := slog.New(slog.NewTextHandler(&textLogBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	jsonLogger := slog.New(slog.NewJSONHandler(&jsonLogBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	textLogger.Info("providers",
+		slog.Any("openai_ptr", openAIPtr),
+		slog.Any("openai_val", openAIVal),
+		slog.Any("tei_ptr", teiPtr),
+		slog.Any("tei_val", teiVal),
+		slog.Any("cfg", openAICfg),
+		slog.Any("secret", openAICfg.APIKey),
+	)
+	jsonLogger.Info("providers",
+		slog.Any("openai_ptr", openAIPtr),
+		slog.Any("openai_val", openAIVal),
+		slog.Any("tei_ptr", teiPtr),
+		slog.Any("tei_val", teiVal),
+		slog.Any("cfg", openAICfg),
+		slog.Any("secret", openAICfg.APIKey),
+	)
+
+	jsonPtrBytes, err := json.Marshal(openAIPtr)
+	if err != nil {
+		t.Fatalf("json.Marshal(openAIPtr): %v", err)
+	}
+	jsonValBytes, err := json.Marshal(openAIVal)
+	if err != nil {
+		t.Fatalf("json.Marshal(openAIVal): %v", err)
+	}
+	jsonCfgBytes, err := json.Marshal(openAICfg)
+	if err != nil {
+		t.Fatalf("json.Marshal(openAICfg): %v", err)
+	}
+
+	representations := map[string]string{
+		"openai_ptr_%v":   fmt.Sprintf("%v", openAIPtr),
+		"openai_ptr_%+v":  fmt.Sprintf("%+v", openAIPtr),
+		"openai_ptr_%#v":  fmt.Sprintf("%#v", openAIPtr),
+		"openai_ptr_%s":   fmt.Sprintf("%s", openAIPtr),
+		"openai_ptr_%q":   fmt.Sprintf("%q", openAIPtr),
+		"openai_val_%v":   fmt.Sprintf("%v", openAIVal),
+		"openai_val_%+v":  fmt.Sprintf("%+v", openAIVal),
+		"openai_val_%#v":  fmt.Sprintf("%#v", openAIVal),
+		"openai_val_%s":   fmt.Sprintf("%s", openAIVal),
+		"openai_val_%q":   fmt.Sprintf("%q", openAIVal),
+		"tei_ptr_%v":      fmt.Sprintf("%v", teiPtr),
+		"tei_ptr_%+v":     fmt.Sprintf("%+v", teiPtr),
+		"tei_ptr_%#v":     fmt.Sprintf("%#v", teiPtr),
+		"tei_val_%v":      fmt.Sprintf("%v", teiVal),
+		"tei_val_%+v":     fmt.Sprintf("%+v", teiVal),
+		"tei_val_%#v":     fmt.Sprintf("%#v", teiVal),
+		"cfg_%v":          fmt.Sprintf("%v", openAICfg),
+		"cfg_%+v":         fmt.Sprintf("%+v", openAICfg),
+		"cfg_%#v":         fmt.Sprintf("%#v", openAICfg),
+		"secret_%v":       fmt.Sprintf("%v", openAICfg.APIKey),
+		"secret_%+v":      fmt.Sprintf("%+v", openAICfg.APIKey),
+		"secret_%#v":      fmt.Sprintf("%#v", openAICfg.APIKey),
+		"secret_%x":       fmt.Sprintf("%x", openAICfg.APIKey),
+		"json_openai_ptr": string(jsonPtrBytes),
+		"json_openai_val": string(jsonValBytes),
+		"json_cfg":        string(jsonCfgBytes),
+		"slog_text":       textLogBuf.String(),
+		"slog_json":       jsonLogBuf.String(),
+	}
+
+	forbidden := []string{
+		secretAPIKey,
+		secretPathSlug,
+		fullBaseURL,
+		muxSrv.URL,
+	}
+
+	for label, repr := range representations {
+		for _, needle := range forbidden {
+			if strings.Contains(repr, needle) {
+				t.Fatalf("%s leaked %q: %s", label, needle, repr)
+			}
 		}
 	}
 }

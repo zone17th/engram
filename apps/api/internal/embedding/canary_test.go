@@ -3,6 +3,7 @@ package embedding_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"math"
 	"strings"
@@ -150,6 +151,119 @@ func TestCanaryFirstRunIdenticalAndPerturbedDrift(t *testing.T) {
 	for _, s := range strs {
 		if strings.Contains(logOutput, s) {
 			t.Fatalf("drift log leaked canary input string %q: %s", s, logOutput)
+		}
+	}
+}
+
+func TestCanaryDriftWarningDoesNotLogProviderResponseStrings(t *testing.T) {
+	const (
+		sensitiveModelMarker = "confidential-model-id-http://internal.example.invalid:8080/secret-model"
+		sensitiveSHAMarker   = "confidential-sha-marker-sk-secret-99887766"
+	)
+
+	srv := embedtest.NewServer(embedtest.Options{
+		Dims:     16,
+		ModelID:  sensitiveModelMarker,
+		ModelSHA: sensitiveSHAMarker,
+	})
+	defer srv.Close()
+
+	client, err := embedding.NewClientFromConfig(
+		context.Background(),
+		embedding.ClientConfig{
+			Provider:    embedding.ProviderTEI,
+			BaseURL:     srv.URL(),
+			Dims:        16,
+			QueryPrefix: "query: ",
+			DocPrefix:   "passage: ",
+		},
+		embedding.RolePrimary,
+		embedding.ClientDeps{},
+	)
+	if err != nil {
+		t.Fatalf("NewClientFromConfig(TEI): %v", err)
+	}
+
+	first, err := embedding.CheckCanary(context.Background(), client, 7, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CheckCanary(first): %v", err)
+	}
+
+	perturbed := make([][]float32, len(first.Vectors))
+	for i := range first.Vectors {
+		cp := make([]float32, len(first.Vectors[i]))
+		copy(cp, first.Vectors[i])
+		if i == 0 {
+			for j := range cp {
+				cp[j] = -cp[j]
+			}
+		}
+		perturbed[i] = cp
+	}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	res, err := embedding.CheckCanary(context.Background(), client, 7, perturbed, nil, logger)
+	if err != nil {
+		t.Fatalf("CheckCanary(drifted): %v", err)
+	}
+	if !res.Drifted {
+		t.Fatal("expected Drifted=true")
+	}
+
+	rawLog := strings.TrimSpace(logBuf.String())
+	if rawLog == "" {
+		t.Fatal("expected warning log entry on canary drift, got empty")
+	}
+	for _, forbidden := range []string{
+		sensitiveModelMarker,
+		sensitiveSHAMarker,
+		"internal.example.invalid",
+		"model_version",
+		`"model"`,
+	} {
+		if strings.Contains(rawLog, forbidden) {
+			t.Fatalf("canary drift warning leaked forbidden marker %q: %s", forbidden, rawLog)
+		}
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(rawLog), &entry); err != nil {
+		t.Fatalf("decode slog JSON: %v (%s)", err, rawLog)
+	}
+	if entry["level"] != "WARN" {
+		t.Fatalf("log level = %v, want WARN", entry["level"])
+	}
+	if entry["generation"] != "7" {
+		t.Fatalf("generation = %v, want \"7\"", entry["generation"])
+	}
+	if entry["provider"] != "tei" {
+		t.Fatalf("provider = %v, want \"tei\"", entry["provider"])
+	}
+	if entry["count"] != float64(embedding.CanaryCount) {
+		t.Fatalf("count = %v, want %d", entry["count"], embedding.CanaryCount)
+	}
+	if _, ok := entry["min_cos"].(float64); !ok {
+		t.Fatalf("min_cos missing or not float64: %v", entry["min_cos"])
+	}
+	if entry["threshold"] != embedding.CanaryThreshold {
+		t.Fatalf("threshold = %v, want %v", entry["threshold"], embedding.CanaryThreshold)
+	}
+
+	allowedKeys := map[string]bool{
+		"time":       true,
+		"level":      true,
+		"msg":        true,
+		"generation": true,
+		"provider":   true,
+		"count":      true,
+		"min_cos":    true,
+		"threshold":  true,
+	}
+	for k := range entry {
+		if !allowedKeys[k] {
+			t.Fatalf("unexpected attribute %q in canary drift warning: %s", k, rawLog)
 		}
 	}
 }
