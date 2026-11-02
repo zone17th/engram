@@ -49,8 +49,11 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/semantic/semantictest"
 )
 
-// One shared Postgres container per package run (gate 10); every test gets its
-// own database inside it.
+// One shared Postgres container per package run (plan P05 gate 10): TestMain
+// owns it and every DB-backed test in this package (settings_semantic_test.go,
+// session_test.go, mail_failure_acceptance_test.go) gets its own migrated
+// database inside it via semNewPool. Nothing in this package calls
+// dbtest.StartPostgres.
 var (
 	semSharedOnce      sync.Once
 	semSharedDSN       string

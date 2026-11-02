@@ -9,14 +9,11 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/auth"
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/clock"
-	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 )
 
 func TestSessionRefreshReuseRevokes(t *testing.T) {
-	dsn := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsn)
-	pool := dbtest.Pool(t, dsn)
+	pool := semNewPool(t)
 	clk := clock.NewFixed(time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 	tokens := auth.NewTokenIssuer(bytes32(1), "http://localhost:3000", "http://localhost:3000", clk)
 	store := auth.NewSessionStore(pool, tokens, clk)
@@ -45,9 +42,7 @@ func TestSessionRefreshReuseRevokes(t *testing.T) {
 }
 
 func TestSessionConcurrentRefreshOneWins(t *testing.T) {
-	dsn := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsn)
-	pool := dbtest.Pool(t, dsn)
+	pool := semNewPool(t)
 	clk := clock.NewFixed(time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 	tokens := auth.NewTokenIssuer(bytes32(1), "http://localhost:3000", "http://localhost:3000", clk)
 	store := auth.NewSessionStore(pool, tokens, clk)
@@ -89,9 +84,7 @@ func TestSessionConcurrentRefreshOneWins(t *testing.T) {
 }
 
 func TestRefreshWrongCSRFDoesNotRevoke(t *testing.T) {
-	dsn := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsn)
-	pool := dbtest.Pool(t, dsn)
+	pool := semNewPool(t)
 	clk := clock.NewFixed(time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 	tokens := auth.NewTokenIssuer(bytes32(1), "http://localhost:3000", "http://localhost:3000", clk)
 	store := auth.NewSessionStore(pool, tokens, clk)
@@ -118,9 +111,7 @@ func TestRefreshWrongCSRFDoesNotRevoke(t *testing.T) {
 }
 
 func TestAuthenticateRejectsRevoked(t *testing.T) {
-	dsn := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsn)
-	pool := dbtest.Pool(t, dsn)
+	pool := semNewPool(t)
 	clk := clock.NewFixed(time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 	tokens := auth.NewTokenIssuer(bytes32(1), "http://localhost:3000", "http://localhost:3000", clk)
 	store := auth.NewSessionStore(pool, tokens, clk)
