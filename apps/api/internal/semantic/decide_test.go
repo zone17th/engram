@@ -849,3 +849,290 @@ func TestCanceledHalfOpenProbeDoesNotStrandRecovery(t *testing.T) {
 		t.Fatalf("expected post-recovery cache miss to reach provider (total 4), got %d", spyProv.QueryCalls())
 	}
 }
+
+// TestActiveGenerationNoProviderCall verifies advisor-dec-290 / dec-294 (Task 12):
+//   - NearSource.ActiveGeneration returns the pinned active generation ID from
+//     Pinner.ActivePin with 0 provider calls and 0 VectorSearch calls.
+//   - Returns (nil, nil) when no generation is active (ErrNoActiveGeneration)
+//     or when the runtime has no pinner / is nil.
+//   - Is NOT gated on user setting (`semantic_suggest=false`), request `semantic=0`,
+//     ClientSet.Match, or static availability (`SEARCH_SEMANTIC_ENABLED=false` /
+//     `provider="noop"`), because `/search` cursors bind `gen` on lexical requests too.
+//   - Propagates non-ErrNoActiveGeneration Pinner errors so `/search` maps them
+//     to HTTP 500 `internal_error`.
+func TestActiveGenerationNoProviderCall(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
+	ts := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(ts)
+
+	teiID := testTEIIdentity()
+	spyProv := semantictest.NewSpyProvider(teiID)
+	client := embedding.NewClient(spyProv, teiID.QueryPrefix, teiID.DocPrefix)
+	cs := embedding.NewClientSet(client, nil)
+	pin7 := testPinForIdentity(7, teiID)
+	pinner := semantictest.NewSpyPinner(pin7, true)
+	searcher := &semantictest.SpyVectorSearcher{}
+	settings := &semantictest.StaticSettingsReader{Default: false} // user off
+
+	rt := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderTEI,
+		ClientSet:      cs,
+		Pinner:         pinner,
+		Calibration:    matchingCalibration(teiID),
+		VectorSearcher: searcher,
+		SettingsReader: settings,
+		Clock:          clk,
+	})
+	nearSrc := rt.NearSource()
+
+	// 1. Active generation = 7 with user setting off -> returns &7, 0 provider/vector calls.
+	reqCtx1, cancel1 := context.WithCancel(ctx)
+	gotGen, err := nearSrc.ActiveGeneration(reqCtx1, userID)
+	cancel1()
+	if err != nil {
+		t.Fatalf("ActiveGeneration unexpected error: %v", err)
+	}
+	if gotGen == nil || *gotGen != 7 {
+		t.Fatalf("ActiveGeneration = %v, want 7", gotGen)
+	}
+	if spyProv.QueryCalls() != 0 {
+		t.Fatalf("ActiveGeneration must make 0 provider calls, got %d", spyProv.QueryCalls())
+	}
+	if searcher.TotalCalls() != 0 {
+		t.Fatalf("ActiveGeneration must make 0 VectorSearch calls, got %d", searcher.TotalCalls())
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("ActiveGeneration Pinner.Calls() = %d, want 1", pinner.Calls())
+	}
+
+	// 2. Not gated on static availability, ClientSet.Match, or request semantic=0:
+	// Even when Enabled=false, Provider=noop, ClientSet=nil, Calibration=nil, and
+	// Near() is called with SemanticParam=false (lexical request), ActiveGeneration
+	// still returns &7 from the pinner while Near returns Semantic=false, Generation=nil.
+	unconfiguredRT := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        false,
+		Provider:       embedding.ProviderNoop,
+		ClientSet:      nil,
+		Pinner:         pinner,
+		Calibration:    nil,
+		VectorSearcher: searcher,
+		SettingsReader: settings,
+		Clock:          clk,
+	})
+	unconfiguredNear := unconfiguredRT.NearSource()
+	pinner.ResetCalls()
+	reqCtx2, cancel2 := context.WithCancel(ctx)
+	gotGenLex, err := unconfiguredNear.ActiveGeneration(reqCtx2, userID)
+	if err != nil {
+		cancel2()
+		t.Fatalf("ActiveGeneration on disabled/unconfigured server unexpected error: %v", err)
+	}
+	if gotGenLex == nil || *gotGenLex != 7 {
+		cancel2()
+		t.Fatalf("ActiveGeneration on disabled/unconfigured server = %v, want 7", gotGenLex)
+	}
+	nearResLex, err := unconfiguredNear.Near(reqCtx2, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "mạng wifi",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: false,
+	})
+	cancel2()
+	if err != nil {
+		t.Fatalf("Near(semantic=0) unexpected error: %v", err)
+	}
+	if nearResLex.Semantic || nearResLex.Generation != nil {
+		t.Fatalf("Near(semantic=0) = %+v, want Semantic=false Generation=nil", nearResLex)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("ActiveGeneration + Near in same request must read ActivePin once, got %d", pinner.Calls())
+	}
+
+	// 3. No active generation (ErrNoActiveGeneration) -> returns (nil, nil).
+	pinner.SetPin(generation.Pin{}, false)
+	pinner.ResetCalls()
+	reqCtx3, cancel3 := context.WithCancel(ctx)
+	gotNil, err := nearSrc.ActiveGeneration(reqCtx3, userID)
+	cancel3()
+	if err != nil {
+		t.Fatalf("ActiveGeneration (no active gen) unexpected error: %v", err)
+	}
+	if gotNil != nil {
+		t.Fatalf("ActiveGeneration (no active gen) = %v, want nil", gotNil)
+	}
+
+	// 4. Disabled deployment with nil pinner (or nil Runtime) -> returns (nil, nil).
+	noPinnerRT := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:  false,
+		Provider: embedding.ProviderNoop,
+		Pinner:   nil,
+		Clock:    clk,
+	})
+	gotNoPinner, err := noPinnerRT.NearSource().ActiveGeneration(ctx, userID)
+	if err != nil || gotNoPinner != nil {
+		t.Fatalf("ActiveGeneration (nil pinner) = (%v, %v), want (nil, nil)", gotNoPinner, err)
+	}
+	var nilRT *semantic.Runtime
+	gotNilRT, err := nilRT.NearSource().ActiveGeneration(ctx, userID)
+	if err != nil || gotNilRT != nil {
+		t.Fatalf("ActiveGeneration (nil Runtime) = (%v, %v), want (nil, nil)", gotNilRT, err)
+	}
+
+	// 5. Pinner error (non-ErrNoActiveGeneration) -> returns (nil, err), 0 provider/vector calls.
+	dbBoom := errors.New("pinner db failure")
+	pinner.SetError(dbBoom)
+	gotErrGen, err := nearSrc.ActiveGeneration(ctx, userID)
+	if !errors.Is(err, dbBoom) || gotErrGen != nil {
+		t.Fatalf("ActiveGeneration (pinner error) = (%v, %v), want (nil, %v)", gotErrGen, err, dbBoom)
+	}
+	if spyProv.QueryCalls() != 0 || searcher.TotalCalls() != 0 {
+		t.Fatalf("provider=%d vector=%d, want 0 and 0", spyProv.QueryCalls(), searcher.TotalCalls())
+	}
+}
+
+// TestActiveGenerationAndNearShareSinglePinAcrossFlip verifies advisor-dec-290 / dec-294:
+//   - Task 4's `/search` page-1 handler calls `ActiveGeneration(ctx, userID)`
+//     (`internal/suggest/search.go:101`) and then `Near(ctx, req)`
+//     (`internal/suggest/search.go:240`) within the same request context.
+//   - Even if the active generation flips from g1 to g2 (or to nil) between
+//     `ActiveGeneration` and `Near`, `Near` reuses the exact `Pin` captured by
+//     `ActiveGeneration`: `Pinner.ActivePin` is called only ONCE for the request,
+//     `VectorSearch` receives `pin.GenID == 1`, and `NearResult.Generation` is `1`
+//     (matching `cursor.gen == 1`).
+//   - A subsequent new request (with a fresh request context) observes the flipped
+//     generation `g2` (`2`).
+func TestActiveGenerationAndNearShareSinglePinAcrossFlip(t *testing.T) {
+	baseCtx := context.Background()
+	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
+	ts := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(ts)
+
+	teiID := testTEIIdentity()
+	spyProv := semantictest.NewSpyProvider(teiID)
+	client := embedding.NewClient(spyProv, teiID.QueryPrefix, teiID.DocPrefix)
+	cs := embedding.NewClientSet(client, nil)
+
+	pin1 := testPinForIdentity(1, teiID)
+	pin2 := testPinForIdentity(2, teiID)
+	pinner := semantictest.NewSpyPinner(pin1, true)
+
+	var observedVectorGenIDs []int
+	var vecMu sync.Mutex
+	searcher := &semantictest.SpyVectorSearcher{
+		SearchFn: func(
+			_ context.Context,
+			pin generation.Pin,
+			_ uuid.UUID,
+			corpus generation.Corpus,
+			_ []float32,
+			_ int,
+			_ time.Time,
+			_ semantic.VectorSearchKnobs,
+		) ([]semantic.VectorHit, semantic.VectorPathStats, error) {
+			vecMu.Lock()
+			observedVectorGenIDs = append(observedVectorGenIDs, pin.GenID)
+			vecMu.Unlock()
+			if corpus == generation.CorpusItem {
+				return []semantic.VectorHit{
+					{
+						ID:         uuid.MustParse("00000000-0001-4000-8000-000000000055"),
+						Cos:        0.90,
+						Name:       "wifi tầng 1",
+						Count:      3,
+						LastUsedAt: ts,
+						CreatedAt:  ts,
+					},
+				}, semantic.VectorPathStats{Corpus: corpus, Path: semantic.VectorPathExact}, nil
+			}
+			return nil, semantic.VectorPathStats{Corpus: corpus, Path: semantic.VectorPathExact}, nil
+		},
+	}
+
+	rt := semantic.NewRuntime(semantic.RuntimeConfig{
+		Enabled:        true,
+		Provider:       embedding.ProviderTEI,
+		ClientSet:      cs,
+		Pinner:         pinner,
+		Calibration:    matchingCalibration(teiID),
+		VectorSearcher: searcher,
+		SettingsReader: &semantictest.StaticSettingsReader{Default: true},
+		Clock:          clk,
+	})
+	nearSrc := rt.NearSource()
+
+	// Request 1: page-1 /search calls ActiveGeneration first, then a flip to g2
+	// happens mid-request before Near is called.
+	reqCtx1, cancel1 := context.WithCancel(baseCtx)
+	defer cancel1()
+
+	activeGen1, err := nearSrc.ActiveGeneration(reqCtx1, userID)
+	if err != nil {
+		t.Fatalf("req1 ActiveGeneration error: %v", err)
+	}
+	if activeGen1 == nil || *activeGen1 != 1 {
+		t.Fatalf("req1 ActiveGeneration = %v, want 1", activeGen1)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("req1 ActivePin calls after ActiveGeneration = %d, want 1", pinner.Calls())
+	}
+
+	// Simulate concurrent generation flip g1 -> g2 + NOTIFY between ActiveGeneration and Near.
+	pinner.SetPin(pin2, true)
+	pinner.Notify()
+
+	nearRes1, err := nearSrc.Near(reqCtx1, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "wifi tầng",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: true,
+	})
+	if err != nil {
+		t.Fatalf("req1 Near error: %v", err)
+	}
+	if !nearRes1.Semantic || nearRes1.Generation == nil {
+		t.Fatalf("req1 Near = %+v, want Semantic=true with non-nil Generation", nearRes1)
+	}
+	if *nearRes1.Generation != *activeGen1 || *nearRes1.Generation != 1 {
+		t.Fatalf("req1 Near.Generation = %d, cursor ActiveGeneration = %d; want both == 1", *nearRes1.Generation, *activeGen1)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("req1 total ActivePin calls across ActiveGeneration + Near = %d, want 1", pinner.Calls())
+	}
+	vecMu.Lock()
+	if len(observedVectorGenIDs) != 2 || observedVectorGenIDs[0] != 1 || observedVectorGenIDs[1] != 1 {
+		t.Fatalf("req1 VectorSearch observed GenIDs = %v, want [1 1]", observedVectorGenIDs)
+	}
+	observedVectorGenIDs = nil
+	vecMu.Unlock()
+
+	// Request 2: fresh request context after the flip observes g2 (2) consistently
+	// across both ActiveGeneration and Near, again with 1 ActivePin read.
+	pinner.ResetCalls()
+	reqCtx2, cancel2 := context.WithCancel(baseCtx)
+	defer cancel2()
+
+	activeGen2, err := nearSrc.ActiveGeneration(reqCtx2, userID)
+	if err != nil || activeGen2 == nil || *activeGen2 != 2 {
+		t.Fatalf("req2 ActiveGeneration = (%v, %v), want 2", activeGen2, err)
+	}
+	nearRes2, err := nearSrc.Near(reqCtx2, suggest.NearRequest{
+		UserID:        userID,
+		QN:            "wifi tầng",
+		Scope:         suggest.ScopeAll,
+		Limit:         20,
+		Cap:           5,
+		SemanticParam: true,
+	})
+	if err != nil || !nearRes2.Semantic || nearRes2.Generation == nil || *nearRes2.Generation != 2 {
+		t.Fatalf("req2 Near = %+v (err=%v), want Generation=2", nearRes2, err)
+	}
+	if pinner.Calls() != 1 {
+		t.Fatalf("req2 total ActivePin calls across ActiveGeneration + Near = %d, want 1", pinner.Calls())
+	}
+}

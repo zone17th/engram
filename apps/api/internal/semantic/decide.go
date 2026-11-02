@@ -94,6 +94,19 @@ func (r *Runtime) decideServerAndPin(ctx context.Context) (generation.Pin, strin
 		return generation.Pin{}, suggest.ReasonDisabledServer, false
 	}
 
+	pin, err := r.readActivePin(ctx)
+	if err != nil {
+		return generation.Pin{}, suggest.ReasonDisabledServer, false
+	}
+	return r.decideServerWithPin(ctx, pin)
+}
+
+// readActivePin reads the active generation Pin from r.pinner and updates the
+// active provider snapshot for the current notification epoch.
+func (r *Runtime) readActivePin(ctx context.Context) (generation.Pin, error) {
+	if r == nil || r.pinner == nil {
+		return generation.Pin{}, generation.ErrNoActiveGeneration
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -102,9 +115,23 @@ func (r *Runtime) decideServerAndPin(ctx context.Context) (generation.Pin, strin
 	r.availMu.Unlock()
 	pin, err := r.pinner.ActivePin(ctx)
 	if err != nil {
-		return generation.Pin{}, suggest.ReasonDisabledServer, false
+		return generation.Pin{}, err
 	}
 	r.recordActiveProvider(epoch, pin.Identity.Provider)
+	return pin, nil
+}
+
+// decideServerWithPin evaluates steps 1 (deployment) and 2 (active generation,
+// ClientSet.Match, calibration) using an already-resolved active Pin (or
+// generation.ErrNoActiveGeneration when hasPin is false) so callers that
+// already called ActiveGeneration in the same request never re-read ActivePin.
+func (r *Runtime) decideServerWithPin(ctx context.Context, pin generation.Pin) (generation.Pin, string, bool) {
+	if r == nil || !r.enabled || r.provider == "" || r.provider == embedding.ProviderNoop || r.clients == nil || r.pinner == nil {
+		return generation.Pin{}, suggest.ReasonDisabledServer, false
+	}
+	if pin.GenID <= 0 {
+		return generation.Pin{}, suggest.ReasonDisabledServer, false
+	}
 	if _, ok := r.clients.Match(pin.Identity); !ok {
 		r.incGenerationMismatch(MismatchReasonUnconfigured)
 		logSafeError(ctx, r.logger, "semantic active generation unconfigured", "generation_unconfigured")
