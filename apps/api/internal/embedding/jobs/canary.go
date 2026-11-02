@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-
-	"github.com/riverqueue/river"
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/riverqueue/river"
 
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
