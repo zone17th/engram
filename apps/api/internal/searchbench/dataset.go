@@ -448,11 +448,14 @@ func drawColocatedUUID(pcg *rand.PCG, modulus int, targetRemainder int) uuid.UUI
 // without requiring prior tags to be generated.
 //
 // Tag uniqueness invariant (0006_content.up.sql: UNIQUE (user_id, normalized)):
-// Every tag display string is composed of 1–2 words from the lexicon followed
-// by a deterministic base-36 ordinal token so normalized tags are strictly
-// unique per tenant for any tenant tag count while exercising both Vietnamese
-// diacritic and English prefix/trigram paths. If an external collision ever
-// occurred, a deterministic suffix is appended before normalization.
+// Every tag display string reserves rune space for a separated base-36 ordinal
+// suffix (`-<ordinal>` or ` <ordinal>`) before truncating the lexicon word
+// prefix to at most `textnorm.TagMaxRunes - len(suffix)` runes. Because the
+// separator (`-` or ` `) cannot occur inside the alphanumeric base-36 ordinal
+// and the suffix is never truncated, `TagAt(t, i)` is intrinsically unique per
+// tenant after `textnorm.NormalizeTag` for any valid lexicon (even one
+// consisting of repeated 50-rune words), and `TenantTags(t)[i]` equals
+// `TagAt(t, i)` field for field.
 func (g *Generator) TagAt(tenantIndex int, tagIndex int) TagRow {
 	tSpec := g.profile.Tenants[tenantIndex]
 	pcg := DerivePCG(g.seed, tenantIndex, StreamTagRow, tagIndex)
@@ -461,18 +464,25 @@ func (g *Generator) TagAt(tenantIndex int, tagIndex int) TagRow {
 	id := drawUUID(pcg)
 	topicID := rng.IntN(TopicCount)
 
+	ord := strconv.FormatInt(int64(tagIndex), 36)
 	w1 := g.pickWord(rng)
-	var rawDisplay string
+	var prefix, sep string
 	if rng.IntN(2) == 0 {
-		rawDisplay = w1 + "-" + strconv.FormatInt(int64(tagIndex), 36)
+		prefix = w1
+		sep = "-"
 	} else {
 		w2 := g.pickWord(rng)
-		rawDisplay = w1 + " " + w2 + " " + strconv.FormatInt(int64(tagIndex), 36)
+		prefix = w1 + " " + w2
+		sep = " "
 	}
-	rawDisplay = truncateRunes(rawDisplay, textnorm.TagMaxRunes)
+
+	suffix := sep + ord
+	maxPrefixRunes := max(1, textnorm.TagMaxRunes-utf8.RuneCountInString(suffix))
+	prefix = truncateRunes(prefix, maxPrefixRunes)
+	rawDisplay := prefix + suffix
 	display, norm, err := textnorm.NormalizeTag(rawDisplay)
 	if err != nil {
-		fallback := "tag-" + strconv.FormatInt(int64(tagIndex), 36)
+		fallback := "tag-" + ord
 		display, norm, _ = textnorm.NormalizeTag(fallback)
 	}
 
@@ -485,48 +495,16 @@ func (g *Generator) TagAt(tenantIndex int, tagIndex int) TagRow {
 	}
 }
 
-// TenantTags generates all TagRows for tenantIndex, enforcing the per-tenant
-// unique normalized tag constraint with a deterministic collision suffix if two
-// candidate normalized strings ever collide.
+// TenantTags generates all TagRows for tenantIndex by calling TagAt(tenantIndex, i)
+// for each index i in [0, TagCount). Because TagAt is intrinsically unique per
+// tenant by construction, TenantTags(t)[i] equals TagAt(t, i) field for field.
 func (g *Generator) TenantTags(tenantIndex int) []TagRow {
 	tSpec := g.profile.Tenants[tenantIndex]
 	tags := make([]TagRow, tSpec.TagCount)
-	seen := make(map[string]struct{}, tSpec.TagCount)
-
 	for i := range tSpec.TagCount {
-		row := g.TagAt(tenantIndex, i)
-		if _, exists := seen[row.Normalized]; exists {
-			row = resolveTagCollision(row, i, seen)
-		}
-		seen[row.Normalized] = struct{}{}
-		tags[i] = row
+		tags[i] = g.TagAt(tenantIndex, i)
 	}
 	return tags
-}
-
-// ResolveTagCollision appends a deterministic suffix (`-2`, `-3`, ...) to a
-// colliding TagRow until its textnorm.NormalizeTag output is not in seen and
-// fits within 50 runes (requirement 3: unique normalized per tenant —
-// deterministic suffix on collision).
-func ResolveTagCollision(row TagRow, ordinal int, seen map[string]struct{}) TagRow {
-	return resolveTagCollision(row, ordinal, seen)
-}
-
-func resolveTagCollision(row TagRow, ordinal int, seen map[string]struct{}) TagRow {
-	for attempt := 2; ; attempt++ {
-		suffix := "-" + strconv.Itoa(ordinal) + "-" + strconv.Itoa(attempt)
-		maxBase := textnorm.TagMaxRunes - utf8.RuneCountInString(suffix)
-		base := truncateRunes(row.Display, max(1, maxBase))
-		cand := base + suffix
-		disp, norm, err := textnorm.NormalizeTag(cand)
-		if err == nil {
-			if _, exists := seen[norm]; !exists {
-				row.Display = disp
-				row.Normalized = norm
-				return row
-			}
-		}
-	}
 }
 
 // ItemAt generates the itemIndex-th ItemRow for tenantIndex deterministically
@@ -770,7 +748,7 @@ func (g *Generator) RandomQueryVector(queryIndex int, dst []float32) []float32 {
 func CosineSimilarity(a, b []float32) float32 {
 	var dot float64
 	for i := range VectorDims {
-		dot += float64(a[i]) * float64(b[i])
+		dot += mulRound64(float64(a[i]), float64(b[i]))
 	}
 	return float32(dot)
 }
@@ -796,12 +774,35 @@ func ensureVectorSlice(dst []float32) []float32 {
 	return make([]float32, VectorDims)
 }
 
+// mulRound32 multiplies two float32 values and rounds the product to IEEE-754
+// binary32 via an explicit float32(...) conversion.
+//
+// Per the Go Language Specification ("Floating-point operators",
+// https://go.dev/ref/spec#Floating_point_operators), an implementation may fuse
+// multiple floating-point operations into a single fused operation (such as FMA
+// on arm64) across expressions or statements, whereas an explicit floating-point
+// type conversion rounds to the precision of the target type and prevents fusion
+// that would discard that rounding. Wrapping every intermediate product in
+// mulRound32/mulRound64 guarantees bit-for-bit identical vector bytes across
+// amd64 and arm64.
+func mulRound32(a, b float32) float32 {
+	return float32(a * b)
+}
+
+// mulRound64 multiplies two float64 values and rounds the product to IEEE-754
+// binary64 via an explicit float64(...) conversion, preventing FMA fusion when
+// accumulating into a running sum (Go spec: "Floating-point operators").
+func mulRound64(a, b float64) float64 {
+	return float64(a * b)
+}
+
 func fillGaussianUnit(rng *rand.Rand, dst []float32) {
 	var sumSq float64
 	for i := range VectorDims {
 		v := float32(rng.NormFloat64())
 		dst[i] = v
-		sumSq += float64(v) * float64(v)
+		fv := float64(v)
+		sumSq = float64(sumSq + mulRound64(fv, fv))
 	}
 	normalizeInPlace(dst, sumSq)
 }
@@ -809,9 +810,11 @@ func fillGaussianUnit(rng *rand.Rand, dst []float32) {
 func perturbAndNormalize(rng *rand.Rand, base []float32, noiseScale float32, dst []float32) {
 	var sumSq float64
 	for i := range VectorDims {
-		v := base[i] + noiseScale*float32(rng.NormFloat64())
+		noise := mulRound32(noiseScale, float32(rng.NormFloat64()))
+		v := float32(base[i] + noise)
 		dst[i] = v
-		sumSq += float64(v) * float64(v)
+		fv := float64(v)
+		sumSq = float64(sumSq + mulRound64(fv, fv))
 	}
 	normalizeInPlace(dst, sumSq)
 }
@@ -824,9 +827,9 @@ func normalizeInPlace(vec []float32, sumSq float64) {
 		}
 		return
 	}
-	invNorm := float32(1.0 / math.Sqrt(sumSq))
+	invNorm := float32(float64(1.0 / math.Sqrt(sumSq)))
 	for i := range vec {
-		vec[i] *= invNorm
+		vec[i] = mulRound32(vec[i], invNorm)
 	}
 }
 
