@@ -12,17 +12,26 @@ export type SupportedLocale = 'en' | 'vi';
 const LOCALE_OPTIONS: ReadonlyArray<SupportedLocale> = ['en', 'vi'];
 
 export function toLandingLocaleHref(pathname: string, targetLocale: SupportedLocale): string {
-  const normalized = pathname || '/';
-  const withoutViPrefix =
-    normalized === '/vi'
-      ? '/'
-      : normalized.startsWith('/vi/')
-        ? normalized.slice(3)
-        : normalized;
-  if (targetLocale === 'en') {
-    return withoutViPrefix || '/';
+  const raw = pathname || '/';
+  const match = /^([^?#]*)(.*)$/.exec(raw);
+  const pathPart = match?.[1] || '/';
+  const suffix = match?.[2] ?? '';
+
+  let withoutLocalePrefix = pathPart;
+  if (pathPart === '/vi' || pathPart === '/en') {
+    withoutLocalePrefix = '/';
+  } else if (pathPart.startsWith('/vi/') || pathPart.startsWith('/en/')) {
+    withoutLocalePrefix = pathPart.slice(3);
   }
-  return withoutViPrefix === '/' ? '/vi' : `/vi${withoutViPrefix}`;
+
+  const basePath =
+    targetLocale === 'en'
+      ? withoutLocalePrefix || '/'
+      : withoutLocalePrefix === '/'
+        ? '/vi'
+        : `/vi${withoutLocalePrefix}`;
+
+  return `${basePath}${suffix}`;
 }
 
 export function LocaleSwitch({
@@ -40,14 +49,15 @@ export function LocaleSwitch({
 
   const handleSelect = (next: SupportedLocale) => {
     setPreferenceCookies(next, theme);
-    if (next === locale) return;
     if (mode === 'landing') {
-      router.push(toLandingLocaleHref(pathname, next));
+      const suffix =
+        typeof window !== 'undefined' && !pathname.includes('?') && !pathname.includes('#')
+          ? `${window.location.search}${window.location.hash}`
+          : '';
+      router.push(toLandingLocaleHref(`${pathname}${suffix}`, next));
       return;
     }
-    if (typeof router.refresh === 'function') {
-      router.refresh();
-    }
+    router.refresh();
   };
 
   return (
@@ -59,21 +69,21 @@ export function LocaleSwitch({
           handleSelect(next);
         }
       }}
-      className={cn('seg shrink-0 !flex-nowrap', className)}
+      className={cn('seg shrink-0 !flex-nowrap !p-0.5 sm:!p-[3px]', className)}
       aria-label={t('label')}
     >
       {LOCALE_OPTIONS.map((option) => {
-        const isActive = locale === option;
-        const label = t(option);
+        const shortLabel = t(option);
+        const ariaLabel = option === 'en' ? t('enAria') : t('viAria');
         return (
           <ToggleGroup.Item
             key={option}
             value={option}
-            aria-label={label}
-            aria-pressed={isActive}
-            className="touch-target !px-2 font-semibold text-[13px]"
+            aria-label={ariaLabel}
+            lang={option}
+            className="touch-target !px-1.5 sm:!px-2 font-semibold text-[13px]"
           >
-            {label}
+            {shortLabel}
           </ToggleGroup.Item>
         );
       })}
