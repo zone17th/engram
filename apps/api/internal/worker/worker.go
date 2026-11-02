@@ -338,6 +338,8 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 	if err != nil {
 		return err
 	}
+	// retry/dead của embedding_jobs_total chỉ tăng ở đây (Task 20a, FS-28).
+	defer startJobOutcomeSubscriber(client, metrics.Embedding, logger, nil)()
 	for _, fn := range beforeStartHooks {
 		fn(ctx, pool)
 	}

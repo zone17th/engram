@@ -106,6 +106,9 @@ func run() error {
 	logger.Info("preflight database ok")
 
 	reg, metrics := obs.NewRegistry()
+	if err := obs.RegisterGauges(reg, obs.NewDBGaugeSource(pool)); err != nil {
+		return fmt.Errorf("register embedding gauges: %w", err)
+	}
 
 	riverInsert, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
 	if err != nil {
