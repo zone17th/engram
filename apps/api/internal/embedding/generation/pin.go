@@ -103,6 +103,15 @@ func WithPinNowFunc(now func() time.Time) PinnerOption {
 	}
 }
 
+// startAttempt represents a single StartListener attempt.
+// err is written at most once before done is closed; waiters capture the
+// attempt pointer under Pinner.mu and read attempt.err after <-attempt.done.
+type startAttempt struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	err    error
+}
+
 // Pinner reads and caches the active embedding generation Pin for ≤ 2 s and
 // listens on NotifyChannel to invalidate its cache and invoke registered
 // subscribers immediately on generation flip (plan P05 mục 2.15, 2.18; M3).
@@ -113,6 +122,7 @@ type Pinner struct {
 	now          func() time.Time
 	onQuery      func()
 	beforeListen func(context.Context) error
+	afterListen  func(context.Context)
 
 	mu          sync.Mutex
 	cached      Pin
@@ -122,14 +132,11 @@ type Pinner struct {
 	cacheEpoch  uint64
 	subscribers []func()
 
-	closed      bool
-	listening   bool
-	starting    bool
-	startCancel context.CancelFunc
-	startDone   chan struct{}
-	startErr    error
-	listenStop  context.CancelFunc
-	listenDone  chan struct{}
+	closed       bool
+	listening    bool
+	startAttempt *startAttempt
+	listenStop   context.CancelFunc
+	listenDone   chan struct{}
 }
 
 // WithBeforeListenHook configures a test-only callback invoked after pool
@@ -137,6 +144,14 @@ type Pinner struct {
 func WithBeforeListenHook(fn func(context.Context) error) PinnerOption {
 	return func(p *Pinner) {
 		p.beforeListen = fn
+	}
+}
+
+// WithAfterListenHook configures a test-only callback invoked immediately after
+// LISTEN succeeds in StartListener and before the listener state is published.
+func WithAfterListenHook(fn func(context.Context)) PinnerOption {
+	return func(p *Pinner) {
+		p.afterListen = fn
 	}
 }
 
@@ -291,102 +306,133 @@ func (p *Pinner) StartListener(ctx context.Context) error {
 		return ErrNilTx
 	}
 
-	for {
-		p.mu.Lock()
-		if p.closed {
-			p.mu.Unlock()
-			return ErrPinnerClosed
-		}
-		if p.listening {
-			p.mu.Unlock()
-			return nil
-		}
-		if p.starting {
-			waitCh := p.startDone
-			p.mu.Unlock()
-			select {
-			case <-waitCh:
-				p.mu.Lock()
-				closed := p.closed
-				listening := p.listening
-				err := p.startErr
-				p.mu.Unlock()
-				if closed {
-					return ErrPinnerClosed
-				}
-				if listening {
-					return nil
-				}
-				return err
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-
-		attemptCtx, attemptCancel := context.WithCancel(ctx)
-		startDone := make(chan struct{})
-		p.starting = true
-		p.startCancel = attemptCancel
-		p.startDone = startDone
-		p.startErr = nil
-		beforeListen := p.beforeListen
+	p.mu.Lock()
+	if p.closed {
 		p.mu.Unlock()
-
-		conn, err := p.pool.Acquire(attemptCtx)
-		if err == nil && beforeListen != nil {
-			if hookErr := beforeListen(attemptCtx); hookErr != nil {
-				conn.Release()
-				conn = nil
-				err = hookErr
-			}
-		}
-		if err == nil {
-			if _, execErr := conn.Exec(attemptCtx, "LISTEN "+NotifyChannel); execErr != nil {
-				conn.Release()
-				conn = nil
-				err = execErr
-			}
-		}
-
-		p.mu.Lock()
-		p.starting = false
-		p.startCancel = nil
-		if err != nil || p.closed {
-			if conn != nil {
-				conn.Release()
-				conn = nil
-			}
-			if p.closed {
-				err = ErrPinnerClosed
-			}
-			p.startErr = err
-			close(startDone)
-			p.mu.Unlock()
-			attemptCancel()
-			return err
-		}
-
-		listenDone := make(chan struct{})
-		p.listening = true
-		p.listenStop = attemptCancel
-		p.listenDone = listenDone
-		p.startErr = nil
-		close(startDone)
+		return ErrPinnerClosed
+	}
+	if p.listening {
 		p.mu.Unlock()
-
-		go p.runListenLoop(attemptCtx, conn, listenDone)
 		return nil
 	}
+	if attempt := p.startAttempt; attempt != nil {
+		p.mu.Unlock()
+		select {
+		case <-attempt.done:
+			if attempt.err != nil {
+				return attempt.err
+			}
+			p.mu.Lock()
+			closed := p.closed
+			p.mu.Unlock()
+			if closed {
+				return ErrPinnerClosed
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	attemptCtx, attemptCancel := context.WithCancel(ctx)
+	attempt := &startAttempt{
+		cancel: attemptCancel,
+		done:   make(chan struct{}),
+	}
+	p.startAttempt = attempt
+	beforeListen := p.beforeListen
+	afterListen := p.afterListen
+	p.mu.Unlock()
+
+	var (
+		conn     *pgxpool.Conn
+		err      error
+		listened bool
+	)
+	conn, err = p.pool.Acquire(attemptCtx)
+	if err == nil && beforeListen != nil {
+		if hookErr := beforeListen(attemptCtx); hookErr != nil {
+			conn.Release()
+			conn = nil
+			err = hookErr
+		}
+	}
+	if err == nil {
+		if _, execErr := conn.Exec(attemptCtx, "LISTEN "+NotifyChannel); execErr != nil {
+			conn.Release()
+			conn = nil
+			err = execErr
+		} else {
+			listened = true
+		}
+	}
+	if err == nil && afterListen != nil {
+		afterListen(attemptCtx)
+	}
+
+	p.mu.Lock()
+	if err != nil || p.closed {
+		if p.closed {
+			err = ErrPinnerClosed
+		}
+		p.mu.Unlock()
+
+		if conn != nil {
+			if listened {
+				releaseSubscribedConn(conn)
+			} else {
+				conn.Release()
+			}
+			conn = nil
+		}
+		attemptCancel()
+
+		p.mu.Lock()
+		p.startAttempt = nil
+		attempt.err = err
+		close(attempt.done)
+		p.mu.Unlock()
+		return err
+	}
+
+	listenDone := make(chan struct{})
+	p.startAttempt = nil
+	p.listening = true
+	p.listenStop = attemptCancel
+	p.listenDone = listenDone
+	attempt.err = nil
+	close(attempt.done)
+	p.mu.Unlock()
+
+	go p.runListenLoop(attemptCtx, conn, listenDone)
+	return nil
+}
+
+// releaseSubscribedConn unsubscribes conn from NotifyChannel before returning
+// it to the pool; if UNLISTEN fails, it destroys the physical connection so a
+// subscribed session is never returned to the shared pool (BE6-9).
+func releaseSubscribedConn(conn *pgxpool.Conn) {
+	if conn == nil {
+		return
+	}
+	unlistenCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := conn.Exec(unlistenCtx, "UNLISTEN "+NotifyChannel)
+	cancel()
+	if err != nil {
+		rawConn := conn.Hijack()
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = rawConn.Close(closeCtx)
+		closeCancel()
+		return
+	}
+	conn.Release()
 }
 
 func (p *Pinner) runListenLoop(ctx context.Context, conn *pgxpool.Conn, done chan struct{}) {
 	defer close(done)
 	defer func() {
 		if conn != nil {
-			unlistenCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_, _ = conn.Exec(unlistenCtx, "UNLISTEN "+NotifyChannel)
-			cancel()
-			conn.Release()
+			releaseSubscribedConn(conn)
 		}
 	}()
 
@@ -429,7 +475,7 @@ func (p *Pinner) runListenLoop(ctx context.Context, conn *pgxpool.Conn, done cha
 			if ctx.Err() != nil {
 				return
 			}
-			conn.Release()
+			releaseSubscribedConn(conn)
 			conn = nil
 			continue
 		}
@@ -446,21 +492,19 @@ func (p *Pinner) Close() {
 	}
 	p.mu.Lock()
 	p.closed = true
-	startCancel := p.startCancel
-	startDone := p.startDone
-	starting := p.starting
+	attempt := p.startAttempt
 	stop := p.listenStop
 	done := p.listenDone
 	p.mu.Unlock()
 
-	if startCancel != nil {
-		startCancel()
+	if attempt != nil && attempt.cancel != nil {
+		attempt.cancel()
 	}
 	if stop != nil {
 		stop()
 	}
-	if starting && startDone != nil {
-		<-startDone
+	if attempt != nil {
+		<-attempt.done
 		p.mu.Lock()
 		done = p.listenDone
 		p.mu.Unlock()
