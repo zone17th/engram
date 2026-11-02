@@ -3,6 +3,7 @@ package suggest
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -58,14 +59,21 @@ func AsError(err error) (*Error, bool) {
 // deterministic hooks into a lexical branch without sleeping or modifying production SQL.
 // Test-only: production never sets it.
 type TestHooks struct {
-	BeforeBranch        func(ctx context.Context, corpus string) error
+	// BeforeBranch runs at the start of the branch SETUP stage, before acquire + BEGIN; its ctx
+	// is bounded by BranchSetupTimeout (FU-SB-2).
+	BeforeBranch func(ctx context.Context, corpus string) error
+	// AfterBranchSetLocal runs at the start of the QUERY stage, after the SET LOCALs; its ctx is
+	// the 50 ms branch budget.
 	AfterBranchSetLocal func(ctx context.Context, tx pgx.Tx, corpus string) error
 	// BranchContext, when set, replaces context.WithTimeout(parent, BranchTimeout) as the
-	// per-branch context. A test that injects a GENUINE error uses it to hand the branch a
+	// per-branch QUERY context (FU-SB-2: the setup stage has its own bound, see SetupTimeout). A test that injects a GENUINE error uses it to hand the branch a
 	// non-expiring context (a WithCancel child of parent), so the real 50 ms timer cannot fire
 	// between the injection and classifyBranchErr (RV-SB1-BE-4). The parent must stay its
 	// parent so a request cancel still reaches the branch.
 	BranchContext func(parent context.Context, corpus string) (context.Context, context.CancelFunc)
+	// SetupTimeout, when > 0, replaces BranchSetupTimeout (acquire + BEGIN + SET LOCAL) so a test
+	// can expire the setup stage without waiting the production 2 s (FU-SB-2).
+	SetupTimeout time.Duration
 }
 
 // Service implements `/suggest` (Task 3) and `/search` (Task 4).
@@ -77,6 +85,7 @@ type Service struct {
 	metrics   *obs.Metrics
 	cursorKey []byte
 	hooks     atomic.Pointer[TestHooks]
+	logger    atomic.Pointer[slog.Logger]
 }
 
 // NewService constructs a suggest Service.
@@ -136,12 +145,16 @@ func (s *Service) SetTestHooks(h *TestHooks) {
 	s.hooks.Store(h)
 }
 
+// setLogger attaches the logger used for the lexical partial line (FU-SB-2). It is set through
+// Handler.SetLogger / Mount so NewService and the compose call sites stay unchanged.
+func (s *Service) setLogger(l *slog.Logger) { s.logger.Store(l) }
+
 func (s *Service) activeHooks() *TestHooks {
 	return s.hooks.Load()
 }
 
-// branchContext returns the per-branch context: the BranchTimeout budget in production, or
-// the TestHooks.BranchContext override a test installed.
+// branchContext returns the per-branch QUERY context: the BranchTimeout budget in production, or
+// the TestHooks.BranchContext override a test installed. runBranch creates it only after setup.
 func (s *Service) branchContext(parent context.Context, corpus string) (context.Context, context.CancelFunc) {
 	if h := s.activeHooks(); h != nil && h.BranchContext != nil {
 		return h.BranchContext(parent, corpus)

@@ -349,41 +349,6 @@ func (s *Service) runSearchItemPageBranch(
 	cur *SearchCursor,
 	pageLimit int,
 ) searchItemPageOutcome {
-	branchCtx, cancel := s.branchContext(ctx, CorpusItem)
-	defer cancel()
-
-	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
-	// genuine error -> err (FU-SB-1, classifyBranchErr).
-	fail := func(err error, class string) searchItemPageOutcome {
-		partial, out := classifyBranchErr(ctx, branchCtx, err, CorpusItem, mode, class)
-		if partial {
-			return searchItemPageOutcome{items: []SuggestItem{}, partial: true}
-		}
-		return searchItemPageOutcome{err: out}
-	}
-
-	if h := s.activeHooks(); h != nil && h.BeforeBranch != nil {
-		if err := h.BeforeBranch(branchCtx, CorpusItem); err != nil {
-			return fail(err, ClassLexicalItemDB)
-		}
-	}
-
-	tx, err := s.txStarter.BeginTx(branchCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return fail(err, ClassLexicalItemDB)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
-	if err := configureLexicalTx(branchCtx, tx, true); err != nil {
-		return fail(err, ClassLexicalItemDB)
-	}
-
-	if h := s.activeHooks(); h != nil && h.AfterBranchSetLocal != nil {
-		if err := h.AfterBranchSetLocal(branchCtx, tx, CorpusItem); err != nil {
-			return fail(err, ClassLexicalItemDB)
-		}
-	}
-
 	params := gen.SearchItemsLexicalPageParams{
 		PageLimit: int32(pageLimit + 1),
 		Qn:        qn,
@@ -406,51 +371,65 @@ func (s *Service) runSearchItemPageBranch(
 		params.CursorCount = &countCopy
 	}
 
-	q := gen.New(tx)
-	rows, err := q.SearchItemsLexicalPage(branchCtx, params)
+	var (
+		out     []SuggestItem
+		nextCur *SearchCursor
+	)
+	// Setup and the 50 ms query budget are bounded separately (FU-SB-2, runBranch); a stage that
+	// expired while the request is alive -> partial (dec-287 turns a primary partial into a 500 in
+	// Search), client gone or genuine error -> err (FU-SB-1, classifyBranchErr).
+	partial, err := s.runBranch(ctx, CorpusItem, mode, ClassLexicalItemDB, true, func(qctx context.Context, tx pgx.Tx) (string, error) {
+		q := gen.New(tx)
+		rows, err := q.SearchItemsLexicalPage(qctx, params)
+		if err != nil {
+			return ClassLexicalItemDB, err
+		}
+
+		hasMore := len(rows) > pageLimit
+		if hasMore {
+			rows = rows[:pageLimit]
+		}
+
+		out = make([]SuggestItem, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, SuggestItem{
+				Kind:       CorpusItem,
+				ID:         r.ID,
+				Name:       r.Name,
+				EntryCount: r.EntryCount,
+				CreatedAt:  r.CreatedAt.Time.UTC(),
+				LastUsedAt: r.LastUsedAt.Time.UTC(),
+				Tags:       []TagRef{},
+				TagTotal:   0,
+				Match:      TierToMatch(r.Tier),
+			})
+		}
+
+		if len(out) > 0 {
+			if err := attachTagRefs(qctx, q, userID, out); err != nil {
+				return ClassLexicalItemTagRefs, err
+			}
+		}
+
+		if hasMore && len(rows) > 0 {
+			last := rows[len(rows)-1]
+			nextCur = &SearchCursor{
+				Kind:       CorpusItem,
+				Tier:       last.Tier,
+				Score:      last.Score,
+				LastUsedAt: last.LastUsedAt.Time.UTC(),
+				Count:      last.EntryCount,
+				ID:         last.ID,
+			}
+		}
+		return "", nil
+	})
+	if partial {
+		return searchItemPageOutcome{items: []SuggestItem{}, partial: true}
+	}
 	if err != nil {
-		return fail(err, ClassLexicalItemDB)
+		return searchItemPageOutcome{err: err}
 	}
-
-	hasMore := len(rows) > pageLimit
-	if hasMore {
-		rows = rows[:pageLimit]
-	}
-
-	out := make([]SuggestItem, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, SuggestItem{
-			Kind:       CorpusItem,
-			ID:         r.ID,
-			Name:       r.Name,
-			EntryCount: r.EntryCount,
-			CreatedAt:  r.CreatedAt.Time.UTC(),
-			LastUsedAt: r.LastUsedAt.Time.UTC(),
-			Tags:       []TagRef{},
-			TagTotal:   0,
-			Match:      TierToMatch(r.Tier),
-		})
-	}
-
-	if len(out) > 0 {
-		if err := attachTagRefs(branchCtx, q, userID, out); err != nil {
-			return fail(err, ClassLexicalItemTagRefs)
-		}
-	}
-
-	var nextCur *SearchCursor
-	if hasMore && len(rows) > 0 {
-		last := rows[len(rows)-1]
-		nextCur = &SearchCursor{
-			Kind:       CorpusItem,
-			Tier:       last.Tier,
-			Score:      last.Score,
-			LastUsedAt: last.LastUsedAt.Time.UTC(),
-			Count:      last.EntryCount,
-			ID:         last.ID,
-		}
-	}
-
 	return searchItemPageOutcome{
 		items:      out,
 		nextCursor: nextCur,
@@ -465,41 +444,6 @@ func (s *Service) runSearchTagPageBranch(
 	cur *SearchCursor,
 	pageLimit int,
 ) searchTagPageOutcome {
-	branchCtx, cancel := s.branchContext(ctx, CorpusTag)
-	defer cancel()
-
-	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
-	// genuine error -> err (FU-SB-1, classifyBranchErr).
-	fail := func(err error, class string) searchTagPageOutcome {
-		partial, out := classifyBranchErr(ctx, branchCtx, err, CorpusTag, mode, class)
-		if partial {
-			return searchTagPageOutcome{tags: []SuggestTag{}, partial: true}
-		}
-		return searchTagPageOutcome{err: out}
-	}
-
-	if h := s.activeHooks(); h != nil && h.BeforeBranch != nil {
-		if err := h.BeforeBranch(branchCtx, CorpusTag); err != nil {
-			return fail(err, ClassLexicalTagDB)
-		}
-	}
-
-	tx, err := s.txStarter.BeginTx(branchCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return fail(err, ClassLexicalTagDB)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
-	if err := configureLexicalTx(branchCtx, tx, true); err != nil {
-		return fail(err, ClassLexicalTagDB)
-	}
-
-	if h := s.activeHooks(); h != nil && h.AfterBranchSetLocal != nil {
-		if err := h.AfterBranchSetLocal(branchCtx, tx, CorpusTag); err != nil {
-			return fail(err, ClassLexicalTagDB)
-		}
-	}
-
 	params := gen.SearchTagsLexicalPageParams{
 		PageLimit: int32(pageLimit + 1),
 		Qn:        qn,
@@ -522,42 +466,54 @@ func (s *Service) runSearchTagPageBranch(
 		params.CursorCount = &countCopy
 	}
 
-	q := gen.New(tx)
-	rows, err := q.SearchTagsLexicalPage(branchCtx, params)
-	if err != nil {
-		return fail(err, ClassLexicalTagDB)
-	}
-
-	hasMore := len(rows) > pageLimit
-	if hasMore {
-		rows = rows[:pageLimit]
-	}
-
-	out := make([]SuggestTag, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, SuggestTag{
-			Kind:       CorpusTag,
-			ID:         r.ID,
-			Display:    r.Display,
-			ItemCount:  r.ItemCount,
-			LastUsedAt: r.LastUsedAt.Time.UTC(),
-			Match:      TierToMatch(r.Tier),
-		})
-	}
-
-	var nextCur *SearchCursor
-	if hasMore && len(rows) > 0 {
-		last := rows[len(rows)-1]
-		nextCur = &SearchCursor{
-			Kind:       CorpusTag,
-			Tier:       last.Tier,
-			Score:      last.Score,
-			LastUsedAt: last.LastUsedAt.Time.UTC(),
-			Count:      last.ItemCount,
-			ID:         last.ID,
+	var (
+		out     []SuggestTag
+		nextCur *SearchCursor
+	)
+	// Setup and the 50 ms query budget are bounded separately (FU-SB-2, runBranch).
+	partial, err := s.runBranch(ctx, CorpusTag, mode, ClassLexicalTagDB, true, func(qctx context.Context, tx pgx.Tx) (string, error) {
+		q := gen.New(tx)
+		rows, err := q.SearchTagsLexicalPage(qctx, params)
+		if err != nil {
+			return ClassLexicalTagDB, err
 		}
-	}
 
+		hasMore := len(rows) > pageLimit
+		if hasMore {
+			rows = rows[:pageLimit]
+		}
+
+		out = make([]SuggestTag, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, SuggestTag{
+				Kind:       CorpusTag,
+				ID:         r.ID,
+				Display:    r.Display,
+				ItemCount:  r.ItemCount,
+				LastUsedAt: r.LastUsedAt.Time.UTC(),
+				Match:      TierToMatch(r.Tier),
+			})
+		}
+
+		if hasMore && len(rows) > 0 {
+			last := rows[len(rows)-1]
+			nextCur = &SearchCursor{
+				Kind:       CorpusTag,
+				Tier:       last.Tier,
+				Score:      last.Score,
+				LastUsedAt: last.LastUsedAt.Time.UTC(),
+				Count:      last.ItemCount,
+				ID:         last.ID,
+			}
+		}
+		return "", nil
+	})
+	if partial {
+		return searchTagPageOutcome{tags: []SuggestTag{}, partial: true}
+	}
+	if err != nil {
+		return searchTagPageOutcome{err: err}
+	}
 	return searchTagPageOutcome{
 		tags:       out,
 		nextCursor: nextCur,

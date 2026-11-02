@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -75,11 +76,19 @@ func (a *suggestTestAuth) addToken(token string, userID uuid.UUID) {
 
 func newSuggestTestEnv(t *testing.T, pool *pgxpool.Pool) *suggestTestEnv {
 	t.Helper()
+	return newSuggestTestEnvWarm(t, pool, 2)
+}
+
+// newSuggestTestEnvWarm is newSuggestTestEnv with an explicit number of connections to pre-open.
+// warmConns must not exceed the pool's MaxConns (a 1-connection pool passes 1, else the second
+// Acquire would wait for the first and fail after its 5 s timeout).
+func newSuggestTestEnvWarm(t *testing.T, pool *pgxpool.Pool, warmConns int) *suggestTestEnv {
+	t.Helper()
 	clk := clock.NewFixed(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
-	// Warm two concurrent pool connections so parallel item/tag lexical branches
+	// Warm concurrent pool connections so parallel item/tag lexical branches
 	// (50 ms per-branch budget) do not pay cold TCP/auth handshake overhead on CI.
-	if pool != nil {
-		warmPoolConns(t, pool, 2)
+	if pool != nil && warmConns > 0 {
+		warmPoolConns(t, pool, warmConns)
 	}
 	reg, metrics := obs.NewRegistry()
 	cursorKey, err := suggest.DeriveCursorKey([]byte("0123456789abcdef0123456789abcdef"))
@@ -156,6 +165,57 @@ func (e *suggestTestEnv) doSuggest(token string, params url.Values) *httptest.Re
 		raw = params.Encode()
 	}
 	return e.doSuggestRaw(token, raw)
+}
+
+// maxSettleAsks bounds doSuggestSettled.
+const maxSettleAsks = 4
+
+// doSuggestSettled is doSuggest for a test that REQUIRES real lexical rows from a database
+// request taken on the production timing path (no TestHooks). It re-asks, a bounded number of
+// times, ONLY when the response explicitly carries a non-empty `lexical_partial` (the SPEC 6.8
+// degrade a slow first query on a cold backend can still produce: FU-SB-2 moved acquire, BEGIN and
+// SET LOCAL out of the 50 ms budget, but the first Parse/plan of the item query on a fresh backend
+// is still query work). A complete response is returned as is, so an empty list with
+// `lexical_partial: []` is a real empty result and the caller's row assertions fail on it. A
+// request that is still partial after maxSettleAsks fails the test.
+func (e *suggestTestEnv) doSuggestSettled(token string, params url.Values) *httptest.ResponseRecorder {
+	e.t.Helper()
+	for ask := 1; ; ask++ {
+		rec := e.doSuggest(token, params)
+		if rec.Code != http.StatusOK {
+			return rec
+		}
+		var body struct {
+			LexicalPartial []string `json:"lexical_partial"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			e.t.Fatalf("doSuggestSettled: decode body: %v", err)
+		}
+		if len(body.LexicalPartial) == 0 {
+			return rec
+		}
+		if ask >= maxSettleAsks {
+			e.t.Fatalf("doSuggestSettled: still lexical_partial=%v after %d asks", body.LexicalPartial, ask)
+		}
+	}
+}
+
+func suggestItemsContain(items []suggest.SuggestItem, id uuid.UUID) bool {
+	for _, it := range items {
+		if it.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func suggestTagsContain(tags []suggest.SuggestTag, id uuid.UUID) bool {
+	for _, tg := range tags {
+		if tg.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // validateSuggestResponseOpenAPIShape strictly validates the raw JSON bytes of a 200
@@ -972,7 +1032,7 @@ func TestSuggestQueryEdgeCases(t *testing.T) {
 
 	// 1. Punctuation-only `!!!` -> 200 empty, mode=prefix.
 	for _, q := range []string{"!!!", "...---...", "   !!!   "} {
-		rec := env.doSuggest(tok, url.Values{"q": {q}})
+		rec := env.doSuggestSettled(tok, url.Values{"q": {q}})
 		resp := validateSuggestResponseOpenAPIShape(t, rec)
 		if resp.Mode != suggest.ModePrefix || resp.Scope != suggest.ScopeAll {
 			t.Fatalf("q=%q: got mode=%q scope=%q, want mode=prefix scope=all", q, resp.Mode, resp.Scope)
@@ -984,7 +1044,7 @@ func TestSuggestQueryEdgeCases(t *testing.T) {
 
 	// 2. `#` alone (or `#` followed by whitespace or punctuation-only token) -> 200 empty, scope=tag, mode=prefix.
 	for _, q := range []string{"#", "   #", "#   ", "#!!!", "#   wifi"} {
-		rec := env.doSuggest(tok, url.Values{"q": {q}})
+		rec := env.doSuggestSettled(tok, url.Values{"q": {q}})
 		resp := validateSuggestResponseOpenAPIShape(t, rec)
 		if resp.Scope != suggest.ScopeTag || resp.Mode != suggest.ModePrefix {
 			t.Fatalf("q=%q: got scope=%q mode=%q, want scope=tag mode=prefix", q, resp.Scope, resp.Mode)
@@ -995,7 +1055,7 @@ func TestSuggestQueryEdgeCases(t *testing.T) {
 	}
 
 	// 3. Leading `#` with valid token forces scope=tag (even if scope=item was passed) and strips trailing tokens.
-	recHash := env.doSuggest(tok, url.Values{"q": {"  #nhà   ignored-second-token"}, "scope": {"item"}})
+	recHash := env.doSuggestSettled(tok, url.Values{"q": {"  #nhà   ignored-second-token"}, "scope": {"item"}})
 	respHash := validateSuggestResponseOpenAPIShape(t, recHash)
 	if respHash.Scope != suggest.ScopeTag || respHash.Mode != suggest.ModeFull {
 		t.Fatalf("#nhà: got scope=%q mode=%q, want scope=tag mode=full", respHash.Scope, respHash.Mode)
@@ -1011,7 +1071,7 @@ func TestSuggestQueryEdgeCases(t *testing.T) {
 		{"q": {"     "}},
 		{"q": {"\u00a0\u2003\u3000"}},
 	} {
-		rec := env.doSuggest(tok, vals)
+		rec := env.doSuggestSettled(tok, vals)
 		resp := validateSuggestResponseOpenAPIShape(t, rec)
 		if resp.Mode != suggest.ModeRecent {
 			t.Fatalf("vals=%v: got mode=%q, want recent", vals, resp.Mode)
@@ -1040,7 +1100,7 @@ func TestSuggestQueryEdgeCases(t *testing.T) {
 		{"q": {strings.Repeat("t", 51)}, "scope": {"tag"}},
 	}
 	for _, vals := range nameInvalidQueries {
-		rec := env.doSuggest(tok, vals)
+		rec := env.doSuggestSettled(tok, vals)
 		assertProblemCode(t, rec, http.StatusBadRequest, "name_invalid")
 	}
 	// Invalid UTF-8 bytes in raw query string -> 400 `name_invalid`.
@@ -1048,9 +1108,9 @@ func TestSuggestQueryEdgeCases(t *testing.T) {
 	assertProblemCode(t, badUTF8Rec, http.StatusBadRequest, "name_invalid")
 
 	// Boundary checks: exactly 200 runes for item/all and 50 runes for tag must succeed with 200.
-	ok200Rec := env.doSuggest(tok, url.Values{"q": {strings.Repeat("a", 200)}})
+	ok200Rec := env.doSuggestSettled(tok, url.Values{"q": {strings.Repeat("a", 200)}})
 	validateSuggestResponseOpenAPIShape(t, ok200Rec)
-	ok50TagRec := env.doSuggest(tok, url.Values{"q": {"#" + strings.Repeat("t", 50)}})
+	ok50TagRec := env.doSuggestSettled(tok, url.Values{"q": {"#" + strings.Repeat("t", 50)}})
 	validateSuggestResponseOpenAPIShape(t, ok50TagRec)
 
 	// 6. 400 `invalid_request`: bad scope, bad limit, bad semantic, unknown param, duplicate param, malformed query encoding.
@@ -1126,7 +1186,7 @@ func TestSuggestLexicalCorpusViEn(t *testing.T) {
 	for _, qc := range fx.Queries {
 		t.Run(qc.Name, func(t *testing.T) {
 			tok := "tok-" + qc.User
-			rec := env.doSuggest(tok, url.Values{
+			rec := env.doSuggestSettled(tok, url.Values{
 				"q":     {qc.Q},
 				"scope": {qc.Scope},
 				"limit": {"12"},
@@ -1193,7 +1253,7 @@ func TestSuggestLexicalCorpusViEn(t *testing.T) {
 
 	// 2. Duplicate item names include <= 3 tag refs ordered by display and accurate tag_total=4.
 	t.Run("duplicate-item-tags-and-tag-total", func(t *testing.T) {
-		rec := env.doSuggest("tok-u1", url.Values{"q": {"tài khoản ngân hàng"}, "scope": {"item"}, "limit": {"8"}})
+		rec := env.doSuggestSettled("tok-u1", url.Values{"q": {"tài khoản ngân hàng"}, "scope": {"item"}, "limit": {"8"}})
 		resp := validateSuggestResponseOpenAPIShape(t, rec)
 		if len(resp.Items) < 2 {
 			t.Fatalf("expected at least 2 duplicate items, got %d", len(resp.Items))
@@ -1209,7 +1269,7 @@ func TestSuggestLexicalCorpusViEn(t *testing.T) {
 
 	// 3. `#` prefix query `#duong` forces scope=tag and returns tier 3 `duong-sat` then tier 2 `đường-bộ`.
 	t.Run("hash-prefix-forces-tag-scope", func(t *testing.T) {
-		rec := env.doSuggest("tok-u1", url.Values{"q": {"#duong"}})
+		rec := env.doSuggestSettled("tok-u1", url.Values{"q": {"#duong"}})
 		resp := validateSuggestResponseOpenAPIShape(t, rec)
 		if resp.Scope != suggest.ScopeTag || resp.Mode != suggest.ModeFull {
 			t.Fatalf("got scope=%q mode=%q, want scope=tag mode=full", resp.Scope, resp.Mode)
@@ -1227,7 +1287,7 @@ func TestSuggestLexicalCorpusViEn(t *testing.T) {
 
 	// 4. Empty `q` = recent mode (`last_used_at DESC, id DESC`), `has_more = true` on corpus > limit.
 	t.Run("empty-q-recent-mode", func(t *testing.T) {
-		rec := env.doSuggest("tok-u1", url.Values{"limit": {"8"}})
+		rec := env.doSuggestSettled("tok-u1", url.Values{"limit": {"8"}})
 		resp := validateSuggestResponseOpenAPIShape(t, rec)
 		if resp.Mode != suggest.ModeRecent || resp.Scope != suggest.ScopeAll {
 			t.Fatalf("got mode=%q scope=%q, want mode=recent scope=all", resp.Mode, resp.Scope)
@@ -1244,7 +1304,7 @@ func TestSuggestLexicalCorpusViEn(t *testing.T) {
 
 	// 5. 1-char `q` = `mode: "prefix"` (prefix-only, no fuzzy matches).
 	t.Run("one-char-q-prefix-only", func(t *testing.T) {
-		rec := env.doSuggest("tok-u1", url.Values{"q": {"đ"}, "limit": {"8"}})
+		rec := env.doSuggestSettled("tok-u1", url.Values{"q": {"đ"}, "limit": {"8"}})
 		resp := validateSuggestResponseOpenAPIShape(t, rec)
 		if resp.Mode != suggest.ModePrefix {
 			t.Fatalf("1-char q='đ': got mode=%q, want prefix", resp.Mode)
@@ -1326,7 +1386,7 @@ func TestSuggestUserScope(t *testing.T) {
 	env.auth.addToken("tok-u2", u2)
 
 	for _, q := range []string{"", "a", "alpha", "#alpha"} {
-		rec := env.doSuggest("tok-u1", url.Values{"q": {q}, "limit": {"12"}})
+		rec := env.doSuggestSettled("tok-u1", url.Values{"q": {q}, "limit": {"12"}})
 		resp := validateSuggestResponseOpenAPIShape(t, rec)
 		for _, it := range resp.Items {
 			if it.ID == u2LiveItem || it.ID == u1DeletedItem {
@@ -1566,7 +1626,7 @@ func TestSuggestLexicalIdenticalSemanticOnOff(t *testing.T) {
 
 	for _, scope := range []string{suggest.ScopeAll, suggest.ScopeItem, suggest.ScopeTag} {
 		for _, limitStr := range []string{"5", "8", "12"} {
-			recOff := env.doSuggest("tok-u1", url.Values{
+			recOff := env.doSuggestSettled("tok-u1", url.Values{
 				"q":        {"wifi"},
 				"scope":    {scope},
 				"limit":    {limitStr},
@@ -1574,13 +1634,51 @@ func TestSuggestLexicalIdenticalSemanticOnOff(t *testing.T) {
 			})
 			respOff := validateSuggestResponseOpenAPIShape(t, recOff)
 
-			recOn := env.doSuggest("tok-u1", url.Values{
+			recOn := env.doSuggestSettled("tok-u1", url.Values{
 				"q":        {"wifi"},
 				"scope":    {scope},
 				"limit":    {limitStr},
 				"semantic": {"1"},
 			})
 			respOn := validateSuggestResponseOpenAPIShape(t, recOn)
+
+			// Positive lexical rows on BOTH responses (RV-SB2-BE-2). Equality alone would pass a
+			// complete-empty result (`lexical_partial: []`, no rows) on both sides, so every
+			// (scope, limit) must also return the fixture's wifi rows. The seed fixes them: u1
+			// owns items "wifi" and "wifi phòng khách" and tags "wifi-khách" and "wifi-nhà", all
+			// exact-prefix hits that fit every quota cell.
+			limitN, convErr := strconv.Atoi(limitStr)
+			if convErr != nil {
+				t.Fatalf("limit %q: %v", limitStr, convErr)
+			}
+			cell, ok := suggest.LookupQuotaCell(scope, limitN)
+			if !ok {
+				t.Fatalf("(%s,%s) no quota cell", scope, limitStr)
+			}
+			for label, resp := range map[string]suggest.SuggestResponse{"semantic=0": respOff, "semantic=1": respOn} {
+				if len(resp.LexicalPartial) != 0 {
+					t.Fatalf("(%s,%s) %s lexical_partial = %v, want none", scope, limitStr, label, resp.LexicalPartial)
+				}
+				if (scope == suggest.ScopeTag && len(resp.Items) != 0) || (scope == suggest.ScopeItem && len(resp.Tags) != 0) {
+					t.Fatalf("(%s,%s) %s returned rows of the wrong corpus: items=%d tags=%d", scope, limitStr, label, len(resp.Items), len(resp.Tags))
+				}
+				if scope != suggest.ScopeTag {
+					if len(resp.Items) == 0 || len(resp.Items) > cell.LexMax {
+						t.Fatalf("(%s,%s) %s items = %d, want 1..%d wifi items (complete-empty lexical result?)", scope, limitStr, label, len(resp.Items), cell.LexMax)
+					}
+					if !suggestItemsContain(resp.Items, lexDupItemID) {
+						t.Fatalf("(%s,%s) %s items %+v lack the fixture item %s", scope, limitStr, label, resp.Items, lexDupItemID)
+					}
+				}
+				if scope != suggest.ScopeItem {
+					if len(resp.Tags) == 0 || len(resp.Tags) > cell.LexMax {
+						t.Fatalf("(%s,%s) %s tags = %d, want 1..%d wifi tags (complete-empty lexical result?)", scope, limitStr, label, len(resp.Tags), cell.LexMax)
+					}
+					if !suggestTagsContain(resp.Tags, lexDupTagID) {
+						t.Fatalf("(%s,%s) %s tags %+v lack the fixture tag %s", scope, limitStr, label, resp.Tags, lexDupTagID)
+					}
+				}
+			}
 
 			tagsOffJSON, _ := json.Marshal(respOff.Tags)
 			tagsOnJSON, _ := json.Marshal(respOn.Tags)
@@ -1629,7 +1727,7 @@ func TestSuggestLexicalIdenticalSemanticOnOff(t *testing.T) {
 	}
 
 	// Verify tag-before-item ordering, lexical deduplication, and literal match=="semantic" on (scope=all, limit=8).
-	recAll8 := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}, "semantic": {"1"}})
+	recAll8 := env.doSuggestSettled("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}, "semantic": {"1"}})
 	var rawAll8 struct {
 		Near []struct {
 			Kind  string    `json:"kind"`
@@ -1663,7 +1761,7 @@ func TestSuggestLexicalIdenticalSemanticOnOff(t *testing.T) {
 		} {
 			env.svc.SetNearSource(src)
 			for _, semParam := range []string{"1", "0"} {
-				rec := env.doSuggest("tok-u1", url.Values{"semantic": {semParam}})
+				rec := env.doSuggestSettled("tok-u1", url.Values{"semantic": {semParam}})
 				resp := validateSuggestResponseOpenAPIShape(t, rec)
 				if resp.Mode != suggest.ModeRecent {
 					t.Fatalf("mode = %q, want recent", resp.Mode)
@@ -1695,7 +1793,7 @@ func TestSuggestLexicalIdenticalSemanticOnOff(t *testing.T) {
 			},
 		})
 		for _, semParam := range []string{"1", "0"} {
-			rec := env.doSuggest("tok-u1", url.Values{"semantic": {semParam}})
+			rec := env.doSuggestSettled("tok-u1", url.Values{"semantic": {semParam}})
 			resp := validateSuggestResponseOpenAPIShape(t, rec)
 			if resp.Mode != suggest.ModeRecent || resp.Semantic || resp.Generation != nil || len(resp.Near) != 0 || resp.Quota.Near != 0 {
 				t.Fatalf("unexpected recent state for stub disabled_user (semantic=%s): %+v", semParam, resp)
@@ -1778,7 +1876,7 @@ func TestSuggestRecencyOnlyTieBreak(t *testing.T) {
 	env := newSuggestTestEnv(t, pool)
 	env.auth.addToken("tok-u1", u1)
 
-	rec := env.doSuggest("tok-u1", url.Values{"q": {"ma"}, "scope": {"item"}, "limit": {"8"}})
+	rec := env.doSuggestSettled("tok-u1", url.Values{"q": {"ma"}, "scope": {"item"}, "limit": {"8"}})
 	resp := validateSuggestResponseOpenAPIShape(t, rec)
 
 	wantOrder := []uuid.UUID{
@@ -2020,4 +2118,104 @@ func TestSuggestBranchTimeoutPartial(t *testing.T) {
 			t.Fatalf("LexicalPartialTotal{corpus=tag} = %v, want %v", afterTag2, beforeTag+1)
 		}
 	})
+}
+
+// delayTxStarter delays BeginTx (the stand-in for a slow pool acquire: pool wait, dial, handshake)
+// and then delegates to the REAL pool, so the transaction, the SET LOCALs and the query run on a
+// real pgx connection. The wait aborts if the setup context ends first.
+type delayTxStarter struct {
+	inner suggest.TxStarter
+	delay time.Duration
+	begun atomic.Int32
+}
+
+func (d *delayTxStarter) BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error) {
+	d.begun.Add(1)
+	timer := time.NewTimer(d.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return d.inner.BeginTx(ctx, opts)
+}
+
+// newSingleConnPool opens a pgxpool limited to ONE connection, configured like dbtest.Pool
+// (MinConns=0, statement_timeout so Close cannot hang), and closes it on cleanup.
+func newSingleConnPool(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	cfg.MaxConns = 1
+	cfg.MinConns = 0
+	cfg.MaxConnIdleTime = time.Minute
+	cfg.HealthCheckPeriod = 30 * time.Second
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "15000"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("NewPool (single connection): %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// TestSuggestSlowAcquireRealDBStillReturnsLexicalRows is the real-driver regression of FU-SB-2
+// (RV-SB2-BE-3): BeginTx takes 120 ms, longer than the whole 50 ms query budget, and then hands a
+// real pgx transaction to the branch. Before the fix the 50 ms context also covered acquire+BEGIN,
+// so each branch expired before its query ran and returned `lexical_partial` with no rows. Now
+// setup has its own bound and the query gets a fresh 50 ms, so the real SET LOCAL and the real
+// query still return the fixture rows and nothing is partial.
+//
+// Backend selection is deterministic (RV-SB2-BE-4): pgx prepares statements per connection, so
+// the service runs on a dedicated pool with MaxConns=1. The seed uses the ordinary test pool; the
+// warm-up (a settled scope=all request, which runs the item query, its tag-reference follow-up and
+// the tag query) and the measured request then execute on the SAME single connection, so every
+// statement of the measured request was already prepared there and a cold first Parse/plan (the
+// FU-SB-2b residual owned by Task 23) is not the condition under test. With one connection the
+// two branches serialize on acquire; that wait is setup (BranchSetupTimeout) and outside the 50 ms
+// query budget. There is deliberately no elapsed-time ceiling: the assertions are on rows,
+// `lexical_partial` and the begin count.
+func TestSuggestSlowAcquireRealDBStillReturnsLexicalRows(t *testing.T) {
+	dsn := startTestDB(t) // skips under -short like the other DB tests
+	dbtest.MigrateUp(t, dsn)
+	seedPool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	_, users := loadAndSeedCorpus(t, ctx, seedPool)
+
+	pool := newSingleConnPool(t, dsn)
+	env := newSuggestTestEnvWarm(t, pool, 1)
+	env.auth.addToken("tok-u1", users["u1"])
+
+	params := url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}}
+	warm := validateSuggestResponseOpenAPIShape(t, env.doSuggestSettled("tok-u1", params))
+	if len(warm.Items) == 0 || len(warm.Tags) == 0 {
+		t.Fatalf("warm-up returned no lexical rows: items=%d tags=%d", len(warm.Items), len(warm.Tags))
+	}
+
+	slow := &delayTxStarter{inner: pool, delay: 120 * time.Millisecond}
+	env.svc.SetTxStarter(slow)
+	rec := env.doSuggest("tok-u1", params)
+	resp := validateSuggestResponseOpenAPIShape(t, rec)
+
+	if got := slow.begun.Load(); got < 2 {
+		t.Fatalf("delayed BeginTx calls = %d, want >= 2 (one per lexical branch)", got)
+	}
+	if len(resp.LexicalPartial) != 0 {
+		t.Fatalf("lexical_partial = %v after a 120 ms acquire, want none: setup must not spend the 50 ms query budget", resp.LexicalPartial)
+	}
+	if !suggestItemsContain(resp.Items, uuid.MustParse("00000000-0001-4000-8000-000000000009")) {
+		t.Fatalf("items %+v lack the fixture item \"wifi\"", resp.Items)
+	}
+	if !suggestTagsContain(resp.Tags, uuid.MustParse("00000000-0011-4000-8000-000000000001")) {
+		t.Fatalf("tags %+v lack the fixture tag \"wifi-khách\"", resp.Tags)
+	}
 }

@@ -1591,7 +1591,9 @@ func TestSearchAndSuggestShareRateLimitBucket(t *testing.T) {
 		t.Fatalf("unauth /search status = %d, want 401", rec401.Code)
 	}
 
-	// Token 1 consumed by `/suggest`.
+	// Token 1 consumed by `/suggest`. Plain doSuggest on purpose: one authenticated call is exactly
+	// one token, so no retry may sit inside this counted sequence. A 200 with a degraded
+	// `lexical_partial` is enough here: this test asserts rate-limit accounting, not lexical rows.
 	rec1 := env.doSuggest(tok, url.Values{"q": {"wifi"}})
 	if rec1.Code != http.StatusOK {
 		t.Fatalf("req 1 (/suggest) status = %d, want 200", rec1.Code)

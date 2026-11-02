@@ -217,6 +217,8 @@ func TestSuggestNeverLogsQuery(t *testing.T) {
 	}
 
 	// 11. `/search` 500 `internal_error` on primary-corpus branch timeout (advisor-dec-287, consumes token 9).
+	// The degraded branch also logs ONE INFO partial line (FU-SB-2): bounded fields only, no query.
+	logOffset := logBuf.Len()
 	svc.SetTestHooks(&suggest.TestHooks{
 		BeforeBranch: func(_ context.Context, corpus string) error {
 			if corpus == suggest.CorpusItem {
@@ -233,6 +235,12 @@ func TestSuggestNeverLogsQuery(t *testing.T) {
 	if strings.Contains(recSearch500.Body.String(), "SearchTimeout500SentinelKappa") ||
 		strings.Contains(recSearch500.Body.String(), "searchtimeout500sentinelkappa") {
 		t.Fatalf("/search 500 problem body echoed query: %s", recSearch500.Body.String())
+	}
+
+	if pl := partialLinesIn(t, logBuf.String()[logOffset:]); len(pl) != 1 {
+		t.Fatalf("partial log lines for the primary timeout = %d, want 1: %v", len(pl), pl)
+	} else {
+		assertPartialLine(t, pl[0], suggest.CorpusItem, "full", "setup")
 	}
 
 	// 12. Consume token 10 via `/search`, then verify 429 `rate_limited` on both `/suggest` and `/search`.

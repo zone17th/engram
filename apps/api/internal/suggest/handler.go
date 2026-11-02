@@ -32,10 +32,15 @@ type Handler struct {
 	logger atomic.Pointer[slog.Logger]
 }
 
-// SetLogger attaches the logger used for server-error lines. nil disables logging.
-// `Mount` calls it with `httpx.Deps.Logger` when none was set, so NewHandler and the
-// compose call sites stay unchanged.
-func (h *Handler) SetLogger(l *slog.Logger) { h.logger.Store(l) }
+// SetLogger attaches the logger used for server-error lines and, through the Service, for the
+// lexical partial line (FU-SB-2). nil disables logging. `Mount` calls it with
+// `httpx.Deps.Logger` when none was set, so NewHandler and the compose call sites stay unchanged.
+func (h *Handler) SetLogger(l *slog.Logger) {
+	h.logger.Store(l)
+	if h.svc != nil { // a zero Handler (tests, partial wiring) has no Service to forward to
+		h.svc.setLogger(l)
+	}
+}
 
 const (
 	routeSuggest = "/api/v1/suggest"
