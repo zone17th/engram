@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
+	"github.com/zone17th/engram/apps/api/internal/embedding/store"
 )
 
 type reembedEnv struct {
@@ -226,6 +228,118 @@ func TestReembedUserWorkerOnlyThatUser(t *testing.T) {
 	if strings.Contains(err.Error(), "not-a-uuid") {
 		t.Fatalf("error echoes the raw user_id: %v", err)
 	}
+}
+
+// TestReembedUserTwoExternalGenerations: with R = {active openai_compat g1,
+// pending openai_compat g2} and two semantic_suggest-on users, reembed_user for
+// A enqueues A's stale and missing targets in BOTH generation ids and nothing at
+// all for B in either (Task 13 cites this test by name).
+func TestReembedUserTwoExternalGenerations(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	q := gen.New(pool)
+
+	srv := embedtest.NewServer(embedtest.Options{Dims: 8})
+	t.Cleanup(srv.Close)
+	c1 := newOpenAIClient(t, srv, 8, "openrouter/qwen/qwen3-embedding-8b", "Retrieve items", embedding.RoleShadow)
+	c2 := newOpenAIClient(t, srv, 8, "openrouter/qwen/qwen3-embedding-4b", "Retrieve items", embedding.RoleShadow)
+	g1 := seedGenerationForIdentity(t, ctx, pool, 1, c1.Identity, generation.StateActive, nil)
+	g2 := seedGenerationForIdentity(t, ctx, pool, 2, c2.Identity, generation.StatePending, nil)
+	for _, g := range []generation.Generation{g1, g2} {
+		if g.Provider != generation.ProviderOpenAICompat {
+			t.Fatalf("generation %d provider = %q, want openai_compat", g.ID, g.Provider)
+		}
+	}
+
+	mkUser := func(email string) uuid.UUID {
+		u, err := q.InsertUser(ctx, gen.InsertUserParams{Email: email, Locale: "vi"})
+		if err != nil {
+			t.Fatalf("InsertUser: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'true'::jsonb) WHERE id = $1`, u.ID); err != nil {
+			t.Fatalf("semantic_suggest on: %v", err)
+		}
+		return u.ID
+	}
+	mkItem := func(user uuid.UUID, name string) uuid.UUID {
+		row, err := q.InsertItem(ctx, gen.InsertItemParams{UserID: user, Name: name, NameNormalized: strings.ToLower(name)})
+		if err != nil {
+			t.Fatalf("InsertItem: %v", err)
+		}
+		return row.ID
+	}
+	mkTag := func(user uuid.UUID, display string) uuid.UUID {
+		row, err := q.InsertTag(ctx, gen.InsertTagParams{UserID: user, Display: display, Normalized: strings.ToLower(display)})
+		if err != nil {
+			t.Fatalf("InsertTag: %v", err)
+		}
+		return row.ID
+	}
+	putStale := func(g generation.Generation, user, item uuid.UUID) {
+		h := embedding.InputHashFor(g.Identity(), "outdated input before edit")
+		vec := make([]float32, g.Dims)
+		vec[0] = 1
+		if err := store.Upsert(ctx, pool, g, generation.CorpusItem, user, item, vec, h[:]); err != nil {
+			t.Fatalf("store.Upsert: %v", err)
+		}
+	}
+
+	a := mkUser("two-ext-a@example.com")
+	b := mkUser("two-ext-b@example.com")
+	aMissing, aStale, aTag := mkItem(a, "A missing item"), mkItem(a, "A stale item"), mkTag(a, "a-tag")
+	bMissing, bStale, bTag := mkItem(b, "B missing item"), mkItem(b, "B stale item"), mkTag(b, "b-tag")
+	for _, g := range []generation.Generation{g1, g2} {
+		putStale(g, a, aStale)
+		putStale(g, b, bStale)
+	}
+
+	deps := jobs.Dependencies{Pool: pool, Inserter: jobs.RiverClientInserter{Client: newInsertClient(t, pool)}}
+	if err := jobs.NewReembedUserWorker(deps).Work(ctx, &river.Job[jobargs.ReembedUserArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1}, Args: jobargs.ReembedUserArgs{UserID: a.String()},
+	}); err != nil {
+		t.Fatalf("Work(user a): %v", err)
+	}
+
+	rows, err := pool.Query(ctx,
+		`SELECT kind, (args->>'generation_id')::int, args->>'user_id', args->>'target_id'
+		 FROM river_job WHERE kind IN ($1, $2)`, jobargs.KindEmbedItem, jobargs.KindEmbedTag)
+	if err != nil {
+		t.Fatalf("query jobs: %v", err)
+	}
+	defer rows.Close()
+	got := map[string]int{}
+	total := 0
+	for rows.Next() {
+		var kind, user, target string
+		var genID int
+		if err := rows.Scan(&kind, &genID, &user, &target); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if user == b.String() {
+			t.Fatalf("a job was enqueued for user b (kind %s, generation %d)", kind, genID)
+		}
+		got[fmt.Sprintf("%s|%d|%s", kind, genID, target)]++
+		total++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	want := map[string]int{}
+	for _, gid := range []int{g1.ID, g2.ID} {
+		want[fmt.Sprintf("%s|%d|%s", jobargs.KindEmbedItem, gid, aMissing)] = 1
+		want[fmt.Sprintf("%s|%d|%s", jobargs.KindEmbedItem, gid, aStale)] = 1
+		want[fmt.Sprintf("%s|%d|%s", jobargs.KindEmbedTag, gid, aTag)] = 1
+	}
+	if total != 6 || len(got) != len(want) {
+		t.Fatalf("jobs = %v (total %d), want exactly user a's missing+stale items and tag in generations 1 and 2: %v", got, total, want)
+	}
+	for k, n := range want {
+		if got[k] != n {
+			t.Fatalf("jobs[%s] = %d, want %d (all jobs %v)", k, got[k], n, got)
+		}
+	}
+	_, _, _ = bMissing, bStale, bTag // user b's targets exist precisely so any job for b would show up above
 }
 
 func TestReembedWorkersLogNoPlaintext(t *testing.T) {
