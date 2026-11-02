@@ -102,6 +102,8 @@ type fakeDB struct {
 	queryErr map[string]error
 	// beginErr, when set, is called by BeginTx and its error is returned.
 	beginErr func(ctx context.Context) error
+	// execErr, when set, is called by every tx.Exec (the SET LOCALs) and its error is returned.
+	execErr func(ctx context.Context) error
 }
 
 func (d *fakeDB) BeginTx(ctx context.Context, _ pgx.TxOptions) (pgx.Tx, error) {
@@ -113,7 +115,12 @@ func (d *fakeDB) BeginTx(ctx context.Context, _ pgx.TxOptions) (pgx.Tx, error) {
 	return &fakeTx{cfg: d}, nil
 }
 
-func (t *fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+func (t *fakeTx) Exec(ctx context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {
+	if t.cfg.execErr != nil {
+		if err := t.cfg.execErr(ctx); err != nil {
+			return pgconn.CommandTag{}, err
+		}
+	}
 	return pgconn.CommandTag{}, nil
 }
 
@@ -218,6 +225,62 @@ func (e *branchFailEnv) serverErrorLines() []map[string]any {
 	return out
 }
 
+// partialLogMsg is the message of the INFO line a degraded lexical branch logs (FU-SB-2).
+const partialLogMsg = "suggest lexical branch partial"
+
+// partialLines returns the decoded partial-branch log lines written so far.
+func (e *branchFailEnv) partialLines() []map[string]any {
+	e.t.Helper()
+	return partialLinesIn(e.t, e.logBuf.String())
+}
+
+func partialLinesIn(t *testing.T, logs string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("log line is not JSON: %q: %v", line, err)
+		}
+		if msg, _ := m["msg"].(string); msg == partialLogMsg {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// assertPartialLine checks the fixed field set of the partial line (dec-268): enums for corpus,
+// mode and phase, integer millisecond durations, and nothing else (no q/qn, names, err text).
+func assertPartialLine(t *testing.T, line map[string]any, corpus, mode, phase string) {
+	t.Helper()
+	if line["level"] != "INFO" {
+		t.Fatalf("partial line level = %v, want INFO: %v", line["level"], line)
+	}
+	for k, v := range map[string]string{"corpus": corpus, "mode": mode, "phase": phase} {
+		if got, _ := line[k].(string); got != v {
+			t.Fatalf("partial line %s = %q, want %q (line %v)", k, got, v, line)
+		}
+	}
+	allowed := map[string]bool{
+		"time": true, "level": true, "msg": true, "corpus": true, "mode": true, "phase": true,
+		"setup_ms": true, "set_local_ms": true, "query_ms": true,
+	}
+	for k := range line {
+		if !allowed[k] {
+			t.Fatalf("unexpected field %q in partial line %v", k, line)
+		}
+	}
+	for _, k := range []string{"setup_ms", "set_local_ms", "query_ms"} {
+		f, ok := line[k].(float64)
+		if !ok || f < 0 || f != float64(int64(f)) {
+			t.Fatalf("partial line %s = %v, want a non-negative integer (line %v)", k, line[k], line)
+		}
+	}
+}
+
 func (e *branchFailEnv) partialCounters() (item, tag float64) {
 	e.t.Helper()
 	return counterValueByCorpus(e.t, e.reg, "search_lexical_partial_total", suggest.CorpusItem),
@@ -243,6 +306,7 @@ func TestSuggestBranchBudgetExpiredOpaqueErrorIsPartial(t *testing.T) {
 		install     func(corpus string)
 		corpus      string // the corpus that fails
 		wantPartial []string
+		wantPhase   string // phase the partial line must name (FU-SB-2)
 	}
 	hookAfterSetLocal := func(corpus string) {
 		env.svc.SetTestHooks(&suggest.TestHooks{
@@ -256,6 +320,9 @@ func TestSuggestBranchBudgetExpiredOpaqueErrorIsPartial(t *testing.T) {
 	}
 	hookBefore := func(corpus string) {
 		env.svc.SetTestHooks(&suggest.TestHooks{
+			// BeforeBranch runs in the SETUP stage, bounded by BranchSetupTimeout (2 s in
+			// production); a short bound keeps the test fast without changing what it proves.
+			SetupTimeout: 50 * time.Millisecond,
 			BeforeBranch: func(ctx context.Context, c string) error {
 				if c == corpus {
 					return opaqueAfterBudget(ctx)
@@ -265,13 +332,14 @@ func TestSuggestBranchBudgetExpiredOpaqueErrorIsPartial(t *testing.T) {
 		})
 	}
 	cases := []tc{
-		{"item-after-set-local", hookAfterSetLocal, suggest.CorpusItem, []string{"item"}},
-		{"tag-after-set-local", hookAfterSetLocal, suggest.CorpusTag, []string{"tag"}},
-		{"item-before-branch", hookBefore, suggest.CorpusItem, []string{"item"}},
-		{"tag-before-branch", hookBefore, suggest.CorpusTag, []string{"tag"}},
+		{"item-after-set-local", hookAfterSetLocal, suggest.CorpusItem, []string{"item"}, "query"},
+		{"tag-after-set-local", hookAfterSetLocal, suggest.CorpusTag, []string{"tag"}, "query"},
+		{"item-before-branch", hookBefore, suggest.CorpusItem, []string{"item"}, "setup"},
+		{"tag-before-branch", hookBefore, suggest.CorpusTag, []string{"tag"}, "setup"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			env.logBuf.Reset()
 			beforeItem, beforeTag := env.partialCounters()
 			c.install(c.corpus)
 			rec := env.doSuggest("tok-u1", q)
@@ -298,6 +366,11 @@ func TestSuggestBranchBudgetExpiredOpaqueErrorIsPartial(t *testing.T) {
 			if lines := env.serverErrorLines(); len(lines) != 0 {
 				t.Fatalf("a partial response must not log WARN/ERROR, got %v", lines)
 			}
+			lines := env.partialLines()
+			if len(lines) != 1 {
+				t.Fatalf("partial lines = %d, want exactly 1: %v", len(lines), lines)
+			}
+			assertPartialLine(t, lines[0], c.corpus, "full", c.wantPhase)
 		})
 	}
 }
@@ -308,6 +381,8 @@ func TestSuggestBeginTxBudgetExpiredIsPartial(t *testing.T) {
 	env := newBranchFailEnv(t)
 	beforeItem, beforeTag := env.partialCounters()
 	env.db.beginErr = opaqueAfterBudget
+	// acquire + BEGIN run in the setup stage (BranchSetupTimeout in production, shortened here).
+	env.svc.SetTestHooks(&suggest.TestHooks{SetupTimeout: 50 * time.Millisecond})
 
 	rec := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}})
 	resp := validateSuggestResponseOpenAPIShape(t, rec)
@@ -325,6 +400,20 @@ func TestSuggestBeginTxBudgetExpiredIsPartial(t *testing.T) {
 	}
 	if lines := env.serverErrorLines(); len(lines) != 0 {
 		t.Fatalf("both-partial 200 must not log WARN/ERROR, got %v", lines)
+	}
+	lines := env.partialLines()
+	if len(lines) != 2 {
+		t.Fatalf("partial lines = %d, want one per corpus: %v", len(lines), lines)
+	}
+	got = nil
+	for _, l := range lines {
+		c, _ := l["corpus"].(string)
+		got = append(got, c)
+		assertPartialLine(t, l, c, "full", "setup")
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"item", "tag"}) {
+		t.Fatalf("partial line corpora = %v, want [item tag]", got)
 	}
 }
 
@@ -579,6 +668,7 @@ func TestSearchBranchBudgetExpiredOpaqueErrorKeepsPolicy(t *testing.T) {
 		env.logBuf.Reset()
 		_, beforeTag := env.partialCounters()
 		env.svc.SetTestHooks(&suggest.TestHooks{
+			SetupTimeout: 50 * time.Millisecond, // BeforeBranch runs in the setup stage
 			BeforeBranch: func(ctx context.Context, c string) error {
 				if c == suggest.CorpusTag {
 					return opaqueAfterBudget(ctx)
@@ -598,12 +688,18 @@ func TestSearchBranchBudgetExpiredOpaqueErrorKeepsPolicy(t *testing.T) {
 		if lines := env.serverErrorLines(); len(lines) != 0 {
 			t.Fatalf("degraded 200 must not log WARN/ERROR, got %v", lines)
 		}
+		lines := env.partialLines()
+		if len(lines) != 1 {
+			t.Fatalf("partial lines = %d, want 1: %v", len(lines), lines)
+		}
+		assertPartialLine(t, lines[0], suggest.CorpusTag, "full", "setup")
 	})
 
 	t.Run("primary-item-is-500-counted-and-logged-once", func(t *testing.T) {
 		env.logBuf.Reset()
 		beforeItem, _ := env.partialCounters()
 		env.svc.SetTestHooks(&suggest.TestHooks{
+			SetupTimeout: 50 * time.Millisecond, // BeforeBranch runs in the setup stage
 			BeforeBranch: func(ctx context.Context, c string) error {
 				if c == suggest.CorpusItem {
 					return opaqueAfterBudget(ctx)
@@ -631,6 +727,12 @@ func TestSearchBranchBudgetExpiredOpaqueErrorKeepsPolicy(t *testing.T) {
 			}
 		}
 		assertOnlyBoundedLogFields(t, lines[0])
+		// dec-287 outcome unchanged; the phase of the timeout is visible in the INFO line.
+		plines := env.partialLines()
+		if len(plines) != 1 {
+			t.Fatalf("partial lines = %d, want 1: %v", len(plines), plines)
+		}
+		assertPartialLine(t, plines[0], suggest.CorpusItem, "full", "setup")
 	})
 
 	t.Run("genuine-error-logged", func(t *testing.T) {
@@ -770,5 +872,183 @@ func TestSearchGenerationLookupFailureLogsExactlyOnce(t *testing.T) {
 	// Same static 500 as before the split of causes.
 	if _, err := env.svc.Search(context.Background(), suggest.SearchInput{UserID: fakeUserID, RawQ: "wifi", Scope: suggest.ScopeAll, Limit: 20}); !errors.Is(err, suggest.ErrSearchInternal) {
 		t.Fatalf("Search err = %v, want errors.Is ErrSearchInternal", err)
+	}
+}
+
+// FU-SB-2: acquire + BEGIN + SET LOCAL are bounded by BranchSetupTimeout, not by the 50 ms
+// query budget. These regressions run on the fake TxStarter (no database), so only the delay
+// the test injects can consume time; nothing asserts a tight wall-clock bound.
+
+// slowBegin makes the fake BeginTx (the stand-in for pool acquire on a cold pool: TCP + SCRAM)
+// take longer than the whole query budget, then succeed. It aborts if the setup ctx ends first.
+func slowBegin(d time.Duration) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		select {
+		case <-time.After(d):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// TestSuggestSlowAcquireIsOutsideQueryBudget: a BeginTx slower than suggest.BranchTimeout (here
+// 120 ms against 50 ms) but under the setup bound must still return the lexical rows with no
+// lexical_partial. Before FU-SB-2 the 50 ms branch ctx covered BeginTx, so both corpora expired
+// and the response was an empty 200 with lexical_partial=[item tag] (the cold-pool flake of CI
+// 41533446051). It fails on that code and on a complete-empty result.
+func TestSuggestSlowAcquireIsOutsideQueryBudget(t *testing.T) {
+	const delay = 120 * time.Millisecond
+	if delay <= suggest.BranchTimeout || delay >= suggest.BranchSetupTimeout {
+		t.Fatalf("test delay must sit between BranchTimeout (%v) and BranchSetupTimeout (%v)", suggest.BranchTimeout, suggest.BranchSetupTimeout)
+	}
+	env := newBranchFailEnv(t)
+	env.db.beginErr = slowBegin(delay)
+	beforeItem, beforeTag := env.partialCounters()
+
+	rec := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}})
+	resp := validateSuggestResponseOpenAPIShape(t, rec)
+	if len(resp.LexicalPartial) != 0 {
+		t.Fatalf("lexical_partial = %v, want none: acquire/BEGIN must not spend the query budget", resp.LexicalPartial)
+	}
+	if len(resp.Items) != 1 || len(resp.Tags) != 1 {
+		t.Fatalf("items=%d tags=%d, want 1 and 1", len(resp.Items), len(resp.Tags))
+	}
+	afterItem, afterTag := env.partialCounters()
+	if afterItem != beforeItem || afterTag != beforeTag {
+		t.Fatalf("a complete response must not bump the partial counter: (%v,%v) -> (%v,%v)", beforeItem, beforeTag, afterItem, afterTag)
+	}
+	if lines := env.partialLines(); len(lines) != 0 {
+		t.Fatalf("a complete response must not log a partial line, got %v", lines)
+	}
+}
+
+// The same holds on /search: a slow acquire must not turn the primary corpus into a 500.
+func TestSearchSlowAcquireIsOutsideQueryBudget(t *testing.T) {
+	env := newBranchFailEnv(t)
+	env.db.beginErr = slowBegin(120 * time.Millisecond)
+	beforeItem, beforeTag := env.partialCounters()
+
+	rec := env.doSearch("tok-u1", url.Values{"q": {"wifi"}, "scope": {"all"}})
+	resp := validateSearchResponseOpenAPIShape(t, rec)
+	if len(resp.Items) != 1 || len(resp.Tags) != 1 {
+		t.Fatalf("items=%d tags=%d, want 1 and 1", len(resp.Items), len(resp.Tags))
+	}
+	afterItem, afterTag := env.partialCounters()
+	if afterItem != beforeItem || afterTag != beforeTag {
+		t.Fatalf("counters moved on a complete /search: (%v,%v) -> (%v,%v)", beforeItem, beforeTag, afterItem, afterTag)
+	}
+	if lines := env.serverErrorLines(); len(lines) != 0 {
+		t.Fatalf("a complete /search must not log WARN/ERROR, got %v", lines)
+	}
+}
+
+// TestSuggestSetupBoundExceededIsPartialNot500: when setup itself outlives its bound (the hook
+// blocks until the setup ctx is done) the response is the SPEC 6.8 partial for that corpus: 200,
+// the sibling corpus intact, the counter bumped once, no WARN/ERROR, and ONE INFO line that
+// names phase=setup. Never a 500.
+func TestSuggestSetupBoundExceededIsPartialNot500(t *testing.T) {
+	env := newBranchFailEnv(t)
+	beforeItem, beforeTag := env.partialCounters()
+	env.logBuf.Reset()
+	env.svc.SetTestHooks(&suggest.TestHooks{
+		SetupTimeout: 50 * time.Millisecond,
+		BeforeBranch: func(ctx context.Context, c string) error {
+			if c != suggest.CorpusItem {
+				return nil
+			}
+			<-ctx.Done() // blocks until the setup bound fires
+			return ctx.Err()
+		},
+	})
+
+	rec := env.doSuggest("tok-u1", url.Values{"q": {failSentinelQuery}, "scope": {"all"}, "limit": {"8"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s, want 200 (a setup expiry is a partial, not a 500)", rec.Code, rec.Body.String())
+	}
+	resp := validateSuggestResponseOpenAPIShape(t, rec)
+	if !slices.Equal(resp.LexicalPartial, []string{"item"}) {
+		t.Fatalf("lexical_partial = %v, want [item]", resp.LexicalPartial)
+	}
+	if len(resp.Items) != 0 || len(resp.Tags) != 1 {
+		t.Fatalf("items=%d tags=%d, want 0 and 1 (the sibling corpus survives)", len(resp.Items), len(resp.Tags))
+	}
+	afterItem, afterTag := env.partialCounters()
+	if afterItem != beforeItem+1 || afterTag != beforeTag {
+		t.Fatalf("counters = (item=%v, tag=%v), want (%v, %v)", afterItem, afterTag, beforeItem+1, beforeTag)
+	}
+	if lines := env.serverErrorLines(); len(lines) != 0 {
+		t.Fatalf("a setup partial must not log WARN/ERROR, got %v", lines)
+	}
+	lines := env.partialLines()
+	if len(lines) != 1 {
+		t.Fatalf("partial lines = %d, want exactly 1: %v", len(lines), lines)
+	}
+	assertPartialLine(t, lines[0], suggest.CorpusItem, "full", "setup")
+	if logs := env.logBuf.String(); strings.Contains(logs, failSentinelQuery) {
+		t.Fatalf("log leaked the query: %s", logs)
+	}
+}
+
+// TestSuggestSetLocalPhaseIsNamed: the SET LOCALs are setup work (inside the setup bound, not the
+// 50 ms budget) but a stall there is named phase=set_local so the next CI/prod line says where the
+// time went. The Exec stub blocks until the setup ctx is done.
+func TestSuggestSetLocalPhaseIsNamed(t *testing.T) {
+	env := newBranchFailEnv(t)
+	env.db.execErr = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	env.svc.SetTestHooks(&suggest.TestHooks{SetupTimeout: 50 * time.Millisecond})
+	env.logBuf.Reset()
+
+	rec := env.doSuggest("tok-u1", url.Values{"q": {"wifi"}, "scope": {"tag"}, "limit": {"8"}})
+	resp := validateSuggestResponseOpenAPIShape(t, rec)
+	if !slices.Equal(resp.LexicalPartial, []string{"tag"}) || len(resp.Tags) != 0 {
+		t.Fatalf("lexical_partial = %v tags=%d, want [tag] and 0", resp.LexicalPartial, len(resp.Tags))
+	}
+	lines := env.partialLines()
+	if len(lines) != 1 {
+		t.Fatalf("partial lines = %d, want 1: %v", len(lines), lines)
+	}
+	assertPartialLine(t, lines[0], suggest.CorpusTag, "full", "set_local")
+}
+
+// TestSuggestClientCancelDuringSetupIsNotPartial: the request ends while a branch is still in its
+// setup stage; the parent wins (FU-SB-1 semantics): a cancel error, no partial counter, no partial
+// line, no server-error line.
+func TestSuggestClientCancelDuringSetupIsNotPartial(t *testing.T) {
+	env := newBranchFailEnv(t)
+	beforeItem, beforeTag := env.partialCounters()
+	env.logBuf.Reset()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	env.svc.SetTestHooks(&suggest.TestHooks{
+		SetupTimeout: 10 * time.Second, // never the reason the stage ends
+		BeforeBranch: func(bctx context.Context, c string) error {
+			if c != suggest.CorpusItem {
+				return nil
+			}
+			cancel() // the client goes away during setup
+			<-bctx.Done()
+			return bctx.Err()
+		},
+	})
+	_, err := env.svc.Suggest(ctx, suggest.SuggestInput{
+		UserID: fakeUserID, RawQ: "wifi", Scope: suggest.ScopeAll, Limit: 8, Semantic: true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Suggest err = %v, want a context.Canceled error", err)
+	}
+	afterItem, afterTag := env.partialCounters()
+	if afterItem != beforeItem || afterTag != beforeTag {
+		t.Fatalf("a canceled request must not bump the partial counter: (%v,%v) -> (%v,%v)", beforeItem, beforeTag, afterItem, afterTag)
+	}
+	if lines := env.partialLines(); len(lines) != 0 {
+		t.Fatalf("a canceled request must not log a partial line, got %v", lines)
+	}
+	if lines := env.serverErrorLines(); len(lines) != 0 {
+		t.Fatalf("a canceled request must not log WARN/ERROR, got %v", lines)
 	}
 }

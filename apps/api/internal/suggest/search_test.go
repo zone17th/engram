@@ -1592,7 +1592,7 @@ func TestSearchAndSuggestShareRateLimitBucket(t *testing.T) {
 	}
 
 	// Token 1 consumed by `/suggest`.
-	rec1 := env.doSuggest(tok, url.Values{"q": {"wifi"}})
+	rec1 := env.doSuggestSettled(tok, url.Values{"q": {"wifi"}})
 	if rec1.Code != http.StatusOK {
 		t.Fatalf("req 1 (/suggest) status = %d, want 200", rec1.Code)
 	}
