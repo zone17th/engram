@@ -28,6 +28,7 @@ import type { EntryEnvelopeV1, EntryMeta, ItemSummary, Tag } from '@/lib/api/con
 import * as searchApi from '@/lib/api/search';
 import type { SuggestResponse } from '@/lib/api/search';
 import { buildSuggestQueryKey } from '@/features/omnibox/suggest/query-keys';
+import { getSessionEpoch } from '@/lib/api/auth-fetch';
 import { postSessionBroadcast } from '@/lib/auth/broadcast';
 import {
   commitAuthenticatedUser,
@@ -277,6 +278,29 @@ function delayMs(ms: number): Promise<void> {
   return promise;
 }
 
+// RV-T17-1-FE2-1: a long synchronous run of native edits never yields to React's scheduler, so pending passive-effect
+// work keeps `nestedUpdateCount` climbing until React throws "Maximum update depth exceeded" (limit 50). Real typing
+// yields between keystrokes; tests that dispatch many edits must do the same (real timers, ~0 ms, far below the
+// 120 ms suggest debounce).
+async function yieldToReact(): Promise<void> {
+  await act(async () => {
+    await delayMs(0);
+  });
+}
+
+// Types `text` rune by rune like `typeNativeString`, yielding to React every `chunkSize` runes and once at the end.
+async function typeNativeStringYielding(
+  textarea: HTMLElement,
+  text: string,
+  chunkSize = 20,
+): Promise<void> {
+  const runes = Array.from(text);
+  for (let i = 0; i < runes.length; i += chunkSize) {
+    typeNativeString(textarea, runes.slice(i, i + chunkSize).join(''));
+    await yieldToReact();
+  }
+}
+
 describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and lock reset', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -318,7 +342,7 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       defaultOptions: { queries: { retry: false } },
     });
     // semantic_external: false -> search.help.sentToServer
-    queryClient.setQueryData(['auth', 'me', 0], {
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], {
       user: { id: USER_A_ID },
       settings: { semantic_suggest: false },
       features: { semantic_available: false, semantic_external: false },
@@ -433,11 +457,14 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
 
     // Tainted input (insertFromPaste, insertFromDrop, historyUndo after setDraft, type-then-paste),
     // colon-locked (ASCII `:`, U+FF1A `：`, `http://x`), add mode, multi-line (`insertLineBreak`), and > 200 runes -> 0 requests (RV-T17-1-FE1-4)
-    const clearToEmpty = () => {
+    // RV-T17-1-FE2-1: yield to React after every case (`clearToEmpty` yields) and every <= 20 runes of the long draft,
+    // so the burst of native edits never trips React's nested-update limit. Every blocked draft is kept.
+    const clearToEmpty = async () => {
       dispatchNativeTextEdit(textarea, {
         inputType: 'deleteWordBackward',
         nextValue: '',
       });
+      await yieldToReact();
     };
 
     dispatchNativeTextEdit(textarea, {
@@ -445,33 +472,33 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       data: 'pasted-tainted',
       nextValue: 'pasted-tainted',
     });
-    clearToEmpty();
+    await clearToEmpty();
     dispatchNativeTextEdit(textarea, {
       inputType: 'insertFromDrop',
       data: 'dropped-secret',
       nextValue: 'dropped-secret',
     });
-    clearToEmpty();
+    await clearToEmpty();
     typeNativeString(textarea, 'ab');
     fireEvent.keyDown(textarea, { key: 'Escape' }); // clears via setDraft('')
     dispatchNativeTextEdit(textarea, {
       inputType: 'historyUndo',
       nextValue: 'ab',
     });
-    clearToEmpty();
+    await clearToEmpty();
     typeNativeString(textarea, 'wi');
     dispatchNativeTextEdit(textarea, {
       inputType: 'insertFromPaste',
       data: 'fi-secret',
       nextValue: 'wifi-secret',
     });
-    clearToEmpty();
-    typeNativeString(textarea, 'http://x');
-    clearToEmpty();
-    typeNativeString(textarea, 'wifi： mật khẩu');
-    clearToEmpty();
-    typeNativeString(textarea, 'wifi: secret');
-    clearToEmpty();
+    await clearToEmpty();
+    await typeNativeStringYielding(textarea, 'http://x');
+    await clearToEmpty();
+    await typeNativeStringYielding(textarea, 'wifi： mật khẩu');
+    await clearToEmpty();
+    await typeNativeStringYielding(textarea, 'wifi: secret');
+    await clearToEmpty();
     typeNativeString(textarea, 'line1');
     dispatchNativeTextEdit(textarea, {
       inputType: 'insertLineBreak',
@@ -479,14 +506,14 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       nextValue: 'line1\n',
     });
     typeNativeString(textarea, 'line2');
-    clearToEmpty();
-    typeNativeString(textarea, 'a'.repeat(201));
+    await clearToEmpty();
+    await typeNativeStringYielding(textarea, 'a'.repeat(201));
     await delayMs(160);
     expect(suggestSpy).not.toHaveBeenCalled();
     expect(itemsSpy).not.toHaveBeenCalled();
 
     // Clear to reset taint/colon lock, then clean typing -> sends /suggest after 120ms debounce
-    clearToEmpty();
+    await clearToEmpty();
     suggestSpy.mockClear();
     typeNativeString(textarea, 'wifi');
     await waitFor(() => {
@@ -2587,7 +2614,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       defaultOptions: { queries: { retry: false } },
     });
     // Seed the real epoch-keyed `['auth', 'me', sessionEpoch]` entry used by `SessionProvider`
-    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], { user: { id: USER_A_ID } });
     setKnownDeviceSessionUserId(USER_A_ID);
     commitAuthenticatedUser(USER_A_ID);
     recordLockClearedNotice({ userId: USER_A_ID, kind: 'plan' });
@@ -2657,7 +2684,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], { user: { id: USER_A_ID } });
     setKnownDeviceSessionUserId(USER_A_ID);
     commitAuthenticatedUser(USER_A_ID);
 
@@ -2783,7 +2810,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    queryClient.setQueryData(['auth', 'me', 0], { user: { id: USER_A_ID } });
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], { user: { id: USER_A_ID } });
     setKnownDeviceSessionUserId(USER_A_ID);
     commitAuthenticatedUser(USER_A_ID);
 
@@ -2844,7 +2871,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
         defaultOptions: { queries: { retry: false } },
       });
       // Enable both semantic_available and semantic_suggest so >= 3 runes fires semantic=0 and semantic=1 on the same tick
-      queryClient.setQueryData(['auth', 'me', 0], {
+      queryClient.setQueryData(['auth', 'me', getSessionEpoch()], {
         user: { id: USER_A_ID },
         settings: { semantic_suggest: true },
         features: { semantic_available: true, semantic_external: false },
@@ -2869,6 +2896,10 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       });
       suggestSpy.mockClear();
       typeNativeString(textarea, 'wi');
+      // RV-T17-1-FE2-3: fail clearly if the seeded `Me` is not the one the hook reads (semantic_external: false ->
+      // `search.help.sentToServer`; a missed read would default to `sentToServerExternal` and drop the semantic=1 leg).
+      expect(screen.getByTestId('omnibox-hint')).toHaveTextContent('gửi tới máy chủ, không mã hoá');
+      expect(screen.getByTestId('omnibox-hint')).not.toHaveTextContent('dịch vụ nhúng bên ngoài');
       await waitFor(() => {
         expect(suggestSpy).toHaveBeenCalledTimes(1);
       });
@@ -3325,7 +3356,11 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       expect(suggestSpy).not.toHaveBeenCalled();
     });
 
-    it('typed char after quick-add save keeps its value, native undo reverts it to empty, the toast stays, and 0 DELETE requests are sent (HM18B-R1-7)', async () => {
+    // RV-T17-1-FE2-5: jsdom never reproduces the real-browser native-listener -> microtask -> stale-value ordering
+    // (CI-41431143632-E2E-QA402), so this test is NOT a regression guard for that ordering. It asserts only the
+    // post-save typed value, the native-undo revert, the surviving toast and 0 DELETEs. The ordering guards are the
+    // stopPropagation test above and e2e `content-omnibox-quick-add.spec.ts:402`.
+    it('after quick-add save, a typed char keeps its value and sends /suggest, native undo reverts it to empty, the toast stays, and 0 DELETE requests are sent (HM18B-R1-7)', async () => {
       vi.spyOn(contentApi, 'itemsLookupExact').mockResolvedValue({
         items: [ITEM_WIFI],
         total: 1,
@@ -3364,7 +3399,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       expect(entryDeleteSpy).not.toHaveBeenCalled();
     });
 
-    it('locked-mode fill-style edit (one insertText with a whole name) then Enter opens the search listbox via GET /items (P03-T21 U5, FU10)', async () => {
+    it('fill-style edit (one insertText with a whole name) then Enter opens the search listbox via GET /items and sends no keystroke /suggest (P03-T21 U5, FU10; vault unlocked in this unit — locked-mode coverage is e2e vault-locked-search.spec.ts)', async () => {
       const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
         items: [ITEM_WIFI],
         next_cursor: null,

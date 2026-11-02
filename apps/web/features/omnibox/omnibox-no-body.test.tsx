@@ -891,9 +891,16 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
         renderStandaloneOmnibox();
       const secretBody = 'secretbody-tag-colon-9001';
       const signals: AbortSignal[] = [];
-      suggestSpy.mockImplementation((_params, opts) => {
+      // RV-T17-1-FE2-2: hold the `home` request pending so the abort on `:` is real (a settled request has already
+      // removed its controller, so aborting an empty set would leave `signals[0].aborted === false`).
+      const { promise: heldHomeSuggest, resolve: resolveHeldHomeSuggest } =
+        Promise.withResolvers<SuggestResponse>();
+      suggestSpy.mockImplementation((params, opts) => {
         if (opts?.signal) {
           signals.push(opts.signal);
+        }
+        if (params?.q === 'home') {
+          return heldHomeSuggest;
         }
         return Promise.resolve(makeEmptySuggestResponse());
       });
@@ -912,6 +919,7 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
       typeNativeString(textarea, `:${secretBody}`);
       expect(signals[0]?.aborted).toBe(true);
       await delayMs(160);
+      resolveHeldHomeSuggest(makeEmptySuggestResponse());
 
       expect(suggestSpy).toHaveBeenCalledTimes(1);
       const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
@@ -928,9 +936,16 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
         renderStandaloneOmnibox();
       const secretSuffix = 'secret-after-colon-9002';
       const signals: AbortSignal[] = [];
-      suggestSpy.mockImplementation((_params, opts) => {
+      // RV-T17-1-FE2-2: hold the `home` request pending so the abort on `:` is real (a settled request has already
+      // removed its controller, so aborting an empty set would leave `signals[0].aborted === false`).
+      const { promise: heldHomeSuggest, resolve: resolveHeldHomeSuggest } =
+        Promise.withResolvers<SuggestResponse>();
+      suggestSpy.mockImplementation((params, opts) => {
         if (opts?.signal) {
           signals.push(opts.signal);
+        }
+        if (params?.q === 'home') {
+          return heldHomeSuggest;
         }
         return Promise.resolve(makeEmptySuggestResponse());
       });
@@ -950,6 +965,7 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
       typeNativeString(textarea, `:${secretSuffix}`);
       expect(signals[0]?.aborted).toBe(true);
       await delayMs(160);
+      resolveHeldHomeSuggest(makeEmptySuggestResponse());
 
       expect(suggestSpy).toHaveBeenCalledTimes(1);
       const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
