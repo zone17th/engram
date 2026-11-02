@@ -698,6 +698,111 @@ func TestReembedApplyHonoursEnqueueGate(t *testing.T) {
 	}
 }
 
+// jobFingerprint renders every river_job row's identity, state, finalized_at,
+// scheduled_at, attempt, max_attempts and args so a refused retry can be proven
+// to have changed none of them.
+func (f *cliFixture) jobFingerprint(t *testing.T) string {
+	t.Helper()
+	rows, err := f.pool.Query(context.Background(),
+		`SELECT id, state::text, COALESCE(finalized_at::text, 'NULL'), scheduled_at::text, attempt, max_attempts, args::text
+		 FROM river_job ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query river_job: %v", err)
+	}
+	defer rows.Close()
+	var sb strings.Builder
+	for rows.Next() {
+		var id int64
+		var state, finalized, scheduled, args string
+		var attempt, maxAttempts int
+		if err := rows.Scan(&id, &state, &finalized, &scheduled, &attempt, &maxAttempts, &args); err != nil {
+			t.Fatalf("scan river_job: %v", err)
+		}
+		fmt.Fprintf(&sb, "%d|%s|%s|%s|%d|%d|%s\n", id, state, finalized, scheduled, attempt, maxAttempts, args)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("river_job rows: %v", err)
+	}
+	return sb.String()
+}
+
+// TestReembedDeadletterRetryHonoursEnqueueGate (EJT15-5): `deadletter retry`
+// makes a discarded job runnable again, so with semantic search disabled or a
+// noop/unset provider it refuses with a fixed error before the database or River
+// is touched, leaving the exhausted discarded job byte-for-byte unchanged;
+// `deadletter list` stays usable. An enabled retry is the control.
+func TestReembedDeadletterRetryHonoursEnqueueGate(t *testing.T) {
+	f := newCLIFixture(t)
+	ctx := context.Background()
+
+	// Real queued jobs from an enabled run, then one exhausted job is discarded.
+	if code, _, errb := f.run(t, "all"); code != 0 {
+		t.Fatalf("seed reembed all exit = %d, stderr=%q", code, errb)
+	}
+	var deadID int64
+	var deadGen int
+	if err := f.pool.QueryRow(ctx,
+		`UPDATE river_job SET state = 'discarded', finalized_at = now(), attempt = max_attempts
+		 WHERE id = (SELECT min(id) FROM river_job WHERE kind = $1)
+		 RETURNING id, (args->>'generation_id')::int`, jobargs.KindEmbedItem).Scan(&deadID, &deadGen); err != nil {
+		t.Fatalf("discard a job: %v", err)
+	}
+	before := f.jobFingerprint(t)
+	if !strings.Contains(before, fmt.Sprintf("%d|discarded|", deadID)) {
+		t.Fatalf("fixture job %d is not discarded:\n%s", deadID, before)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		enabled  bool
+		provider string
+	}{
+		{"semantic_disabled", false, embedding.ProviderTEI},
+		{"noop_provider", true, embedding.ProviderNoop},
+		{"unset_provider", true, ""},
+		{"disabled_and_noop", false, embedding.ProviderNoop},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, args := range [][]string{
+				{"deadletter", "retry"},
+				{"deadletter", "retry", "--generation", strconv.Itoa(deadGen)},
+			} {
+				code, out, errb := f.runCfg(t, tc.enabled, tc.provider, args...)
+				if code != 1 || out != "" {
+					t.Fatalf("reembed %v: exit=%d stdout=%q, want a refusal (exit 1, empty stdout)", args, code, out)
+				}
+				if want := "reembed: " + errReembedRetryDisabled.Error() + "\n"; errb != want {
+					t.Fatalf("reembed %v: stderr=%q, want exactly %q", args, errb, want)
+				}
+			}
+			if after := f.jobFingerprint(t); after != before {
+				t.Fatalf("refused retry changed river_job (state/finalized_at/scheduled_at/attempt/max_attempts/args):\n before %s\n after  %s", before, after)
+			}
+			code, out, errb := f.runCfg(t, tc.enabled, tc.provider, "deadletter", "list")
+			if code != 0 || !strings.Contains(out, "dead_letter_count=1 listed=1") || !strings.Contains(out, fmt.Sprintf("job_id=%d", deadID)) {
+				t.Fatalf("deadletter list exit=%d out=%q err=%q, want the dead letter listed", code, out, errb)
+			}
+			if after := f.jobFingerprint(t); after != before {
+				t.Fatalf("deadletter list changed river_job:\n before %s\n after  %s", before, after)
+			}
+		})
+	}
+
+	// Control: the gate opened retries the same job for real.
+	code, out, errb := f.runCfg(t, true, embedding.ProviderTEI, "deadletter", "retry", "--generation", strconv.Itoa(deadGen))
+	if code != 0 || !strings.Contains(out, "dead_letter_found=1 retried=1 failed=0") {
+		t.Fatalf("enabled retry exit=%d out=%q err=%q, want the dead letter retried", code, out, errb)
+	}
+	var state string
+	var finalizedNull bool
+	if err := f.pool.QueryRow(ctx, `SELECT state::text, finalized_at IS NULL FROM river_job WHERE id = $1`, deadID).Scan(&state, &finalizedNull); err != nil {
+		t.Fatalf("read retried job: %v", err)
+	}
+	if state != "available" || !finalizedNull {
+		t.Fatalf("retried job state=%q finalized_at null=%v, want available / true", state, finalizedNull)
+	}
+}
+
 func TestReembedSubcommandRegistryHook(t *testing.T) {
 	if _, ok := defaultRegistry.m["reembed"]; !ok {
 		t.Fatal(`"reembed" is not registered in the default registry`)

@@ -93,7 +93,7 @@ func writeReembedUsage(w io.Writer) {
 		_, _ = fmt.Fprintf(w, "  %s\n", n)
 	}
 	_, _ = fmt.Fprintln(w, "  all [--generation N] [--dry-run] | user --user <uuid> [--dry-run] | status | deadletter list|retry [--generation N]")
-	_, _ = fmt.Fprintln(w, "  applying all/user needs semantic search enabled and a non-noop provider; --dry-run, status and deadletter list always work")
+	_, _ = fmt.Fprintln(w, "  applying all/user and deadletter retry need semantic search enabled and a non-noop provider; --dry-run, status and deadletter list always work")
 }
 
 // safeErr turns a database/library error into a privacy-safe one: the registry
@@ -117,6 +117,13 @@ var errReembedFlags = errors.New("invalid flags (run 'worker reembed help' for u
 // errReembedEnqueueDisabled is returned when an applying run is requested while
 // the deployment does not enqueue embeddings (SPEC 6.6/6.10).
 var errReembedEnqueueDisabled = errors.New("embedding enqueue is disabled in this deployment (semantic search off or noop provider); nothing was written, use --dry-run to inspect")
+
+// errReembedRetryDisabled is the same refusal for `deadletter retry`: River's
+// JobRetry makes a discarded job available again (clears finalized_at, resets
+// scheduled_at, may raise max_attempts), which is runnable embedding work that a
+// disabled/noop deployment must not restore, and this CLI cannot know that no
+// other worker consumes the shared database.
+var errReembedRetryDisabled = errors.New("embedding enqueue is disabled in this deployment (semantic search off or noop provider); no dead-letter job was retried, use 'deadletter list' to inspect")
 
 // parseReembedFlags parses args into fs without letting the flag package write
 // anything: its output is discarded and its error is replaced by a fixed
@@ -402,6 +409,13 @@ func reembedDeadletterRun(ctx context.Context, env Env, args []string) error {
 	}
 	if *genID < 0 {
 		return errors.New("--generation must be a positive id")
+	}
+
+	// retry re-queues work, so it honours the same deployment gate as an applying
+	// all/user run, before the database is opened or River is called. list stays
+	// read-only and always usable.
+	if action == "retry" && !enqueueAllowed(env.Cfg) {
+		return errReembedRetryDisabled
 	}
 
 	pool, err := reembedPool(ctx, env)
