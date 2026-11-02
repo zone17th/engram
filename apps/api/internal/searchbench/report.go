@@ -241,12 +241,18 @@ type CellAgg struct {
 	Eligible   int            `json:"eligible_ann_queries"`
 	ExcludedE0 int            `json:"excluded_e0_ann_queries"` // |E|=0, excluded from C2-R/C2-Q
 
-	RecallMean     float64 `json:"recall_mean"`          // C2-R input (|E|>0 ANN queries)
-	QFraction      float64 `json:"recall_ge_080_frac"`   // C2-Q input
-	UnderfillAfter float64 `json:"underfill_after_frac"` // C2-U input (after threshold and after fallback)
-	OverlapMean    float64 `json:"overlap_jaccard_mean"` // |A∩E| / |A∪E| after threshold
-	MeanE          float64 `json:"mean_e_size"`
-	ESmallerThanK  int     `json:"e_smaller_than_20"`
+	RecallMean  float64 `json:"recall_mean"`          // C2-R input (|E|>0 ANN queries)
+	QFraction   float64 `json:"recall_ge_080_frac"`   // C2-Q input
+	OverlapMean float64 `json:"overlap_jaccard_mean"` // |A∩E| / |A∪E| after threshold
+	MeanE       float64 `json:"mean_e_size"`
+
+	// C2-U input (targets.md §2): queries with Rows < |E| after threshold and
+	// after fallback, over EVERY measured query of the cell (all paths; |E| = 0
+	// queries count as non-underfilled). Independent of the C2-R/C2-Q exclusions.
+	UnderfillAfter      float64 `json:"underfill_after_frac"`
+	UnderfillAfterCount int     `json:"underfill_after_queries"`
+
+	ESmallerThanK int `json:"e_smaller_than_20"`
 
 	FalsePositives     int     `json:"false_positives_e0"` // |E|=0 but rows returned (all paths)
 	UnderfillBeforeANN float64 `json:"ann_candidate_underfill_before_threshold_frac"`
@@ -279,6 +285,12 @@ func AggregateCell(corpus, class, knob string, outs []QueryOutcome) CellAgg {
 		c.CrossTenantRows += o.CrossTenant
 		if o.TimedOut {
 			c.TimedOut++
+		}
+		// C2-U (frozen: Rows < |E| after threshold and fallback) is judged on every
+		// measured query on every path, so an exact-branch timeout that returns no
+		// rows counts; |E| = 0 can never be underfilled.
+		if o.Rows < o.ESize {
+			underAfter++
 		}
 		if o.ESize == 0 && o.Rows > 0 {
 			c.FalsePositives++
@@ -315,9 +327,6 @@ func AggregateCell(corpus, class, knob string, outs []QueryOutcome) CellAgg {
 		if r >= TargetC2QRecall-recallEps {
 			ge80++
 		}
-		if o.Rows < o.ESize {
-			underAfter++
-		}
 		union := o.Rows + o.ESize - o.Hits
 		if union > 0 {
 			overlapSum += float64(o.Hits) / float64(union)
@@ -327,9 +336,12 @@ func AggregateCell(corpus, class, knob string, outs []QueryOutcome) CellAgg {
 		n := float64(c.Eligible)
 		c.RecallMean = recallSum / n
 		c.QFraction = float64(ge80) / n
-		c.UnderfillAfter = float64(underAfter) / n
 		c.OverlapMean = overlapSum / n
 		c.MeanE = eSum / n
+	}
+	if c.Queries > 0 {
+		c.UnderfillAfterCount = underAfter
+		c.UnderfillAfter = float64(underAfter) / float64(c.Queries)
 	}
 	if c.ExactQueries > 0 {
 		c.ExactRecallMean = exactSum / float64(c.ExactQueries)
@@ -342,7 +354,8 @@ func AggregateCell(corpus, class, knob string, outs []QueryOutcome) CellAgg {
 	return c
 }
 
-// applicableCells keeps the cells of one knob set that entered ANN with |E|>0.
+// applicableCells keeps the cells of one knob set that entered ANN with |E|>0:
+// the inputs of C2-R / C2-Q (targets.md §2 excludes |E| = 0 queries from those two).
 func applicableCells(cells []CellAgg, knob string) []CellAgg {
 	var out []CellAgg
 	for _, c := range cells {
@@ -353,14 +366,26 @@ func applicableCells(cells []CellAgg, knob string) []CellAgg {
 	return out
 }
 
+// measuredCells keeps every non-empty cell of one knob set, whatever the path
+// mix or |E|: the inputs of C2-U and C2-B, which targets.md §2 does not restrict
+// to ANN-path or |E| > 0 queries.
+func measuredCells(cells []CellAgg, knob string) []CellAgg {
+	var out []CellAgg
+	for _, c := range cells {
+		if c.Knob == knob && c.Queries > 0 {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 func cellLabel(c CellAgg) string { return c.Corpus + "/" + c.Class }
 
-func perCellVerdict(id, metric, target string, cells []CellAgg, knob string,
+func perCellVerdict(id, metric, target string, app []CellAgg, empty string,
 	value func(CellAgg) (float64, string), ok func(float64) bool) Verdict {
 	v := Verdict{ID: id, Metric: metric, Target: target}
-	app := applicableCells(cells, knob)
 	if len(app) == 0 {
-		v.Measured = "no (corpus x class) went ANN with |E|>0"
+		v.Measured = empty
 		v.Note = "not applicable for this knob set"
 		return v
 	}
@@ -381,34 +406,42 @@ func perCellVerdict(id, metric, target string, cells []CellAgg, knob string,
 	return v
 }
 
+const emptyANNCells = "no (corpus x class) went ANN with |E|>0"
+
 // EvaluateC2R: mean recall@20 of every applicable (corpus x class) >= 0.95.
 func EvaluateC2R(cells []CellAgg, knob string) Verdict {
-	return perCellVerdict("C2-R", "recall@20 mean per (corpus x class going ANN)", ">= 0.95", cells, knob,
+	return perCellVerdict("C2-R", "recall@20 mean per (corpus x class going ANN)", ">= 0.95", applicableCells(cells, knob), emptyANNCells,
 		func(c CellAgg) (float64, string) { return c.RecallMean, fmt.Sprintf("%.4f", c.RecallMean) },
 		func(x float64) bool { return x >= TargetC2RMean-recallEps })
 }
 
 // EvaluateC2Q: >= 95 % of |E|>0 queries have recall@20 >= 0.80, per cell.
 func EvaluateC2Q(cells []CellAgg, knob string) Verdict {
-	return perCellVerdict("C2-Q", "per-query recall@20 >= 0.80", ">= 95 % of queries", cells, knob,
+	return perCellVerdict("C2-Q", "per-query recall@20 >= 0.80", ">= 95 % of queries", applicableCells(cells, knob), emptyANNCells,
 		func(c CellAgg) (float64, string) { return c.QFraction, fmt.Sprintf("%.2f%%", 100*c.QFraction) },
 		func(x float64) bool { return x >= TargetC2QFraction-recallEps })
 }
 
-// EvaluateC2U: underfill after threshold and fallback <= 1 % of queries, per cell.
+// EvaluateC2U: underfill after threshold and fallback <= 1 % of queries, per
+// cell. Underfill is `Rows < |E|` over every measured query of the cell on every
+// path (exact timeouts included; |E| = 0 queries count as non-underfilled), so
+// it does not inherit the recall exclusions.
 func EvaluateC2U(cells []CellAgg, knob string) Verdict {
-	return perCellVerdict("C2-U", "underfill after fallback", "<= 1 % of queries", cells, knob,
+	return perCellVerdict("C2-U", "underfill after fallback", "<= 1 % of queries", measuredCells(cells, knob), "no measured queries",
 		func(c CellAgg) (float64, string) {
-			return c.UnderfillAfter, fmt.Sprintf("%.2f%%", 100*c.UnderfillAfter)
+			return c.UnderfillAfter, fmt.Sprintf("%.2f%% (%d/%d)", 100*c.UnderfillAfter, c.UnderfillAfterCount, c.Queries)
 		},
 		func(x float64) bool { return x <= TargetC2UMax+recallEps })
 }
 
-// EvaluateC2B: single-corpus vector branch p95 <= 80 ms (ANN queries), per cell.
+// EvaluateC2B: single-corpus vector branch p95 <= 80 ms, per cell, from the
+// branch latency of EVERY request of the cell (exact and ANN paths, |E| = 0
+// included). The ANN-only p95 is reported next to it for information.
 func EvaluateC2B(cells []CellAgg, knob string) Verdict {
-	return perCellVerdict("C2-B", "vector branch latency (single corpus)", "p95 <= 80 ms (p99 reported)", cells, knob,
+	return perCellVerdict("C2-B", "vector branch latency (single corpus)", "p95 <= 80 ms (p99 reported)", measuredCells(cells, knob), "no measured queries",
 		func(c CellAgg) (float64, string) {
-			return c.ANNBranchLatency.P95Ms, fmt.Sprintf("p95 %.2f / p99 %.2f ms", c.ANNBranchLatency.P95Ms, c.ANNBranchLatency.P99Ms)
+			return c.BranchLatency.P95Ms, fmt.Sprintf("p95 %.2f / p99 %.2f ms (n=%d; ANN-only p95 %.2f, n=%d)",
+				c.BranchLatency.P95Ms, c.BranchLatency.P99Ms, c.BranchLatency.N, c.ANNBranchLatency.P95Ms, c.ANNBranchLatency.N)
 		},
 		func(x float64) bool { return x <= ms(TargetC2BP95) })
 }
@@ -1037,9 +1070,9 @@ func RenderMarkdown(r *Report) string {
 		c := r.C2
 		w("## C2 - recall / underfill / vector branch\n\n")
 		w("Default knob set: `%s`. %s\n\n", c.DefaultKnob, c.MatrixNote)
-		w("| Corpus | Class | Knob | Queries | ANN q. | %s | %s | recall@20 mean | recall>=0.8 | underfill after | underfill before (ANN cand.) | overlap | false+ | scan-cap suspect | fallback | timeout | cross-tenant | branch p95/p99 ms (ANN) | paths |\n",
+		w("| Corpus | Class | Knob | Queries | ANN q. | %s | %s | recall@20 mean | recall>=0.8 | underfill after | underfill before (ANN cand.) | overlap | false+ | scan-cap suspect | fallback | timeout | cross-tenant | branch p95/p99 ms (all paths, C2-B) | branch p95/p99 ms (ANN only) | paths |\n",
 			mdCell("|E|>0"), mdCell("|E|=0"))
-		w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, x := range c.Cells {
 			var paths []string
 			for _, p := range []string{"exact", "ann", "ann_fallback_exact", "ann_short"} {
@@ -1047,10 +1080,11 @@ func RenderMarkdown(r *Report) string {
 					paths = append(paths, fmt.Sprintf("%s %d (%.0f%%)", p, n, 100*float64(n)/float64(x.Queries)))
 				}
 			}
-			w("| %s | %s | %s | %d | %d | %d | %d | %.4f | %.1f%% | %.2f%% | %.1f%% | %.3f | %d | %d | %d | %d | %d | %.1f / %.1f | %s |\n",
+			w("| %s | %s | %s | %d | %d | %d | %d | %.4f | %.1f%% | %.2f%% | %.1f%% | %.3f | %d | %d | %d | %d | %d | %.1f / %.1f | %.1f / %.1f | %s |\n",
 				x.Corpus, x.Class, x.Knob, x.Queries, x.ANNQueries, x.Eligible, x.ExcludedE0, x.RecallMean, 100*x.QFraction,
 				100*x.UnderfillAfter, 100*x.UnderfillBeforeANN, x.OverlapMean, x.FalsePositives, x.ScanCapSuspect,
-				x.FallbackUsed, x.TimedOut, x.CrossTenantRows, x.ANNBranchLatency.P95Ms, x.ANNBranchLatency.P99Ms, strings.Join(paths, ", "))
+				x.FallbackUsed, x.TimedOut, x.CrossTenantRows, x.BranchLatency.P95Ms, x.BranchLatency.P99Ms,
+				x.ANNBranchLatency.P95Ms, x.ANNBranchLatency.P99Ms, strings.Join(paths, ", "))
 		}
 		w("\n_scan-cap suspect_ = ANN candidate underfill although the tenant has >= 20 vectors (proxy for ef_search / max_scan_tuples stopping the scan; `PathStats` has no direct scan-cap signal). _overlap_ = |ANN ∩ E| / |ANN ∪ E| after threshold.\n\n")
 		if len(c.CountCost) > 0 {

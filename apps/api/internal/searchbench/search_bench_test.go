@@ -231,6 +231,155 @@ func TestRecallDefinitionEdgeCases(t *testing.T) {
 	})
 }
 
+func withLatency(o QueryOutcome, d time.Duration) QueryOutcome {
+	o.Latency = d
+	return o
+}
+
+// TestC2UnderfillIsOverEveryMeasuredQuery pins SBW3-1-2: C2-U is Rows < |E| over
+// every measured query of the cell on every path (targets.md section 2), not over
+// the |E| > 0 ANN subset that C2-R/C2-Q use.
+func TestC2UnderfillIsOverEveryMeasuredQuery(t *testing.T) {
+	e := ids(20)
+	t.Run("zero_E_queries_are_non_underfilled_denominator", func(t *testing.T) {
+		// 100 ANN queries: 10 with |E| = 0, 89 complete, 1 underfilled.
+		// Frozen rate 1/100 = 1 % (pass); dividing by the 90 |E| > 0 queries would
+		// give 1.11 % (fail).
+		var outs []QueryOutcome
+		for range 10 {
+			outs = append(outs, annOutcome(nil, nil, "ann", false, false, 9000))
+		}
+		for range 89 {
+			outs = append(outs, annOutcome(e, e, "ann", false, false, 9000))
+		}
+		outs = append(outs, annOutcome(e, e[:19], "ann_short", true, false, 40000))
+		c := AggregateCell("item", "whale", "k", outs)
+		if c.Queries != 100 || c.Eligible != 90 {
+			t.Fatalf("queries %d eligible %d, want 100 and 90", c.Queries, c.Eligible)
+		}
+		if c.UnderfillAfterCount != 1 || c.UnderfillAfter < 0.01-1e-12 || c.UnderfillAfter > 0.01+1e-12 {
+			t.Fatalf("underfill after = %d queries, %v, want 1 query, 1%%", c.UnderfillAfterCount, c.UnderfillAfter)
+		}
+		if v := EvaluateC2U([]CellAgg{c}, "k"); !v.Applicable || !v.Pass {
+			t.Fatalf("C2-U at exactly 1/100 must pass: %+v", v)
+		}
+		// One more underfilled query: 2 % fails.
+		outs[10] = annOutcome(e, e[:3], "ann_short", true, false, 40000)
+		if v := EvaluateC2U([]CellAgg{AggregateCell("item", "whale", "k", outs)}, "k"); v.Pass {
+			t.Fatalf("C2-U at 2 %% must fail: %+v", v)
+		}
+	})
+
+	t.Run("exact_path_timeout_with_no_rows_is_underfill", func(t *testing.T) {
+		// No ANN query at all: C2-R is n/a, but C2-U still judges the exact path.
+		var outs []QueryOutcome
+		for range 98 {
+			outs = append(outs, annOutcome(e, e, "exact", false, false, 300))
+		}
+		for range 2 {
+			o := annOutcome(e, nil, "exact", false, false, 300)
+			o.TimedOut = true
+			outs = append(outs, o)
+		}
+		c := AggregateCell("tag", "small", "k", outs)
+		if c.ANNQueries != 0 || c.TimedOut != 2 || c.UnderfillAfterCount != 2 {
+			t.Fatalf("ann %d timed out %d underfill %d, want 0, 2, 2", c.ANNQueries, c.TimedOut, c.UnderfillAfterCount)
+		}
+		if v := EvaluateC2R([]CellAgg{c}, "k"); v.Applicable {
+			t.Fatalf("C2-R must stay n/a for an exact-only cell: %+v", v)
+		}
+		if v := EvaluateC2U([]CellAgg{c}, "k"); !v.Applicable || v.Pass {
+			t.Fatalf("C2-U must fail at 2 %% exact-path underfill: %+v", v)
+		}
+		// One timeout in 100 queries is exactly 1 %: pass (<= 1 %).
+		outs[98] = annOutcome(e, e, "exact", false, false, 300)
+		if v := EvaluateC2U([]CellAgg{AggregateCell("tag", "small", "k", outs)}, "k"); !v.Pass {
+			t.Fatalf("C2-U at 1 underfilled exact query of 100 must pass: %+v", v)
+		}
+	})
+
+	t.Run("candidate_underfill_stays_separate", func(t *testing.T) {
+		// Fallback recovered every query: C2-U 0 %, candidate underfill 100 %.
+		var outs []QueryOutcome
+		for range 10 {
+			outs = append(outs, annOutcome(e, e, "ann_fallback_exact", true, true, 15000))
+		}
+		c := AggregateCell("item", "medium", "k", outs)
+		if c.UnderfillAfter != 0 || c.UnderfillBeforeANN != 1 {
+			t.Fatalf("after %v before %v, want 0 and 1", c.UnderfillAfter, c.UnderfillBeforeANN)
+		}
+		if v := EvaluateC2U([]CellAgg{c}, "k"); !v.Pass {
+			t.Fatalf("a recovered underfill must not fail C2-U: %+v", v)
+		}
+	})
+
+	t.Run("only_zero_E_queries_pass", func(t *testing.T) {
+		c := AggregateCell("item", "whale", "k", []QueryOutcome{annOutcome(nil, nil, "ann", false, false, 9000)})
+		if v := EvaluateC2U([]CellAgg{c}, "k"); !v.Applicable || !v.Pass {
+			t.Fatalf("a cell of |E| = 0 queries is measured and non-underfilled: %+v", v)
+		}
+	})
+}
+
+// TestC2BranchLatencyCoversEveryRequest pins SBW3-1-3: C2-B is the p95 of the
+// vector branch latency of every request of the cell (exact and ANN paths,
+// |E| = 0 included), per targets.md.
+func TestC2BranchLatencyCoversEveryRequest(t *testing.T) {
+	e := ids(20)
+	t.Run("exact_only_slow_cell_fails", func(t *testing.T) {
+		var outs []QueryOutcome
+		for range 100 {
+			outs = append(outs, withLatency(annOutcome(e, e, "exact", false, false, 300), 120*time.Millisecond))
+		}
+		c := AggregateCell("item", "small", "k", outs)
+		v := EvaluateC2B([]CellAgg{c}, "k")
+		if !v.Applicable || v.Pass {
+			t.Fatalf("an exact-only cell with p95 120 ms must FAIL C2-B (it was n/a before): %+v", v)
+		}
+		if c.ANNBranchLatency.N != 0 || c.BranchLatency.N != 100 {
+			t.Fatalf("all-path n %d ann n %d, want 100 and 0", c.BranchLatency.N, c.ANNBranchLatency.N)
+		}
+	})
+	t.Run("zero_E_requests_count", func(t *testing.T) {
+		var outs []QueryOutcome
+		for range 50 {
+			outs = append(outs, withLatency(annOutcome(e, e, "ann", false, false, 9000), 10*time.Millisecond))
+		}
+		for range 50 {
+			outs = append(outs, withLatency(annOutcome(nil, nil, "ann", false, false, 9000), 150*time.Millisecond))
+		}
+		c := AggregateCell("item", "whale", "k", outs)
+		if v := EvaluateC2B([]CellAgg{c}, "k"); !v.Applicable || v.Pass {
+			t.Fatalf("slow |E| = 0 requests must fail C2-B: %+v", v)
+		}
+	})
+	t.Run("slow_exact_requests_fail_a_mixed_cell_that_ann_alone_would_pass", func(t *testing.T) {
+		var outs []QueryOutcome
+		for range 90 {
+			outs = append(outs, withLatency(annOutcome(e, e, "ann", false, false, 9000), 20*time.Millisecond))
+		}
+		for range 10 {
+			outs = append(outs, withLatency(annOutcome(e, e, "exact", false, false, 300), 200*time.Millisecond))
+		}
+		c := AggregateCell("item", "medium", "k", outs)
+		if c.ANNBranchLatency.P95Ms > 80 {
+			t.Fatalf("ANN-only p95 = %v, want <= 80", c.ANNBranchLatency.P95Ms)
+		}
+		if v := EvaluateC2B([]CellAgg{c}, "k"); v.Pass {
+			t.Fatalf("all-path p95 %.0f ms must FAIL C2-B: %+v", c.BranchLatency.P95Ms, v)
+		}
+	})
+	t.Run("fast_cell_passes_at_the_boundary", func(t *testing.T) {
+		var outs []QueryOutcome
+		for range 100 {
+			outs = append(outs, withLatency(annOutcome(e, e, "exact", false, false, 300), 80*time.Millisecond))
+		}
+		if v := EvaluateC2B([]CellAgg{AggregateCell("item", "small", "k", outs)}, "k"); !v.Pass {
+			t.Fatalf("p95 == 80 ms must pass C2-B (<=): %+v", v)
+		}
+	})
+}
+
 // mdColumns counts the cells of a Markdown table row, honouring `\|` escapes.
 func mdColumns(line string) int {
 	n, esc := 0, false
