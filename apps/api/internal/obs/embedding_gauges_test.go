@@ -270,13 +270,18 @@ func TestDBGaugeLagIgnoresLaterRewrite(t *testing.T) {
 	exec(`SELECT embedding_generation_create_tables(1, 3, 2, false, 16, 128)`)
 
 	hashHex := strings.Repeat("ab", 32)
+	// RV-T20a-BE-7: hai INSERT là hai câu lệnh autocommit riêng, `now()` của mỗi câu
+	// khác nhau nên lag sẽ lệch (1 s − khoảng cách giữa hai câu). Một mốc `base`
+	// duy nhất (tính ở phía Go, cắt về micro-giây như timestamptz) được bind vào cả
+	// hai câu, nên mọi hiệu thời gian đều chính xác tuyệt đối.
 	// base = 10 phút trước (trong cửa sổ 15 phút); vector hiện tại ghi lúc base+101 s.
+	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Microsecond)
 	exec(`INSERT INTO item_embedding_g1 (user_id, target_id, embedding, model, model_version, input_hash, embedded_at)
 	      VALUES ($1::uuid, $2::uuid, '[0.1,0.2,0.3]'::vector, 'm', 'v1', decode($3, 'hex'),
-	              now() - interval '10 minutes' + interval '101 seconds')`, userID, itemID, hashHex)
+	              $4::timestamptz + interval '101 seconds')`, userID, itemID, hashHex, base)
 	exec(`INSERT INTO river_job (state, max_attempts, created_at, finalized_at, kind, args, queue)
 	      SELECT 'completed'::river_job_state, 30,
-	             now() - interval '10 minutes' + c.created_off, now() - interval '10 minutes' + c.finalized_off,
+	             $4::timestamptz + c.created_off, $4::timestamptz + c.finalized_off,
 	             'embed_item',
 	             jsonb_build_object('generation_id', 1, 'user_id', $1::text, 'target_id', $2::text, 'input_hash', $3::text),
 	             'embedding'
