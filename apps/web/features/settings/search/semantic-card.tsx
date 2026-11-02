@@ -7,12 +7,14 @@
  * Contract:
  * - Bound to `useSemanticSuggestSetting()` (shared with Omnibox `≈`, Task 9).
  * - Switch is non-optimistic: reflects cache (`semanticSuggest`) only; waits for HTTP 200 before flipping.
- * - Server-off (`me === null` or `semanticAvailable === false`): switch is `disabled` + `aria-disabled="true"`,
- *   `aria-checked` reflects stored setting, shows `semanticServerOff` (`aria-describedby`), clicking does nothing (no PATCH).
+ * - Server-off (`me === null` or `semanticAvailable === false`): card has `control-disabled` + `aria-disabled="true"`,
+ *   switch is `disabled` + `aria-disabled="true"` and renders OFF (`aria-checked="false"`), copy blocks are hidden,
+ *   shows `semanticServerOff` (`aria-describedby`) when `me !== null`, clicking does nothing (no PATCH).
  * - While `isPending`: switch uses `aria-disabled="true"` + `aria-busy` without `disabled` (preserves keyboard focus)
  *   and is guarded against double clicks in the click handler.
- * - Copy block: `semanticExternal` true (or absent, defaulted to `true` by hook per 2.24 item 4) renders
- *   `semanticExternalCopy`; `false` renders `semanticSelfHostCopy`; both followed by `semanticEntryNeverSent`.
+ * - Copy block (when `semanticAvailable` is true): `semanticExternal` true (or absent, defaulted to `true` by hook
+ *   per 2.24 item 4) renders `semanticExternalCopy`; `false` renders `semanticSelfHostCopy`; both followed by
+ *   `semanticEntryNeverSent`.
  * - 409 `semantic_unavailable`: switch stays/reverts to `false` (by hook), renders `semanticEnable409` in
  *   always-mounted `role="status"` node (`aria-describedby` when non-empty), NO toast.
  * - Other PATCH failures (`errorCode === 'patch_failed'`): renders `semanticSaveFailed` in the `role="status"` node.
@@ -44,8 +46,8 @@ export function SemanticCard() {
 
   const isServerOff = me === null || !semanticAvailable;
   const isSwitchDisabled = isServerOff || isPending;
+  const isSwitchChecked = !isServerOff && !isSemanticUnavailableError && semanticSuggest;
   const showServerOffNote = isServerOff && me !== null;
-
   const statusText = isSemanticUnavailableError
     ? t('semanticEnable409')
     : errorCode === 'patch_failed'
@@ -65,8 +67,9 @@ export function SemanticCard() {
 
   return (
     <div
-      className="card mb-3 p-5"
+      className={`card mb-3 p-5${isServerOff ? ' control-disabled' : ''}`}
       id="timkiem-semantic-card"
+      aria-disabled={isServerOff ? 'true' : undefined}
       data-testid="settings-semantic-card"
     >
       <div className="mb-4 flex flex-wrap items-start gap-4">
@@ -87,7 +90,7 @@ export function SemanticCard() {
           type="button"
           id="timkiem-sem-switch"
           role="switch"
-          aria-checked={semanticSuggest}
+          aria-checked={isSwitchChecked}
           aria-labelledby={titleId}
           aria-describedby={describedById}
           aria-disabled={isSwitchDisabled ? 'true' : undefined}
@@ -101,23 +104,24 @@ export function SemanticCard() {
         />
       </div>
 
-      <div
-        className="rounded-md bg-surface p-4"
-        id={semanticExternal ? 'timkiem-copy-external' : 'timkiem-copy-selfhost'}
-        data-testid={
-          semanticExternal
-            ? 'settings-semantic-copy-external'
-            : 'settings-semantic-copy-selfhost'
-        }
-      >
-        <p className="m-0 mb-2 text-[13px] text-body">
-          {semanticExternal ? t('semanticExternalCopy') : t('semanticSelfHostCopy')}
-        </p>
-        <p className="m-0 text-[13px] text-muted">
-          {t('semanticEntryNeverSent')}
-        </p>
-      </div>
-
+      {!isServerOff ? (
+        <div
+          className="rounded-md bg-surface p-4"
+          id={semanticExternal ? 'timkiem-copy-external' : 'timkiem-copy-selfhost'}
+          data-testid={
+            semanticExternal
+              ? 'settings-semantic-copy-external'
+              : 'settings-semantic-copy-selfhost'
+          }
+        >
+          <p className="m-0 mb-2 text-[13px] text-body">
+            {semanticExternal ? t('semanticExternalCopy') : t('semanticSelfHostCopy')}
+          </p>
+          <p className="m-0 text-[13px] text-muted">
+            {t('semanticEntryNeverSent')}
+          </p>
+        </div>
+      ) : null}
       {showServerOffNote ? (
         <p
           id={serverOffNoteId}

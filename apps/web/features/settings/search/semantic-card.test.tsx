@@ -201,13 +201,30 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
       locale: 'vi',
     });
 
+    const card = screen.getByTestId('settings-semantic-card');
+    expect(card).toHaveClass('control-disabled');
+    expect(card).toHaveAttribute('aria-disabled', 'true');
+
     const sw = screen.getByRole('switch', {
       name: messages.settings.search.semanticTitle,
     });
     expect(sw).toBeDisabled();
     expect(sw).toHaveAttribute('aria-disabled', 'true');
-    // Reflects stored setting even when server is off
-    expect(sw).toHaveAttribute('aria-checked', 'true');
+    // Server-off always renders the switch OFF regardless of stored semantic_suggest
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+
+    // Neither copy block renders when server-off
+    expect(screen.queryByTestId('settings-semantic-copy-external')).toBeNull();
+    expect(screen.queryByTestId('settings-semantic-copy-selfhost')).toBeNull();
+    expect(
+      screen.queryByText(messages.settings.search.semanticExternalCopy),
+    ).toBeNull();
+    expect(
+      screen.queryByText(messages.settings.search.semanticSelfHostCopy),
+    ).toBeNull();
+    expect(
+      screen.queryByText(messages.settings.search.semanticEntryNeverSent),
+    ).toBeNull();
 
     const serverOffNote = screen.getByText(messages.settings.search.semanticServerOff);
     expect(serverOffNote).toBeInTheDocument();
@@ -431,12 +448,19 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
       initialMe: null,
       locale: 'en',
     });
+    const nullCard = screen.getByTestId('settings-semantic-card');
+    expect(nullCard).toHaveClass('control-disabled');
+    expect(nullCard).toHaveAttribute('aria-disabled', 'true');
     const nullSw = screen.getByRole('switch', {
       name: enMessages.settings.search.semanticTitle,
     });
     expect(nullSw).toBeDisabled();
     expect(nullSw).toHaveAttribute('aria-disabled', 'true');
+    expect(nullSw).toHaveAttribute('aria-checked', 'false');
     expect(nullSw).not.toHaveAttribute('aria-describedby');
+    expect(screen.queryByTestId('settings-semantic-copy-external')).toBeNull();
+    expect(screen.queryByTestId('settings-semantic-copy-selfhost')).toBeNull();
+    expect(screen.queryByTestId('settings-semantic-server-off')).toBeNull();
     fireEvent.click(nullSw);
     expect(fetchMock).not.toHaveBeenCalled();
     nullView.unmount();
