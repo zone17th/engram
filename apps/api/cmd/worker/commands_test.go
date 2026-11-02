@@ -184,7 +184,7 @@ func TestDispatchUnknownCommandExit2(t *testing.T) {
 		}
 		idxReembed := strings.Index(errOut, "reembed")
 		idxSemeval := strings.Index(errOut, "semeval")
-		if idxReembed < 0 || idxSemeval < 0 || !(idxReembed < idxSemeval) {
+		if idxReembed < 0 || idxSemeval < 0 || idxReembed >= idxSemeval {
 			t.Fatalf("token %q: expected sorted registered command names in stderr usage, got %q", token, errOut)
 		}
 	}
@@ -227,7 +227,7 @@ func TestHelpListsCommandsSorted(t *testing.T) {
 		if idxAlpha < 0 || idxReembed < 0 || idxSemeval < 0 {
 			t.Fatalf("%s: expected all commands in output, got %q", helpArg, out)
 		}
-		if !(idxAlpha < idxReembed && idxReembed < idxSemeval) {
+		if idxAlpha >= idxReembed || idxReembed >= idxSemeval {
 			t.Fatalf("%s: expected sorted order alpha < reembed < semeval, got %q", helpArg, out)
 		}
 		if !strings.Contains(out, "evaluate semantic threshold") ||
