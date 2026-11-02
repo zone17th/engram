@@ -186,7 +186,11 @@ services:
   # image or default compose stack, and refuses to start outside development|staging.
   #
   # How to start (cite dec-262 & advisor-dec-279):
-  #   EMBEDDING_PROVIDER=tei TEI_URL=http://fakeembed:8080 docker compose --profile semantic-fake up
+  #   EMBEDDING_PROVIDER=tei TEI_URL=http://fakeembed:8080 TEI_INPUT_PREFIX_QUERY='query: ' TEI_INPUT_PREFIX_DOCUMENT='passage: ' docker compose --profile semantic-fake up
+  # Why prefixes are required for semantic-fake: fakeembed classifies query vs
+  # document requests by matching the non-empty TEI query prefix (and refuses to
+  # start when FAKEEMBED_QUERY_PREFIX is empty/whitespace); the fake calibration
+  # entry in calibration.go accepts any qp/dp suffix for fakeembed-v1.
   # Deviation from plan text (advisor-dec-279): dec-262 fixed the CI fake
   # calibration entry in calibration.go as provider="tei", model="tei/engram-fakeembed",
   # model_version prefix="fakeembed-v1;", so semantic-fake runs api/worker with

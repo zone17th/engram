@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,13 +28,21 @@ func envFromMap(kv map[string]string) envLookup {
 func startTestServer(t *testing.T, kv map[string]string) *httptest.Server {
 	t.Helper()
 	if kv == nil {
-		kv = map[string]string{"APP_ENV": "development"}
-	} else if _, ok := kv["APP_ENV"]; !ok {
-		cp := make(map[string]string, len(kv)+1)
+		kv = map[string]string{
+			"APP_ENV":                "development",
+			"FAKEEMBED_QUERY_PREFIX": "query: ",
+		}
+	} else {
+		cp := make(map[string]string, len(kv)+2)
 		for k, v := range kv {
 			cp[k] = v
 		}
-		cp["APP_ENV"] = "development"
+		if _, ok := cp["APP_ENV"]; !ok {
+			cp["APP_ENV"] = "development"
+		}
+		if _, ok := cp["FAKEEMBED_QUERY_PREFIX"]; !ok {
+			cp["FAKEEMBED_QUERY_PREFIX"] = "query: "
+		}
 		kv = cp
 	}
 	handler, _, err := newHandler(envFromMap(kv))
@@ -359,16 +368,20 @@ func TestControlStatsCountsOnly(t *testing.T) {
 }
 
 func TestIdentityMatchesCalibration(t *testing.T) {
+	const queryPrefix = "query: "
+	const docPrefix = "passage: "
+
 	ts := startTestServer(t, map[string]string{
-		"APP_ENV": "development",
+		"APP_ENV":                "development",
+		"FAKEEMBED_QUERY_PREFIX": queryPrefix,
 	})
 
 	primaryCfg := embedding.ClientConfig{
 		Provider:    embedding.FakeEmbedProvider,
 		BaseURL:     embedding.NewEndpoint(ts.URL),
 		Dims:        defaultDims,
-		QueryPrefix: "",
-		DocPrefix:   "",
+		QueryPrefix: queryPrefix,
+		DocPrefix:   docPrefix,
 	}
 	cs, err := embedding.NewClientSetFromConfigs(context.Background(), primaryCfg, nil, embedding.ClientDeps{})
 	if err != nil {
@@ -407,11 +420,105 @@ func TestIdentityMatchesCalibration(t *testing.T) {
 	}
 }
 
+func TestRealTEIClientStatsAndAlias(t *testing.T) {
+	const queryPrefix = "query: "
+	const docPrefix = "passage: "
+
+	ts := startTestServer(t, map[string]string{
+		"APP_ENV":                "development",
+		"FAKEEMBED_QUERY_PREFIX": queryPrefix,
+	})
+
+	primaryCfg := embedding.ClientConfig{
+		Provider:    embedding.FakeEmbedProvider,
+		BaseURL:     embedding.NewEndpoint(ts.URL),
+		Dims:        defaultDims,
+		QueryPrefix: queryPrefix,
+		DocPrefix:   docPrefix,
+	}
+	cs, err := embedding.NewClientSetFromConfigs(context.Background(), primaryCfg, nil, embedding.ClientDeps{})
+	if err != nil {
+		t.Fatalf("NewClientSetFromConfigs() error = %v", err)
+	}
+	provider := cs.Primary().Provider
+
+	type statsPayload struct {
+		QueryRequests    int64 `json:"query_requests"`
+		DocumentRequests int64 `json:"document_requests"`
+		TotalRequests    int64 `json:"total_requests"`
+	}
+	readStats := func() statsPayload {
+		t.Helper()
+		st, raw := doJSONRequest(t, http.MethodGet, ts.URL+"/__control/stats", nil)
+		if st != http.StatusOK {
+			t.Fatalf("GET /__control/stats status = %d, want 200", st)
+		}
+		var s statsPayload
+		if uErr := json.Unmarshal(raw, &s); uErr != nil {
+			t.Fatalf("json.Unmarshal stats: %v", uErr)
+		}
+		return s
+	}
+
+	docInput := embedding.ItemInput("Thẻ ngân hàng Vietcombank", "chi nhánh Hà Nội")
+	aliasTarget := docPrefix + docInput
+	status, _ := doJSONRequest(t, http.MethodPost, ts.URL+"/__control", map[string]any{
+		"mode": "ok",
+		"aliases": map[string]string{
+			"zzprobe-1": aliasTarget,
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("POST /__control aliases status = %d, want 200", status)
+	}
+
+	baseStats := readStats()
+
+	qVec, err := provider.EmbedQuery(context.Background(), "zzprobe-1")
+	if err != nil {
+		t.Fatalf("EmbedQuery(\"zzprobe-1\") error = %v", err)
+	}
+	docVecs, err := provider.EmbedDocuments(context.Background(), []string{docInput})
+	if err != nil {
+		t.Fatalf("EmbedDocuments() error = %v", err)
+	}
+	if len(docVecs) != 1 {
+		t.Fatalf("len(EmbedDocuments) = %d, want 1", len(docVecs))
+	}
+
+	cos := cosineSimilarity(qVec, docVecs[0])
+	if math.Abs(cos-1.0) > 1e-6 {
+		t.Fatalf("cosine(EmbedQuery(\"zzprobe-1\"), EmbedDocuments target) = %v, want 1.0 ± 1e-6", cos)
+	}
+
+	afterOK := readStats()
+	if gotQ, gotD := afterOK.QueryRequests-baseStats.QueryRequests, afterOK.DocumentRequests-baseStats.DocumentRequests; gotQ != 1 || gotD != 1 {
+		t.Fatalf("stats delta after 1 EmbedQuery + 1 EmbedDocuments = (query=%d, doc=%d), want (1, 1)", gotQ, gotD)
+	}
+
+	status, _ = doJSONRequest(t, http.MethodPost, ts.URL+"/__control", map[string]any{
+		"mode": "down",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("POST /__control down status = %d, want 200", status)
+	}
+
+	if _, err := provider.EmbedQuery(context.Background(), "zzprobe-1"); err == nil {
+		t.Fatal("EmbedQuery() in down mode = nil, want error")
+	}
+
+	afterDown := readStats()
+	if gotQ, gotD := afterDown.QueryRequests-afterOK.QueryRequests, afterDown.DocumentRequests-afterOK.DocumentRequests; gotQ != 1 || gotD != 0 {
+		t.Fatalf("stats delta after down EmbedQuery = (query=%d, doc=%d), want (1, 0)", gotQ, gotD)
+	}
+}
+
 func TestRefusesOutsideDevStaging(t *testing.T) {
 	refused := []string{"production", "", "prod", "test", "local", "DEVELOPMENT"}
 	for _, appEnv := range refused {
 		_, _, err := newHandler(envFromMap(map[string]string{
-			"APP_ENV": appEnv,
+			"APP_ENV":                appEnv,
+			"FAKEEMBED_QUERY_PREFIX": "query: ",
 		}))
 		if err == nil {
 			t.Fatalf("newHandler(APP_ENV=%q) = nil, want error", appEnv)
@@ -421,10 +528,24 @@ func TestRefusesOutsideDevStaging(t *testing.T) {
 		}
 	}
 
+	for _, badPrefix := range []string{"", "   ", "\t\n"} {
+		_, _, err := newHandler(envFromMap(map[string]string{
+			"APP_ENV":                "development",
+			"FAKEEMBED_QUERY_PREFIX": badPrefix,
+		}))
+		if err == nil {
+			t.Fatalf("newHandler(FAKEEMBED_QUERY_PREFIX=%q) = nil, want error", badPrefix)
+		}
+		if !strings.Contains(err.Error(), "FAKEEMBED_QUERY_PREFIX") {
+			t.Fatalf("error message %q should name FAKEEMBED_QUERY_PREFIX", err.Error())
+		}
+	}
+
 	allowed := []string{"development", "staging"}
 	for _, appEnv := range allowed {
 		h, cfg, err := newHandler(envFromMap(map[string]string{
-			"APP_ENV": appEnv,
+			"APP_ENV":                appEnv,
+			"FAKEEMBED_QUERY_PREFIX": "query: ",
 		}))
 		if err != nil {
 			t.Fatalf("newHandler(APP_ENV=%q) unexpected error = %v", appEnv, err)
@@ -435,30 +556,83 @@ func TestRefusesOutsideDevStaging(t *testing.T) {
 	}
 }
 
+func TestProbeTargetHostPort(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{name: "empty host wildcard", in: ":8080", want: "127.0.0.1:8080"},
+		{name: "ipv4 wildcard", in: "0.0.0.0:8080", want: "127.0.0.1:8080"},
+		{name: "ipv6 wildcard bracketed", in: "[::]:8080", want: "[::1]:8080"},
+		{name: "concrete ipv4 loopback", in: "127.0.0.1:18080", want: "127.0.0.1:18080"},
+		{name: "concrete ipv4 non-default", in: "127.0.0.2:9090", want: "127.0.0.2:9090"},
+		{name: "concrete ipv6 loopback", in: "[::1]:8080", want: "[::1]:8080"},
+		{name: "invalid addr", in: "not-a-host-port", wantErr: true},
+	}
+	for _, tc := range cases {
+		got, err := probeTargetHostPort(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("%s: probeTargetHostPort(%q) = %q, nil; want error", tc.name, tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: probeTargetHostPort(%q) unexpected error = %v", tc.name, tc.in, err)
+		}
+		if got != tc.want {
+			t.Fatalf("%s: probeTargetHostPort(%q) = %q, want %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestHealthcheckProbe(t *testing.T) {
-	ts := startTestServer(t, map[string]string{
-		"APP_ENV": "development",
+	handler, _, err := newHandler(envFromMap(map[string]string{
+		"APP_ENV":                "development",
+		"FAKEEMBED_QUERY_PREFIX": "query: ",
+	}))
+	if err != nil {
+		t.Fatalf("newHandler() error = %v", err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen(127.0.0.1:0) error = %v", err)
+	}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		_ = srv.Serve(ln)
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = ln.Close()
 	})
+
+	listenAddr := ln.Addr().String()
+	baseURL := "http://" + listenAddr
 
 	// Put the handler in "down" mode so /health would return 503, and verify
 	// probeHealthcheck still succeeds because it probes GET /__control/stats.
-	status, _ := doJSONRequest(t, http.MethodPost, ts.URL+"/__control", map[string]any{
+	status, _ := doJSONRequest(t, http.MethodPost, baseURL+"/__control", map[string]any{
 		"mode": "down",
 	})
 	if status != http.StatusOK {
 		t.Fatalf("POST /__control down status = %d, want 200", status)
 	}
 
-	healthStatus, _ := doJSONRequest(t, http.MethodGet, ts.URL+"/health", nil)
+	healthStatus, _ := doJSONRequest(t, http.MethodGet, baseURL+"/health", nil)
 	if healthStatus < 500 || healthStatus >= 600 {
 		t.Fatalf("GET /health in down mode status = %d, want 5xx", healthStatus)
 	}
 
-	listenAddr := strings.TrimPrefix(ts.URL, "http://")
-	err := probeHealthcheck(context.Background(), envFromMap(map[string]string{
+	if err := probeHealthcheck(context.Background(), envFromMap(map[string]string{
 		"FAKEEMBED_ADDR": listenAddr,
-	}))
-	if err != nil {
-		t.Fatalf("probeHealthcheck() in down mode error = %v, want nil", err)
+	})); err != nil {
+		t.Fatalf("probeHealthcheck(%q) in down mode error = %v, want nil", listenAddr, err)
 	}
 }
