@@ -340,6 +340,24 @@ async function saveCapture(
 }
 
 /**
+ * Scrolls `target` inside the popover (`#omni-pop`) and hard-asserts that its box lies inside both the popover box and the
+ * viewport, so a capture cannot pass while the element is clipped (VIS-T22-1-1/2: `toBeVisible()` is true for a clipped row).
+ */
+async function scrollIntoPopoverAndAssertFramed(page: Page, target: Locator, label: string): Promise<void> {
+  await target.scrollIntoViewIfNeeded();
+  const box = await target.boundingBox();
+  const pop = await page.locator('#omni-pop').boundingBox();
+  const viewportHeight = await page.evaluate(() => window.innerHeight);
+  expect(box, `${label} must have a box`).not.toBeNull();
+  expect(pop, '#omni-pop must have a box').not.toBeNull();
+  if (!box || !pop) return;
+  expect(box.y, `${label} top must be inside #omni-pop`).toBeGreaterThanOrEqual(pop.y - 0.5);
+  expect(box.y + box.height, `${label} bottom must be inside #omni-pop`).toBeLessThanOrEqual(pop.y + pop.height + 0.5);
+  expect(box.y, `${label} top must be inside the viewport`).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height, `${label} bottom must be inside the viewport`).toBeLessThanOrEqual(viewportHeight);
+}
+
+/**
  * Runs `interact` once per width on a cold omnibox (the suggest limit is resolved at send time from the viewport width, so the
  * 390 px capture must come from a request made at 390 px), then asserts and captures.
  */
@@ -564,7 +582,14 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
         expect(rowsBefore).toBeGreaterThan(0);
         expect(rowsBefore).toBeLessThan(NIMBUS_COUNT);
       },
-      { requireRows: true },
+      {
+        requireRows: true,
+        // VIS-T22-1-1: the Xem them row sits at the end of the scrolling list; frame it before the capture. The `21 results`
+        // header stays evidenced by `more-page2` and the a11y spec.
+        after: async () => {
+          await scrollIntoPopoverAndAssertFramed(page, moreOption, 'the more option');
+        },
+      },
     );
     await sweepWidths(
       ctx,
@@ -615,7 +640,17 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
           await expect(page.getByTestId('undo-toast-item')).toHaveCount(0);
           await expect(line).not.toHaveAttribute('role', /.+/);
         },
-        { requireRows: true },
+        {
+          requireRows: true,
+          // VIS-T22-1-2: the muted line is the last child of a scrolling list; frame it before the capture.
+          after: async () => {
+            await scrollIntoPopoverAndAssertFramed(
+              page,
+              page.getByTestId('omnibox-status-rate-limited'),
+              'the 429 line',
+            );
+          },
+        },
       );
     } finally {
       await page.unroute('**/api/v1/search*');
