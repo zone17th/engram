@@ -277,6 +277,11 @@ test.describe('P05-T22 search suggest (lexical, real stack)', () => {
       expect(info.activeDescendantId).not.toBeNull();
     });
 
+    // 22-2: near rows, the Gần nghĩa zone with its ≈ badge, the ≈ toggle, near-pending / degraded / enable-409 lines and the
+    // cursor page ("Xem thêm") are `@semantic` (job `e2e-search-semantic`, real `fakeembed`) or need the semantic stack and
+    // land in PR 22-2. They go right after the lexical probes above, with the same typeProbe/waitForSuggestResponse
+    // helpers; this spec must stay lexical-only (no `semantic=1`, no `page.route` stub, advisor-dec-323 Q2).
+
     // The recorder saw only GET /suggest for the omnibox: no /search, no legacy GET /items?q= or GET /tags?q=.
     await recorder.flush();
     expect(recorder.searchSince(0)).toHaveLength(0);
