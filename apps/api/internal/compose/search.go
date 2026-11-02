@@ -11,6 +11,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/obs"
+	"github.com/zone17th/engram/apps/api/internal/semantic"
 	"github.com/zone17th/engram/apps/api/internal/suggest"
 )
 
@@ -41,6 +42,7 @@ func NewSearch(
 	clk clock.Clock,
 	metrics *obs.Metrics,
 	logger *slog.Logger,
+	nearOpts ...suggest.NearSource,
 ) (*Search, error) {
 	if cfg == nil || pool == nil {
 		return nil, fmt.Errorf("compose search thiếu config/pool")
@@ -52,7 +54,12 @@ func NewSearch(
 	if err != nil {
 		return nil, fmt.Errorf("compose search cursor key: %w", err)
 	}
-	near := suggest.NewNoopNearSource()
+	var near suggest.NearSource = suggest.NewNoopNearSource()
+	for _, opt := range nearOpts {
+		if opt != nil {
+			near = opt
+		}
+	}
 	bucket := httpx.NewSearchReadBucket(clk)
 	svc := suggest.NewService(pool, clk, near, metrics, cursorKey)
 	handler := suggest.NewHandler(svc, bucket)
@@ -68,7 +75,13 @@ func NewSearch(
 		Service:     svc,
 		Handler:     handler,
 	}
-	s.Mount = suggest.Mount(s)
+	innerMount := suggest.Mount(s)
+	s.Mount = func(v1 chi.Router, d httpx.Deps) {
+		v1.Group(func(r chi.Router) {
+			r.Use(semantic.RequestScopeMiddleware)
+			innerMount(r, d)
+		})
+	}
 	return s, nil
 }
 
