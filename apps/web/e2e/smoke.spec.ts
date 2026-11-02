@@ -137,13 +137,34 @@ test.describe('P01 browser smoke', () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   });
 
-  test('landing locale switch navigates / <-> /vi, persists sabk_locale across reload, and has 0 header axe violations', async ({
+  test('landing locale switch navigates / <-> /vi with query/hash, fits pill without overflow, persists sabk_locale into /app/auth/login, and has 0 header axe violations', async ({
     page,
   }) => {
-    await page.goto('/', { waitUntil: 'networkidle' });
-    const enGroup = page.getByRole('group', { name: 'Language' });
-    await expect(enGroup.getByRole('radio', { name: 'EN' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(enGroup.getByRole('radio', { name: 'VI' })).toHaveAttribute('aria-pressed', 'false');
+    const assertNoPillOrPageOverflow = async (label: string) => {
+      const metrics = await page.evaluate(() => {
+        const root = document.documentElement;
+        const nav = document.querySelector<HTMLElement>('nav[aria-label="Primary"]');
+        return {
+          docOverflow: root.scrollWidth - root.clientWidth,
+          navOverflow: nav ? nav.scrollWidth - nav.clientWidth : -1,
+        };
+      });
+      expect(metrics.docOverflow, `${label} document horizontal overflow`).toBeLessThanOrEqual(0);
+      expect(metrics.navOverflow, `${label} primary nav horizontal overflow`).toBeLessThanOrEqual(0);
+    };
+
+    await page.goto('/?from=smoke#riengtu', { waitUntil: 'networkidle' });
+    await assertNoPillOrPageOverflow('landing-en');
+
+    const enGroup = page.getByRole('radiogroup', { name: 'Language' });
+    const enRadio = enGroup.getByRole('radio', { name: 'English (EN)' });
+    const viRadio = enGroup.getByRole('radio', { name: 'Vietnamese (VI)' });
+    await expect(enRadio).toHaveAttribute('aria-checked', 'true');
+    await expect(enRadio).toHaveAttribute('data-state', 'on');
+    await expect(enRadio).toHaveAttribute('lang', 'en');
+    await expect(viRadio).toHaveAttribute('aria-checked', 'false');
+    await expect(viRadio).toHaveAttribute('data-state', 'off');
+    await expect(viRadio).toHaveAttribute('lang', 'vi');
 
     const enHeaderAxe = await new AxeBuilder({ page })
       .include('nav[aria-label="Primary"]')
@@ -151,24 +172,37 @@ test.describe('P01 browser smoke', () => {
       .analyze();
     expect(enHeaderAxe.violations, JSON.stringify(enHeaderAxe.violations, null, 2)).toEqual([]);
 
-    await enGroup.getByRole('radio', { name: 'VI' }).click();
-    await expect(page).toHaveURL(/\/vi$/);
-    await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
-    await expect(page.getByRole('heading', { level: 1 })).toContainText('Gõ một từ bạn còn nhớ.');
+    // Toggle dark theme before switching locale to verify sabk_theme=dark survives the [locale] layout navigation (FE1-5)
+    await page.getByRole('button', { name: 'Toggle light/dark theme' }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 
-    const viGroup = page.getByRole('group', { name: 'Ngôn ngữ' });
-    await expect(viGroup.getByRole('radio', { name: 'VI' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(viGroup.getByRole('radio', { name: 'EN' })).toHaveAttribute('aria-pressed', 'false');
+    await viRadio.click();
+    await expect(page).toHaveURL(/\/vi\?from=smoke#riengtu$/);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Gõ một từ bạn còn nhớ.');
+    await assertNoPillOrPageOverflow('landing-vi');
+
+    const viGroup = page.getByRole('radiogroup', { name: 'Ngôn ngữ' });
+    const viActiveRadio = viGroup.getByRole('radio', { name: 'Tiếng Việt (VI)' });
+    const enInactiveRadio = viGroup.getByRole('radio', { name: 'English (EN)' });
+    await expect(viActiveRadio).toHaveAttribute('aria-checked', 'true');
+    await expect(viActiveRadio).toHaveAttribute('data-state', 'on');
+    await expect(enInactiveRadio).toHaveAttribute('aria-checked', 'false');
+    await expect(enInactiveRadio).toHaveAttribute('data-state', 'off');
 
     const cookiesAfterVi = await page.context().cookies();
     expect(cookiesAfterVi.find((c) => c.name === 'sabk_locale')?.value).toBe('vi');
+    expect(cookiesAfterVi.find((c) => c.name === 'sabk_theme')?.value).toBe('dark');
 
     await page.reload({ waitUntil: 'networkidle' });
-    await expect(page).toHaveURL(/\/vi$/);
+    await expect(page).toHaveURL(/\/vi\?from=smoke#riengtu$/);
     await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expect(
-      page.getByRole('group', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'VI' }),
-    ).toHaveAttribute('aria-pressed', 'true');
+      page.getByRole('radiogroup', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'Tiếng Việt (VI)' }),
+    ).toHaveAttribute('aria-checked', 'true');
+    await assertNoPillOrPageOverflow('landing-vi-reloaded');
 
     const viHeaderAxe = await new AxeBuilder({ page })
       .include('nav[aria-label="Primary"]')
@@ -176,7 +210,22 @@ test.describe('P01 browser smoke', () => {
       .analyze();
     expect(viHeaderAxe.violations, JSON.stringify(viHeaderAxe.violations, null, 2)).toEqual([]);
 
-    await page.getByRole('group', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'EN' }).click();
+    // Marketing legal route check: /privacy and /vi/privacy under next-intl [locale] routing (FE1-5)
+    await page.goto('/vi/privacy#contact', { waitUntil: 'networkidle' });
+    await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
+    await expect(page.getByRole('heading', { level: 1, name: 'Điều khoản & Chính sách bảo mật' })).toBeVisible();
+    await page.goto('/privacy#contact', { waitUntil: 'networkidle' });
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(page.getByRole('heading', { level: 1, name: 'Terms of Service & Privacy Policy' })).toBeVisible();
+
+    // FE1-10: sabk_locale='vi' set on landing is consumed when opening /app/auth/login
+    await page.goto('/app/auth/login', { waitUntil: 'networkidle' });
+    await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
+    await expect(page.getByRole('heading', { level: 1, name: 'Đăng nhập' })).toBeVisible();
+
+    // Return to /vi and switch back to EN -> /
+    await page.goto('/vi', { waitUntil: 'networkidle' });
+    await page.getByRole('radiogroup', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'English (EN)' }).click();
     await expect(page).toHaveURL(/\/$/);
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     const cookiesAfterEn = await page.context().cookies();
