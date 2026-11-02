@@ -1,5 +1,5 @@
 {
-  "$comment": "P05 plan mục 2.2 + 2.3 + Task 2 — Corpus lexical tổng hợp (150 items + 40 tags trên 2 user u1/u2, vi/en, 100% synthetic, không có hint/body) và các truy vấn kiểm thứ tự xếp hạng (tier DESC, score DESC, last_used_at DESC, count DESC, id ASC), prefix đúng dấu (tier 3), prefix bỏ dấu (tier 2), đ/d, typo >= 5 ký tự (pasword->password, wiifi->wifi, tier 1), ca âm wfii, trùng tên mục, phá hoà theo last_used_at/count/id, và cô lập dữ liệu giữa hai user.",
+  "$comment": "P05 plan mục 2.2 + 2.3 + Task 2 — Corpus lexical tổng hợp (150 items + 40 tags trên 2 user u1/u2, vi/en, 100% synthetic, không có hint/body) và các truy vấn kiểm thứ tự xếp hạng (tier DESC, score DESC, last_used_at DESC, count DESC, id ASC), prefix đúng dấu (tier 3), prefix bỏ dấu (tier 2, gồm cả full-width ｗｉｆｉ -> wifi theo advisor-dec-264), đ/d, typo >= 5 ký tự (pasword->password, wiifi->wifi, wi-fi->wifi, tier 1), ca âm wfii, trùng tên mục, phá hoà theo last_used_at/count/id, và cô lập dữ liệu giữa hai user.",
   "version": 1,
   "schema": "engram-search-corpus-lexical-v1",
   "users": {
@@ -1624,18 +1624,37 @@
       "q": "wi-fi",
       "scope": "item",
       "user": "u1",
+      "comment": "pg_trgm treats '-' as a word separator, so trigrams('wi-fi') = {'  f','  w',' fi',' wi','fi ','wi '} (6 trigrams). Against 'wifi' ({'  w',' wi','fi ','ifi','wif'}), similarity = 3/8 = 0.375 >= 0.35 and word_similarity = 3/8 = 0.375 -> rounded score 0.38 (tier 1 fuzzy match). Against 'wifi phòng khách', whole-string similarity = 3/20 = 0.15 < 0.35 and word_similarity = 3/8 = 0.375 < 0.50 (pg_trgm.word_similarity_threshold), so only 'wifi' is returned.",
       "expect_top": [
         {
           "id": "00000000-0001-4000-8000-000000000009",
           "name": "wifi",
           "tier": 1,
+          "score": 0.38,
           "match": "fuzzy"
+        }
+      ]
+    },
+    {
+      "name": "fullwidth-wifi-matches-ascii-wifi-tier2-prefix-folded",
+      "q": "\uff57\uff49\uff46\uff49",
+      "scope": "item",
+      "user": "u1",
+      "comment": "advisor-dec-264: NormalizeQuery keeps NFC full-width 'ｗｉｆｉ' (qn), while PostgreSQL 16 immutable_unaccent transliterates full-width Latin to 'wifi' (qa), matching 'wifi' and 'wifi phòng khách' via the folded prefix arm (tier 2 / prefix_folded) with word_similarity('wifi', ...) = 1.00.",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000009",
+          "name": "wifi",
+          "tier": 2,
+          "score": 1.0,
+          "match": "prefix_folded"
         },
         {
           "id": "00000000-0001-4000-8000-00000000000a",
           "name": "wifi phòng khách",
-          "tier": 1,
-          "match": "fuzzy"
+          "tier": 2,
+          "score": 1.0,
+          "match": "prefix_folded"
         }
       ]
     },
@@ -1726,17 +1745,20 @@
       "q": "wifi",
       "scope": "tag",
       "user": "u1",
+      "comment": "RV-T2-BE-2: Both 'wifi-khách' and 'wifi-nhà' are tier 3 exact-prefix matches and contain the full word 'wifi', so word_similarity('wifi', tag_unaccent) = 1.0 and rounded score = 1.00 for both. Tie-break by last_used_at DESC puts 'wifi-khách' (2026-10-22T12:00:00Z) before 'wifi-nhà' (2026-10-21T12:00:00Z).",
       "expect_top": [
-        {
-          "id": "00000000-0011-4000-8000-000000000002",
-          "display": "wifi-nhà",
-          "tier": 3,
-          "match": "prefix"
-        },
         {
           "id": "00000000-0011-4000-8000-000000000001",
           "display": "wifi-khách",
           "tier": 3,
+          "score": 1.0,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0011-4000-8000-000000000002",
+          "display": "wifi-nhà",
+          "tier": 3,
+          "score": 1.0,
           "match": "prefix"
         }
       ]

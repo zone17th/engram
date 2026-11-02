@@ -1,5 +1,5 @@
 {
-  "$comment": "P05 plan mục 2.2 + Task 2 — Fixture chuẩn hoá query (textnorm.NormalizeQuery) và bỏ dấu Postgres (immutable_unaccent) trên dữ liệu tổng hợp. Kiểm đủ các ca bắt buộc của plan 2.2: đường->duong, Đà Nẵng->da nang, NFD mã ≡ NFC mã, ma<->mã (giữ dấu ở qn, trùng ở qa), ĐƯỜNG, full-width ｗｉｆｉ (không NFKC nên giữ nguyên full-width và không khớp ASCII 'wifi'), c++, wi-fi<->wifi (fuzzy), emoji, '#' một mình (chuẩn hoá ra rỗng -> lỗi name_invalid/ErrEmptyQuery), İ (Turkish I-with-dot-above -> i).",
+  "$comment": "P05 plan mục 2.2 + Task 2 — Fixture chuẩn hoá query (textnorm.NormalizeQuery) và bỏ dấu Postgres (immutable_unaccent) trên dữ liệu tổng hợp. Kiểm đủ các ca bắt buộc của plan 2.2: đường->duong, Đà Nẵng->da nang, NFD mã ≡ NFC mã, ma<->mã (giữ dấu ở qn, trùng ở qa), ĐƯỜNG, full-width ｗｉｆｉ (Go không NFKC nên qn giữ full-width, nhưng unaccent của Postgres gập về 'wifi' -> khớp prefix bỏ dấu tier 2 — advisor-dec-264), c++, wi-fi<->wifi (fuzzy), emoji, '#' một mình (chuẩn hoá ra rỗng -> lỗi name_invalid/ErrEmptyQuery), İ (Turkish I-with-dot-above -> i).",
   "version": 1,
   "schema": "engram-search-query-normalize-v1",
   "cases": [
@@ -42,12 +42,12 @@
       "unaccent": "duong"
     },
     {
-      "name": "fullwidth-wifi-no-nfkc-no-ascii-match",
+      "name": "fullwidth-wifi-nfc-preserved-unaccent-folds-to-ascii",
       "input": "\uff57\uff49\uff46\uff49",
       "normalized": "\uff57\uff49\uff46\uff49",
-      "unaccent": "\uff57\uff49\uff46\uff49",
-      "does_not_match_ascii": "wifi",
-      "note": "textnorm dùng NFC (không NFKC) và Postgres unaccent không gập full-width Latin sang ASCII, nên 'ｗｉｆｉ' không khớp item 'wifi'"
+      "unaccent": "wifi",
+      "folded_prefix_matches_ascii": "wifi",
+      "note": "textnorm dùng NFC (không NFKC) nên qn giữ full-width 'ｗｉｆｉ', nhưng từ điển unaccent của Postgres 16 gập full-width Latin sang ASCII 'wifi' -> khớp item 'wifi' ở nhánh prefix bỏ dấu (tier 2 / prefix_folded — advisor-dec-264)"
     },
     {
       "name": "punctuation-middle-preserved-c-plus-plus",
