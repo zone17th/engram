@@ -428,6 +428,11 @@ async function captureCoreStates(ctx: CaptureContext): Promise<void> {
       async () => {
         await typeQuery(page, MULTI_TAG_QUERY);
         await expectRowsSettled(page, 'item');
+        // The focus-time `recent` rows stay visible and not busy for the 120 ms debounce: wait for the `zeph` server row
+        // itself (`.chip-more-mobile` is rendered whenever the row has > 2 tags, at every width; CSS hides it at >= 768).
+        await expect(
+          listboxOf(page).locator('[role="option"][data-opt-kind="item"]').filter({ has: page.locator('.chip-more-mobile') }),
+        ).toHaveCount(1, { timeout: CONTENT_A11Y_UI_WAIT_MS });
       },
       { after: async (width) => expectChipCounts(page, width), requireRows: true },
     );
@@ -735,6 +740,12 @@ async function assertCoarseRows(browser: Browser, sourcePage: Page): Promise<voi
     await omnibox.focus();
     await omnibox.pressSequentially(MULTI_TAG_QUERY);
     await expectRowsSettled(coarsePage, 'item');
+    // Same focus -> recent -> type window as the chips step: wait for the `zeph` server row (it has `.chip-more-mobile`).
+    await expect(
+      listboxOf(coarsePage)
+        .locator('[role="option"][data-opt-kind="item"]')
+        .filter({ has: coarsePage.locator('.chip-more-mobile') }),
+    ).toHaveCount(1, { timeout: CONTENT_A11Y_UI_WAIT_MS });
     await expect(listboxOf(coarsePage).locator('[role="option"][data-opt-kind="create"]')).toHaveCount(1);
     const [rows] = await measureCoarseTouchTargets(coarsePage, ['#omni-listbox .sugg-row']);
     expect(rows!.count).toBeGreaterThanOrEqual(2);
