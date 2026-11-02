@@ -349,9 +349,9 @@ func (a *fakeAuth) Authenticate(_ context.Context, access string) (authctx.Princ
 //     (a) `suggest.NewNoopNearSource()` (Phase A baseline),
 //     (b) `semantic.Runtime.NearSource()` with semantic disabled at the server, and
 //     (c) `semantic.Runtime.NearSource()` with semantic enabled and returning near rows.
-//   - Also exercises `ExactVectorSearcher` against the real PostgreSQL
-//     `item_embedding_g1` and `tag_embedding_g1` partition tables created by
-//     `generation.Bootstrap`.
+//   - Also exercises `StoreVectorSearcher` (backed by Task 14 `store.VectorSearch`)
+//     against the real PostgreSQL `item_embedding_g1` and `tag_embedding_g1`
+//     partition tables created by `generation.Bootstrap`.
 func TestSuggestWithRealNearSourceLexicalByteIdentical(t *testing.T) {
 	pool := newTestPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -466,7 +466,7 @@ func TestSuggestWithRealNearSourceLexicalByteIdentical(t *testing.T) {
 	}, pool, generation.NewPinner(pool, generation.WithPinNowFunc(clk.Now)), clk, metrics, nil)
 	disabledRouter := buildRouter(disabledRT.NearSource())
 
-	// Router 3: Real semantic.Runtime with semantic enabled + ExactVectorSearcher against Postgres.
+	// Router 3: Real semantic.Runtime with semantic enabled + StoreVectorSearcher against Postgres.
 	spyProv := semantictest.NewSpyProvider(teiID) // returns [1,0,0,0,0,0,0,0]
 	enabledRT := semantic.NewRuntime(semantic.RuntimeConfig{
 		Enabled:        true,
@@ -474,7 +474,7 @@ func TestSuggestWithRealNearSourceLexicalByteIdentical(t *testing.T) {
 		ClientSet:      embedding.NewClientSet(embedding.NewClient(spyProv, "", ""), nil),
 		Pinner:         generation.NewPinner(pool, generation.WithPinNowFunc(clk.Now)),
 		Calibration:    cal,
-		VectorSearcher: semantic.NewExactVectorSearcher(pool),
+		VectorSearcher: semantic.NewStoreVectorSearcher(pool),
 		SettingsReader: semantic.NewDBUserSettingsReader(pool),
 		ItemTagLoader:  semantic.NewDBItemTagRefLoader(pool),
 		Metrics:        metrics,

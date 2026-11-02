@@ -3,16 +3,15 @@ package semantic
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/pgvector/pgvector-go"
 
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
+	"github.com/zone17th/engram/apps/api/internal/embedding/store"
+	"github.com/zone17th/engram/apps/api/internal/obs"
 )
 
 // DefaultVectorBranchTimeout is the default per-branch budget (80 ms) for item
@@ -27,20 +26,49 @@ const DefaultNearCandidateK = 20
 // match the pinned generation's Identity.Dims (plan P05 mục 2.15, 2.16).
 var ErrDimsMismatch = errors.New("semantic: query vector dimensions do not match pinned generation")
 
-// VectorSearchKnobs holds the query-time vector search parameters passed to
-// VectorSearcher (mirroring Task 14 store.VectorSearchKnobs, plan P05 mục 2.13, 2.16).
+// VectorPath identifies the execution path taken by VectorSearcher (aligned
+// with Task 14 store.VectorPath, plan P05 mục 2.16, 2.21).
+type VectorPath = store.VectorPath
+
+const (
+	VectorPathExact            VectorPath = store.VectorPathExact
+	VectorPathANN              VectorPath = store.VectorPathANN
+	VectorPathANNFallbackExact VectorPath = store.VectorPathANNFallbackExact
+	VectorPathANNShort         VectorPath = store.VectorPathANNShort
+)
+
+// VectorSearchKnobs holds the query-time vector search parameters and optional
+// metrics/clock dependencies passed to VectorSearcher (aligned with Task 14
+// store.VectorSearchKnobs, plan P05 mục 2.13, 2.16, 2.21; RV-T12-BE-6).
 type VectorSearchKnobs struct {
-	ExactMaxVectors         int
-	ExactFallbackMaxVectors int
-	HNSWEfSearch            int
-	HNSWMaxScanTuples       int
-	HNSWIterativeScan       string
-	VectorBranchTimeout     time.Duration
-	VectorFallbackMinBudget time.Duration
+	ExactMaxVectors    int
+	FallbackMaxVectors int
+	EfSearch           int
+	MaxScanTuples      int
+	IterativeScan      string
+	BranchTimeout      time.Duration
+	FallbackMinBudget  time.Duration
+	Metrics            *obs.SearchMetrics
+	Now                func() time.Time
 }
 
-// VectorHit represents a single candidate returned by VectorSearcher (mirroring
-// Task 14 store.Hit, plan P05 mục 2.16, 2.19).
+// DefaultVectorSearchKnobs returns the default query-time vector search knobs
+// matching store.DefaultVectorSearchKnobs().
+func DefaultVectorSearchKnobs() VectorSearchKnobs {
+	d := store.DefaultVectorSearchKnobs()
+	return VectorSearchKnobs{
+		ExactMaxVectors:    d.ExactMaxVectors,
+		FallbackMaxVectors: d.FallbackMaxVectors,
+		EfSearch:           d.EfSearch,
+		MaxScanTuples:      d.MaxScanTuples,
+		IterativeScan:      d.IterativeScan,
+		BranchTimeout:      d.BranchTimeout,
+		FallbackMinBudget:  d.FallbackMinBudget,
+	}
+}
+
+// VectorHit represents a single candidate returned by VectorSearcher (aligned
+// with Task 14 store.Hit, plan P05 mục 2.16, 2.19; RV-T12-BE-6).
 //
 // Security invariant (user-dec-016): never includes item.hint or entry content.
 // Cos is used only in-memory by AppendZone to order the near zone and is never
@@ -51,27 +79,39 @@ type VectorHit struct {
 	Dist       float64
 	Name       string    // populated when corpus == generation.CorpusItem
 	Display    string    // populated when corpus == generation.CorpusTag
-	Count      int32     // entry_count (item) or item_count (tag)
+	Count      int       // entry_count (item) or item_count (tag)
 	LastUsedAt time.Time // UTC
 	CreatedAt  time.Time // UTC (populated for items)
 }
 
 // VectorPathStats records the execution path and timeout outcome of a single
-// corpus vector search branch (mirroring Task 14 store.PathStats).
+// corpus vector search branch (aligned with Task 14 store.PathStats; RV-T12-BE-6).
 type VectorPathStats struct {
-	Path      string // "exact" | "ann" | "ann_fallback_exact" | "ann_short"
-	Underfill bool
-	TimedOut  bool
+	Corpus        generation.Corpus
+	Path          VectorPath // "exact" | "ann" | "ann_fallback_exact" | "ann_short"
+	CappedCount   int
+	ANNCandidates int
+	Returned      int
+	Underfill     bool
+	FallbackUsed  bool
+	TimedOut      bool
 }
 
-// VectorSearcher abstracts the per-corpus vector search execution (plan P05
-// mục 2.16, 2.19, Task 12 / Task 14 seam).
+// VectorSearcher abstracts the per-corpus vector search execution for unit spies
+// while production uses StoreVectorSearcher backed by Task 14 store.VectorSearch
+// (plan P05 mục 2.16, 2.19, Task 12 / Task 14 seam; dec-293, RV-T12-BE-6).
 //
-// Contract (matching Task 14 store.VectorSearch):
-//   - Returns ErrDimsMismatch before any SQL when len(qvec) != pin.Identity.Dims.
-//   - On SQL statement_timeout (57014) or branch deadline exceeded, returns
-//     partial/empty hits with PathStats{TimedOut: true} and err == nil.
-//   - On caller context cancellation, returns context.Canceled.
+// Contract & adapter conversions (StoreVectorSearcher -> store.VectorSearch):
+//   - Forwards VectorSearchKnobs (ExactMaxVectors, FallbackMaxVectors, EfSearch,
+//     MaxScanTuples, IterativeScan, BranchTimeout, FallbackMinBudget) plus
+//     obs.Metrics.Search and the runtime clock (Now) into store.VectorSearchKnobs.
+//   - Normalizes store.ErrDimsMismatch to semantic.ErrDimsMismatch before any SQL
+//     when len(qvec) != pin.Identity.Dims so Candidates records
+//     embedding_generation_mismatch_total{reason="dims"} and degrades.
+//   - Maps SQL statement_timeout (57014) or branch deadline expiry (PathStats.TimedOut
+//     with partial hits and err == nil) to request-local degraded in Candidates
+//     without touching the provider circuit breaker.
+//   - Propagates caller context.Canceled as context.Canceled.
 type VectorSearcher interface {
 	VectorSearch(
 		ctx context.Context,
@@ -85,27 +125,20 @@ type VectorSearcher interface {
 	) ([]VectorHit, VectorPathStats, error)
 }
 
-// VectorTxStarter abstracts pgxpool.Pool.BeginTx for ExactVectorSearcher.
-type VectorTxStarter interface {
-	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+// StoreVectorSearcher adapts Task 14 store.VectorSearch to VectorSearcher.
+type StoreVectorSearcher struct {
+	db store.VectorQueryDB
 }
 
-// ExactVectorSearcher is the minimal exact vector search implementation used
-// by semantic.Runtime until Task 14 (store.VectorSearch with exact/ANN/underfill)
-// merges (plan P05 Task 12, SPEC §6.3).
-type ExactVectorSearcher struct {
-	txStarter VectorTxStarter
+// NewStoreVectorSearcher constructs a VectorSearcher backed by store.VectorSearch
+// over db (typically *pgxpool.Pool).
+func NewStoreVectorSearcher(db store.VectorQueryDB) *StoreVectorSearcher {
+	return &StoreVectorSearcher{db: db}
 }
 
-// NewExactVectorSearcher constructs an ExactVectorSearcher over txStarter
-// (typically *pgxpool.Pool).
-func NewExactVectorSearcher(txStarter VectorTxStarter) *ExactVectorSearcher {
-	return &ExactVectorSearcher{txStarter: txStarter}
-}
-
-// VectorSearch executes an exact cosine-similarity query against the pinned
-// generation's table within a read-only transaction bounded by deadline.
-func (s *ExactVectorSearcher) VectorSearch(
+// VectorSearch delegates to store.VectorSearch, forwarding knobs, metrics, and
+// clock, and converting store.Hit / store.PathStats / store.ErrDimsMismatch.
+func (s *StoreVectorSearcher) VectorSearch(
 	ctx context.Context,
 	pin generation.Pin,
 	userID uuid.UUID,
@@ -116,198 +149,77 @@ func (s *ExactVectorSearcher) VectorSearch(
 	knobs VectorSearchKnobs,
 ) ([]VectorHit, VectorPathStats, error) {
 	if pin.Identity.Dims <= 0 || len(qvec) != pin.Identity.Dims {
-		return nil, VectorPathStats{}, ErrDimsMismatch
+		return nil, VectorPathStats{Corpus: corpus}, ErrDimsMismatch
 	}
-	if err := ctx.Err(); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, VectorPathStats{}, context.Canceled
-		}
-		if isSQLOrBranchTimeout(err) {
-			return nil, VectorPathStats{Path: "exact", TimedOut: true}, nil
-		}
-		return nil, VectorPathStats{}, err
-	}
-	if s == nil || s.txStarter == nil {
-		return nil, VectorPathStats{Path: "exact"}, nil
+	if s == nil || s.db == nil {
+		return nil, VectorPathStats{Corpus: corpus, Path: VectorPathExact}, nil
 	}
 	if k <= 0 {
 		k = DefaultNearCandidateK
 	}
 
-	ident, err := pin.TableIdent(corpus)
+	storeKnobs := store.DefaultVectorSearchKnobs()
+	if knobs.ExactMaxVectors > 0 || knobs.FallbackMaxVectors > 0 {
+		storeKnobs.ExactMaxVectors = knobs.ExactMaxVectors
+	}
+	if knobs.FallbackMaxVectors > 0 {
+		storeKnobs.FallbackMaxVectors = knobs.FallbackMaxVectors
+	}
+	if storeKnobs.FallbackMaxVectors < storeKnobs.ExactMaxVectors {
+		storeKnobs.FallbackMaxVectors = storeKnobs.ExactMaxVectors
+	}
+	if knobs.EfSearch > 0 {
+		storeKnobs.EfSearch = knobs.EfSearch
+	}
+	if knobs.MaxScanTuples > 0 {
+		storeKnobs.MaxScanTuples = knobs.MaxScanTuples
+	}
+	if knobs.IterativeScan != "" {
+		storeKnobs.IterativeScan = knobs.IterativeScan
+	}
+	if knobs.BranchTimeout > 0 {
+		storeKnobs.BranchTimeout = knobs.BranchTimeout
+	}
+	if knobs.FallbackMinBudget > 0 {
+		storeKnobs.FallbackMinBudget = knobs.FallbackMinBudget
+	}
+	if storeKnobs.FallbackMinBudget > storeKnobs.BranchTimeout {
+		storeKnobs.FallbackMinBudget = storeKnobs.BranchTimeout
+	}
+	storeKnobs.Metrics = knobs.Metrics
+	storeKnobs.Now = knobs.Now
+
+	hits, st, err := store.VectorSearch(ctx, s.db, pin, userID, corpus, qvec, k, deadline, storeKnobs)
+	outStats := VectorPathStats{
+		Corpus:        st.Corpus,
+		Path:          st.Path,
+		CappedCount:   st.CappedCount,
+		ANNCandidates: st.ANNCandidates,
+		Returned:      st.Returned,
+		Underfill:     st.Underfill,
+		FallbackUsed:  st.FallbackUsed,
+		TimedOut:      st.TimedOut,
+	}
+	outHits := make([]VectorHit, len(hits))
+	for i, h := range hits {
+		outHits[i] = VectorHit{
+			ID:         h.ID,
+			Cos:        h.Cos,
+			Dist:       h.Dist,
+			Name:       h.Name,
+			Display:    h.Display,
+			Count:      h.Count,
+			LastUsedAt: h.LastUsedAt.UTC(),
+			CreatedAt:  h.CreatedAt.UTC(),
+		}
+	}
 	if err != nil {
-		return nil, VectorPathStats{}, err
+		if errors.Is(err, store.ErrDimsMismatch) {
+			return nil, outStats, ErrDimsMismatch
+		}
+		return outHits, outStats, err
 	}
-	tbl := ident.Sanitize()
-
-	branchCtx := ctx
-	var cancel context.CancelFunc
-	if !deadline.IsZero() {
-		branchCtx, cancel = context.WithDeadline(ctx, deadline)
-		defer cancel()
-	}
-
-	tx, err := s.txStarter.BeginTx(branchCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		if isCallerCanceled(ctx, err) {
-			return nil, VectorPathStats{}, context.Canceled
-		}
-		if isSQLOrBranchTimeout(err) {
-			return nil, VectorPathStats{Path: "exact", TimedOut: true}, nil
-		}
-		return nil, VectorPathStats{}, err
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
-	timeoutMS := int64(DefaultVectorBranchTimeout / time.Millisecond)
-	if knobs.VectorBranchTimeout > 0 {
-		timeoutMS = max(1, knobs.VectorBranchTimeout.Milliseconds())
-	}
-	if !deadline.IsZero() {
-		if rem := time.Until(deadline).Milliseconds(); rem > 0 && rem < timeoutMS {
-			timeoutMS = rem
-		}
-	}
-	if _, err := tx.Exec(branchCtx, fmt.Sprintf("SET LOCAL statement_timeout = '%dms'", timeoutMS)); err != nil {
-		if isCallerCanceled(ctx, err) {
-			return nil, VectorPathStats{}, context.Canceled
-		}
-		if isSQLOrBranchTimeout(err) {
-			return nil, VectorPathStats{Path: "exact", TimedOut: true}, nil
-		}
-		return nil, VectorPathStats{}, err
-	}
-
-	vecParam := pgvector.NewVector(qvec)
-	switch corpus {
-	case generation.CorpusItem:
-		query := `WITH tenant_vecs AS MATERIALIZED (
-			SELECT target_id, embedding
-			FROM ` + tbl + `
-			WHERE user_id = $1
-		)
-		SELECT
-			i.id,
-			i.name,
-			i.entry_count,
-			i.last_used_at,
-			i.created_at,
-			(1 - (e.embedding <=> $2))::float8 AS cos_sim,
-			(e.embedding <=> $2)::float8 AS dist
-		FROM tenant_vecs e
-		JOIN item i ON i.user_id = $1 AND i.id = e.target_id
-		WHERE i.deleted_at IS NULL
-		  AND (1 - (e.embedding <=> $2)) >= $3
-		ORDER BY dist ASC, i.id ASC
-		LIMIT $4`
-
-		rows, err := tx.Query(branchCtx, query, userID, vecParam, pin.MinCos, k)
-		if err != nil {
-			if isCallerCanceled(ctx, err) {
-				return nil, VectorPathStats{}, context.Canceled
-			}
-			if isSQLOrBranchTimeout(err) {
-				return nil, VectorPathStats{Path: "exact", TimedOut: true}, nil
-			}
-			return nil, VectorPathStats{}, err
-		}
-		defer rows.Close()
-
-		var hits []VectorHit
-		for rows.Next() {
-			var (
-				h          VectorHit
-				lastUsedAt time.Time
-				createdAt  time.Time
-			)
-			if err := rows.Scan(&h.ID, &h.Name, &h.Count, &lastUsedAt, &createdAt, &h.Cos, &h.Dist); err != nil {
-				if isCallerCanceled(ctx, err) {
-					return nil, VectorPathStats{}, context.Canceled
-				}
-				if isSQLOrBranchTimeout(err) {
-					return nil, VectorPathStats{Path: "exact", TimedOut: true}, nil
-				}
-				return nil, VectorPathStats{}, err
-			}
-			h.LastUsedAt = lastUsedAt.UTC()
-			h.CreatedAt = createdAt.UTC()
-			hits = append(hits, h)
-		}
-		if err := rows.Err(); err != nil {
-			if isCallerCanceled(ctx, err) {
-				return nil, VectorPathStats{}, context.Canceled
-			}
-			if isSQLOrBranchTimeout(err) {
-				return nil, VectorPathStats{Path: "exact", TimedOut: true}, nil
-			}
-			return nil, VectorPathStats{}, err
-		}
-		return hits, VectorPathStats{Path: "exact"}, nil
-
-	case generation.CorpusTag:
-		query := `WITH tenant_vecs AS MATERIALIZED (
-			SELECT target_id, embedding
-			FROM ` + tbl + `
-			WHERE user_id = $1
-		)
-		SELECT
-			t.id,
-			t.display,
-			t.item_count,
-			t.last_used_at,
-			(1 - (e.embedding <=> $2))::float8 AS cos_sim,
-			(e.embedding <=> $2)::float8 AS dist
-		FROM tenant_vecs e
-		JOIN tag t ON t.user_id = $1 AND t.id = e.target_id
-		WHERE t.deleted_at IS NULL
-		  AND (1 - (e.embedding <=> $2)) >= $3
-		ORDER BY dist ASC, t.id ASC
-		LIMIT $4`
-
-		rows, err := tx.Query(branchCtx, query, userID, vecParam, pin.MinCos, k)
-		if err != nil {
-			if isCallerCanceled(ctx, err) {
-				return nil, VectorPathStats{}, context.Canceled
-			}
-			if isSQLOrBranchTimeout(err) {
-				return nil, VectorPathStats{Path: "exact", TimedOut: true}, nil
-			}
-			return nil, VectorPathStats{}, err
-		}
-		defer rows.Close()
-
-		var hits []VectorHit
-		for rows.Next() {
-			var (
-				h          VectorHit
-				lastUsedAt time.Time
-			)
-			if err := rows.Scan(&h.ID, &h.Display, &h.Count, &lastUsedAt, &h.Cos, &h.Dist); err != nil {
-				if isCallerCanceled(ctx, err) {
-					return nil, VectorPathStats{}, context.Canceled
-				}
-				if isSQLOrBranchTimeout(err) {
-					return nil, VectorPathStats{Path: "exact", TimedOut: true}, nil
-				}
-				return nil, VectorPathStats{}, err
-			}
-			h.LastUsedAt = lastUsedAt.UTC()
-			hits = append(hits, h)
-		}
-		if err := rows.Err(); err != nil {
-			if isCallerCanceled(ctx, err) {
-				return nil, VectorPathStats{}, context.Canceled
-			}
-			if isSQLOrBranchTimeout(err) {
-				return nil, VectorPathStats{Path: "exact", TimedOut: true}, nil
-			}
-			return nil, VectorPathStats{}, err
-		}
-		return hits, VectorPathStats{Path: "exact"}, nil
-
-	default:
-		return nil, VectorPathStats{}, generation.ErrInvalidCorpus
-	}
+	return outHits, outStats, nil
 }
 
 func isCallerCanceled(parentCtx context.Context, err error) bool {

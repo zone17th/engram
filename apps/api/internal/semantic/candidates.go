@@ -206,7 +206,7 @@ func (r *Runtime) Candidates(
 	runItems := scope == "" || scope == suggest.ScopeAll || scope == suggest.ScopeItem
 	runTags := scope == "" || scope == suggest.ScopeAll || scope == suggest.ScopeTag
 
-	branchTimeout := r.knobs.VectorBranchTimeout
+	branchTimeout := r.knobs.BranchTimeout
 	if branchTimeout <= 0 {
 		branchTimeout = DefaultVectorBranchTimeout
 	}
@@ -266,7 +266,7 @@ func (r *Runtime) Candidates(
 			ID:         h.ID,
 			Cos:        h.Cos,
 			Name:       h.Name,
-			Count:      h.Count,
+			Count:      int32(h.Count),
 			LastUsedAt: h.LastUsedAt.UTC(),
 			CreatedAt:  h.CreatedAt.UTC(),
 			Tags:       []TagRef{},
@@ -308,7 +308,7 @@ func (r *Runtime) Candidates(
 			ID:         h.ID,
 			Cos:        h.Cos,
 			Display:    h.Display,
-			Count:      h.Count,
+			Count:      int32(h.Count),
 			LastUsedAt: h.LastUsedAt.UTC(),
 		})
 	}

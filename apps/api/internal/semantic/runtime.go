@@ -158,13 +158,19 @@ func NewRuntime(rc RuntimeConfig) *Runtime {
 		cal = embedding.CalibrationLookupFor(rc.AppEnv)
 	}
 	knobs := rc.Knobs
-	if knobs.VectorBranchTimeout <= 0 {
-		knobs.VectorBranchTimeout = DefaultVectorBranchTimeout
+	if knobs.BranchTimeout <= 0 {
+		knobs.BranchTimeout = DefaultVectorBranchTimeout
+	}
+	if knobs.Now == nil {
+		knobs.Now = clk.Now
 	}
 
 	var embMetrics *obs.EmbeddingMetrics
 	if rc.Metrics != nil {
 		embMetrics = rc.Metrics.Embedding
+		if knobs.Metrics == nil {
+			knobs.Metrics = rc.Metrics.Search
+		}
 	}
 
 	breakers := make(map[string]*embedding.Breaker, 2)
@@ -269,19 +275,19 @@ func NewRuntimeFromConfig(
 		shadowProv = strings.TrimSpace(cfg.EmbeddingShadowProvider)
 		appEnv = cfg.Env
 		knobs = VectorSearchKnobs{
-			ExactMaxVectors:         cfg.SearchExactMaxVectors,
-			ExactFallbackMaxVectors: cfg.SearchExactFallbackMaxVectors,
-			HNSWEfSearch:            cfg.SearchHNSWEfSearch,
-			HNSWMaxScanTuples:       cfg.SearchHNSWMaxScanTuples,
-			HNSWIterativeScan:       cfg.SearchHNSWIterativeScan,
-			VectorBranchTimeout:     cfg.SearchVectorBranchTimeout,
-			VectorFallbackMinBudget: cfg.SearchVectorFallbackMinBudget,
+			ExactMaxVectors:    cfg.SearchExactMaxVectors,
+			FallbackMaxVectors: cfg.SearchExactFallbackMaxVectors,
+			EfSearch:           cfg.SearchHNSWEfSearch,
+			MaxScanTuples:      cfg.SearchHNSWMaxScanTuples,
+			IterativeScan:      cfg.SearchHNSWIterativeScan,
+			BranchTimeout:      cfg.SearchVectorBranchTimeout,
+			FallbackMinBudget:  cfg.SearchVectorFallbackMinBudget,
 		}
 	}
 	if pool != nil {
 		settingsReader = &dbUserSettingsReader{db: pool}
 		tagLoader = &dbItemTagRefLoader{db: pool}
-		searcher = NewExactVectorSearcher(pool)
+		searcher = NewStoreVectorSearcher(pool)
 		if pinner == nil && enabled && prov != embedding.ProviderNoop {
 			pinner = generation.NewPinner(pool, generation.WithPinNowFunc(clk.Now))
 		}
