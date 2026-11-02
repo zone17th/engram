@@ -254,6 +254,10 @@ export function Omnibox({
   const searchAbortRef = useRef<AbortController | null>(null);
   const suggestAbortControllersRef = useRef<Set<AbortController>>(new Set());
   const suggestDebounceTimerRef = useRef<number | null>(null);
+  // Set by the native `input` listener (observe-only), consumed by `handleInputChange` (see native listener effect).
+  const nativeInputPendingRef = useRef(false);
+  const nativeInputFlagTimerRef = useRef<number | null>(null);
+  const compositionDeferTimerRef = useRef<number | null>(null);
   const gateRef = useRef<SendGateController | null>(null);
   if (!gateRef.current) {
     gateRef.current = createSendGate('');
@@ -797,6 +801,30 @@ export function Omnibox({
     const gate = gateRef.current;
     if (!el || !gate) return;
 
+    // CI-41431143632-E2E-QA402 / CI-41431143632-SMOKE-LOCKED: these native listeners must only OBSERVE (mutate the
+    // gate's own ref state) and must never call a React state setter or dispatch to the merge reducer. In a real
+    // browser the native `input` event reaches the textarea listener BEFORE React's root `onChange` listener, and
+    // React 19 flushes a sync-lane update scheduled from a native listener in a microtask that runs between the two
+    // listeners. That render re-applies the stale controlled `value={inputValue}` to the DOM, wiping the typed /
+    // `fill()`ed text before `onChange` can read it (jsdom's script `dispatchEvent` never exposes this).
+    // Render ticks and the debounced `/suggest` are therefore driven from `handleInputChange` (React's own event
+    // dispatch, after the controlled state is committed) or from a macrotask for composition events.
+    const clearNativeInputFlagTimer = () => {
+      if (nativeInputFlagTimerRef.current !== null) {
+        window.clearTimeout(nativeInputFlagTimerRef.current);
+        nativeInputFlagTimerRef.current = null;
+      }
+    };
+    const deferComposition = (fn: () => void) => {
+      if (compositionDeferTimerRef.current !== null) {
+        window.clearTimeout(compositionDeferTimerRef.current);
+      }
+      compositionDeferTimerRef.current = window.setTimeout(() => {
+        compositionDeferTimerRef.current = null;
+        fn();
+      }, 0);
+    };
+
     const onNativeBeforeInput = (event: Event) => {
       if (activePlanRef.current?.running) return;
       const inputEvt = event as InputEvent;
@@ -817,16 +845,22 @@ export function Omnibox({
         isComposing: 'isComposing' in inputEvt ? Boolean(inputEvt.isComposing) : undefined,
         value: el.value,
       });
-      setTabCannotFill(false);
-      setGateRenderTick((prev) => prev + 1);
-      scheduleKeystrokeSuggest();
+      // Hand off to `handleInputChange` (React `onChange`) which renders + schedules `/suggest` for this edit.
+      nativeInputPendingRef.current = true;
+      clearNativeInputFlagTimer();
+      nativeInputFlagTimerRef.current = window.setTimeout(() => {
+        nativeInputFlagTimerRef.current = null;
+        nativeInputPendingRef.current = false;
+      }, 0);
     };
 
     const onNativeCompositionStart = () => {
       if (activePlanRef.current?.running) return;
       clearSuggestDebounceTimer();
       gate.handleCompositionStart(el.value);
-      setGateRenderTick((prev) => prev + 1);
+      deferComposition(() => {
+        setGateRenderTick((prev) => prev + 1);
+      });
     };
 
     const onNativeCompositionEnd = (event: Event) => {
@@ -836,8 +870,10 @@ export function Omnibox({
         value: el.value,
         data: typeof compEvt.data === 'string' ? compEvt.data : undefined,
       });
-      setGateRenderTick((prev) => prev + 1);
-      scheduleKeystrokeSuggest();
+      deferComposition(() => {
+        setGateRenderTick((prev) => prev + 1);
+        scheduleKeystrokeSuggest();
+      });
     };
 
     el.addEventListener('beforeinput', onNativeBeforeInput);
@@ -850,6 +886,12 @@ export function Omnibox({
       el.removeEventListener('input', onNativeInput);
       el.removeEventListener('compositionstart', onNativeCompositionStart);
       el.removeEventListener('compositionend', onNativeCompositionEnd);
+      clearNativeInputFlagTimer();
+      nativeInputPendingRef.current = false;
+      if (compositionDeferTimerRef.current !== null) {
+        window.clearTimeout(compositionDeferTimerRef.current);
+        compositionDeferTimerRef.current = null;
+      }
     };
   }, [clearSuggestDebounceTimer, scheduleKeystrokeSuggest]);
 
@@ -1643,6 +1685,13 @@ export function Omnibox({
       nextValue,
     );
     setTabCannotFill(false);
+    if (nativeInputPendingRef.current) {
+      // Native `input` listener only observed this edit; render + debounced `/suggest` are driven from here so no
+      // React update is ever scheduled between the native listener and `onChange` (CI-41431143632-E2E-QA402).
+      nativeInputPendingRef.current = false;
+      setGateRenderTick((prev) => prev + 1);
+      scheduleKeystrokeSuggest();
+    }
     setGuardKind(null);
     setActionErrorCode(null);
     clearLockClearedNotice();
