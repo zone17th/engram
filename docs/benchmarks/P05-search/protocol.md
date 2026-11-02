@@ -37,14 +37,14 @@ Quy trình:
 
 1. **Bảng sizing từ smoke (Task 10):** run smoke xuất byte/vector (heap + HNSW) và giây build HNSW/vector, ngoại suy lên `full`, ghi vào report smoke.
 2. Lead chọn runner/disk theo bảng sizing đó **trước** Task 23.
-3. **Precheck:** đầu job in `df -h` và `free -m`. Disk trống < 1,5 × ước lượng → job dừng, fail sớm kèm số.
+3. **Precheck:** ở **đầu job, trước khi seed dataset và dựng HNSW** (mục 4 bước 2), in `df -h` và `free -m`. Disk trống < 1,5 × ước lượng → job dừng, fail sớm kèm số.
 4. **Quy tắc dừng:** chỉ được giảm tenant **nhỏ**. **Không bao giờ** giảm whale 100k + 20k, và không giảm tenant trung bình colocation. Vẫn không đủ → cần `user-dec` (runner lớn hơn hoặc disk ngoài) ghi trước run kế; không tự đổi profile.
 
 ## 4. Quy trình chạy
 
 1. Xác nhận [targets.md](targets.md) đã merge và `min_cos` benchmark đã được điền (mục 7).
-2. Tạo DB từ `POSTGRES_IMAGE` pin; tạo bảng g1 bằng hàm DDL của Task 6 (`embedding_generation_create_tables`); seed dataset (in hash dataset); dựng HNSW theo partition.
-3. Precheck (mục 3).
+2. **Precheck trước mọi cấp phát nặng (mục 3):** in `df -h` và `free -m`; disk trống < 1,5 × ước lượng → dừng fail sớm kèm số. Bước này chạy **trước** seed dataset và dựng HNSW, để runner không cạn disk/RAM giữa chừng.
+3. Tạo DB từ `POSTGRES_IMAGE` pin; tạo bảng g1 bằng hàm DDL của Task 6 (`embedding_generation_create_tables`); seed dataset (in hash dataset); dựng HNSW theo partition.
 4. Chạy kịch bản qua `router.ServeHTTP`; rate limit nới (ghi giá trị đã dùng vào report).
 5. Closed-loop **1/8/32 client**, target áp ở **8**; warm-up bỏ; **≥ 2000 request mỗi kịch bản**.
 6. Cache mode: lexical; hybrid cache hit; hybrid cache miss với stub **90 ms** (OQ-21); thông tin `openai_compat` ~2,3 s (số vận hành, không phải target).
