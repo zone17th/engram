@@ -509,15 +509,13 @@ func TestGenerationMismatchSnoozes(t *testing.T) {
 	cs := embedding.NewClientSet(configuredClient, nil)
 	baseIdent := configuredClient.Identity
 
+	// Seed every generation that transitions out of 'pending' (g1 active, g3 and
+	// g4 retired) BEFORE seeding g2 in state 'pending' so the DB partial unique
+	// index embedding_generation_one_pending is respected at every step (EJ2-2).
 	// g1: different model_version (same model ID "tei/BAAI/bge-m3").
 	diffVersionIdent := baseIdent
 	diffVersionIdent.ModelVersion = "rev-9999;qp=00000000;dp=11111111"
 	gDiffVersion := seedGenerationForIdentity(t, ctx, pool, 1, diffVersionIdent, generation.StateActive, nil)
-
-	// g2: different doc_prefix (same model ID and version string).
-	diffDocPrefixIdent := baseIdent
-	diffDocPrefixIdent.DocPrefix = "document: "
-	gDiffDocPrefix := seedGenerationForIdentity(t, ctx, pool, 2, diffDocPrefixIdent, generation.StatePending, nil)
 
 	// g3: different preprocessing (same model ID, version, prefixes).
 	diffPreprocIdent := baseIdent
@@ -528,6 +526,10 @@ func TestGenerationMismatchSnoozes(t *testing.T) {
 	// g4: exact 7-field match with non-empty doc_prefix = "passage: ".
 	gMatch := seedGenerationForIdentity(t, ctx, pool, 4, baseIdent, generation.StateRetired, &rollUntil)
 
+	// g2: different doc_prefix (same model ID and version string), stays pending.
+	diffDocPrefixIdent := baseIdent
+	diffDocPrefixIdent.DocPrefix = "document: "
+	gDiffDocPrefix := seedGenerationForIdentity(t, ctx, pool, 2, diffDocPrefixIdent, generation.StatePending, nil)
 	user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "mismatch-snooze@example.com", Locale: "en"})
 	if err != nil {
 		t.Fatalf("InsertUser: %v", err)
