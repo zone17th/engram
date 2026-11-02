@@ -896,7 +896,10 @@ jobs:
           for name in \
             TestRecallDefinitionEdgeCases TestHarnessCatchesSlowLexical TestHarnessCatchesLowRecall \
             TestNearestRankPercentiles TestEvaluateLatencyBoundaries TestEstimateDiskBytes \
-            TestMixKindProportions TestQuerySetsAreDeterministic; do
+            TestMixKindProportions TestQuerySetsAreDeterministic \
+            TestC2UnderfillIsOverEveryMeasuredQuery TestC2BranchLatencyCoversEveryRequest \
+            TestHybridScenarioRequiresEverySemanticSuccess TestMarkdownTablesEscapePipes \
+            TestParseANNPlan TestBenchHarnessUsesDefaultPlanner; do
             if ! grep -Eq "^[[:space:]]*--- PASS: ${name} \(" "$SEARCH_BENCH_OUT_DIR/self-checks.log"; then
               echo "::error::self-check ${name} has no '--- PASS:' line (skipped, filtered out or failed)"
               status=1
