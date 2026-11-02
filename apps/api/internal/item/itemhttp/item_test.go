@@ -12,12 +12,32 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/zone17th/engram/apps/api/internal/content/contenttest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/item"
 )
+
+type spyEmbedHook struct {
+	onUpsert func(ctx context.Context, tx pgx.Tx, userID uuid.UUID, kind item.EmbedKind, id uuid.UUID, input string) error
+	onDelete func(ctx context.Context, tx pgx.Tx, userID uuid.UUID, kind item.EmbedKind, id uuid.UUID) error
+}
+
+func (s spyEmbedHook) OnUpsert(ctx context.Context, tx pgx.Tx, userID uuid.UUID, kind item.EmbedKind, id uuid.UUID, input string) error {
+	if s.onUpsert != nil {
+		return s.onUpsert(ctx, tx, userID, kind, id, input)
+	}
+	return nil
+}
+
+func (s spyEmbedHook) OnDelete(ctx context.Context, tx pgx.Tx, userID uuid.UUID, kind item.EmbedKind, id uuid.UUID) error {
+	if s.onDelete != nil {
+		return s.onDelete(ctx, tx, userID, kind, id)
+	}
+	return nil
+}
 
 func decodeSummary(t testing.TB, raw string) item.Summary {
 	t.Helper()
@@ -832,32 +852,45 @@ func TestItemsListQueryEscapesWildcardsRejects201RunesAndCursorSortMismatch(t *t
 //   - IT4-R1-2: phân biệt trường bị bỏ qua với `null` tường minh (`id:null`, `name:null` -> `400 invalid_request`, không ghi DB).
 //   - IT4-R1-3: từ chối byte UTF-8 không hợp lệ (`0xff`) trước khi decode JSON làm mất thông tin (`400 name_invalid` / `400 hint_invalid`),
 //     nhưng vẫn chấp nhận ký tự U+FFFD hợp lệ.
-//   - Hook giữ chỗ `Service.SetEmbedEnqueueHook` / `EnqueueEmbed` chỉ truyền `(userID, itemID)`.
+//   - Hook transactional `Service.SetEmbedHook` / `EmbedHook` của P05 (Task 11b).
 func TestClientIDConflictAndPatchVersionConcurrency(t *testing.T) {
 	h := contenttest.NewHarness(t, contenttest.HarnessOpts{})
 	jarA, userA, jarB, userB := h.SignupTwoUsers()
 
-	// Xác minh hợp đồng hook giữ chỗ P05 trên item.Service (chỉ nhận userID và itemID, không nhận plaintext).
+	// Xác minh hợp đồng hook transactional P05 trên item.Service (`SetEmbedHook` / `EmbedHook`).
 	var hookedUser, hookedItem uuid.UUID
+	var hookedKind item.EmbedKind
+	var hookedInput string
 	hookCalls := 0
 	hookSvc := item.NewService(h.Pool, h.Clock)
-	hookSvc.SetEmbedEnqueueHook(func(_ context.Context, u, it uuid.UUID) {
-		hookCalls++
-		hookedUser = u
-		hookedItem = it
+	hookSvc.SetEmbedHook(spyEmbedHook{
+		onUpsert: func(_ context.Context, _ pgx.Tx, u uuid.UUID, kind item.EmbedKind, it uuid.UUID, input string) error {
+			hookCalls++
+			hookedUser = u
+			hookedKind = kind
+			hookedItem = it
+			hookedInput = input
+			return nil
+		},
 	})
 
 	clientID := uuid.New()
-	hookSvc.EnqueueEmbed(context.Background(), userA.User.ID, clientID)
-	if hookCalls != 1 || hookedUser != userA.User.ID || hookedItem != clientID {
-		t.Fatalf("EmbedEnqueueHook got calls=%d user=%s item=%s", hookCalls, hookedUser, hookedItem)
+	if err := hookSvc.EmbedHook().OnUpsert(context.Background(), nil, userA.User.ID, item.EmbedKindItem, clientID, "SSH Server — port 2222"); err != nil {
+		t.Fatalf("EmbedHook.OnUpsert err: %v", err)
 	}
-	hookSvc.SetEmbedEnqueueHook(nil)
-	hookSvc.EnqueueEmbed(context.Background(), userA.User.ID, clientID)
+	if hookCalls != 1 || hookedUser != userA.User.ID || hookedKind != item.EmbedKindItem || hookedItem != clientID || hookedInput != "SSH Server — port 2222" {
+		t.Fatalf("EmbedHook got calls=%d user=%s kind=%q item=%s input=%q", hookCalls, hookedUser, hookedKind, hookedItem, hookedInput)
+	}
+	hookSvc.SetEmbedHook(nil)
+	if err := hookSvc.EmbedHook().OnUpsert(context.Background(), nil, userA.User.ID, item.EmbedKindItem, clientID, "SSH Server"); err != nil {
+		t.Fatalf("nil reset EmbedHook.OnUpsert err: %v", err)
+	}
+	if err := hookSvc.EmbedHook().OnDelete(context.Background(), nil, userA.User.ID, item.EmbedKindItem, clientID); err != nil {
+		t.Fatalf("nil reset EmbedHook.OnDelete err: %v", err)
+	}
 	if hookCalls != 1 {
-		t.Fatalf("nil reset EmbedEnqueueHook should restore no-op, got calls=%d", hookCalls)
+		t.Fatalf("nil reset EmbedHook should restore no-op, got calls=%d", hookCalls)
 	}
-
 	idemKey := "idem-item-create-" + uuid.NewString()
 	createBody := fmt.Sprintf(`{"id":%q,"name":"SSH Server","hint":"port 2222"}`, clientID.String())
 
