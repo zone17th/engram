@@ -1,0 +1,124 @@
+{"id":"p001","query":"vcb","target":"Ngân hàng Vietcombank","target_kind":"item","hint":"Tài khoản thanh toán chính","label":"related","lang":"vi","category":"abbrev"}
+{"id":"p002","query":"tcb","target":"Ngân hàng Techcombank","target_kind":"item","hint":"Thẻ tín dụng và tiết kiệm","label":"related","lang":"vi","category":"abbrev"}
+{"id":"p003","query":"acb","target":"Ngân hàng Á Châu","target_kind":"item","hint":"Internet banking cá nhân","label":"related","lang":"vi","category":"abbrev"}
+{"id":"p004","query":"bidv","target":"Ngân hàng Đầu tư và Phát triển","target_kind":"item","hint":"SmartBanking doanh nghiệp","label":"related","lang":"vi","category":"abbrev"}
+{"id":"p005","query":"vpb","target":"Ngân hàng VPBank NEO","target_kind":"item","hint":"Ứng dụng ngân hàng số","label":"related","lang":"vi","category":"abbrev"}
+{"id":"p006","query":"mb bank","target":"Ngân hàng Quân đội MBBank","target_kind":"item","hint":"Tài khoản nhận lương","label":"related","lang":"mixed","category":"abbrev"}
+{"id":"p007","query":"bhxh","target":"Bảo hiểm xã hội VssID","target_kind":"item","hint":"Cổng dịch vụ công bảo hiểm","label":"related","lang":"vi","category":"abbrev"}
+{"id":"p008","query":"vneid","target":"Định danh điện tử Bộ Công an","target_kind":"item","hint":"Tài khoản định danh mức 2","label":"related","lang":"vi","category":"abbrev"}
+{"id":"p009","query":"evn hcm","target":"Điện lực TP.HCM CSKH","target_kind":"item","hint":"Thanh toán hóa đơn tiền điện","label":"related","lang":"vi","category":"abbrev"}
+{"id":"p010","query":"aws prod","target":"Amazon Web Services Production","target_kind":"item","hint":"IAM root & billing console","label":"related","lang":"en","category":"abbrev"}
+{"id":"p011","query":"gcp console","target":"Google Cloud Platform Console","target_kind":"item","hint":"Project hạ tầng dữ liệu","label":"related","lang":"en","category":"abbrev"}
+{"id":"p012","query":"gh token","target":"GitHub Personal Access Token","target_kind":"item","hint":"Token CI/CD repo công ty","label":"related","lang":"en","category":"abbrev"}
+{"id":"p013","query":"vcb","target":"Vận chuyển Bắc Nam Express","target_kind":"item","hint":"Tài khoản gửi hàng nội địa","label":"unrelated","lang":"vi","category":"abbrev"}
+{"id":"p014","query":"acb","target":"Âm nhạc Cổ điển Bình Minh","target_kind":"item","hint":"Thẻ thành viên câu lạc bộ","label":"unrelated","lang":"vi","category":"abbrev"}
+{"id":"p015","query":"tcb","target":"Tạp chí Bóng đá Quốc tế","target_kind":"item","hint":"Thuê bao đọc báo tháng","label":"unrelated","lang":"vi","category":"abbrev"}
+{"id":"p016","query":"aws","target":"Awesome Wallpaper Studio","target_kind":"item","hint":"Tài khoản tải ảnh nền","label":"unrelated","lang":"en","category":"abbrev"}
+{"id":"p017","query":"gcp","target":"Gói Cước Phim Gia Đình","target_kind":"item","hint":"Truyền hình cáp phòng khách","label":"unrelated","lang":"vi","category":"abbrev"}
+{"id":"p018","query":"bhxh","target":"Bách Hóa Xanh Online","target_kind":"item","hint":"Đặt hàng siêu thị giao tận nhà","label":"unrelated","lang":"vi","category":"abbrev"}
+{"id":"p019","query":"ngân hàng quốc tế","target":"Tài khoản VIB Quốc Tế","target_kind":"item","hint":"Ứng dụng MyVIB thanh toán","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p020","query":"mật khẩu wifi tầng 2","target":"Router TP-Link Phòng Khách","target_kind":"item","hint":"Bộ phát sóng băng tần kép","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p021","query":"thuế thu nhập cá nhân","target":"Thuế điện tử eTax Mobile","target_kind":"item","hint":"Quyết toán thuế hằng năm","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p022","query":"chữ ký số công ty","target":"USB Token Viettel-CA","target_kind":"item","hint":"Ký hóa đơn điện tử và thuế","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p023","query":"ví điện tử thanh toán","target":"MoMo Cá Nhân","target_kind":"item","hint":"Liên kết ngân hàng thanh toán","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p024","query":"hóa đơn nước sinh hoạt","target":"Cấp nước Chợ Lớn SAWACO","target_kind":"item","hint":"Mã khách hàng hộ gia đình","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p025","query":"tài khoản chứng khoán","target":"SSI iBoard Chứng Khoán","target_kind":"item","hint":"Giao dịch cổ phiếu cá nhân","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p026","query":"khóa dự phòng khẩn cấp","target":"Mã khôi phục tài khoản Google","target_kind":"item","hint":"10 mã backup hai lớp","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p027","query":"máy chủ nội bộ","target":"Proxmox VE Homelab","target_kind":"item","hint":"Quản trị cụm máy ảo tại nhà","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p028","query":"bảo hiểm sức khỏe","target":"Thẻ Bảo Việt An Gia","target_kind":"item","hint":"Hợp đồng bảo lãnh viện phí","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p029","query":"đăng ký tên miền","target":"Quản lý tên miền Cloudflare","target_kind":"item","hint":"DNS và chứng chỉ SSL","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p030","query":"lưu trữ đám mây","target":"Google Drive Gia Đình","target_kind":"item","hint":"Gói 2TB sao lưu ảnh","label":"related","lang":"vi","category":"diacritics"}
+{"id":"p031","query":"ngân hàng quốc tế","target":"Nhà hàng Quốc Tế Biển Đông","target_kind":"item","hint":"Thẻ tích điểm đặt bàn tiệc","label":"unrelated","lang":"vi","category":"diacritics"}
+{"id":"p032","query":"thuế thu nhập cá nhân","target":"Thuê xe tự lái cuối tuần","target_kind":"item","hint":"Ứng dụng đặt xe du lịch","label":"unrelated","lang":"vi","category":"diacritics"}
+{"id":"p033","query":"chữ ký số công ty","target":"Chữ kiểu nghệ thuật Canva","target_kind":"item","hint":"Tài khoản thiết kế poster","label":"unrelated","lang":"vi","category":"diacritics"}
+{"id":"p034","query":"hóa đơn nước sinh hoạt","target":"Nước hoa chính hãng Paris","target_kind":"item","hint":"Tài khoản thành viên mua sắm","label":"unrelated","lang":"vi","category":"diacritics"}
+{"id":"p035","query":"máy chủ nội bộ","target":"Máy chiếu phòng họp tầng 3","target_kind":"item","hint":"Mã PIN kết nối không dây","label":"unrelated","lang":"vi","category":"diacritics"}
+{"id":"p036","query":"đăng ký tên miền","target":"Đăng ký khám bệnh trực tuyến","target_kind":"item","hint":"Bệnh viện Đại học Y Dược","label":"unrelated","lang":"vi","category":"diacritics"}
+{"id":"p037","query":"ngan hang ngoai thuong","target":"Ngân hàng Vietcombank VCB","target_kind":"item","hint":"Tài khoản chuyển khoản nhanh","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p038","query":"mat khau ket sat","target":"Két sắt Hòa Phát phòng ngủ","target_kind":"item","hint":"Mã số cơ và chìa khóa phụ","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p039","query":"tai khoan tiet kiem","target":"Sổ tiết kiệm online Techcombank","target_kind":"item","hint":"Kỳ hạn 6 tháng tự động tái tục","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p040","query":"cong dich vu cong","target":"Dịch vụ công Quốc gia","target_kind":"item","hint":"Nộp hồ sơ hành chính trực tuyến","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p041","query":"bao hiem xe may","target":"Bảo hiểm PTI xe máy","target_kind":"item","hint":"Giấy chứng nhận điện tử","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p042","query":"the tin dung quoc te","target":"Thẻ Visa Platinum Sacombank","target_kind":"item","hint":"Hạn mức chi tiêu quốc tế","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p043","query":"email cong viec","target":"Google Workspace Công ty","target_kind":"item","hint":"Hộp thư nội bộ nhân viên","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p044","query":"mang rieng ao","target":"WireGuard VPN Văn phòng","target_kind":"item","hint":"Cấu hình kết nối từ xa","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p045","query":"quan ly mat khau","target":"Kho khóa chính Engram","target_kind":"item","hint":"Passphrase và khóa khôi phục","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p046","query":"hoa don tien dien","target":"EVN Miền Nam CSKH","target_kind":"item","hint":"Tra cứu chỉ số công tơ","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p047","query":"ve may bay tet","target":"Vietnam Airlines Lotusmiles","target_kind":"item","hint":"Tài khoản hội viên bông sen vàng","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p048","query":"kham suc khoe dinh ky","target":"Phòng khám Victoria Healthcare","target_kind":"item","hint":"Hồ sơ bệnh án điện tử","label":"related","lang":"vi","category":"no_diacritics"}
+{"id":"p049","query":"mat khau ket sat","target":"Mật ong rừng nguyên chất","target_kind":"item","hint":"Tài khoản đặt hàng đặc sản","label":"unrelated","lang":"vi","category":"no_diacritics"}
+{"id":"p050","query":"tai khoan tiet kiem","target":"Tài liệu thiết kế kiến trúc","target_kind":"item","hint":"Kho bản vẽ nội thất căn hộ","label":"unrelated","lang":"vi","category":"no_diacritics"}
+{"id":"p051","query":"cong dich vu cong","target":"Công viên giải trí Suối Tiên","target_kind":"item","hint":"Vé điện tử gia đình","label":"unrelated","lang":"vi","category":"no_diacritics"}
+{"id":"p052","query":"bao hiem xe may","target":"Bảo tàng Mỹ thuật Thành phố","target_kind":"item","hint":"Thẻ tham quan triển lãm","label":"unrelated","lang":"vi","category":"no_diacritics"}
+{"id":"p053","query":"mang rieng ao","target":"Mạng xã hội âm nhạc SoundCloud","target_kind":"item","hint":"Tài khoản nghe nhạc indie","label":"unrelated","lang":"vi","category":"no_diacritics"}
+{"id":"p054","query":"hoa don tien dien","target":"Hoa tươi điện hoa Sài Gòn","target_kind":"item","hint":"Đặt vòng hoa chúc mừng","label":"unrelated","lang":"vi","category":"no_diacritics"}
+{"id":"p055","query":"ssh","target":"Khóa SSH máy chủ triển khai","target_kind":"item","hint":"Ed25519 key cho VPS production","label":"related","lang":"en","category":"short_name"}
+{"id":"p056","query":"vpn","target":"Tailscale Mesh Network","target_kind":"item","hint":"Mạng nội bộ giữa các thiết bị","label":"related","lang":"en","category":"short_name"}
+{"id":"p057","query":"nas","target":"Synology DiskStation ở nhà","target_kind":"item","hint":"Ổ cứng mạng sao lưu dữ liệu","label":"related","lang":"en","category":"short_name"}
+{"id":"p058","query":"dns","target":"Cloudflare DNS Zone","target_kind":"item","hint":"Quản lý bản ghi tên miền","label":"related","lang":"en","category":"short_name"}
+{"id":"p059","query":"sim","target":"Mã PUK eSIM Viettel","target_kind":"item","hint":"Khôi phục khóa SIM điện thoại","label":"related","lang":"vi","category":"short_name"}
+{"id":"p060","query":"pin","target":"Mã PIN thẻ ATM ngân hàng","target_kind":"item","hint":"Rút tiền mặt tại cây ATM","label":"related","lang":"vi","category":"short_name"}
+{"id":"p061","query":"otp","target":"Ứng dụng tạo mã 2FA","target_kind":"item","hint":"Khóa bí mật TOTP dự phòng","label":"related","lang":"en","category":"short_name"}
+{"id":"p062","query":"git","target":"GitLab Self-Hosted","target_kind":"item","hint":"Kho mã nguồn dự án nội bộ","label":"related","lang":"en","category":"short_name"}
+{"id":"p063","query":"k8s","target":"Cụm Kubernetes Staging","target_kind":"item","hint":"Kubeconfig quản trị container","label":"related","lang":"en","category":"short_name"}
+{"id":"p064","query":"pgp","target":"Khóa GPG ký commit","target_kind":"item","hint":"Passphrase bảo vệ khóa riêng","label":"related","lang":"en","category":"short_name"}
+{"id":"p065","query":"ssh","target":"Sushi Hokkaido Sachi","target_kind":"item","hint":"Thẻ thành viên nhà hàng Nhật","label":"unrelated","lang":"vi","category":"short_name"}
+{"id":"p066","query":"vpn","target":"Văn phòng phẩm Nhanh","target_kind":"item","hint":"Tài khoản đặt giấy in công ty","label":"unrelated","lang":"vi","category":"short_name"}
+{"id":"p067","query":"nas","target":"Nước ép trái cây Nắng","target_kind":"item","hint":"Ứng dụng gọi đồ uống chiều","label":"unrelated","lang":"vi","category":"short_name"}
+{"id":"p068","query":"sim","target":"The Sims 4 EA App","target_kind":"item","hint":"Tài khoản game mô phỏng","label":"unrelated","lang":"en","category":"short_name"}
+{"id":"p069","query":"pin","target":"Pinterest Bảng Ý Tưởng","target_kind":"item","hint":"Lưu ảnh thiết kế nội thất","label":"unrelated","lang":"en","category":"short_name"}
+{"id":"p070","query":"git","target":"Guitar Acoustic Lớp Nhạc","target_kind":"item","hint":"Tài khoản học đàn trực tuyến","label":"unrelated","lang":"vi","category":"short_name"}
+{"id":"p071","query":"company email","target":"Hộp thư Outlook Công ty","target_kind":"item","hint":"Tài khoản Microsoft 365 doanh nghiệp","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p072","query":"home wifi router","target":"Bộ phát Wi-Fi Asus phòng khách","target_kind":"item","hint":"Trang quản trị 192.168.1.1","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p073","query":"bank account","target":"Tài khoản thanh toán Techcombank","target_kind":"item","hint":"Chuyển tiền 24/7 nội địa","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p074","query":"cloud backup","target":"Sao lưu đám mây Backblaze B2","target_kind":"item","hint":"Bucket lưu trữ bản sao mã hóa","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p075","query":"tax portal","target":"Cổng thông tin Thuế điện tử","target_kind":"item","hint":"Kê khai thuế cá nhân","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p076","query":"health insurance","target":"Bảo hiểm sức khỏe PVI Care","target_kind":"item","hint":"Thẻ bảo lãnh viện phí nội trú","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p077","query":"domain registrar","target":"Nhà đăng ký tên miền Namecheap","target_kind":"item","hint":"Gia hạn domain hằng năm","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p078","query":"password recovery","target":"Mã khôi phục kho khóa chính","target_kind":"item","hint":"Lưu trữ ngoại tuyến an toàn","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p079","query":"server database","target":"Cơ sở dữ liệu PostgreSQL chính","target_kind":"item","hint":"Tài khoản quản trị viên chỉ đọc","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p080","query":"flight booking","target":"Đặt vé máy bay Traveloka","target_kind":"item","hint":"Tài khoản đặt phòng và chuyến bay","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p081","query":"mã xác thực hai bước","target":"Two-Factor Backup Codes","target_kind":"item","hint":"Emergency recovery tokens","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p082","query":"thẻ tín dụng hoàn tiền","target":"Cashback Visa Signature Card","target_kind":"item","hint":"International credit card account","label":"related","lang":"mixed","category":"cross_lang"}
+{"id":"p083","query":"company email","target":"Công ty chuyển phát nhanh EMS","target_kind":"item","hint":"Tra cứu vận đơn bưu điện","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p084","query":"bank account","target":"Ngân hàng đề thi tiếng Anh","target_kind":"item","hint":"Tài khoản luyện thi chứng chỉ","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p085","query":"cloud backup","target":"Đệm mây cao su thiên nhiên","target_kind":"item","hint":"Bảo hành điện tử nội thất","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p086","query":"tax portal","target":"Cổng thông tin tuyển sinh đại học","target_kind":"item","hint":"Tra cứu hồ sơ xét tuyển","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p087","query":"server database","target":"Cơ sở thẩm mỹ viện Á Châu","target_kind":"item","hint":"Thẻ thành viên chăm sóc da","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p088","query":"thẻ tín dụng hoàn tiền","target":"Credit Course Online Learning","target_kind":"item","hint":"University lecture portal","label":"unrelated","lang":"mixed","category":"cross_lang"}
+{"id":"p089","query":"tài chính ngân hàng","target":"ngân hàng","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
+{"id":"p090","query":"chứng thực hai lớp","target":"bảo mật","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
+{"id":"p091","query":"dự án văn phòng","target":"công việc","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
+{"id":"p092","query":"máy chủ hạ tầng","target":"hạ tầng","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
+{"id":"p093","query":"mua sắm trực tuyến","target":"thương mại điện tử","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
+{"id":"p094","query":"mạng xã hội cá nhân","target":"mạng xã hội","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
+{"id":"p095","query":"hóa đơn tiện ích","target":"sinh hoạt phí","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
+{"id":"p096","query":"khám chữa bệnh","target":"y tế","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
+{"id":"p097","query":"chuyến bay khách sạn","target":"du lịch","target_kind":"tag","hint":"","label":"related","lang":"vi","category":"tag"}
+{"id":"p098","query":"streaming giải trí","target":"giải trí","target_kind":"tag","hint":"","label":"related","lang":"mixed","category":"tag"}
+{"id":"p099","query":"developer tools","target":"lập trình","target_kind":"tag","hint":"","label":"related","lang":"mixed","category":"tag"}
+{"id":"p100","query":"family shared","target":"gia đình","target_kind":"tag","hint":"","label":"related","lang":"mixed","category":"tag"}
+{"id":"p101","query":"thẻ ngân hàng","target":"thẻ thư viện","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p102","query":"mạng xã hội","target":"mạng nội bộ","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p103","query":"khóa bảo mật","target":"khóa học","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p104","query":"ví điện tử","target":"báo điện tử","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p105","query":"cloud server","target":"cloud gaming","target_kind":"tag","hint":"","label":"unrelated","lang":"mixed","category":"tag"}
+{"id":"p106","query":"hóa đơn điện nước","target":"hóa mỹ phẩm","target_kind":"tag","hint":"","label":"unrelated","lang":"vi","category":"tag"}
+{"id":"p107","query":"ngân hàng","target":"Ngân sách chi tiêu gia đình","target_kind":"item","hint":"Bảng tính theo dõi thu chi tháng","label":"unrelated","lang":"vi","category":"noise"}
+{"id":"p108","query":"ngân hàng","target":"Ngân Hà Studio Nhiếp Ảnh","target_kind":"item","hint":"Tài khoản tải ảnh cưới","label":"unrelated","lang":"vi","category":"noise"}
+{"id":"p109","query":"mail công việc","target":"Mailchimp Chiến dịch Marketing","target_kind":"item","hint":"Công cụ gửi bản tin khách hàng","label":"unrelated","lang":"mixed","category":"noise"}
+{"id":"p110","query":"mail nội bộ","target":"Daily Mail Tờ báo Điện tử","target_kind":"item","hint":"Tài khoản đọc tin tức tiếng Anh","label":"unrelated","lang":"mixed","category":"noise"}
+{"id":"p111","query":"thẻ tín dụng","target":"Thẻ thư viện Đại học Quốc gia","target_kind":"item","hint":"Mượn sách và phòng đọc","label":"unrelated","lang":"vi","category":"noise"}
+{"id":"p112","query":"thẻ ngân hàng","target":"Thẻ tập gym California","target_kind":"item","hint":"Check-in phòng tập thể hình","label":"unrelated","lang":"vi","category":"noise"}
+{"id":"p113","query":"khóa bảo mật","target":"Khóa học tiếng Anh giao tiếp","target_kind":"item","hint":"Tài khoản học viên trực tuyến","label":"unrelated","lang":"vi","category":"noise"}
+{"id":"p114","query":"khóa máy chủ","target":"Khóa cửa vân tay căn hộ","target_kind":"item","hint":"Mã quản trị viên cửa chính","label":"unrelated","lang":"vi","category":"noise"}
+{"id":"p115","query":"ví điện tử","target":"Ví da thủ công khắc tên","target_kind":"item","hint":"Tài khoản cửa hàng phụ kiện","label":"unrelated","lang":"vi","category":"noise"}
+{"id":"p116","query":"bảo hiểm","target":"Bảo tàng Lịch sử Quốc gia","target_kind":"item","hint":"Vé tham quan trực tuyến","label":"unrelated","lang":"vi","category":"noise"}
+{"id":"p117","query":"apple id","target":"Pineapple Cloud Pos System","target_kind":"item","hint":"Phần mềm bán hàng quán cà phê","label":"unrelated","lang":"en","category":"noise"}
+{"id":"p118","query":"git repo","target":"Gitea Trà Sữa & Đồ Uống","target_kind":"item","hint":"Ứng dụng tích điểm quán nước","label":"unrelated","lang":"mixed","category":"noise"}
+{"id":"p119","query":"cloud server","target":"SoundCloud Nhạc Trực Tuyến","target_kind":"item","hint":"Tài khoản nghệ sĩ độc lập","label":"unrelated","lang":"en","category":"noise"}
+{"id":"p120","query":"tài khoản ngân hàng","target":"Tài xế công nghệ BeGroup","target_kind":"item","hint":"Ứng dụng đặt xe hai bánh","label":"unrelated","lang":"vi","category":"noise"}
+{"id":"p121","query":"ngân hàng số","target":"Ngân hàng số Timo Digital Bank","target_kind":"item","hint":"Tài khoản thanh toán miễn phí","label":"related","lang":"vi","category":"noise"}
+{"id":"p122","query":"mail doanh nghiệp","target":"Zoho Mail Doanh Nghiệp","target_kind":"item","hint":"Quản trị tên miền email công ty","label":"related","lang":"vi","category":"noise"}
+{"id":"p123","query":"khóa bảo mật phần cứng","target":"YubiKey 5C NFC Khóa Bảo Mật","target_kind":"item","hint":"Mã PIN FIDO2 dự phòng","label":"related","lang":"vi","category":"noise"}
+{"id":"p124","query":"thẻ thanh toán quốc tế","target":"Thẻ Mastercard HSBC Premier","target_kind":"item","hint":"Thanh toán ngoại tệ tự động","label":"related","lang":"vi","category":"noise"}
