@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -443,8 +444,12 @@ func TestMutationEnqueuesPerReceivingGeneration(t *testing.T) {
 		"/api/v1/items/"+itemSummary.ID.String()+"/tags/"+tag2.ID.String(),
 		"",
 	)
-	if respRemTag.StatusCode != http.StatusNoContent {
+	if respRemTag.StatusCode != http.StatusOK {
 		t.Fatalf("DELETE /items/{id}/tags/{tag_id} status = %d, body = %s", respRemTag.StatusCode, bodyRemTag)
+	}
+	remTagItemSummary := decodeItemSummary(t, bodyRemTag)
+	if len(remTagItemSummary.Tags) != 0 {
+		t.Fatalf("DELETE /items/{id}/tags/{tag_id} tags = %+v, want []", remTagItemSummary.Tags)
 	}
 	if gotItem, gotTag := countRiverJobs(t, h.Pool, jobargs.KindEmbedItem), countRiverJobs(t, h.Pool, jobargs.KindEmbedTag); gotItem != 0 || gotTag != 0 {
 		t.Fatalf("assign/unassign tag enqueued embed_item=%d embed_tag=%d, want 0/0", gotItem, gotTag)
@@ -798,8 +803,18 @@ func TestIdempotentReplayNoSecondJob(t *testing.T) {
 	}
 
 	resp2, raw2 := h.DoReq(jarA, http.MethodPost, "/api/v1/tags", body, contenttest.ReqOptions{IdemKey: idemKey})
-	if resp2.StatusCode != http.StatusCreated || raw2 != raw1 {
-		t.Fatalf("replay POST /tags status=%d body=%s, want 201 %s", resp2.StatusCode, raw2, raw1)
+	if resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("replay POST /tags status=%d body=%s, want 201", resp2.StatusCode, raw2)
+	}
+	var doc1, doc2 map[string]any
+	if err := json.Unmarshal([]byte(raw1), &doc1); err != nil {
+		t.Fatalf("unmarshal initial response: %v", err)
+	}
+	if err := json.Unmarshal([]byte(raw2), &doc2); err != nil {
+		t.Fatalf("unmarshal replay response: %v", err)
+	}
+	if !reflect.DeepEqual(doc2, doc1) {
+		t.Fatalf("replay POST /tags JSON = %v, want %v", doc2, doc1)
 	}
 	if got := countRiverJobs(t, h.Pool, jobargs.KindEmbedTag); got != 1 {
 		t.Fatalf("river_job count after idempotent replay = %d, want still 1", got)
