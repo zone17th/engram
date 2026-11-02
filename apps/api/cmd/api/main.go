@@ -22,11 +22,13 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/compose"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db"
+	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/entry"
 	"github.com/zone17th/engram/apps/api/internal/entry/entryhttp"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/item/itemhttp"
 	"github.com/zone17th/engram/apps/api/internal/obs"
+	"github.com/zone17th/engram/apps/api/internal/semantic"
 	"github.com/zone17th/engram/apps/api/internal/tag/taghttp"
 	"github.com/zone17th/engram/apps/api/internal/vault/vaulthttp"
 )
@@ -122,7 +124,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("compose content: %w", err)
 	}
-	searchComp, err := compose.NewSearch(cfg, pool, nil, metrics, logger)
+	pinner := generation.NewPinner(pool)
+	defer pinner.Close()
+	if err := pinner.StartListener(ctx); err != nil {
+		return fmt.Errorf("generation pinner listener: %w", err)
+	}
+	semRuntime := semantic.NewRuntimeFromConfig(ctx, cfg, pool, pinner, nil, metrics, logger)
+	searchComp, err := compose.NewSearch(cfg, pool, nil, metrics, logger, semRuntime.NearSource())
 	if err != nil {
 		return fmt.Errorf("compose search: %w", err)
 	}

@@ -41,6 +41,7 @@ func NewSearch(
 	clk clock.Clock,
 	metrics *obs.Metrics,
 	logger *slog.Logger,
+	nearOpts ...suggest.NearSource,
 ) (*Search, error) {
 	if cfg == nil || pool == nil {
 		return nil, fmt.Errorf("compose search thiếu config/pool")
@@ -52,7 +53,12 @@ func NewSearch(
 	if err != nil {
 		return nil, fmt.Errorf("compose search cursor key: %w", err)
 	}
-	near := suggest.NewNoopNearSource()
+	var near suggest.NearSource = suggest.NewNoopNearSource()
+	for _, opt := range nearOpts {
+		if opt != nil {
+			near = opt
+		}
+	}
 	bucket := httpx.NewSearchReadBucket(clk)
 	svc := suggest.NewService(pool, clk, near, metrics, cursorKey)
 	handler := suggest.NewHandler(svc, bucket)
