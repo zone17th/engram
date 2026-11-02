@@ -17,15 +17,15 @@ import type { SuggestMatch } from '@/lib/api/search';
 
 export type { PrefixMarkSegments };
 
-const COMBINING_MARK_RE = /\p{Mn}/gu;
-
+const COMBINING_MARK_GLOBAL_RE = /\p{Mn}/gu;
+const COMBINING_MARK_CHAR_RE = /^\p{Mn}$/u;
 /**
  * Folds a single string using NFD decomposition, stripping `\p{Mn}`, mapping `đ/Đ -> d`,
  * and applying Go-compatible lowercasing.
  */
 export function foldDiacritics(value: string): string {
   if (value === '') return '';
-  const nfd = value.normalize('NFD').replace(COMBINING_MARK_RE, '');
+  const nfd = value.normalize('NFD').replace(COMBINING_MARK_GLOBAL_RE, '');
   let result = '';
   for (const ch of nfd) {
     const cp = ch.codePointAt(0);
@@ -120,7 +120,20 @@ export function splitMarkedFoldedPrefix(
 
   const lastUnitIdx = matchIdx + target.length - 1;
   const startOffset = unitStartOffsets[matchIdx] ?? 0;
-  const endOffset = unitEndOffsets[lastUnitIdx] ?? nfcText.length;
+  let endOffset = unitEndOffsets[lastUnitIdx] ?? nfcText.length;
+
+  // Advance `endOffset` over any trailing non-spacing combining marks (`\p{Mn}`) that have no
+  // precomposed NFC form (e.g. `q` + U+0323 -> `'q̣'`), so they stay inside `match` rather than
+  // orphaned at the start of `after` (RV-T9-FE1-12).
+  while (endOffset < nfcText.length) {
+    const cp = nfcText.codePointAt(endOffset);
+    if (cp === undefined) break;
+    const ch = String.fromCodePoint(cp);
+    if (!COMBINING_MARK_CHAR_RE.test(ch)) {
+      break;
+    }
+    endOffset += ch.length;
+  }
 
   return {
     before: nfcText.slice(0, startOffset),

@@ -1,4 +1,4 @@
-import type { components, operations } from '@engram/shared-types';
+import type { components, paths } from '@engram/shared-types';
 import { authFetch } from '@/lib/api/auth-fetch';
 
 export type SearchScope = components['schemas']['SearchScope'];
@@ -15,10 +15,10 @@ export type SearchResponse = components['schemas']['SearchResponse'];
 export type TagRef = components['schemas']['TagRef'];
 
 export type SuggestLimit = NonNullable<
-  NonNullable<operations['suggest']['parameters']['query']>['limit']
+  NonNullable<paths['/suggest']['get']['parameters']['query']>['limit']
 >;
 export type SearchLimit = NonNullable<
-  NonNullable<operations['search']['parameters']['query']>['limit']
+  paths['/search']['get']['parameters']['query']['limit']
 >;
 export type SemanticParam = 0 | 1;
 
@@ -30,7 +30,7 @@ export interface SuggestParams {
   readonly q?: string;
   readonly scope?: SearchScope;
   readonly limit?: SuggestLimit;
-  readonly semantic?: SemanticParam;
+  readonly semantic: SemanticParam;
   readonly signal?: AbortSignal;
 }
 
@@ -39,7 +39,7 @@ export interface SearchParams {
   readonly scope?: SearchScope;
   readonly limit?: SearchLimit;
   readonly cursor?: string;
-  readonly semantic?: SemanticParam;
+  readonly semantic: SemanticParam;
   readonly signal?: AbortSignal;
 }
 
@@ -54,9 +54,8 @@ function buildSuggestQueryString(params: SuggestParams): string {
   if (params.limit !== undefined) {
     searchParams.set('limit', String(params.limit));
   }
-  if (params.semantic !== undefined) {
-    searchParams.set('semantic', String(params.semantic));
-  }
+  const semantic: SemanticParam = params.semantic === 1 ? 1 : 0;
+  searchParams.set('semantic', String(semantic));
   const qs = searchParams.toString();
   return qs ? `?${qs}` : '';
 }
@@ -73,9 +72,8 @@ function buildSearchQueryString(params: SearchParams): string {
   if (params.cursor !== undefined && params.cursor !== '') {
     searchParams.set('cursor', params.cursor);
   }
-  if (params.semantic !== undefined) {
-    searchParams.set('semantic', String(params.semantic));
-  }
+  const semantic: SemanticParam = params.semantic === 1 ? 1 : 0;
+  searchParams.set('semantic', String(semantic));
   const qs = searchParams.toString();
   return qs ? `?${qs}` : '';
 }
@@ -87,7 +85,7 @@ function buildSearchQueryString(params: SearchParams): string {
  * Never logs `q`.
  */
 export function suggest(
-  params: SuggestParams = {},
+  params: SuggestParams = { semantic: 0 },
   opts?: SearchRequestOptions,
 ): Promise<SuggestResponse> {
   const qs = buildSuggestQueryString(params);

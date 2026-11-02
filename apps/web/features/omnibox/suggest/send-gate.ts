@@ -15,10 +15,12 @@
  *   (`semantic_available && semantic_suggest && len_runes(qn) >= 3 && mode !== 'recent' && scope !== 'tag' && !cursor`).
  */
 
+import { isWellFormedUtf16 } from '@/lib/json/utf8';
 import {
   QUERY_MAX_RUNES,
   TAG_QUERY_MAX_RUNES,
   countRunes,
+  hasForbiddenRune,
   isUnicodeWhiteSpace,
   normalizeQuery,
   normalizeTagQuery,
@@ -27,7 +29,6 @@ import {
 import { parseQuickAdd } from '../quick-add-parse';
 import type { SearchScope, SemanticParam, SuggestMode } from '@/lib/api/search';
 import type { SearchRequestMode } from './query-keys';
-
 export const SUGGEST_DEBOUNCE_MS = 120;
 export const COMPOSITION_COMMIT_MAX_GRAPHEMES = 64;
 export const SEMANTIC_MIN_QUERY_RUNES = 3;
@@ -74,27 +75,37 @@ const COMPOSITION_INPUT_TYPES: Readonly<Record<string, true>> = {
 };
 
 let cachedGraphemeSegmenter: Intl.Segmenter | null = null;
+let cachedSegmenterCtor: typeof Intl.Segmenter | undefined;
 
-function getGraphemeSegmenter(): Intl.Segmenter {
-  if (cachedGraphemeSegmenter) {
-    return cachedGraphemeSegmenter;
+function getGraphemeSegmenterOrNull(): Intl.Segmenter | null {
+  const ctor = typeof Intl !== 'undefined' ? Intl.Segmenter : undefined;
+  if (typeof ctor !== 'function') {
+    cachedGraphemeSegmenter = null;
+    cachedSegmenterCtor = undefined;
+    return null;
   }
-  if (typeof Intl === 'undefined' || typeof Intl.Segmenter !== 'function') {
-    throw new Error('Intl.Segmenter is required for omnibox send-gate grapheme counting.');
+  if (!cachedGraphemeSegmenter || cachedSegmenterCtor !== ctor) {
+    cachedGraphemeSegmenter = new ctor(undefined, { granularity: 'grapheme' });
+    cachedSegmenterCtor = ctor;
   }
-  cachedGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
   return cachedGraphemeSegmenter;
 }
 
 /**
  * Counts extended grapheme clusters in `text` using `Intl.Segmenter`.
- * Fails loudly if `Intl.Segmenter` is unavailable.
+ * Fails closed when `Intl.Segmenter` is unavailable in the environment (RV-T9-FE1-8):
+ * returns `(stopAfter ?? COMPOSITION_COMMIT_MAX_GRAPHEMES) + 1` for non-empty text so any
+ * inserted text is treated as tainted rather_than throwing inside DOM event handlers.
  */
 export function countGraphemes(text: string, stopAfter?: number): number {
-  const segmenter = getGraphemeSegmenter();
   if (text === '') return 0;
+  const segmenter = getGraphemeSegmenterOrNull();
+  if (!segmenter) {
+    return (stopAfter ?? COMPOSITION_COMMIT_MAX_GRAPHEMES) + 1;
+  }
   let count = 0;
-  for (const _ of segmenter.segment(text)) {
+  const iterator = segmenter.segment(text)[Symbol.iterator]();
+  while (!iterator.next().done) {
     count += 1;
     if (stopAfter !== undefined && count > stopAfter) {
       return count;
@@ -105,7 +116,9 @@ export function countGraphemes(text: string, stopAfter?: number): number {
 
 /**
  * Checks whether `value` contains ASCII `:` (U+003A) or full-width `：` (U+FF1A) anywhere
- * across any line or mode (including `#` and `://`), or parses as `add`/`add-invalid` via `parseQuickAdd`.
+ * across any line or mode (including `#` and `://`).
+ * Note: `parseQuickAdd` only returns `add`/`add-invalid` when an ASCII `:` exists on the first line,
+ * which is already matched by this colon scan (RV-T9-FE1-7).
  */
 export function hasColonOrAddModeLock(value: string): boolean {
   if (value === '') return false;
@@ -115,8 +128,7 @@ export function hasColonOrAddModeLock(value: string): boolean {
       return true;
     }
   }
-  const parsed = parseQuickAdd(value);
-  return parsed.mode === 'add' || parsed.mode === 'add-invalid';
+  return false;
 }
 
 export function isSingleLineValue(value: string): boolean {
@@ -338,9 +350,6 @@ export function stepSendGateInput(
   state: SendGateState,
   event: SendGateInputStepParams,
 ): SendGateState {
-  // Ensure Intl.Segmenter is checked early so missing support fails loudly.
-  getGraphemeSegmenter();
-
   const nextValue = event.value;
   if (nextValue === '') {
     return {
@@ -355,11 +364,13 @@ export function stepSendGateInput(
   }
 
   const prevValue = event.prevValue !== undefined ? event.prevValue : state.prevValue;
-  const colonLocked = state.colonLocked || hasColonOrAddModeLock(nextValue) || hasColonOrAddModeLock(prevValue);
+  const colonLocked =
+    state.colonLocked || hasColonOrAddModeLock(nextValue) || hasColonOrAddModeLock(prevValue);
   const inputType = event.inputType ?? '';
-  const isComposing =
+  // RV-T9-FE1-10: decide composition for an input step from the event itself (`event.isComposing`
+  // or a composition `inputType`), never from a stale `state.isComposing` after a missed `compositionend`.
+  const isEventComposing =
     Boolean(event.isComposing) ||
-    state.isComposing ||
     Object.prototype.hasOwnProperty.call(COMPOSITION_INPUT_TYPES, inputType);
 
   let tainted = state.tainted;
@@ -380,7 +391,7 @@ export function stepSendGateInput(
       if (diff.inserted.length > 0) {
         tainted = true;
       }
-    } else if (!isComposing) {
+    } else if (!isEventComposing) {
       // Rule 1(a) & 1(d) outside composition (`insertText`):
       // Verify that `nextValue` matches `prevValue` + the event's own edit, and inserted graphemes <= 1.
       const inserted = diff.inserted;
@@ -390,27 +401,30 @@ export function stepSendGateInput(
       if (countGraphemes(inserted, 1) > 1) {
         tainted = true;
       }
-      // If event.data was provided, also check its grapheme count directly (e.g. beforeinput where value hasn't mutated yet).
+      // If event.data was provided, also check its grapheme count directly.
       if (event.data !== undefined && event.data !== null && countGraphemes(event.data, 1) > 1) {
         tainted = true;
       }
-      // If `nextValue === prevValue` and `event.data` is empty/absent on an `input` event, nothing changed;
-      // if `nextValue !== prevValue` and `inserted === ''` on `insertText`, that's a deletion or foreign mutation.
+      // If `nextValue !== prevValue` and `inserted === ''` on `insertText`, that's a deletion or foreign mutation.
       if (nextValue !== prevValue && inserted === '') {
         tainted = true;
       }
     } else {
-      // Inside composition (`insertCompositionText`, `insertFromComposition`):
+      // Inside composition (`insertCompositionText`, `insertFromComposition`, or `event.isComposing`):
       // Check against the 64-grapheme commit ceiling (FE-24) on the active composition span or inserted text.
       const baseValue = state.compositionStartValue ?? prevValue;
       const compDiff = computeSingleSpliceDiff(baseValue, nextValue);
-      if (countGraphemes(compDiff.inserted, COMPOSITION_COMMIT_MAX_GRAPHEMES) > COMPOSITION_COMMIT_MAX_GRAPHEMES) {
+      if (
+        countGraphemes(compDiff.inserted, COMPOSITION_COMMIT_MAX_GRAPHEMES) >
+        COMPOSITION_COMMIT_MAX_GRAPHEMES
+      ) {
         tainted = true;
       }
       if (
         event.data !== undefined &&
         event.data !== null &&
-        countGraphemes(event.data, COMPOSITION_COMMIT_MAX_GRAPHEMES) > COMPOSITION_COMMIT_MAX_GRAPHEMES
+        countGraphemes(event.data, COMPOSITION_COMMIT_MAX_GRAPHEMES) >
+          COMPOSITION_COMMIT_MAX_GRAPHEMES
       ) {
         tainted = true;
       }
@@ -426,8 +440,8 @@ export function stepSendGateInput(
     prevValue: nextValue,
     tainted,
     colonLocked,
-    isComposing: Boolean(event.isComposing),
-    compositionStartValue: state.compositionStartValue,
+    isComposing: isEventComposing && inputType !== 'insertFromComposition',
+    compositionStartValue: isEventComposing ? (state.compositionStartValue ?? prevValue) : null,
     restartDebounceSignal: state.restartDebounceSignal,
   };
 }
@@ -445,8 +459,6 @@ export function stepSendGateBeforeInput(
     readonly currentDomValue?: string;
   },
 ): SendGateState {
-  getGraphemeSegmenter();
-
   let tainted = state.tainted;
   let colonLocked = state.colonLocked;
 
@@ -459,14 +471,13 @@ export function stepSendGateBeforeInput(
     }
   }
   const inputType = event.inputType ?? '';
-  const isComposing =
+  const isEventComposing =
     Boolean(event.isComposing) ||
-    state.isComposing ||
     Object.prototype.hasOwnProperty.call(COMPOSITION_INPUT_TYPES, inputType);
 
   if (!inputType || !Object.prototype.hasOwnProperty.call(ALLOWED_INPUT_TYPES, inputType)) {
     tainted = true;
-  } else if (!isComposing && inputType === 'insertText') {
+  } else if (!isEventComposing && inputType === 'insertText') {
     const data = event.data ?? '';
     if (countGraphemes(data, 1) > 1) {
       tainted = true;
@@ -474,8 +485,11 @@ export function stepSendGateBeforeInput(
     if (hasColonOrAddModeLock(data)) {
       colonLocked = true;
     }
-  } else if (isComposing && event.data) {
-    if (countGraphemes(event.data, COMPOSITION_COMMIT_MAX_GRAPHEMES) > COMPOSITION_COMMIT_MAX_GRAPHEMES) {
+  } else if (isEventComposing && event.data) {
+    if (
+      countGraphemes(event.data, COMPOSITION_COMMIT_MAX_GRAPHEMES) >
+      COMPOSITION_COMMIT_MAX_GRAPHEMES
+    ) {
       tainted = true;
     }
     if (hasColonOrAddModeLock(event.data)) {
@@ -521,8 +535,6 @@ export function stepSendGateCompositionEnd(
   state: SendGateState,
   params: { readonly value: string; readonly data?: string | null },
 ): SendGateState {
-  getGraphemeSegmenter();
-
   const nextValue = params.value;
   if (nextValue === '') {
     return {
@@ -540,13 +552,17 @@ export function stepSendGateCompositionEnd(
   const diff = computeSingleSpliceDiff(baseValue, nextValue);
   let tainted = state.tainted;
 
-  if (countGraphemes(diff.inserted, COMPOSITION_COMMIT_MAX_GRAPHEMES) > COMPOSITION_COMMIT_MAX_GRAPHEMES) {
+  if (
+    countGraphemes(diff.inserted, COMPOSITION_COMMIT_MAX_GRAPHEMES) >
+    COMPOSITION_COMMIT_MAX_GRAPHEMES
+  ) {
     tainted = true;
   }
   if (
     params.data !== undefined &&
     params.data !== null &&
-    countGraphemes(params.data, COMPOSITION_COMMIT_MAX_GRAPHEMES) > COMPOSITION_COMMIT_MAX_GRAPHEMES
+    countGraphemes(params.data, COMPOSITION_COMMIT_MAX_GRAPHEMES) >
+      COMPOSITION_COMMIT_MAX_GRAPHEMES
   ) {
     tainted = true;
   }
@@ -637,6 +653,50 @@ function reconcileObservedValue(
   };
 }
 
+function isMalformedOrForbiddenInput(value: string): boolean {
+  return !isWellFormedUtf16(value) || hasForbiddenRune(value);
+}
+
+function blockedKeystrokeDecision(params: {
+  readonly blockReason: GateBlockReason;
+  readonly gateClosed: boolean;
+  readonly inTagMode: boolean;
+  readonly scope: SearchScope;
+  readonly restartDebounceSignal: number;
+}): KeystrokeSendDecision {
+  return {
+    canSend: false,
+    gateClosed: params.gateClosed,
+    keepLocalTagCacheRows: params.inTagMode,
+    blockReason: params.blockReason,
+    q: undefined,
+    qn: '',
+    scope: params.inTagMode ? 'tag' : params.scope,
+    mode: 'prefix',
+    allowSemantic: false,
+    semanticFlags: [],
+    requestMode: 'lex',
+    restartDebounceSignal: params.restartDebounceSignal,
+  };
+}
+
+function blockedEnterDecision(
+  blockReason: GateBlockReason,
+  scope: SearchScope,
+  isLocalEmptyMatch = false,
+): EnterSearchDecision {
+  return {
+    canSearch: false,
+    isLocalEmptyMatch,
+    blockReason,
+    q: '',
+    qn: '',
+    scope,
+    semantic: 0,
+    requestMode: 'lex',
+  };
+}
+
 /**
  * Evaluates whether a keystroke `/suggest` request may be sent for the current gate state,
  * and with which `{ q, scope, semanticFlags, requestMode }` (plan mục 2.1, 2.24 items 1, 2, 8, 9, 10; SPEC §3.5 rules 1–11).
@@ -649,83 +709,56 @@ export function evaluateKeystrokeSend(
   const state = reconcileObservedValue(rawState, currentValue);
   const value = state.value;
   const inTagMode = isHashTagModeValue(value);
+  const defaultScope: SearchScope = context.scope ?? 'all';
+  const signal = state.restartDebounceSignal;
 
   // Rule 3: Colon lock (or add/add-invalid mode) blocks all keystroke sends until empty.
   if (state.colonLocked || hasColonOrAddModeLock(value)) {
-    return {
-      canSend: false,
-      gateClosed: true,
-      keepLocalTagCacheRows: inTagMode,
+    return blockedKeystrokeDecision({
       blockReason: 'colon_locked',
-      q: undefined,
-      qn: '',
-      scope: inTagMode ? 'tag' : (context.scope ?? 'all'),
-      mode: 'prefix',
-      allowSemantic: false,
-      semanticFlags: [],
-      requestMode: 'lex',
-      restartDebounceSignal: state.restartDebounceSignal,
-    };
+      gateClosed: true,
+      inTagMode,
+      scope: defaultScope,
+      restartDebounceSignal: signal,
+    });
   }
 
   // Rule 1: Tainted draft blocks all keystroke sends until empty.
   if (state.tainted) {
-    return {
-      canSend: false,
-      gateClosed: true,
-      keepLocalTagCacheRows: inTagMode,
+    return blockedKeystrokeDecision({
       blockReason: 'tainted',
-      q: undefined,
-      qn: '',
-      scope: inTagMode ? 'tag' : (context.scope ?? 'all'),
-      mode: 'prefix',
-      allowSemantic: false,
-      semanticFlags: [],
-      requestMode: 'lex',
-      restartDebounceSignal: state.restartDebounceSignal,
-    };
+      gateClosed: true,
+      inTagMode,
+      scope: defaultScope,
+      restartDebounceSignal: signal,
+    });
   }
 
   // Rule 4: Multi-line draft never sends.
   if (!isSingleLineValue(value)) {
-    return {
-      canSend: false,
-      gateClosed: true,
-      keepLocalTagCacheRows: inTagMode,
+    return blockedKeystrokeDecision({
       blockReason: 'multiline',
-      q: undefined,
-      qn: '',
-      scope: inTagMode ? 'tag' : (context.scope ?? 'all'),
-      mode: 'prefix',
-      allowSemantic: false,
-      semanticFlags: [],
-      requestMode: 'lex',
-      restartDebounceSignal: state.restartDebounceSignal,
-    };
+      gateClosed: true,
+      inTagMode,
+      scope: defaultScope,
+      restartDebounceSignal: signal,
+    });
   }
 
   // Rule 2: While IME composing, hold off sending (keep current rows, do not close gate).
   if (state.isComposing) {
-    return {
-      canSend: false,
-      gateClosed: false,
-      keepLocalTagCacheRows: inTagMode,
+    return blockedKeystrokeDecision({
       blockReason: 'composing',
-      q: undefined,
-      qn: '',
-      scope: inTagMode ? 'tag' : (context.scope ?? 'all'),
-      mode: 'prefix',
-      allowSemantic: false,
-      semanticFlags: [],
-      requestMode: 'lex',
-      restartDebounceSignal: state.restartDebounceSignal,
-    };
+      gateClosed: false,
+      inTagMode,
+      scope: defaultScope,
+      restartDebounceSignal: signal,
+    });
   }
 
   // Rule 6: Empty or whitespace-only field -> recent mode (`GET /suggest` without `q`, always `semantic=0`).
   const trimmed = trimUnicodeWhiteSpace(value);
   if (trimmed === '') {
-    const scope: SearchScope = context.scope ?? 'all';
     return {
       canSend: true,
       gateClosed: false,
@@ -733,12 +766,12 @@ export function evaluateKeystrokeSend(
       blockReason: null,
       q: undefined,
       qn: '',
-      scope,
+      scope: defaultScope,
       mode: 'recent',
       allowSemantic: false,
       semanticFlags: [0],
       requestMode: 'lex',
-      restartDebounceSignal: state.restartDebounceSignal,
+      restartDebounceSignal: signal,
     };
   }
 
@@ -746,41 +779,54 @@ export function evaluateKeystrokeSend(
   if (inTagMode) {
     const extracted = extractTagModeToken(value);
     if (!extracted.withinRuneLimit) {
-      return {
-        canSend: false,
-        gateClosed: true,
-        keepLocalTagCacheRows: true,
+      return blockedKeystrokeDecision({
         blockReason: 'too_long',
-        q: undefined,
+        gateClosed: true,
+        inTagMode: true,
+        scope: 'tag',
+        restartDebounceSignal: signal,
+      });
+    }
+
+    if (isMalformedOrForbiddenInput(extracted.token)) {
+      return blockedKeystrokeDecision({
+        blockReason: 'invalid_query',
+        gateClosed: true,
+        inTagMode: true,
+        scope: 'tag',
+        restartDebounceSignal: signal,
+      });
+    }
+
+    // Lone `#` (empty token) sends `q: '#'` (server maps `#` alone to 200 empty prefix, SPEC §2.2).
+    if (extracted.token === '') {
+      return {
+        canSend: true,
+        gateClosed: false,
+        keepLocalTagCacheRows: true,
+        blockReason: null,
+        q: '#',
         qn: '',
         scope: 'tag',
         mode: 'prefix',
         allowSemantic: false,
-        semanticFlags: [],
+        semanticFlags: [0],
         requestMode: 'lex',
-        restartDebounceSignal: state.restartDebounceSignal,
+        restartDebounceSignal: signal,
       };
     }
 
-    // Lone `#` (empty token) sends `q: '#'` (server maps `#` alone to 200 empty prefix, SPEC §2.2);
-    // non-empty token sends only the extracted token (never text after whitespace).
-    const qToSend = extracted.token === '' ? '#' : extracted.token;
     const normTag = normalizeTagQuery(extracted.token);
     if (!normTag.ok) {
-      return {
-        canSend: false,
-        gateClosed: true,
-        keepLocalTagCacheRows: true,
-        blockReason: 'invalid_query',
-        q: undefined,
-        qn: '',
+      // RV-T9-FE1-6: token normalized to empty after punctuation stripping (`#!!!`) ->
+      // do not send, and do NOT close the gate (`gateClosed: false`).
+      return blockedKeystrokeDecision({
+        blockReason: 'empty_normalized',
+        gateClosed: false,
+        inTagMode: true,
         scope: 'tag',
-        mode: 'prefix',
-        allowSemantic: false,
-        semanticFlags: [],
-        requestMode: 'lex',
-        restartDebounceSignal: state.restartDebounceSignal,
-      };
+        restartDebounceSignal: signal,
+      });
     }
     const qn = normTag.normalized;
     const qnRunes = countRunes(qn);
@@ -791,64 +837,61 @@ export function evaluateKeystrokeSend(
       gateClosed: false,
       keepLocalTagCacheRows: true,
       blockReason: null,
-      q: qToSend,
+      q: extracted.token,
       qn,
       scope: 'tag',
       mode,
       allowSemantic: false,
       semanticFlags: [0],
       requestMode: 'lex',
-      restartDebounceSignal: state.restartDebounceSignal,
+      restartDebounceSignal: signal,
     };
   }
 
   // Rule 4: Search mode <= 200 runes.
   if (countRunes(trimmed, QUERY_MAX_RUNES) > QUERY_MAX_RUNES) {
-    return {
-      canSend: false,
-      gateClosed: true,
-      keepLocalTagCacheRows: false,
+    return blockedKeystrokeDecision({
       blockReason: 'too_long',
-      q: undefined,
-      qn: '',
-      scope: context.scope ?? 'all',
-      mode: 'prefix',
-      allowSemantic: false,
-      semanticFlags: [],
-      requestMode: 'lex',
-      restartDebounceSignal: state.restartDebounceSignal,
-    };
+      gateClosed: true,
+      inTagMode: false,
+      scope: defaultScope,
+      restartDebounceSignal: signal,
+    });
+  }
+
+  if (isMalformedOrForbiddenInput(trimmed)) {
+    return blockedKeystrokeDecision({
+      blockReason: 'invalid_query',
+      gateClosed: true,
+      inTagMode: false,
+      scope: defaultScope,
+      restartDebounceSignal: signal,
+    });
   }
 
   const norm = normalizeQuery(trimmed);
   if (!norm.ok) {
-    return {
-      canSend: false,
-      gateClosed: true,
-      keepLocalTagCacheRows: false,
-      blockReason: 'invalid_query',
-      q: undefined,
-      qn: '',
-      scope: context.scope ?? 'all',
-      mode: 'prefix',
-      allowSemantic: false,
-      semanticFlags: [],
-      requestMode: 'lex',
-      restartDebounceSignal: state.restartDebounceSignal,
-    };
+    // RV-T9-FE1-6: input normalized to empty after punctuation stripping (`!` / `!!!`) ->
+    // do not send (`canSend: false`), and do NOT close the gate (`gateClosed: false`).
+    return blockedKeystrokeDecision({
+      blockReason: 'empty_normalized',
+      gateClosed: false,
+      inTagMode: false,
+      scope: defaultScope,
+      restartDebounceSignal: signal,
+    });
   }
 
   const qn = norm.normalized;
   const qnRunes = countRunes(qn);
   const mode: SuggestMode = qnRunes >= 2 ? 'full' : 'prefix';
-  const scope: SearchScope = context.scope ?? 'all';
 
   // SPEC §3.5 rule 7 + rule 10 + 2.24 items 8 & 9:
   // `semantic=1` ONLY when gate-clean AND `semantic_available && semantic_suggest && len_runes(qn) >= 3 && mode !== 'recent' && scope !== 'tag'`.
   const allowSemantic =
     Boolean(context.semanticAvailable) &&
     Boolean(context.semanticSuggest) &&
-    scope !== 'tag' &&
+    defaultScope !== 'tag' &&
     qnRunes >= SEMANTIC_MIN_QUERY_RUNES;
 
   return {
@@ -858,12 +901,12 @@ export function evaluateKeystrokeSend(
     blockReason: null,
     q: trimmed,
     qn,
-    scope,
+    scope: defaultScope,
     mode,
     allowSemantic,
     semanticFlags: allowSemantic ? [0, 1] : [0],
     requestMode: allowSemantic ? 'hybrid' : 'lex',
-    restartDebounceSignal: state.restartDebounceSignal,
+    restartDebounceSignal: signal,
   };
 }
 
@@ -875,8 +918,8 @@ export function evaluateKeystrokeSend(
  * - If the draft is NOT clean through the keystroke send-gate (tainted/pasted, colon-locked such as `http://x`
  *   or `wifi： mật khẩu`, or `#` mode), Enter-search MUST send `semantic=0` (lexical only, never external embedding provider).
  * - If the draft is multi-line, > 200 runes (> 50 runes in `#` mode), or `add`/`add-invalid` mode, `/search` is not called.
- * - If `q` normalizes to empty (`"!!!"`, lone `"#"`), `canSearch` is `false` and `isLocalEmptyMatch` is `true`
- *   so the caller shows local "Không khớp" without calling `/search` (FE-17).
+ * - If `q` normalizes to empty (`"!!!"`, `"#!!!"`, lone `"#"`), `canSearch` is `false` and `isLocalEmptyMatch` is `true`
+ *   so the caller shows local "Không khớp" without calling `/search` (FE-17, RV-T9-FE1-6).
  */
 export function evaluateEnterSearch(
   rawState: SendGateState,
@@ -885,47 +928,21 @@ export function evaluateEnterSearch(
 ): EnterSearchDecision {
   const state = reconcileObservedValue(rawState, currentValue);
   const value = state.value;
+  const defaultScope: SearchScope = context.scope ?? 'all';
 
   // Quick-add (`name: body`) or invalid quick-add goes to the add-mode Enter flow, never `/search`.
   const quickAdd = parseQuickAdd(value);
   if (quickAdd.mode === 'add' || quickAdd.mode === 'add-invalid') {
-    return {
-      canSearch: false,
-      isLocalEmptyMatch: false,
-      blockReason: 'colon_locked',
-      q: '',
-      qn: '',
-      scope: 'all',
-      semantic: 0,
-      requestMode: 'lex',
-    };
+    return blockedEnterDecision('colon_locked', 'all');
   }
 
   if (!isSingleLineValue(value)) {
-    return {
-      canSearch: false,
-      isLocalEmptyMatch: false,
-      blockReason: 'multiline',
-      q: '',
-      qn: '',
-      scope: 'all',
-      semantic: 0,
-      requestMode: 'lex',
-    };
+    return blockedEnterDecision('multiline', 'all');
   }
 
   const trimmed = trimUnicodeWhiteSpace(value);
   if (trimmed === '') {
-    return {
-      canSearch: false,
-      isLocalEmptyMatch: false,
-      blockReason: 'empty_normalized',
-      q: '',
-      qn: '',
-      scope: context.scope ?? 'all',
-      semantic: 0,
-      requestMode: 'lex',
-    };
+    return blockedEnterDecision('empty_normalized', defaultScope, false);
   }
 
   const inTagMode = isHashTagModeValue(value);
@@ -933,55 +950,20 @@ export function evaluateEnterSearch(
     // SPEC §3.5 rules 3 & 7 (FE-1, FE-C23): Enter-search from `#` mode sends `scope='tag'&semantic=0`
     // and never sends anything if the draft contains `:` or `：`.
     if (hasColonOrAddModeLock(value)) {
-      return {
-        canSearch: false,
-        isLocalEmptyMatch: false,
-        blockReason: 'colon_locked',
-        q: '',
-        qn: '',
-        scope: 'tag',
-        semantic: 0,
-        requestMode: 'lex',
-      };
+      return blockedEnterDecision('colon_locked', 'tag');
     }
 
     const extracted = extractTagModeToken(value);
     if (!extracted.withinRuneLimit) {
-      return {
-        canSearch: false,
-        isLocalEmptyMatch: false,
-        blockReason: 'too_long',
-        q: '',
-        qn: '',
-        scope: 'tag',
-        semantic: 0,
-        requestMode: 'lex',
-      };
+      return blockedEnterDecision('too_long', 'tag');
+    }
+    if (isMalformedOrForbiddenInput(extracted.token)) {
+      return blockedEnterDecision('invalid_query', 'tag');
     }
     const normTag = normalizeTagQuery(extracted.token);
-    if (!normTag.ok) {
-      return {
-        canSearch: false,
-        isLocalEmptyMatch: false,
-        blockReason: 'invalid_query',
-        q: '',
-        qn: '',
-        scope: 'tag',
-        semantic: 0,
-        requestMode: 'lex',
-      };
-    }
-    if (normTag.normalized === '') {
-      return {
-        canSearch: false,
-        isLocalEmptyMatch: true,
-        blockReason: 'empty_normalized',
-        q: '',
-        qn: '',
-        scope: 'tag',
-        semantic: 0,
-        requestMode: 'lex',
-      };
+    if (!normTag.ok || normTag.normalized === '') {
+      // RV-T9-FE1-6: lone `#` or `#!!!` normalizes to empty -> local "Không khớp" (`isLocalEmptyMatch: true`).
+      return blockedEnterDecision('empty_normalized', 'tag', true);
     }
     return {
       canSearch: true,
@@ -996,46 +978,20 @@ export function evaluateEnterSearch(
   }
 
   if (countRunes(trimmed, QUERY_MAX_RUNES) > QUERY_MAX_RUNES) {
-    return {
-      canSearch: false,
-      isLocalEmptyMatch: false,
-      blockReason: 'too_long',
-      q: '',
-      qn: '',
-      scope: context.scope ?? 'all',
-      semantic: 0,
-      requestMode: 'lex',
-    };
+    return blockedEnterDecision('too_long', defaultScope);
+  }
+
+  if (isMalformedOrForbiddenInput(trimmed)) {
+    return blockedEnterDecision('invalid_query', defaultScope);
   }
 
   const norm = normalizeQuery(trimmed);
-  if (!norm.ok) {
-    return {
-      canSearch: false,
-      isLocalEmptyMatch: false,
-      blockReason: 'invalid_query',
-      q: '',
-      qn: '',
-      scope: context.scope ?? 'all',
-      semantic: 0,
-      requestMode: 'lex',
-    };
+  if (!norm.ok || norm.normalized === '') {
+    // RV-T9-FE1-6: input that normalizes to empty after punctuation stripping (`!!!`) ->
+    // local "Không khớp" (`isLocalEmptyMatch: true`) without calling `/search` (plan 2.9, FE-17).
+    return blockedEnterDecision('empty_normalized', defaultScope, true);
   }
 
-  if (norm.normalized === '') {
-    return {
-      canSearch: false,
-      isLocalEmptyMatch: true,
-      blockReason: 'empty_normalized',
-      q: '',
-      qn: '',
-      scope: context.scope ?? 'all',
-      semantic: 0,
-      requestMode: 'lex',
-    };
-  }
-
-  const scope: SearchScope = context.scope ?? 'all';
   const hasCursor = Boolean(context.cursor && context.cursor !== '');
   const gateClean =
     !state.tainted &&
@@ -1047,7 +1003,7 @@ export function evaluateEnterSearch(
   const allowSemantic =
     gateClean &&
     !hasCursor &&
-    scope !== 'tag' &&
+    defaultScope !== 'tag' &&
     Boolean(context.semanticAvailable) &&
     Boolean(context.semanticSuggest) &&
     qnRunes >= SEMANTIC_MIN_QUERY_RUNES;
@@ -1058,7 +1014,7 @@ export function evaluateEnterSearch(
     blockReason: null,
     q: trimmed,
     qn: norm.normalized,
-    scope,
+    scope: defaultScope,
     semantic: allowSemantic ? 1 : 0,
     requestMode: allowSemantic ? 'hybrid' : 'lex',
   };
@@ -1087,15 +1043,6 @@ export function evaluateSemanticReissue(
     scope: keystroke.scope,
   };
 }
-
-/**
- * Evaluates the `semantic` parameter for a "See more" (`cursor`) page of `GET /search`
- * (plan mục 2.24 item 8, SPEC §3.5 rule 10, §6.8): cursor pages ALWAYS send `semantic=0`.
- */
-export function evaluateSeeMoreSearchSemantic(): SemanticParam {
-  return 0;
-}
-
 /**
  * Resolves the omnibox help-text i18n key per SPEC §3.4 table and plan mục 2.1 rule 9 / 2.24 item 4:
  * - Add mode (`name: ...`) -> `'content.privacy'`
@@ -1157,7 +1104,6 @@ export interface SendGateController {
   decideKeystroke(context?: SemanticEligibilityContext, currentValue?: string): KeystrokeSendDecision;
   decideEnterSearch(context?: SemanticEligibilityContext, currentValue?: string): EnterSearchDecision;
   decideSemanticReissue(context?: SemanticEligibilityContext, currentValue?: string): ReissueSemanticDecision;
-  decideSeeMoreSemantic(): SemanticParam;
   getHelpTextKey(opts?: { readonly semanticExternal?: boolean | null; readonly currentValue?: string }): OmniboxHelpTextKey;
 }
 
@@ -1167,7 +1113,6 @@ export interface SendGateController {
  * `syncOwnWrite(value)`, and `reset()`.
  */
 export function createSendGate(initialValue = ''): SendGateController {
-  getGraphemeSegmenter();
   let state = createInitialSendGateState(initialValue);
 
   return {
@@ -1209,9 +1154,6 @@ export function createSendGate(initialValue = ''): SendGateController {
     decideSemanticReissue(context, currentValue) {
       state = reconcileObservedValue(state, currentValue);
       return evaluateSemanticReissue(state, context);
-    },
-    decideSeeMoreSemantic() {
-      return evaluateSeeMoreSearchSemantic();
     },
     getHelpTextKey(opts) {
       state = reconcileObservedValue(state, opts?.currentValue);

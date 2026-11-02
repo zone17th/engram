@@ -73,6 +73,14 @@ export interface SuggestSnapshot {
   readonly source: 'suggest' | 'search' | 'tag-cache';
 }
 
+export interface PendingNearBuffer {
+  readonly gen: number;
+  readonly semantic: boolean;
+  readonly semanticReason: SemanticReason | null;
+  readonly near: readonly SuggestNearRow[];
+  readonly generation: number | null;
+}
+
 export interface SuggestMergeState {
   readonly queryGen: number;
   readonly pendingQn: string;
@@ -81,6 +89,10 @@ export interface SuggestMergeState {
   readonly isBusy: boolean;
   readonly dropdownOpen: boolean;
   readonly snapshot: SuggestSnapshot | null;
+  /** Buffered semantic leg that arrived with `lexical_partial` before any complete snapshot for `queryGen` (RV-T9-FE1-4). */
+  readonly pendingNear: PendingNearBuffer | null;
+  /** Durable semantic toggle flag so late `semantic=1` responses after toggle-off never re-show `near` (RV-T9-FE1-5). */
+  readonly semanticEnabled: boolean;
   /** Local tag-cache rows in `#` mode (kept when gate closes in `#` mode per 2.24 item 10). */
   readonly localTagRows: readonly SuggestTag[];
   readonly activeKey: SuggestActiveKey | null;
@@ -90,6 +102,10 @@ export interface SuggestMergeState {
 
 export function getRowKey(row: { readonly kind: 'tag' | 'item'; readonly id: string }): SuggestActiveKey {
   return `${row.kind}:${row.id}`;
+}
+
+export function isSuggestTag(tag: Tag | SuggestTag): tag is SuggestTag {
+  return 'kind' in tag && tag.kind === 'tag';
 }
 
 export function toSuggestTagFromCachedTag(tag: Tag): SuggestTag {
@@ -112,12 +128,13 @@ export function createInitialMergeState(): SuggestMergeState {
     isBusy: false,
     dropdownOpen: false,
     snapshot: null,
+    pendingNear: null,
+    semanticEnabled: true,
     localTagRows: [],
     activeKey: null,
     activeClearedFromNear: false,
   };
 }
-
 function deriveNearStateFromResponse(params: {
   readonly semantic: boolean;
   readonly semanticReason: SemanticReason | null;
@@ -240,6 +257,11 @@ export type SuggestMergeAction =
       readonly response: SearchResponse;
     }
   | {
+      readonly type: 'semantic_leg_failed';
+      readonly gen?: number;
+      readonly aborted?: boolean;
+    }
+  | {
       readonly type: 'toggle_semantic_off';
     }
   | {
@@ -271,6 +293,7 @@ export function startNewQueryGen(
     readonly qn: string;
     readonly scope: SearchScope;
     readonly limit: number;
+    readonly expectSemantic?: boolean;
   },
 ): SuggestMergeState {
   const nextGen = state.queryGen + 1;
@@ -280,6 +303,8 @@ export function startNewQueryGen(
     pendingQn: params.qn,
     pendingScope: params.scope,
     pendingLimit: params.limit,
+    pendingNear: null,
+    semanticEnabled: params.expectSemantic !== undefined ? params.expectSemantic : state.semanticEnabled,
     isBusy: true,
     activeClearedFromNear: false,
   };
@@ -299,9 +324,9 @@ export function seedTagModeCacheRows(
   },
 ): SuggestMergeState {
   const limit = params.limit ?? state.pendingLimit;
-  const suggestTags: SuggestTag[] = params.tags.slice(0, limit).map((t) =>
-    'kind' in t && t.kind === 'tag' ? t : toSuggestTagFromCachedTag(t),
-  );
+  const suggestTags: SuggestTag[] = params.tags
+    .slice(0, limit)
+    .map((t) => (isSuggestTag(t) ? t : toSuggestTagFromCachedTag(t)));
   const firstKey: SuggestActiveKey | null =
     suggestTags.length > 0 ? getRowKey(suggestTags[0]!) : null;
   const activeKey: SuggestActiveKey | null =
@@ -337,24 +362,26 @@ export function seedTagModeCacheRows(
   };
 }
 
-/**
- * Applies a `/suggest` response for generation `gen` per plan mục 2.8 rules 1–3, 7:
- * - Stale `gen !== state.queryGen` is dropped.
- * - Response with non-empty `lexical_partial` NEVER defines or replaces `snapshot` (FE-12a).
- *   However, if a complete snapshot for `state.queryGen` ALREADY exists and this response has
- *   `semantic: true`, its `near` rows are still merged into the existing snapshot (plan 2.8 rule 3:
- *   "`semantic=1` có `lexical_partial` vẫn được lấy `near` sau khi snapshot đầy đủ có").
- * - First complete response (`lexical_partial.length === 0`, regardless of `semantic` flag) defines
- *   the snapshot (`lexical = [...tags, ...items]`).
- * - Second response for the same `gen` contributes ONLY `near`, keeping the exact `snapshot.lexical`
- *   array reference so lexical DOM nodes are never re-created or shifted.
- */
-export function applySuggestResponse(
+function mergePrimarySnapshotResponse(
   state: SuggestMergeState,
   params: {
     readonly gen: number;
-    readonly qn?: string;
-    readonly response: SuggestResponse;
+    readonly qn: string;
+    readonly scope: SearchScope;
+    readonly limit: number;
+    readonly tags: readonly SuggestTag[];
+    readonly items: readonly SuggestItem[];
+    readonly near: readonly SuggestNearRow[];
+    readonly semantic: boolean;
+    readonly semanticReason: SemanticReason | null;
+    readonly quota: SuggestQuota;
+    readonly nearClipLimit: number;
+    readonly hasMore: boolean;
+    readonly nextCursor: string | null;
+    readonly generation: number | null;
+    readonly source: 'suggest' | 'search';
+    readonly isPartial: boolean;
+    readonly hasCompleteSnapshotForGen: boolean;
     readonly expectSemantic?: boolean;
   },
 ): SuggestMergeState {
@@ -362,60 +389,96 @@ export function applySuggestResponse(
     return state;
   }
 
-  const { response } = params;
-  const qn = params.qn ?? state.pendingQn;
-  const isPartial = response.lexical_partial.length > 0;
-  const hasCompleteServerSnapshotForGen =
-    state.snapshot !== null &&
-    state.snapshot.gen === params.gen &&
-    state.snapshot.source !== 'tag-cache';
+  const isLexicalOnlyLeg = !params.semantic && params.semanticReason === 'request_lexical';
 
   // Case A: Complete snapshot for this `gen` does NOT exist yet.
-  if (!hasCompleteServerSnapshotForGen) {
-    if (isPartial) {
+  if (!params.hasCompleteSnapshotForGen) {
+    if (params.isPartial) {
       // Rule 1 (FE-12a): `lexical_partial` never defines or replaces a snapshot; keep previous rows.
+      // RV-T9-FE1-4: if the semantic leg (`semantic=1`) arrived first with `lexical_partial`,
+      // buffer its `near` rows and semantic outcome for `params.gen` so the later complete `semantic=0`
+      // response merges them instead of getting stuck at `nearState: 'pending'`.
+      const nextPendingNear: PendingNearBuffer | null =
+        state.semanticEnabled && !isLexicalOnlyLeg
+          ? {
+              gen: params.gen,
+              semantic: params.semantic,
+              semanticReason: params.semanticReason,
+              near: params.semantic ? params.near : [],
+              generation: params.generation,
+            }
+          : state.pendingNear;
+
       return {
         ...state,
+        pendingNear: nextPendingNear,
         isBusy: false,
         activeClearedFromNear: false,
       };
     }
 
-    const lexical: readonly SuggestRow[] = [...response.tags, ...response.items];
-    const expectSemantic = Boolean(params.expectSemantic) && !response.semantic;
-    const near = response.semantic
-      ? dedupAndClipNear(lexical, response.near, response.quota.near, response.limit)
-      : [];
-    const nearState = deriveNearStateFromResponse({
-      semantic: response.semantic,
-      semanticReason: response.semantic_reason,
-      expectSemanticResponse: expectSemantic,
-    });
+    const lexical: readonly SuggestRow[] = [...params.tags, ...params.items];
+    const buffered =
+      state.pendingNear !== null && state.pendingNear.gen === params.gen
+        ? state.pendingNear
+        : null;
+
+    let near: readonly SuggestNearRow[] = [];
+    let nearState: NearZoneState;
+    let generation: number | null = params.generation;
+
+    // RV-T9-FE1-5: if toggle-off disabled semantic for this query/state, never show `near`
+    // and keep `nearState = 'off'` even if a `semantic=1` response defines the snapshot.
+    if (!state.semanticEnabled) {
+      near = [];
+      nearState = 'off';
+    } else if (params.semantic) {
+      near = dedupAndClipNear(lexical, params.near, params.quota.near, params.nearClipLimit);
+      nearState = 'shown';
+    } else if (buffered) {
+      if (buffered.semantic) {
+        near = dedupAndClipNear(lexical, buffered.near, params.quota.near, params.nearClipLimit);
+      }
+      nearState = deriveNearStateFromResponse({
+        semantic: buffered.semantic,
+        semanticReason: buffered.semanticReason,
+        expectSemanticResponse: false,
+      });
+      generation = buffered.generation ?? params.generation;
+    } else {
+      const expectSemantic = Boolean(params.expectSemantic);
+      nearState = deriveNearStateFromResponse({
+        semantic: false,
+        semanticReason: params.semanticReason,
+        expectSemanticResponse: expectSemantic,
+      });
+    }
 
     const activeKey = resolveActiveKeyAfterSnapshotReplace({
       prevActiveKey: state.activeKey,
-      scope: response.scope,
+      scope: params.scope,
       lexical,
       near,
     });
 
     const nextSnapshot: SuggestSnapshot = {
       gen: params.gen,
-      qn,
-      scope: response.scope,
-      limit: response.limit,
+      qn: params.qn,
+      scope: params.scope,
+      limit: params.limit,
       lexical,
       near,
       nearState,
-      quota: response.quota,
-      hasMore: response.has_more,
-      nextCursor: null,
-      generation: response.generation,
-      source: 'suggest',
+      quota: params.quota,
+      hasMore: params.hasMore,
+      nextCursor: params.nextCursor,
+      generation,
+      source: params.source,
     };
 
     return {
       ...state,
+      pendingNear: null,
       isBusy: false,
       dropdownOpen: true,
       snapshot: nextSnapshot,
@@ -427,11 +490,8 @@ export function applySuggestResponse(
   // Case B: Complete snapshot for this `gen` ALREADY exists.
   // The second response contributes ONLY `near` (or updates `nearState` if it was the semantic leg).
   const currentSnapshot = state.snapshot!;
-  if (
-    !response.semantic &&
-    response.semantic_reason === 'request_lexical'
-  ) {
-    // Late lexical-only response arriving after complete semantic=1 response defined the snapshot:
+  if (isLexicalOnlyLeg) {
+    // Late lexical-only response arriving after complete `semantic=1` response defined the snapshot:
     // its tags/items are ignored because the snapshot is already complete.
     return {
       ...state,
@@ -440,37 +500,91 @@ export function applySuggestResponse(
     };
   }
 
-  const effectiveQuotaNear = currentSnapshot.quota.near;
-  const nextNear = response.semantic
+  // RV-T9-FE1-5: if user toggled `≈` off while the `semantic=1` request was in flight,
+  // ignore the late semantic leg and keep `near = []` and `nearState = 'off'`.
+  if (!state.semanticEnabled || currentSnapshot.nearState === 'off') {
+    return {
+      ...state,
+      pendingNear: null,
+      isBusy: false,
+      snapshot: {
+        ...currentSnapshot,
+        near: [],
+        nearState: 'off',
+      },
+      activeClearedFromNear: false,
+    };
+  }
+
+  const nextNear = params.semantic
     ? dedupAndClipNear(
         currentSnapshot.lexical,
-        response.near,
-        effectiveQuotaNear,
-        currentSnapshot.limit,
+        params.near,
+        currentSnapshot.quota.near,
+        params.nearClipLimit,
       )
     : currentSnapshot.near;
 
   const nextNearState = deriveNearStateFromResponse({
-    semantic: response.semantic,
-    semanticReason: response.semantic_reason,
+    semantic: params.semantic,
+    semanticReason: params.semanticReason,
     expectSemanticResponse: false,
     currentNearState: currentSnapshot.nearState,
   });
 
   // Preserve exact `currentSnapshot.lexical` array reference and `activeKey`.
-  const nextSnapshot: SuggestSnapshot = {
-    ...currentSnapshot,
-    near: nextNear,
-    nearState: nextNearState,
-    generation: response.generation ?? currentSnapshot.generation,
-  };
-
   return {
     ...state,
+    pendingNear: null,
     isBusy: false,
-    snapshot: nextSnapshot,
+    snapshot: {
+      ...currentSnapshot,
+      near: nextNear,
+      nearState: nextNearState,
+      generation: params.generation ?? currentSnapshot.generation,
+    },
     activeClearedFromNear: false,
   };
+}
+
+/**
+ * Applies a `/suggest` response for generation `gen` per plan mục 2.8 rules 1–3, 7.
+ */
+export function applySuggestResponse(
+  state: SuggestMergeState,
+  params: {
+    readonly gen: number;
+    readonly qn?: string;
+    readonly response: SuggestResponse;
+    readonly expectSemantic?: boolean;
+  },
+): SuggestMergeState {
+  const { response } = params;
+  const hasCompleteServerSnapshotForGen =
+    state.snapshot !== null &&
+    state.snapshot.gen === params.gen &&
+    state.snapshot.source !== 'tag-cache';
+
+  return mergePrimarySnapshotResponse(state, {
+    gen: params.gen,
+    qn: params.qn ?? state.pendingQn,
+    scope: response.scope,
+    limit: response.limit,
+    tags: response.tags,
+    items: response.items,
+    near: response.near,
+    semantic: response.semantic,
+    semanticReason: response.semantic_reason,
+    quota: response.quota,
+    nearClipLimit: response.limit,
+    hasMore: response.has_more,
+    nextCursor: null,
+    generation: response.generation,
+    source: 'suggest',
+    isPartial: response.lexical_partial.length > 0,
+    hasCompleteSnapshotForGen: hasCompleteServerSnapshotForGen,
+    expectSemantic: params.expectSemantic,
+  });
 }
 
 /**
@@ -485,105 +599,41 @@ export function applySearchFirstPageResponse(
     readonly expectSemantic?: boolean;
   },
 ): SuggestMergeState {
-  if (params.gen !== state.queryGen) {
-    return state;
-  }
-
   const { response } = params;
   const hasCompleteSearchSnapshotForGen =
     state.snapshot !== null &&
     state.snapshot.gen === params.gen &&
     state.snapshot.source === 'search';
+  const lexicalCount =
+    hasCompleteSearchSnapshotForGen && state.snapshot
+      ? state.snapshot.lexical.length
+      : response.tags.length + response.items.length;
+  const quotaNear = SEARCH_FIRST_PAGE_NEAR_MAX;
 
-  if (!hasCompleteSearchSnapshotForGen) {
-    const lexical: readonly SuggestRow[] = [...response.tags, ...response.items];
-    const quotaNear = SEARCH_FIRST_PAGE_NEAR_MAX;
-    const near = response.semantic
-      ? dedupAndClipNear(
-          lexical,
-          response.near,
-          quotaNear,
-          lexical.length + quotaNear,
-        )
-      : [];
-    const expectSemantic = Boolean(params.expectSemantic) && !response.semantic;
-    const nearState = deriveNearStateFromResponse({
-      semantic: response.semantic,
-      semanticReason: response.semantic_reason,
-      expectSemanticResponse: expectSemantic,
-    });
-    const activeKey = resolveActiveKeyAfterSnapshotReplace({
-      prevActiveKey: state.activeKey,
-      scope: response.scope,
-      lexical,
-      near,
-    });
-
-    const nextSnapshot: SuggestSnapshot = {
-      gen: params.gen,
-      qn: params.qn,
-      scope: response.scope,
-      limit: response.limit,
-      lexical,
-      near,
-      nearState,
-      quota: {
-        tag: response.tags.length,
-        lexical: lexical.length,
-        near: quotaNear,
-      },
-      hasMore: response.next_cursor !== null,
-      nextCursor: response.next_cursor,
-      generation: response.generation,
-      source: 'search',
-    };
-
-    return {
-      ...state,
-      isBusy: false,
-      dropdownOpen: true,
-      snapshot: nextSnapshot,
-      activeKey,
-      activeClearedFromNear: false,
-    };
-  }
-
-  const currentSnapshot = state.snapshot!;
-  if (!response.semantic && response.semantic_reason === 'request_lexical') {
-    return {
-      ...state,
-      isBusy: false,
-      activeClearedFromNear: false,
-    };
-  }
-
-  const nextNear = response.semantic
-    ? dedupAndClipNear(
-        currentSnapshot.lexical,
-        response.near,
-        SEARCH_FIRST_PAGE_NEAR_MAX,
-        currentSnapshot.lexical.length + SEARCH_FIRST_PAGE_NEAR_MAX,
-      )
-    : currentSnapshot.near;
-
-  const nextNearState = deriveNearStateFromResponse({
+  return mergePrimarySnapshotResponse(state, {
+    gen: params.gen,
+    qn: params.qn,
+    scope: response.scope,
+    limit: response.limit,
+    tags: response.tags,
+    items: response.items,
+    near: response.near,
     semantic: response.semantic,
     semanticReason: response.semantic_reason,
-    expectSemanticResponse: false,
-    currentNearState: currentSnapshot.nearState,
-  });
-
-  return {
-    ...state,
-    isBusy: false,
-    snapshot: {
-      ...currentSnapshot,
-      near: nextNear,
-      nearState: nextNearState,
-      generation: response.generation ?? currentSnapshot.generation,
+    quota: {
+      tag: response.tags.length,
+      lexical: lexicalCount,
+      near: quotaNear,
     },
-    activeClearedFromNear: false,
-  };
+    nearClipLimit: lexicalCount + quotaNear,
+    hasMore: response.next_cursor !== null,
+    nextCursor: response.next_cursor,
+    generation: response.generation,
+    source: 'search',
+    isPartial: false,
+    hasCompleteSnapshotForGen: hasCompleteSearchSnapshotForGen,
+    expectSemantic: params.expectSemantic,
+  });
 }
 
 /**
@@ -644,13 +694,64 @@ export function applySearchCursorPageResponse(
 }
 
 /**
- * Handles toggling `≈` OFF (plan mục 2.8 rule 4):
+ * Handles a failed, rate-limited, or aborted `semantic=1` leg for `gen` (RV-T9-FE1-4):
+ * transitions `nearState` out of `'pending'` (`'idle'` on abort, `'degraded'` on failure/429)
+ * and clears any `pendingNear` buffer for `gen` so the UI never stays stuck on "Đang tìm gần nghĩa…".
+ */
+export function applySemanticLegFailed(
+  state: SuggestMergeState,
+  params: { readonly gen?: number; readonly aborted?: boolean } = {},
+): SuggestMergeState {
+  const targetGen = params.gen ?? state.queryGen;
+  if (targetGen !== state.queryGen) {
+    return state;
+  }
+
+  const nextPendingNear =
+    state.pendingNear && state.pendingNear.gen === targetGen ? null : state.pendingNear;
+
+  if (!state.snapshot || state.snapshot.gen !== targetGen) {
+    if (nextPendingNear === state.pendingNear) return state;
+    return {
+      ...state,
+      pendingNear: nextPendingNear,
+    };
+  }
+
+  if (state.snapshot.nearState !== 'pending') {
+    return {
+      ...state,
+      pendingNear: nextPendingNear,
+    };
+  }
+
+  const nextNearState: NearZoneState = params.aborted ? 'idle' : 'degraded';
+  return {
+    ...state,
+    pendingNear: nextPendingNear,
+    snapshot: {
+      ...state.snapshot,
+      nearState: nextNearState,
+    },
+    activeClearedFromNear: false,
+  };
+}
+
+/**
+ * Handles toggling `≈` OFF (plan mục 2.8 rule 4, RV-T9-FE1-5):
+ * - Durably sets `semanticEnabled = false` and clears `pendingNear` (even when `snapshot === null`)
+ *   so any in-flight `semantic=1` response arriving later cannot re-show `near`.
  * - Removes only the `near` zone (`near = []`, `nearState = 'off'`), keeping `lexical` untouched.
  * - If `activeKey` was inside `near`, resets `activeKey = null` and sets `activeClearedFromNear = true`.
  */
 export function applyToggleSemanticOff(state: SuggestMergeState): SuggestMergeState {
   if (!state.snapshot) {
-    return state;
+    return {
+      ...state,
+      pendingNear: null,
+      semanticEnabled: false,
+      activeClearedFromNear: false,
+    };
   }
 
   const wasActiveInNear =
@@ -659,6 +760,8 @@ export function applyToggleSemanticOff(state: SuggestMergeState): SuggestMergeSt
 
   return {
     ...state,
+    pendingNear: null,
+    semanticEnabled: false,
     snapshot: {
       ...state.snapshot,
       near: [],
@@ -670,14 +773,20 @@ export function applyToggleSemanticOff(state: SuggestMergeState): SuggestMergeSt
 }
 
 /**
- * Marks `nearState = 'pending'` when toggling `≈` ON for a clean query that re-issues `semantic=1`.
+ * Marks `semanticEnabled = true` and `nearState = 'pending'` when toggling `≈` ON
+ * for a clean query that re-issues `semantic=1`.
  */
 export function applyToggleSemanticOnPending(state: SuggestMergeState): SuggestMergeState {
   if (!state.snapshot) {
-    return state;
+    return {
+      ...state,
+      semanticEnabled: true,
+      activeClearedFromNear: false,
+    };
   }
   return {
     ...state,
+    semanticEnabled: true,
     snapshot: {
       ...state.snapshot,
       nearState: 'pending',
@@ -722,6 +831,7 @@ export function applyGateClose(
     return {
       ...state,
       queryGen: nextGen,
+      pendingNear: null,
       isBusy: false,
       dropdownOpen: keptLocal.length > 0,
       snapshot: localSnapshot,
@@ -733,6 +843,7 @@ export function applyGateClose(
   return {
     ...state,
     queryGen: nextGen,
+    pendingNear: null,
     isBusy: false,
     dropdownOpen: false,
     snapshot: null,
@@ -806,6 +917,8 @@ export function suggestMergeReducer(
       return applySearchFirstPageResponse(state, action);
     case 'receive_search_cursor_page':
       return applySearchCursorPageResponse(state, action);
+    case 'semantic_leg_failed':
+      return applySemanticLegFailed(state, action);
     case 'toggle_semantic_off':
       return applyToggleSemanticOff(state);
     case 'toggle_semantic_on_pending':

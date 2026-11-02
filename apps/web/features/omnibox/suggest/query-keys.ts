@@ -111,18 +111,6 @@ export function buildSuggestQueryKey(params: SuggestQueryKeyParams): SuggestQuer
     params.qn,
   ] as const;
 }
-
-/**
- * Builds a `SuggestQueryKey` and throws if `userId` is missing/empty.
- */
-export function requireSuggestQueryKey(params: SuggestQueryKeyParams): SuggestQueryKey {
-  const key = buildSuggestQueryKey(params);
-  if (!key) {
-    throw new Error('Suggest query key requires a non-empty userId.');
-  }
-  return key;
-}
-
 /**
  * Builds a `SearchPageQueryKey` or returns `null` when `userId` is missing/empty.
  * Cursor pages ("Xem thêm", SPEC §6.8) always force `requestMode = 'lex'`.
@@ -145,32 +133,6 @@ export function buildSearchQueryKey(params: SearchPageQueryKeyParams): SearchPag
     cursor,
   ] as const;
 }
-
-/**
- * Builds a `SearchPageQueryKey` and throws if `userId` is missing/empty.
- */
-export function requireSearchQueryKey(params: SearchPageQueryKeyParams): SearchPageQueryKey {
-  const key = buildSearchQueryKey(params);
-  if (!key) {
-    throw new Error('Search query key requires a non-empty userId.');
-  }
-  return key;
-}
-
-export const searchQueryKeys = {
-  all: SEARCH_QUERY_KEY_PREFIX,
-  user: (userId: string) => {
-    const uid = normalizeUserId(userId);
-    if (!uid) {
-      throw new Error('Search user query key prefix requires a non-empty userId.');
-    }
-    return ['search', uid] as const;
-  },
-  suggest: buildSuggestQueryKey,
-  requireSuggest: requireSuggestQueryKey,
-  search: buildSearchQueryKey,
-  requireSearch: requireSearchQueryKey,
-} as const;
 
 /**
  * Predicate matching the `['search', ...]` query key prefix (plan mục 2.7).

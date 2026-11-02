@@ -36,6 +36,8 @@ export const AUTH_ME_QUERY_KEY_PREFIX = ['auth', 'me'] as const;
 
 export type SemanticSuggestErrorCode = 'semantic_unavailable' | 'patch_failed';
 
+export type SemanticSuggestPatchOutcome = 'ok' | 'busy' | 'unavailable' | 'failed';
+
 export interface UseSemanticSuggestSettingResult {
   readonly me: Me | null;
   readonly semanticSuggest: boolean;
@@ -45,45 +47,35 @@ export interface UseSemanticSuggestSettingResult {
   readonly isPending: boolean;
   readonly errorCode: SemanticSuggestErrorCode | null;
   readonly isSemanticUnavailableError: boolean;
+  readonly lastOutcome: SemanticSuggestPatchOutcome | null;
   readonly setSemanticSuggest: (next: boolean) => Promise<boolean>;
   readonly toggleSemanticSuggest: () => Promise<boolean>;
   readonly clearError: () => void;
 }
 
-export function readMeFromQueryClient(queryClient: QueryClient | undefined): Me | null {
+export function readMeFromQueryClient(
+  queryClient: QueryClient | undefined,
+  epoch: number = getSessionEpoch(),
+): Me | null {
   if (!queryClient) return null;
-  const epochKey = ['auth', 'me', getSessionEpoch()] as const;
-  const exact = queryClient.getQueryData<Me | null>(epochKey);
-  if (exact) return exact;
-
-  const queries = queryClient.getQueriesData<Me | null>({
-    queryKey: AUTH_ME_QUERY_KEY_PREFIX,
-  });
-  for (let i = queries.length - 1; i >= 0; i -= 1) {
-    const data = queries[i]?.[1];
-    if (data) return data;
-  }
-  return null;
+  const epochKey = ['auth', 'me', epoch] as const;
+  return queryClient.getQueryData<Me | null>(epochKey) ?? null;
 }
 
 export function writeMeToQueryClient(
   queryClient: QueryClient | undefined,
   updatedMe: Me,
+  epoch: number = getSessionEpoch(),
 ): void {
   if (!queryClient) return;
-  const existing = queryClient.getQueriesData<Me | null>({
-    queryKey: AUTH_ME_QUERY_KEY_PREFIX,
-  });
-  let updatedAny = false;
-  for (const [key, data] of existing) {
-    if (data !== undefined) {
-      queryClient.setQueryData<Me | null>(key, updatedMe);
-      updatedAny = true;
-    }
-  }
-  if (!updatedAny) {
-    queryClient.setQueryData<Me | null>(['auth', 'me', getSessionEpoch()], updatedMe);
-  }
+  if (getSessionEpoch() !== epoch) return;
+  const epochKey = ['auth', 'me', epoch] as const;
+  const existing = queryClient.getQueryData<Me | null>(epochKey);
+  // If the current epoch entry was explicitly cleared to `null` (signed_out) or belongs to another user,
+  // never resurrect or cross-write `Me` (RV-T9-FE1-3).
+  if (existing === null) return;
+  if (existing !== undefined && existing.user.id !== updatedMe.user.id) return;
+  queryClient.setQueryData<Me | null>(epochKey, updatedMe);
 }
 
 export function useSemanticSuggestSetting(opts?: {
@@ -93,7 +85,11 @@ export function useSemanticSuggestSetting(opts?: {
   const queryClient = useContext(QueryClientContext);
   const [isPending, setIsPending] = useState(false);
   const [errorCode, setErrorCode] = useState<SemanticSuggestErrorCode | null>(null);
+  const [lastOutcome, setLastOutcome] = useState<SemanticSuggestPatchOutcome | null>(null);
   const inFlightRef = useRef(false);
+  const fallbackMe = opts?.fallbackMe;
+  const onUpdatedRef = useRef(opts?.onUpdated);
+  onUpdatedRef.current = opts?.onUpdated;
 
   const subscribe = useCallback(
     (onStoreChange: () => void): (() => void) => {
@@ -109,11 +105,10 @@ export function useSemanticSuggestSetting(opts?: {
   );
 
   const getSnapshot = useCallback((): Me | null => {
-    return readMeFromQueryClient(queryClient) ?? opts?.fallbackMe ?? null;
-  }, [queryClient, opts?.fallbackMe]);
+    return readMeFromQueryClient(queryClient) ?? fallbackMe ?? null;
+  }, [queryClient, fallbackMe]);
 
-  const me = useSyncExternalStore(subscribe, getSnapshot, () => opts?.fallbackMe ?? null);
-
+  const me = useSyncExternalStore(subscribe, getSnapshot, () => fallbackMe ?? null);
   const semanticAvailable = Boolean(me?.features?.semantic_available);
   const semanticSuggest = Boolean(me?.settings?.semantic_suggest);
   // Plan 2.24 item 4: `Me.features.semantic_external` absent (`undefined`) -> treat as `true`.
@@ -125,10 +120,16 @@ export function useSemanticSuggestSetting(opts?: {
 
   const setSemanticSuggest = useCallback(
     async (next: boolean): Promise<boolean> => {
-      if (inFlightRef.current) return false;
-      const currentMe = readMeFromQueryClient(queryClient) ?? opts?.fallbackMe ?? null;
+      if (inFlightRef.current) {
+        setLastOutcome('busy');
+        return false;
+      }
+      const startEpoch = getSessionEpoch();
+      const currentMe = readMeFromQueryClient(queryClient, startEpoch) ?? fallbackMe ?? null;
+      const startUserId = currentMe?.user.id ?? null;
       if (next && currentMe && !currentMe.features.semantic_available) {
         setErrorCode('semantic_unavailable');
+        setLastOutcome('unavailable');
         return false;
       }
 
@@ -139,40 +140,72 @@ export function useSemanticSuggestSetting(opts?: {
       try {
         // Non-optimistic PATCH: wait for HTTP 200 before mutating the `Me` cache.
         const updatedMe = await patchSettings({ semantic_suggest: next });
-        writeMeToQueryClient(queryClient, updatedMe);
-        opts?.onUpdated?.(updatedMe, Boolean(updatedMe.settings.semantic_suggest));
+        // Guard against session epoch change, logout (`null` cache), or user switch mid-PATCH (RV-T9-FE1-3).
+        if (getSessionEpoch() !== startEpoch) {
+          setLastOutcome('failed');
+          return false;
+        }
+        if (startUserId !== null && updatedMe.user.id !== startUserId) {
+          setLastOutcome('failed');
+          return false;
+        }
+        const latestCachedMe = readMeFromQueryClient(queryClient, startEpoch);
+        if (latestCachedMe !== null && latestCachedMe.user.id !== updatedMe.user.id) {
+          setLastOutcome('failed');
+          return false;
+        }
+        if (queryClient && queryClient.getQueryData<Me | null>(['auth', 'me', startEpoch]) === null) {
+          setLastOutcome('failed');
+          return false;
+        }
+        writeMeToQueryClient(queryClient, updatedMe, startEpoch);
+        onUpdatedRef.current?.(updatedMe, Boolean(updatedMe.settings.semantic_suggest));
+        setLastOutcome('ok');
         return true;
       } catch (err) {
         if (err instanceof ProblemError && err.problem.code === 'semantic_unavailable') {
-          // Ensure cache stays/reverts to `semantic_suggest: false` on 409 semantic_unavailable.
-          const latestMe = readMeFromQueryClient(queryClient) ?? currentMe;
-          if (latestMe && latestMe.settings.semantic_suggest !== false) {
-            writeMeToQueryClient(queryClient, {
-              ...latestMe,
-              settings: {
-                ...latestMe.settings,
-                semantic_suggest: false,
-              },
-            });
+          // Ensure cache stays/reverts to `semantic_suggest: false` on 409 semantic_unavailable
+          // only if the session epoch and user are still the same.
+          if (getSessionEpoch() === startEpoch) {
+            const latestMe = readMeFromQueryClient(queryClient, startEpoch) ?? currentMe;
+            if (
+              latestMe &&
+              (startUserId === null || latestMe.user.id === startUserId) &&
+              latestMe.settings.semantic_suggest !== false
+            ) {
+              writeMeToQueryClient(
+                queryClient,
+                {
+                  ...latestMe,
+                  settings: {
+                    ...latestMe.settings,
+                    semantic_suggest: false,
+                  },
+                },
+                startEpoch,
+              );
+            }
           }
           setErrorCode('semantic_unavailable');
+          setLastOutcome('unavailable');
           return false;
         }
         setErrorCode('patch_failed');
+        setLastOutcome('failed');
         return false;
       } finally {
         inFlightRef.current = false;
         setIsPending(false);
       }
     },
-    [queryClient, opts],
+    [queryClient, fallbackMe],
   );
 
   const toggleSemanticSuggest = useCallback(async (): Promise<boolean> => {
-    const currentMe = readMeFromQueryClient(queryClient) ?? opts?.fallbackMe ?? null;
+    const currentMe = readMeFromQueryClient(queryClient) ?? fallbackMe ?? null;
     const currentVal = Boolean(currentMe?.settings?.semantic_suggest);
     return setSemanticSuggest(!currentVal);
-  }, [queryClient, opts?.fallbackMe, setSemanticSuggest]);
+  }, [queryClient, fallbackMe, setSemanticSuggest]);
 
   return {
     me,
@@ -182,6 +215,7 @@ export function useSemanticSuggestSetting(opts?: {
     isPending,
     errorCode,
     isSemanticUnavailableError: errorCode === 'semantic_unavailable',
+    lastOutcome,
     setSemanticSuggest,
     toggleSemanticSuggest,
     clearError,
