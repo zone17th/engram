@@ -39,6 +39,54 @@ func collectPlanPartitionRelations(v any, prefix string, out map[string]struct{}
 	}
 }
 
+// annCTEScansPartitionIndex reports whether the "CTE ann" subplan contains a
+// scan node on relation `partition` that uses exactly index `index`. It is
+// scoped to the ann CTE subtree so an HNSW-named index elsewhere in the plan
+// (or a different index on the same partition, e.g. the PK) cannot satisfy it.
+func annCTEScansPartitionIndex(v any, partition, index string) bool {
+	switch node := v.(type) {
+	case map[string]any:
+		if name, ok := node["Subplan Name"].(string); ok && name == "CTE ann" {
+			return planScansIndex(node, partition, index)
+		}
+		for _, child := range node {
+			if annCTEScansPartitionIndex(child, partition, index) {
+				return true
+			}
+		}
+	case []any:
+		for _, elem := range node {
+			if annCTEScansPartitionIndex(elem, partition, index) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func planScansIndex(v any, partition, index string) bool {
+	switch node := v.(type) {
+	case map[string]any:
+		rel, _ := node["Relation Name"].(string)
+		idx, _ := node["Index Name"].(string)
+		if rel == partition && idx == index {
+			return true
+		}
+		for _, child := range node {
+			if planScansIndex(child, partition, index) {
+				return true
+			}
+		}
+	case []any:
+		for _, elem := range node {
+			if planScansIndex(elem, partition, index) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestANNAboveThresholdPrunesPartition(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
@@ -71,7 +119,8 @@ func TestANNAboveThresholdPrunesPartition(t *testing.T) {
 
 	// 1. Verify EXPLAIN (FORMAT JSON, COSTS OFF) on ANNSearchSQL touches
 	// exactly 1 partition of item_embedding_g1 (15 of 16 partitions pruned)
-	// and uses that partition's HNSW index when seqscan is disabled.
+	// and that the ann candidate CTE is HNSW-eligible, i.e. scans that
+	// partition via its <partition>_hnsw index (migration 0009 naming).
 	ident, err := pin.TableIdent(generation.CorpusItem)
 	if err != nil {
 		t.Fatal(err)
@@ -85,9 +134,20 @@ func TestANNAboveThresholdPrunesPartition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
-		_ = tx.Rollback(ctx)
-		t.Fatal(err)
+	// With only 4 tiny rows the planner would otherwise prefer a bitmap scan
+	// on the partition PK plus Sort over the HNSW index. Disable those
+	// alternatives (EXPLAIN-only transaction) so the assertion proves the ANN
+	// SQL shape is HNSW-eligible and partition-pruned. Planner choice on real
+	// volumes (whale/mid tenants) is measured in Task 23 search-bench, not here.
+	for _, setting := range []string{
+		`SET LOCAL enable_seqscan = off`,
+		`SET LOCAL enable_bitmapscan = off`,
+		`SET LOCAL enable_sort = off`,
+	} {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatal(err)
+		}
 	}
 	var rawPlan []byte
 	if err := tx.QueryRow(ctx,
@@ -115,8 +175,14 @@ func TestANNAboveThresholdPrunesPartition(t *testing.T) {
 		t.Fatalf("expected ANNSearchSQL EXPLAIN to touch exactly 1 partition of item_embedding_g1, touched %d (%v)\nPlan:\n%s",
 			len(seenPartitions), seenPartitions, string(rawPlan))
 	}
-	if !explainContainsHNSW(planPayload) {
-		t.Fatalf("expected ANNSearchSQL EXPLAIN to use per-partition HNSW index, plan:\n%s", string(rawPlan))
+	var prunedPartition string
+	for rel := range seenPartitions {
+		prunedPartition = rel
+	}
+	wantIndex := prunedPartition + "_hnsw"
+	if !annCTEScansPartitionIndex(planPayload, prunedPartition, wantIndex) {
+		t.Fatalf("expected ANNSearchSQL ann CTE to scan %s via HNSW index %s, plan:\n%s",
+			prunedPartition, wantIndex, string(rawPlan))
 	}
 
 	// 2. Execute VectorSearch above injected ExactMaxVectors (4 > 2) with k=3
