@@ -2,35 +2,15 @@ package semantic
 
 import (
 	"context"
-	"errors"
-	"sync"
 
 	"github.com/google/uuid"
 
-	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
+	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/suggest"
 )
 
-// requestPinState caches the single ActivePin read within an HTTP request when
-// Task 4's /search page-1 path calls ActiveGeneration(ctx, userID) first and
-// Near(ctx, req) second (`internal/suggest/search.go:101,240`).
-//
-// Keying by ctx.Done() (the per-request context cancellation channel created by
-// net/http Server or per-request context.WithTimeout/WithCancel) allows Near to
-// consume the exact Pin resolved by ActiveGeneration even though suggest.Service
-// does not return a mutated context from ActiveGeneration. The entry is
-// one-shot (deleted on consumption by Near, or on context cancellation when
-// Near is not called on cursor pages).
-type requestPinEntry struct {
-	userID uuid.UUID
-	pin    generation.Pin
-	hasPin bool
-}
-
 type nearSource struct {
-	rt      *Runtime
-	reqMu   sync.Mutex
-	reqPins map[<-chan struct{}]requestPinEntry
+	rt *Runtime
 }
 
 // NearSource returns the suggest.NearSource backed by this Runtime.
@@ -39,8 +19,7 @@ func (r *Runtime) NearSource() suggest.NearSource {
 		return suggest.NewNoopNearSource()
 	}
 	return &nearSource{
-		rt:      r,
-		reqPins: make(map[<-chan struct{}]requestPinEntry),
+		rt: r,
 	}
 }
 
@@ -59,10 +38,15 @@ func (r *Runtime) NearSource() suggest.NearSource {
 //   - Propagates non-ErrNoActiveGeneration Pinner/DB errors (logged only with a
 //     fixed error_class="active_generation_lookup_failed") so `/search` maps them
 //     to HTTP 500 `internal_error` with a static problem detail (`search.go:93-95,102-104`).
-//   - Records the resolved Pin in the request-scoped slot keyed by ctx.Done() so
-//     a subsequent Near(ctx, req) call in the same page-1 `/search` request reuses
-//     the exact same Pin without a second ActivePin read (preventing a generation
-//     flip between ActiveGeneration and Near from producing response.generation != cursor.gen).
+//   - When a request-scoped carrier is present in ctx (installed via
+//     WithRequestScope or RequestScopeMiddleware), resolves ActivePin once and
+//     stores the outcome (including no-active and lookup error outcomes) on the
+//     carrier for userID so a subsequent Near(ctx, req) call for the same userID
+//     reuses that exact resolution without a second ActivePin read (preventing a
+//     generation flip between ActiveGeneration and Near from producing
+//     response.generation != cursor.gen, RV-T12-BE-10). Without a carrier in ctx,
+//     reads ActivePin directly on each call; callers needing cursor/response
+//     consistency must install the scope via WithRequestScope or RequestScopeMiddleware.
 func (s *nearSource) ActiveGeneration(ctx context.Context, userID uuid.UUID) (*int, error) {
 	if s == nil || s.rt == nil || s.rt.pinner == nil {
 		return nil, nil
@@ -71,71 +55,20 @@ func (s *nearSource) ActiveGeneration(ctx context.Context, userID uuid.UUID) (*i
 		ctx = context.Background()
 	}
 
-	pin, err := s.rt.readActivePin(ctx)
+	pin, hasPin, err := s.rt.resolveOrReadPin(ctx, userID)
 	if err != nil {
-		if errors.Is(err, generation.ErrNoActiveGeneration) {
-			s.storeRequestPin(ctx, userID, generation.Pin{}, false)
-			return nil, nil
-		}
 		if isCallerCanceled(ctx, err) {
 			return nil, context.Canceled
 		}
 		logSafeError(ctx, s.rt.logger, "semantic active generation lookup failed", "active_generation_lookup_failed")
 		return nil, err
 	}
+	if !hasPin {
+		return nil, nil
+	}
 
-	s.storeRequestPin(ctx, userID, pin, true)
 	genID := pin.GenID
 	return &genID, nil
-}
-
-func (s *nearSource) storeRequestPin(ctx context.Context, userID uuid.UUID, pin generation.Pin, hasPin bool) {
-	if s == nil || ctx == nil {
-		return
-	}
-	done := ctx.Done()
-	if done == nil {
-		return
-	}
-	s.reqMu.Lock()
-	if s.reqPins == nil {
-		s.reqPins = make(map[<-chan struct{}]requestPinEntry)
-	}
-	_, alreadyTracked := s.reqPins[done]
-	s.reqPins[done] = requestPinEntry{
-		userID: userID,
-		pin:    pin,
-		hasPin: hasPin,
-	}
-	s.reqMu.Unlock()
-
-	if !alreadyTracked {
-		go func() {
-			<-done
-			s.reqMu.Lock()
-			delete(s.reqPins, done)
-			s.reqMu.Unlock()
-		}()
-	}
-}
-
-func (s *nearSource) takeRequestPin(ctx context.Context, userID uuid.UUID) (generation.Pin, bool, bool) {
-	if s == nil || ctx == nil {
-		return generation.Pin{}, false, false
-	}
-	done := ctx.Done()
-	if done == nil {
-		return generation.Pin{}, false, false
-	}
-	s.reqMu.Lock()
-	entry, ok := s.reqPins[done]
-	if ok && entry.userID == userID {
-		delete(s.reqPins, done)
-		s.reqMu.Unlock()
-		return entry.pin, entry.hasPin, true
-	}
-	s.reqMu.Unlock()
-	return generation.Pin{}, false, false
 }
 
 // Near implements suggest.NearSource on top of Runtime.Decide, Runtime.Candidates,
@@ -160,20 +93,17 @@ func (s *nearSource) Near(ctx context.Context, req suggest.NearRequest) (suggest
 	}
 
 	rt := s.rt
-	var (
-		pin    generation.Pin
-		reason string
-		ok     bool
-	)
-	if cachedPin, hasPin, found := s.takeRequestPin(ctx, req.UserID); found {
-		if !hasPin {
-			rt.recordDecisionMetric(suggest.ReasonDisabledServer)
-			return disabledNearResult(suggest.ReasonDisabledServer), nil
-		}
-		pin, reason, ok = rt.decideServerWithPin(ctx, cachedPin)
-	} else {
-		pin, reason, ok = rt.decideServerAndPin(ctx)
+	if !rt.enabled || rt.provider == "" || rt.provider == embedding.ProviderNoop || rt.clients == nil || rt.pinner == nil {
+		rt.recordDecisionMetric(suggest.ReasonDisabledServer)
+		return disabledNearResult(suggest.ReasonDisabledServer), nil
 	}
+
+	resolvedPin, hasPin, err := rt.resolveOrReadPin(ctx, req.UserID)
+	if err != nil || !hasPin {
+		rt.recordDecisionMetric(suggest.ReasonDisabledServer)
+		return disabledNearResult(suggest.ReasonDisabledServer), nil
+	}
+	pin, reason, ok := rt.decideServerWithPin(ctx, resolvedPin)
 	if !ok {
 		rt.recordDecisionMetric(reason)
 		return disabledNearResult(reason), nil
