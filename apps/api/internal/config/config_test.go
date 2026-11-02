@@ -1,9 +1,11 @@
 package config_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"path/filepath"
 	"strings"
@@ -806,24 +808,40 @@ func TestP05ProviderValidationAndDefaultTimeouts(t *testing.T) {
 		}
 	})
 
-	// 2. tei đủ TEI_URL -> default query timeout 300ms.
-	t.Run("tei_default_query_timeout_300ms", func(t *testing.T) {
-		setEnv(t, map[string]string{
-			"EMBEDDING_PROVIDER":        "tei",
-			"TEI_URL":                   "http://10.0.0.5:8080",
-			"TEI_INPUT_PREFIX_QUERY":    "query: ",
-			"TEI_INPUT_PREFIX_DOCUMENT": "passage: ",
-		})
-		cfg, err := config.Load()
-		if err != nil {
-			t.Fatalf("Load() error = %v", err)
-		}
-		if cfg.EmbeddingQueryTimeout != 300*time.Millisecond {
-			t.Fatalf("EmbeddingQueryTimeout = %v, muốn 300ms", cfg.EmbeddingQueryTimeout)
-		}
-		prim := cfg.EmbeddingPrimary()
-		if prim.Provider != "tei" || prim.BaseURL != "http://10.0.0.5:8080" || prim.QueryPrefix != "query: " || prim.DocPrefix != "passage: " {
-			t.Fatalf("EmbeddingPrimary() = %+v", prim)
+	// 2. tei đủ TEI_URL -> default query timeout 300ms (kể cả khi unset hoặc đặt rỗng).
+	t.Run("tei_default_query_timeout_300ms_unset_and_empty", func(t *testing.T) {
+		for _, rawTimeout := range []struct {
+			name string
+			set  bool
+			val  string
+		}{
+			{"unset", false, ""},
+			{"explicit_empty", true, ""},
+			{"whitespace_only", true, "   "},
+		} {
+			t.Run(rawTimeout.name, func(t *testing.T) {
+				env := map[string]string{
+					"EMBEDDING_PROVIDER":        "tei",
+					"TEI_URL":                   "http://10.0.0.5:8080",
+					"TEI_INPUT_PREFIX_QUERY":    "query: ",
+					"TEI_INPUT_PREFIX_DOCUMENT": "passage: ",
+				}
+				if rawTimeout.set {
+					env["EMBEDDING_QUERY_TIMEOUT"] = rawTimeout.val
+				}
+				setEnv(t, env)
+				cfg, err := config.Load()
+				if err != nil {
+					t.Fatalf("Load() error = %v", err)
+				}
+				if cfg.EmbeddingQueryTimeout != 300*time.Millisecond {
+					t.Fatalf("EmbeddingQueryTimeout = %v, muốn 300ms", cfg.EmbeddingQueryTimeout)
+				}
+				prim := cfg.EmbeddingPrimary()
+				if prim.Provider != "tei" || prim.BaseURL != "http://10.0.0.5:8080" || prim.QueryPrefix != "query: " || prim.DocPrefix != "passage: " || prim.QueryTimeout != 300*time.Millisecond {
+					t.Fatalf("EmbeddingPrimary() = %+v", prim)
+				}
+			})
 		}
 	})
 
@@ -847,19 +865,35 @@ func TestP05ProviderValidationAndDefaultTimeouts(t *testing.T) {
 		}
 	})
 
-	// 4. openai_compat đủ -> default query timeout 4s, explicit timeout thắng.
-	t.Run("openai_compat_default_4s_and_explicit_override", func(t *testing.T) {
-		setEnv(t, map[string]string{
-			"EMBEDDING_PROVIDER": "openai_compat",
-			"EMBEDDING_BASE_URL": "https://router.example.invalid/v1",
-			"EMBEDDING_API_KEY":  "fake-key-for-test-only",
-		})
-		cfg, err := config.Load()
-		if err != nil {
-			t.Fatalf("Load() error = %v", err)
-		}
-		if cfg.EmbeddingQueryTimeout != 4*time.Second {
-			t.Fatalf("EmbeddingQueryTimeout = %v, muốn 4s", cfg.EmbeddingQueryTimeout)
+	// 4. openai_compat đủ -> default query timeout 4s (unset và đặt rỗng), explicit timeout thắng.
+	t.Run("openai_compat_default_4s_unset_empty_and_explicit_override", func(t *testing.T) {
+		for _, rawTimeout := range []struct {
+			name string
+			set  bool
+			val  string
+		}{
+			{"unset", false, ""},
+			{"explicit_empty", true, ""},
+			{"whitespace_only", true, "  "},
+		} {
+			t.Run(rawTimeout.name, func(t *testing.T) {
+				env := map[string]string{
+					"EMBEDDING_PROVIDER": "openai_compat",
+					"EMBEDDING_BASE_URL": "https://router.example.invalid/v1",
+					"EMBEDDING_API_KEY":  "fake-key-for-test-only",
+				}
+				if rawTimeout.set {
+					env["EMBEDDING_QUERY_TIMEOUT"] = rawTimeout.val
+				}
+				setEnv(t, env)
+				cfg, err := config.Load()
+				if err != nil {
+					t.Fatalf("Load() error = %v", err)
+				}
+				if cfg.EmbeddingQueryTimeout != 4*time.Second {
+					t.Fatalf("EmbeddingQueryTimeout = %v, muốn 4s", cfg.EmbeddingQueryTimeout)
+				}
+			})
 		}
 
 		setEnv(t, map[string]string{
@@ -874,6 +908,22 @@ func TestP05ProviderValidationAndDefaultTimeouts(t *testing.T) {
 		}
 		if cfgOverride.EmbeddingQueryTimeout != 1500*time.Millisecond {
 			t.Fatalf("EmbeddingQueryTimeout = %v, muốn 1.5s", cfgOverride.EmbeddingQueryTimeout)
+		}
+	})
+
+	// 5. EMBEDDING_QUERY_TIMEOUT từ chối 0s, âm, sai cú pháp, quá biên (>5m hoặc <1ms).
+	t.Run("primary_query_timeout_rejects_zero_negative_malformed_over_bound", func(t *testing.T) {
+		for _, bad := range []string{"0s", "0", "-1ms", "-5s", "500us", "5m1s", "10m", "not-a-duration"} {
+			t.Run(bad, func(t *testing.T) {
+				setEnv(t, map[string]string{
+					"EMBEDDING_PROVIDER":      "tei",
+					"TEI_URL":                 "http://10.0.0.5:8080",
+					"EMBEDDING_QUERY_TIMEOUT": bad,
+				})
+				if _, err := config.Load(); err == nil {
+					t.Fatalf("EMBEDDING_QUERY_TIMEOUT=%q phải bị từ chối", bad)
+				}
+			})
 		}
 	})
 }
@@ -896,22 +946,39 @@ func TestP05ShadowProviderRules(t *testing.T) {
 			t.Fatal("Load() phải từ chối shadow tei thiếu EMBEDDING_SHADOW_BASE_URL")
 		}
 
-		setEnv(t, map[string]string{
-			"EMBEDDING_SHADOW_PROVIDER":              "tei",
-			"EMBEDDING_SHADOW_BASE_URL":              "http://10.0.0.9:80",
-			"EMBEDDING_SHADOW_INPUT_PREFIX_QUERY":    "query: ",
-			"EMBEDDING_SHADOW_INPUT_PREFIX_DOCUMENT": "passage: ",
-		})
-		cfg, err := config.Load()
-		if err != nil {
-			t.Fatalf("Load() error = %v", err)
-		}
-		sh, ok := cfg.EmbeddingShadow()
-		if !ok {
-			t.Fatal("EmbeddingShadow() = false, muốn true")
-		}
-		if sh.Provider != "tei" || sh.QueryTimeout != 300*time.Millisecond || sh.QueryPrefix != "query: " || sh.DocPrefix != "passage: " {
-			t.Fatalf("EmbeddingShadow() = %+v", sh)
+		for _, rawTimeout := range []struct {
+			name string
+			set  bool
+			val  string
+			want time.Duration
+		}{
+			{"unset", false, "", 300 * time.Millisecond},
+			{"explicit_empty", true, "", 300 * time.Millisecond},
+			{"positive_override", true, "450ms", 450 * time.Millisecond},
+		} {
+			t.Run(rawTimeout.name, func(t *testing.T) {
+				env := map[string]string{
+					"EMBEDDING_SHADOW_PROVIDER":              "tei",
+					"EMBEDDING_SHADOW_BASE_URL":              "http://10.0.0.9:80",
+					"EMBEDDING_SHADOW_INPUT_PREFIX_QUERY":    "query: ",
+					"EMBEDDING_SHADOW_INPUT_PREFIX_DOCUMENT": "passage: ",
+				}
+				if rawTimeout.set {
+					env["EMBEDDING_SHADOW_QUERY_TIMEOUT"] = rawTimeout.val
+				}
+				setEnv(t, env)
+				cfg, err := config.Load()
+				if err != nil {
+					t.Fatalf("Load() error = %v", err)
+				}
+				sh, ok := cfg.EmbeddingShadow()
+				if !ok {
+					t.Fatal("EmbeddingShadow() = false, muốn true")
+				}
+				if sh.Provider != "tei" || sh.QueryTimeout != rawTimeout.want || sh.QueryPrefix != "query: " || sh.DocPrefix != "passage: " {
+					t.Fatalf("EmbeddingShadow() = %+v, muốn QueryTimeout=%v", sh, rawTimeout.want)
+				}
+			})
 		}
 	})
 
@@ -924,21 +991,66 @@ func TestP05ShadowProviderRules(t *testing.T) {
 			t.Fatal("Load() phải từ chối shadow openai_compat thiếu EMBEDDING_SHADOW_API_KEY")
 		}
 
+		for _, rawTimeout := range []struct {
+			name string
+			set  bool
+			val  string
+			want time.Duration
+		}{
+			{"unset", false, "", 4 * time.Second},
+			{"explicit_empty", true, "", 4 * time.Second},
+			{"positive_override", true, "2500ms", 2500 * time.Millisecond},
+		} {
+			t.Run(rawTimeout.name, func(t *testing.T) {
+				env := map[string]string{
+					"EMBEDDING_SHADOW_PROVIDER": "openai_compat",
+					"EMBEDDING_SHADOW_BASE_URL": "https://shadow.example.invalid/v1",
+					"EMBEDDING_SHADOW_API_KEY":  "fake-shadow-key",
+				}
+				if rawTimeout.set {
+					env["EMBEDDING_SHADOW_QUERY_TIMEOUT"] = rawTimeout.val
+				}
+				setEnv(t, env)
+				cfg, err := config.Load()
+				if err != nil {
+					t.Fatalf("Load() error = %v", err)
+				}
+				sh, ok := cfg.EmbeddingShadow()
+				if !ok {
+					t.Fatal("EmbeddingShadow() = false, muốn true")
+				}
+				if sh.Provider != "openai_compat" || sh.QueryTimeout != rawTimeout.want || sh.Dims != 1024 {
+					t.Fatalf("EmbeddingShadow() = %+v, muốn QueryTimeout=%v", sh, rawTimeout.want)
+				}
+			})
+		}
+	})
+
+	t.Run("shadow_query_timeout_empty_when_disabled_and_rejects_invalid_values", func(t *testing.T) {
 		setEnv(t, map[string]string{
-			"EMBEDDING_SHADOW_PROVIDER": "openai_compat",
-			"EMBEDDING_SHADOW_BASE_URL": "https://shadow.example.invalid/v1",
-			"EMBEDDING_SHADOW_API_KEY":  "fake-shadow-key",
+			"EMBEDDING_SHADOW_PROVIDER":      "",
+			"EMBEDDING_SHADOW_QUERY_TIMEOUT": "",
 		})
 		cfg, err := config.Load()
 		if err != nil {
-			t.Fatalf("Load() error = %v", err)
+			t.Fatalf("Load() với EMBEDDING_SHADOW_QUERY_TIMEOUT rỗng khi shadow tắt bị lỗi: %v", err)
 		}
-		sh, ok := cfg.EmbeddingShadow()
-		if !ok {
-			t.Fatal("EmbeddingShadow() = false, muốn true")
+		if cfg.EmbeddingShadowQueryTimeout != 300*time.Millisecond {
+			t.Fatalf("EmbeddingShadowQueryTimeout = %v, muốn 300ms", cfg.EmbeddingShadowQueryTimeout)
 		}
-		if sh.Provider != "openai_compat" || sh.QueryTimeout != 4*time.Second || sh.Dims != 1024 {
-			t.Fatalf("EmbeddingShadow() = %+v", sh)
+
+		for _, bad := range []string{"0s", "0", "-1ms", "-10s", "500us", "5m1s", "10m", "invalid"} {
+			t.Run(bad, func(t *testing.T) {
+				setEnv(t, map[string]string{
+					"EMBEDDING_SHADOW_PROVIDER":      "openai_compat",
+					"EMBEDDING_SHADOW_BASE_URL":      "https://shadow.example.invalid/v1",
+					"EMBEDDING_SHADOW_API_KEY":       "fake-shadow-key",
+					"EMBEDDING_SHADOW_QUERY_TIMEOUT": bad,
+				})
+				if _, err := config.Load(); err == nil {
+					t.Fatalf("EMBEDDING_SHADOW_QUERY_TIMEOUT=%q phải bị từ chối", bad)
+				}
+			})
 		}
 	})
 }
@@ -1052,15 +1164,77 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 		if redacted["embedding_shadow_api_key_set"] != true {
 			t.Fatalf("embedding_shadow_api_key_set = %v, muốn true", redacted["embedding_shadow_api_key_set"])
 		}
+		shadowClient, shadowOK := cfg.EmbeddingShadow()
+		if !shadowOK {
+			t.Fatal("EmbeddingShadow() = false, muốn true")
+		}
+		primaryClient := cfg.EmbeddingPrimary()
 
-		sprinted := fmt.Sprint(redacted) + "|" + fmtMap(redacted) + "|" +
-			fmt.Sprintf("%v|%#v", cfg.EmbeddingPrimary(), cfg.EmbeddingPrimary())
-		for _, secret := range []string{distinctivePrimaryKey, distinctiveShadowKey, primaryURL, shadowURL} {
-			if strings.Contains(sprinted, secret) {
-				t.Fatalf("Redacted / ClientConfig String làm lộ %q trong %s", secret, sprinted)
-			}
+		if primaryClient.APIKey.Reveal() != distinctivePrimaryKey {
+			t.Fatalf("primaryClient.APIKey.Reveal() = %q, muốn %q", primaryClient.APIKey.Reveal(), distinctivePrimaryKey)
+		}
+		if shadowClient.APIKey.Reveal() != distinctiveShadowKey {
+			t.Fatalf("shadowClient.APIKey.Reveal() = %q, muốn %q", shadowClient.APIKey.Reveal(), distinctiveShadowKey)
+		}
+		if cfg.EmbeddingAPIKey.Reveal() != distinctivePrimaryKey || cfg.EmbeddingShadowAPIKey.Reveal() != distinctiveShadowKey {
+			t.Fatal("cfg.EmbeddingAPIKey / EmbeddingShadowAPIKey Reveal() không khớp")
 		}
 
+		cfgJSON, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("json.Marshal(cfg) error = %v", err)
+		}
+		primaryJSON, err := json.Marshal(primaryClient)
+		if err != nil {
+			t.Fatalf("json.Marshal(primaryClient) error = %v", err)
+		}
+		shadowJSON, err := json.Marshal(shadowClient)
+		if err != nil {
+			t.Fatalf("json.Marshal(shadowClient) error = %v", err)
+		}
+		keyText, err := primaryClient.APIKey.MarshalText()
+		if err != nil {
+			t.Fatalf("APIKey.MarshalText() error = %v", err)
+		}
+
+		var logBuf bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+		logger.Info("config_dump",
+			slog.Any("cfg", cfg),
+			slog.Any("cfg_val", *cfg),
+			slog.Any("primary", primaryClient),
+			slog.Any("shadow", shadowClient),
+			slog.Any("primary_key", primaryClient.APIKey),
+			slog.Any("shadow_key", shadowClient.APIKey),
+		)
+
+		formattedParts := []string{
+			fmt.Sprint(redacted),
+			fmtMap(redacted),
+			fmt.Sprintf("%v|%s|%+v|%#v", cfg, cfg, cfg, cfg),
+			fmt.Sprintf("%v|%s|%+v|%#v", *cfg, *cfg, *cfg, *cfg),
+			fmt.Sprintf("%v|%s|%+v|%#v", primaryClient, primaryClient, primaryClient, primaryClient),
+			fmt.Sprintf("%v|%s|%+v|%#v", &primaryClient, &primaryClient, &primaryClient, &primaryClient),
+			fmt.Sprintf("%v|%s|%+v|%#v", shadowClient, shadowClient, shadowClient, shadowClient),
+			fmt.Sprintf("%v|%s|%+v|%#v", &shadowClient, &shadowClient, &shadowClient, &shadowClient),
+			fmt.Sprintf("%v|%s|%+v|%#v|%q|%x", primaryClient.APIKey, primaryClient.APIKey, primaryClient.APIKey, primaryClient.APIKey, primaryClient.APIKey, primaryClient.APIKey),
+			fmt.Sprintf("%v|%s|%+v|%#v|%q|%x", shadowClient.APIKey, shadowClient.APIKey, shadowClient.APIKey, shadowClient.APIKey, shadowClient.APIKey, shadowClient.APIKey),
+			string(primaryJSON),
+			string(shadowJSON),
+			string(keyText),
+			logBuf.String(),
+		}
+		sprinted := strings.Join(formattedParts, "|")
+		for _, secret := range []string{distinctivePrimaryKey, distinctiveShadowKey, primaryURL, shadowURL} {
+			if strings.Contains(sprinted, secret) {
+				t.Fatalf("Formatting / JSON / slog Config / ClientConfig làm lộ %q trong %s", secret, sprinted)
+			}
+		}
+		for _, keySecret := range []string{distinctivePrimaryKey, distinctiveShadowKey} {
+			if strings.Contains(string(cfgJSON), keySecret) {
+				t.Fatalf("json.Marshal(cfg) làm lộ API key %q trong %s", keySecret, string(cfgJSON))
+			}
+		}
 		// Trigger validation errors with the distinctive key set and verify no error contains the key.
 		errCases := []map[string]string{
 			{
