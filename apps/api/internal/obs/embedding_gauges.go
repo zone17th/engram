@@ -54,10 +54,15 @@ type DBQuerier interface {
 //   - lag: với mỗi generation chưa `dropped`, p95 của `embedded_at −
 //     river_job.created_at` trên các job `embed_item`/`embed_tag` `completed`
 //     có `finalized_at` trong JobLagWindow (15 phút), nối với hàng vector đúng
-//     `(user_id, target_id, input_hash)` của job đó. Hàng có `embedded_at` trước
-//     `created_at` (job bỏ qua vì vector đã có từ trước: `skipped_fresh`, …) bị
-//     loại để chỉ đo job thật sự ghi vector. Nhiều generation cùng vai trò →
-//     lấy max của các p95. Cửa sổ rỗng → phát 0 cho mọi cặp corpus × vai trò
+//     `(user_id, target_id, input_hash)` của job đó. Chỉ đếm lần ghi vector quy
+//     được cho job: `created_at <= embedded_at <= finalized_at`. Cận dưới loại job
+//     bỏ qua vì vector đã có từ trước (`skipped_fresh`, …); cận trên loại hàng
+//     vector bị ghi lại SAU khi job kết thúc (vd. đổi tên A→B→A tạo job thứ hai
+//     ghi lại cùng hash A, `store.Upsert` ghi đè `embedded_at`), nếu không job
+//     cũ sẽ bị gán lag của lần ghi sau. Vì vậy gauge chỉ phủ các lần ghi còn quy
+//     được cho job, không phải toàn bộ phân phối job đã hoàn tất: hàng vector
+//     bị ghi đè thì mẫu của job cũ biến mất (không có bảng lịch sử bất biến).
+//     Nhiều generation cùng vai trò → lấy max của các p95. Cửa sổ rỗng → phát 0 cho mọi cặp corpus × vai trò
 //     (ba vai trò của GenerationRoles): hàng đợi rảnh nghĩa là không có gì trễ,
 //     nên 0 là đúng nghĩa và series luôn có mặt trên `/metrics` (FS-40) thay vì
 //     biến mất; alert `> 10` không bị kích hoạt khi rảnh.
@@ -248,7 +253,8 @@ func (s *DBGaugeSource) queryLag(ctx context.Context, gens []gaugeGeneration) ([
 			     AND j.state = 'completed'
 			     AND (j.args->>'generation_id')::int = $3
 			     AND j.finalized_at >= now() - make_interval(secs => $4::float8)
-			     AND e.embedded_at >= j.created_at`, vectorTable(c.corpus, g.id))
+			     AND e.embedded_at >= j.created_at
+			     AND e.embedded_at <= j.finalized_at`, vectorTable(c.corpus, g.id))
 
 			var p95 *float64
 			err := s.db.QueryRow(ctx, q, JobLagQuantile, c.kind, g.id, JobLagWindow.Seconds()).Scan(&p95)

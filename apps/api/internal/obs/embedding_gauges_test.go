@@ -237,6 +237,70 @@ func TestDBGaugeSourceValues(t *testing.T) {
 	}
 }
 
+// TestDBGaugeLagIgnoresLaterRewrite (RV-T20a-BE-2): A→B→A. Job 1 (hash A) tạo ở
+// t0, ghi vector lúc t1 và xong lúc t1; đổi tên rồi đổi lại tạo job 2 (cũng hash
+// A) tạo ở t100, ghi lúc t101. Hàng vector hiện tại giữ embedded_at = t101 nên cả
+// hai job cùng nối với nó: không có cận trên thì mẫu là 101 s và 1 s (p95 ≈ 96 s)
+// dù mỗi job chỉ mất 1 s. Có `embedded_at <= finalized_at`, job 1 bị loại và lag
+// đúng 1 s.
+func TestDBGaugeLagIgnoresLaterRewrite(t *testing.T) {
+	dsn := newGaugeTestDSN(t)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed %q: %v", sql, err)
+		}
+	}
+	var userID, itemID string
+	if err := pool.QueryRow(ctx, `INSERT INTO app_user (email) VALUES ('aba@example.test') RETURNING id::text`).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO item (user_id, name, name_normalized) VALUES ($1::uuid, 'alpha', 'alpha') RETURNING id::text`, userID,
+	).Scan(&itemID); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	exec(`INSERT INTO embedding_generation
+	        (id, provider, model, model_version, preprocessing, query_prefix, doc_prefix, dims,
+	         partitions, semantic_min_cos, calibration_ref, item_table, tag_table, state, bootstrap)
+	      VALUES (1, 'tei', 'm', 'v1', 'v1', '', '', 3, 2, 0.5, 'ref', 'item_embedding_g1', 'tag_embedding_g1', 'active', false)`)
+	exec(`SELECT embedding_generation_create_tables(1, 3, 2, false, 16, 128)`)
+
+	hashHex := strings.Repeat("ab", 32)
+	// base = 10 phút trước (trong cửa sổ 15 phút); vector hiện tại ghi lúc base+101 s.
+	exec(`INSERT INTO item_embedding_g1 (user_id, target_id, embedding, model, model_version, input_hash, embedded_at)
+	      VALUES ($1::uuid, $2::uuid, '[0.1,0.2,0.3]'::vector, 'm', 'v1', decode($3, 'hex'),
+	              now() - interval '10 minutes' + interval '101 seconds')`, userID, itemID, hashHex)
+	exec(`INSERT INTO river_job (state, max_attempts, created_at, finalized_at, kind, args, queue)
+	      SELECT 'completed'::river_job_state, 30,
+	             now() - interval '10 minutes' + c.created_off, now() - interval '10 minutes' + c.finalized_off,
+	             'embed_item',
+	             jsonb_build_object('generation_id', 1, 'user_id', $1::text, 'target_id', $2::text, 'input_hash', $3::text),
+	             'embedding'
+	        FROM (VALUES (interval '0 seconds', interval '1 second'),
+	                     (interval '100 seconds', interval '101 seconds')) AS c(created_off, finalized_off)`,
+		userID, itemID, hashHex)
+
+	lags, err := obs.NewDBGaugeSource(pool).JobLag(ctx)
+	if err != nil {
+		t.Fatalf("JobLag: %v", err)
+	}
+	var found bool
+	for _, s := range lags {
+		if s.Corpus == "item" && s.Role == "active" {
+			found = true
+			if math.Abs(s.Seconds-1) > 1e-6 {
+				t.Errorf("lag{item,active} = %v, want 1 (job 1 must not take the later rewrite)", s.Seconds)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no lag sample for item/active: %+v", lags)
+	}
+}
+
 // TestDBGaugesCached15s: hai scrape trong 15 s chỉ đọc DB một lần, sau 15 s đọc
 // lại; nhiều scrape đồng thời cũng chỉ một lần nạp; và router dựng như `main`
 // (NewRegistry + RegisterGauges(NewDBGaugeSource) + promhttp.HandlerFor) trả
