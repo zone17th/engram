@@ -1,0 +1,68 @@
+{
+  "$comment": "Generated with Node.js: crypto.createHash(\"sha256\").update(JSON.stringify({input, input_prefix, model, model_version}), \"utf8\").digest(\"hex\"). Object keys input < input_prefix < model < model_version are already in RFC 8785 JCS UTF-16 code unit order, and V8 JSON.stringify string escaping matches RFC 8785 §3.2.2.2.",
+  "cases": [
+    {
+      "name": "vietnamese_diacritics_item_with_hint_empty_prefix",
+      "input": "Mật khẩu Wi-Fi tầng 2 — mạng khách văn phòng Đà Nẵng",
+      "input_prefix": "",
+      "model": "openai_compat/openrouter/qwen/qwen3-embedding-8b",
+      "model_version": "dims=1024;instr=3a8f1b2c",
+      "expected_jcs": "{\"input\":\"Mật khẩu Wi-Fi tầng 2 — mạng khách văn phòng Đà Nẵng\",\"input_prefix\":\"\",\"model\":\"openai_compat/openrouter/qwen/qwen3-embedding-8b\",\"model_version\":\"dims=1024;instr=3a8f1b2c\"}",
+      "expected_sha256": "22630d9d1d0bd497a871df5e9647039fdcf41a5fa4d4cc09575b3864c6021374"
+    },
+    {
+      "name": "vietnamese_diacritics_with_non_empty_doc_prefix",
+      "input": "Mật khẩu Wi-Fi tầng 2 — mạng khách văn phòng Đà Nẵng",
+      "input_prefix": "passage: ",
+      "model": "tei/intfloat/multilingual-e5-base",
+      "model_version": "9f4b1c2;qp=a1b2c3d4;dp=e5f60718",
+      "expected_jcs": "{\"input\":\"Mật khẩu Wi-Fi tầng 2 — mạng khách văn phòng Đà Nẵng\",\"input_prefix\":\"passage: \",\"model\":\"tei/intfloat/multilingual-e5-base\",\"model_version\":\"9f4b1c2;qp=a1b2c3d4;dp=e5f60718\"}",
+      "expected_sha256": "b4386847ffdfe98e28b17e01e36b9df94556db6e54f48a48aadb4b9485908564"
+    },
+    {
+      "name": "html_angle_brackets_and_ampersand_not_escaped_in_jcs",
+      "input": "env <prod> & staging > dev — a<b && c>d",
+      "input_prefix": "doc<a>&b: ",
+      "model": "openai_compat/qwen/qwen3-embedding-8b",
+      "model_version": "dims=1024;instr=11223344",
+      "expected_jcs": "{\"input\":\"env <prod> & staging > dev — a<b && c>d\",\"input_prefix\":\"doc<a>&b: \",\"model\":\"openai_compat/qwen/qwen3-embedding-8b\",\"model_version\":\"dims=1024;instr=11223344\"}",
+      "expected_sha256": "04fb285f06e4b2617a1d585291439380b83aa6f91c1ef9ff71c9869ca8204b98"
+    },
+    {
+      "name": "quotes_and_backslashes",
+      "input": "Đường dẫn \"C:\\Users\\admin\\secrets\" — khoá \"chính\"",
+      "input_prefix": "prefix\\\"test:",
+      "model": "tei/BAAI/bge-m3",
+      "model_version": "deadbeef;qp=00000000;dp=ffffffff",
+      "expected_jcs": "{\"input\":\"Đường dẫn \\\"C:\\\\Users\\\\admin\\\\secrets\\\" — khoá \\\"chính\\\"\",\"input_prefix\":\"prefix\\\\\\\"test:\",\"model\":\"tei/BAAI/bge-m3\",\"model_version\":\"deadbeef;qp=00000000;dp=ffffffff\"}",
+      "expected_sha256": "bf6d3a66a657d4d2581dc0c6cb6215b011e462a222fe2290c71d104ed522998d"
+    },
+    {
+      "name": "control_chars_newline_tab_cr_backspace_formfeed_and_low_ascii",
+      "input": "line1\nline2\tindented\rcarriage\bback\ffeed\u0000null\u0007bell\u001funitsep",
+      "input_prefix": "\t\u0001",
+      "model": "openai_compat/qwen/qwen3-embedding-8b",
+      "model_version": "dims=1024;instr=abcdef01",
+      "expected_jcs": "{\"input\":\"line1\\nline2\\tindented\\rcarriage\\bback\\ffeed\\u0000null\\u0007bell\\u001funitsep\",\"input_prefix\":\"\\t\\u0001\",\"model\":\"openai_compat/qwen/qwen3-embedding-8b\",\"model_version\":\"dims=1024;instr=abcdef01\"}",
+      "expected_sha256": "3e5534482ac7f70e7bf267d487e0a71d390e37a697474c9db5291979ec98aa20"
+    },
+    {
+      "name": "line_and_paragraph_separators_u2028_u2029_literal_in_jcs",
+      "input": "trước giữa sau",
+      "input_prefix": " ",
+      "model": "tei/BAAI/bge-m3",
+      "model_version": "cafebabe;qp=12345678;dp=87654321",
+      "expected_jcs": "{\"input\":\"trước giữa sau\",\"input_prefix\":\" \",\"model\":\"tei/BAAI/bge-m3\",\"model_version\":\"cafebabe;qp=12345678;dp=87654321\"}",
+      "expected_sha256": "d6eda53d73b6af4258c6fc54eaa625b6107b2408296419d64d87779be6f52122"
+    },
+    {
+      "name": "astral_plane_emoji_and_combining_marks",
+      "input": "Khoá bảo mật 🔐🔑🚀 — dự án 👨‍💻 Việt Nam 🇻🇳",
+      "input_prefix": "🔎 ",
+      "model": "openai_compat/openrouter/qwen/qwen3-embedding-8b",
+      "model_version": "dims=1024;instr=99887766",
+      "expected_jcs": "{\"input\":\"Khoá bảo mật 🔐🔑🚀 — dự án 👨‍💻 Việt Nam 🇻🇳\",\"input_prefix\":\"🔎 \",\"model\":\"openai_compat/openrouter/qwen/qwen3-embedding-8b\",\"model_version\":\"dims=1024;instr=99887766\"}",
+      "expected_sha256": "e87c3474cad1f41fd4c30510e0ccf401d0b83d892548e73e3850dd053f78879a"
+    }
+  ]
+}
