@@ -116,6 +116,13 @@ func (s *Service) runLexicalBranches(
 	if tagOut.err != nil {
 		return nil, nil, false, false, nil, tagOut.err
 	}
+	// A branch was classified partial while the request was alive, but the request may have
+	// ended since: the parent wins, so a client disconnect never counts as a partial (RV-SB1-BE-1).
+	if itmOut.partial || tagOut.partial {
+		if perr := parentDoneErr(ctx, "", mode); perr != nil {
+			return nil, nil, false, false, nil, perr
+		}
+	}
 
 	partial = []string{}
 	if itmOut.partial {
@@ -135,41 +142,39 @@ func (s *Service) runLexicalBranches(
 }
 
 func (s *Service) runItemBranch(ctx context.Context, userID uuid.UUID, mode string, qn string, fetchLimit int32) itemBranchOutcome {
-	branchCtx, cancel := context.WithTimeout(ctx, BranchTimeout)
+	branchCtx, cancel := s.branchContext(ctx, CorpusItem)
 	defer cancel()
+
+	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
+	// genuine error -> err (FU-SB-1, classifyBranchErr).
+	fail := func(err error, class string) itemBranchOutcome {
+		partial, out := classifyBranchErr(ctx, branchCtx, err, CorpusItem, mode, class)
+		if partial {
+			return itemBranchOutcome{items: []SuggestItem{}, partial: true}
+		}
+		return itemBranchOutcome{err: out}
+	}
 
 	if h := s.activeHooks(); h != nil && h.BeforeBranch != nil {
 		if err := h.BeforeBranch(branchCtx, CorpusItem); err != nil {
-			if isBranchTimeout(err) {
-				return itemBranchOutcome{items: []SuggestItem{}, partial: true}
-			}
-			return itemBranchOutcome{err: err}
+			return fail(err, ClassLexicalItemDB)
 		}
 	}
 
 	tx, err := s.txStarter.BeginTx(branchCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		if isBranchTimeout(err) {
-			return itemBranchOutcome{items: []SuggestItem{}, partial: true}
-		}
-		return itemBranchOutcome{err: err}
+		return fail(err, ClassLexicalItemDB)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	isRecent := mode == ModeRecent
 	if err := configureLexicalTx(branchCtx, tx, !isRecent); err != nil {
-		if isBranchTimeout(err) {
-			return itemBranchOutcome{items: []SuggestItem{}, partial: true}
-		}
-		return itemBranchOutcome{err: err}
+		return fail(err, ClassLexicalItemDB)
 	}
 
 	if h := s.activeHooks(); h != nil && h.AfterBranchSetLocal != nil {
 		if err := h.AfterBranchSetLocal(branchCtx, tx, CorpusItem); err != nil {
-			if isBranchTimeout(err) {
-				return itemBranchOutcome{items: []SuggestItem{}, partial: true}
-			}
-			return itemBranchOutcome{err: err}
+			return fail(err, ClassLexicalItemDB)
 		}
 	}
 
@@ -182,10 +187,7 @@ func (s *Service) runItemBranch(ctx context.Context, userID uuid.UUID, mode stri
 			PageLimit: fetchLimit,
 		})
 		if err != nil {
-			if isBranchTimeout(err) {
-				return itemBranchOutcome{items: []SuggestItem{}, partial: true}
-			}
-			return itemBranchOutcome{err: err}
+			return fail(err, ClassLexicalItemDB)
 		}
 		out = make([]SuggestItem, 0, len(rows))
 		for _, r := range rows {
@@ -210,10 +212,7 @@ func (s *Service) runItemBranch(ctx context.Context, userID uuid.UUID, mode stri
 			PageLimit: fetchLimit,
 		})
 		if err != nil {
-			if isBranchTimeout(err) {
-				return itemBranchOutcome{items: []SuggestItem{}, partial: true}
-			}
-			return itemBranchOutcome{err: err}
+			return fail(err, ClassLexicalItemDB)
 		}
 		out = make([]SuggestItem, 0, len(rows))
 		for _, r := range rows {
@@ -233,10 +232,7 @@ func (s *Service) runItemBranch(ctx context.Context, userID uuid.UUID, mode stri
 
 	if len(out) > 0 {
 		if err := attachTagRefs(branchCtx, q, userID, out); err != nil {
-			if isBranchTimeout(err) {
-				return itemBranchOutcome{items: []SuggestItem{}, partial: true}
-			}
-			return itemBranchOutcome{err: err}
+			return fail(err, ClassLexicalItemTagRefs)
 		}
 	}
 
@@ -247,41 +243,39 @@ func (s *Service) runItemBranch(ctx context.Context, userID uuid.UUID, mode stri
 }
 
 func (s *Service) runTagBranch(ctx context.Context, userID uuid.UUID, mode string, qn string, fetchLimit int32) tagBranchOutcome {
-	branchCtx, cancel := context.WithTimeout(ctx, BranchTimeout)
+	branchCtx, cancel := s.branchContext(ctx, CorpusTag)
 	defer cancel()
+
+	// fail classifies a failed step: branch budget expired -> partial (SPEC §6.8), client gone or
+	// genuine error -> err (FU-SB-1, classifyBranchErr).
+	fail := func(err error, class string) tagBranchOutcome {
+		partial, out := classifyBranchErr(ctx, branchCtx, err, CorpusTag, mode, class)
+		if partial {
+			return tagBranchOutcome{tags: []SuggestTag{}, partial: true}
+		}
+		return tagBranchOutcome{err: out}
+	}
 
 	if h := s.activeHooks(); h != nil && h.BeforeBranch != nil {
 		if err := h.BeforeBranch(branchCtx, CorpusTag); err != nil {
-			if isBranchTimeout(err) {
-				return tagBranchOutcome{tags: []SuggestTag{}, partial: true}
-			}
-			return tagBranchOutcome{err: err}
+			return fail(err, ClassLexicalTagDB)
 		}
 	}
 
 	tx, err := s.txStarter.BeginTx(branchCtx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		if isBranchTimeout(err) {
-			return tagBranchOutcome{tags: []SuggestTag{}, partial: true}
-		}
-		return tagBranchOutcome{err: err}
+		return fail(err, ClassLexicalTagDB)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	isRecent := mode == ModeRecent
 	if err := configureLexicalTx(branchCtx, tx, !isRecent); err != nil {
-		if isBranchTimeout(err) {
-			return tagBranchOutcome{tags: []SuggestTag{}, partial: true}
-		}
-		return tagBranchOutcome{err: err}
+		return fail(err, ClassLexicalTagDB)
 	}
 
 	if h := s.activeHooks(); h != nil && h.AfterBranchSetLocal != nil {
 		if err := h.AfterBranchSetLocal(branchCtx, tx, CorpusTag); err != nil {
-			if isBranchTimeout(err) {
-				return tagBranchOutcome{tags: []SuggestTag{}, partial: true}
-			}
-			return tagBranchOutcome{err: err}
+			return fail(err, ClassLexicalTagDB)
 		}
 	}
 
@@ -294,10 +288,7 @@ func (s *Service) runTagBranch(ctx context.Context, userID uuid.UUID, mode strin
 			PageLimit: fetchLimit,
 		})
 		if err != nil {
-			if isBranchTimeout(err) {
-				return tagBranchOutcome{tags: []SuggestTag{}, partial: true}
-			}
-			return tagBranchOutcome{err: err}
+			return fail(err, ClassLexicalTagDB)
 		}
 		out = make([]SuggestTag, 0, len(rows))
 		for _, r := range rows {
@@ -319,10 +310,7 @@ func (s *Service) runTagBranch(ctx context.Context, userID uuid.UUID, mode strin
 			PageLimit: fetchLimit,
 		})
 		if err != nil {
-			if isBranchTimeout(err) {
-				return tagBranchOutcome{tags: []SuggestTag{}, partial: true}
-			}
-			return tagBranchOutcome{err: err}
+			return fail(err, ClassLexicalTagDB)
 		}
 		out = make([]SuggestTag, 0, len(rows))
 		for _, r := range rows {

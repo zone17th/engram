@@ -36,6 +36,10 @@ type NearResult struct {
 // NearSource computes the semantic "Gần nghĩa" zone for /suggest and /search.
 // Task 3 wires NoopNearSource; Task 12 replaces it with the real semantic runtime
 // via a single hunk in compose/search.go.
+//
+// Logging contract (RV-SB1-BE-3): an ActiveGeneration failure that is not a caller cancel is
+// logged by the implementation itself (the semantic source emits
+// active_generation_lookup_failed); the /search handler does not log it again.
 type NearSource interface {
 	Near(ctx context.Context, req NearRequest) (NearResult, error)
 	ActiveGeneration(ctx context.Context, userID uuid.UUID) (*int, error)
