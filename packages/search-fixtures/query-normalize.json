@@ -1,0 +1,91 @@
+{
+  "$comment": "P05 plan mục 2.2 + Task 2 — Fixture chuẩn hoá query (textnorm.NormalizeQuery) và bỏ dấu Postgres (immutable_unaccent) trên dữ liệu tổng hợp. Kiểm đủ các ca bắt buộc của plan 2.2: đường->duong, Đà Nẵng->da nang, NFD mã ≡ NFC mã, ma<->mã (giữ dấu ở qn, trùng ở qa), ĐƯỜNG, full-width ｗｉｆｉ (Go không NFKC nên qn giữ full-width, nhưng unaccent của Postgres gập về 'wifi' -> khớp prefix bỏ dấu tier 2 — advisor-dec-264), c++, wi-fi<->wifi (fuzzy), emoji, '#' một mình (chuẩn hoá ra rỗng -> lỗi name_invalid/ErrEmptyQuery), İ (Turkish I-with-dot-above -> i).",
+  "version": 1,
+  "schema": "engram-search-query-normalize-v1",
+  "cases": [
+    {
+      "name": "vietnamese-duong-to-duong",
+      "input": "đường",
+      "normalized": "đường",
+      "unaccent": "duong"
+    },
+    {
+      "name": "vietnamese-da-nang-mixed-case-to-da-nang",
+      "input": "Đà Nẵng",
+      "normalized": "đà nẵng",
+      "unaccent": "da nang"
+    },
+    {
+      "name": "nfd-ma-tilde-decomposed-matches-nfc",
+      "input": "m\u0061\u0303",
+      "normalized": "m\u00e3",
+      "unaccent": "ma",
+      "equiv_nfc_input": "m\u00e3"
+    },
+    {
+      "name": "nfc-ma-tilde-precomposed",
+      "input": "m\u00e3",
+      "normalized": "m\u00e3",
+      "unaccent": "ma"
+    },
+    {
+      "name": "plain-ma-distinct-normalized-same-unaccent",
+      "input": "ma",
+      "normalized": "ma",
+      "unaccent": "ma",
+      "note": "ma != mã ở name_normalized (tier 3 phân biệt dấu), nhưng trùng ở immutable_unaccent (tier 2 folded prefix / fuzzy)"
+    },
+    {
+      "name": "vietnamese-uppercase-duong-d-stroke",
+      "input": "ĐƯỜNG",
+      "normalized": "đường",
+      "unaccent": "duong"
+    },
+    {
+      "name": "fullwidth-wifi-nfc-preserved-unaccent-folds-to-ascii",
+      "input": "\uff57\uff49\uff46\uff49",
+      "normalized": "\uff57\uff49\uff46\uff49",
+      "unaccent": "wifi",
+      "folded_prefix_matches_ascii": "wifi",
+      "note": "textnorm dùng NFC (không NFKC) nên qn giữ full-width 'ｗｉｆｉ', nhưng từ điển unaccent của Postgres 16 gập full-width Latin sang ASCII 'wifi' -> khớp item 'wifi' ở nhánh prefix bỏ dấu (tier 2 / prefix_folded — advisor-dec-264)"
+    },
+    {
+      "name": "punctuation-middle-preserved-c-plus-plus",
+      "input": "C++",
+      "normalized": "c++",
+      "unaccent": "c++"
+    },
+    {
+      "name": "hyphen-preserved-wi-fi-fuzzy-matches-wifi",
+      "input": "wi-fi",
+      "normalized": "wi-fi",
+      "unaccent": "wi-fi",
+      "fuzzy_matches_target": "wifi",
+      "note": "Dấu gạch nối giữa từ được giữ ở qn/qa; 'wi-fi' khớp 'wifi' qua nhánh trigram (word_similarity/similarity)"
+    },
+    {
+      "name": "emoji-preserved-with-text",
+      "input": "🔐 Mật khẩu",
+      "normalized": "🔐 mật khẩu",
+      "unaccent": "🔐 mat khau"
+    },
+    {
+      "name": "emoji-only-preserved-symbol-so",
+      "input": "🚀🔥",
+      "normalized": "🚀🔥",
+      "unaccent": "🚀🔥"
+    },
+    {
+      "name": "hash-alone-empty-after-strip-punct",
+      "input": "#",
+      "error": "name_invalid",
+      "note": "Chỉ dấu '#' (category Po) bị strip hết ở bước 2 -> rỗng; NormalizeQuery trả ErrNameInvalid (Task 3 bọc ErrEmptyQuery, /suggest trả 200 rỗng)"
+    },
+    {
+      "name": "turkish-capital-i-with-dot-above",
+      "input": "\u0130",
+      "normalized": "i",
+      "unaccent": "i"
+    }
+  ]
+}
