@@ -56,14 +56,6 @@ func resolveTableSQL(g generation.Generation, kind generation.Corpus) (string, e
 	return ident.Sanitize(), nil
 }
 
-func resolveTableByIDSQL(genID int, kind generation.Corpus) (string, error) {
-	ident, err := generation.TableIdent(genID, kind)
-	if err != nil {
-		return "", err
-	}
-	return ident.Sanitize(), nil
-}
-
 func validateVectorDims(vec []float32, dims int) error {
 	if dims <= 0 || len(vec) != dims {
 		return fmt.Errorf("%w: got %d, want %d", ErrDimsMismatch, len(vec), dims)

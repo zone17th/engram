@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -422,40 +423,48 @@ func TestExplainTouchesSinglePartitionForUserFilter(t *testing.T) {
 	_ = seedGenerationWithTables(t, ctx, pool, 1, generation.ProviderTEI, 3, 16, generation.StateActive, nil)
 
 	userID := uuid.New()
-	rows, err := pool.Query(ctx,
-		`EXPLAIN (COSTS OFF) SELECT target_id FROM item_embedding_g1 WHERE user_id = $1`,
+	var rawPlan []byte
+	if err := pool.QueryRow(ctx,
+		`EXPLAIN (FORMAT JSON, COSTS OFF) SELECT target_id FROM item_embedding_g1 WHERE user_id = $1`,
 		userID,
-	)
-	if err != nil {
+	).Scan(&rawPlan); err != nil {
 		t.Fatalf("EXPLAIN query: %v", err)
 	}
-	defer rows.Close()
 
-	var planLines []string
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			t.Fatal(err)
-		}
-		planLines = append(planLines, line)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
+	var planPayload []map[string]any
+	if err := json.Unmarshal(rawPlan, &planPayload); err != nil {
+		t.Fatalf("unmarshal EXPLAIN JSON: %v\nRaw:\n%s", err, string(rawPlan))
 	}
 
-	fullPlan := strings.Join(planLines, "\n")
 	seenPartitions := make(map[string]struct{})
-	for _, line := range planLines {
-		for _, field := range strings.Fields(line) {
-			trimmed := strings.Trim(field, "(),:")
-			if strings.HasPrefix(trimmed, "item_embedding_g1_p") {
-				seenPartitions[trimmed] = struct{}{}
+	var collectPartitionRelations func(v any)
+	collectPartitionRelations = func(v any) {
+		switch node := v.(type) {
+		case map[string]any:
+			if rel, ok := node["Relation Name"].(string); ok {
+				if strings.HasPrefix(rel, "item_embedding_g1_p") {
+					seenPartitions[rel] = struct{}{}
+				}
+			}
+			for k, child := range node {
+				if k == "Index Name" {
+					continue
+				}
+				collectPartitionRelations(child)
+			}
+		case []any:
+			for _, elem := range node {
+				collectPartitionRelations(elem)
 			}
 		}
 	}
+	for _, root := range planPayload {
+		collectPartitionRelations(root)
+	}
+
 	if len(seenPartitions) != 1 {
-		t.Fatalf("expected EXPLAIN to touch exactly 1 partition of item_embedding_g1, touched %d (%v)\nPlan:\n%s",
-			len(seenPartitions), seenPartitions, fullPlan)
+		t.Fatalf("expected EXPLAIN to touch exactly 1 partition relation of item_embedding_g1, touched %d (%v)\nPlan JSON:\n%s",
+			len(seenPartitions), seenPartitions, string(rawPlan))
 	}
 }
 

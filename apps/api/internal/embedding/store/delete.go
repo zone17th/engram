@@ -14,9 +14,10 @@ import (
 // retired generations past their rollback window (plan P05 mục 2.15, 2.17;
 // ADR 0007 §3).
 //
-// Locking contract (OQ-16): callers in mutation transactions that delete or
-// enqueue vectors should acquire generation.LockGenerationSetShared(ctx, tx)
-// before calling DeleteTarget.
+// Locking contract (OQ-16, plan P05 mục 2.15): callers in mutation transactions
+// MUST hold generation.LockGenerationSetShared(ctx, tx) across the registry
+// read and all DELETEs (in addition to the applicable target/user row lock).
+// DeleteTarget does not acquire locks itself.
 func DeleteTarget(
 	ctx context.Context,
 	tx gen.DBTX,
@@ -81,9 +82,12 @@ func DeleteTargetInGeneration(
 // keeping vectors in 'tei' generations intact (plan P05 mục 2.15, 2.18, Task 6;
 // BE-3, ADR 0007 §9).
 //
-// Locking contract (OQ-16): callers in mutation transactions (such as PATCH
-// /me/settings turning semantic_suggest off, or Reconcile) should hold the user
-// lock and/or generation.LockGenerationSetShared(ctx, tx) as appropriate.
+// Locking contract (OQ-16, plan P05 mục 2.15, 2.18): callers in mutation
+// transactions (such as PATCH /me/settings turning semantic_suggest off, or
+// Reconcile) MUST hold generation.LockGenerationSetShared(ctx, tx) across the
+// registry read and all DELETEs, in addition to the applicable user-policy row
+// lock (e.g. app_user FOR UPDATE / FOR SHARE). DeleteUserExternal does not
+// acquire locks itself.
 func DeleteUserExternal(
 	ctx context.Context,
 	tx gen.DBTX,
