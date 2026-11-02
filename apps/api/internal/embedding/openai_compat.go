@@ -152,7 +152,7 @@ func (p *OpenAICompat) MaxBatch() int {
 }
 
 func (p OpenAICompat) redactedSummary() string {
-	return fmt.Sprintf("OpenAICompat{Model:%q, ModelVersion:%q, Dims:%d}", p.fullModel, p.modelVersion, p.dims)
+	return fmt.Sprintf("OpenAICompat{Provider:%q, Dims:%d, Endpoint:%s}", ProviderOpenAICompat, p.dims, redactedMask)
 }
 
 // String redacts internal credentials and URLs if the provider is formatted

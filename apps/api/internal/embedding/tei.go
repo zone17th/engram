@@ -170,20 +170,20 @@ func (p *TEI) fetchBootInfo(ctx context.Context) error {
 	}
 
 	modelID := strings.TrimSpace(info.ModelID)
-	if modelID == "" {
+	if !isValidTEIInfoToken(modelID) {
 		return &ProviderError{
 			Class:      ClassBadResponse,
 			HTTPStatus: resp.StatusCode,
-			Detail:     "TEI /info missing model_id",
+			Detail:     "TEI /info missing or invalid model_id",
 			Err:        ErrBadResponse,
 		}
 	}
 	modelSHA := strings.TrimSpace(info.ModelSHA)
-	if modelSHA == "" {
+	if !isValidTEIInfoToken(modelSHA) {
 		return &ProviderError{
 			Class:      ClassBadResponse,
 			HTTPStatus: resp.StatusCode,
-			Detail:     "TEI /info missing model_sha",
+			Detail:     "TEI /info missing or invalid model_sha",
 			Err:        ErrBadResponse,
 		}
 	}
@@ -192,6 +192,33 @@ func (p *TEI) fetchBootInfo(ctx context.Context) error {
 	p.fullModel = ProviderTEI + "/" + modelID
 	p.modelVersion = TEIModelVersion(modelSHA, p.queryPrefix, p.docPrefix)
 	return nil
+}
+
+// isValidTEIInfoToken enforces the strict charset and length rule
+// ^[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,127}$ on TEI /info model_id and model_sha
+// values so untrusted response strings cannot inject arbitrary text or control
+// characters into generation identity strings.
+func isValidTEIInfoToken(s string) bool {
+	if len(s) == 0 || len(s) > 128 {
+		return false
+	}
+	c0 := s[0]
+	if !((c0 >= 'A' && c0 <= 'Z') || (c0 >= 'a' && c0 <= 'z') || (c0 >= '0' && c0 <= '9')) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		ch := s[i]
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
+			continue
+		}
+		switch ch {
+		case '.', '_', '/', ':', '@', '+', '-':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Name returns "tei".
@@ -220,7 +247,7 @@ func (p *TEI) MaxBatch() int {
 }
 
 func (p TEI) redactedSummary() string {
-	return fmt.Sprintf("TEI{Model:%q, ModelVersion:%q, Dims:%d}", p.fullModel, p.modelVersion, p.dims)
+	return fmt.Sprintf("TEI{Provider:%q, Dims:%d, Endpoint:%s}", ProviderTEI, p.dims, redactedMask)
 }
 
 // String returns a redacted summary of the TEI provider (both value and pointer receivers).
