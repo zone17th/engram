@@ -18,8 +18,8 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/zone17th/engram/apps/api/internal/embedding"
-	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
+	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/store"
 	"github.com/zone17th/engram/apps/api/internal/obs"
 )
@@ -38,43 +38,52 @@ const (
 	ErrorClassGenerationUnconfigured = "generation_unconfigured"
 )
 
-// Lỗi mang mã lý do không đến từ provider. Worker embed (Task 11a) xử lý các
-// tình huống này bằng outcome (snooze/skip/discard) chứ không trả lỗi, nên các
-// sentinel này dành cho code muốn nêu chúng như một lỗi và vẫn nhận đúng
-// `error_class` qua ErrorClass; chuỗi lỗi bắt đầu bằng chính mã nên River (chỉ
-// giữ chuỗi) cũng nhận ra qua ErrorClassFromMessage.
-var (
-	ErrHashStale              = errors.New("hash_stale: embedding input hash is stale")
-	ErrGenerationNotReceiving = errors.New("generation_not_receiving: embedding generation is not receiving")
-	ErrGenerationUnconfigured = errors.New("generation_unconfigured: embedding generation has no matching configured client")
-)
-
-// ErrorClass ánh xạ lỗi provider/job sang một trong chín mã lý do của plan
-// mục 2.21; nil → "". Lỗi provider dùng lại logic của classifyBootProviderError
-// (cùng nguồn với embedding.OutcomeForError): *ProviderError.Class, ErrBadResponse,
-// timeout, còn lại là provider_refused.
+// ErrorClass ánh xạ lỗi provider/job THẬT sang mã lý do của plan mục 2.21; nil →
+// "". Lỗi provider dùng lại logic của classifyBootProviderError (cùng nguồn với
+// embedding.OutcomeForError và classifyJobError của jobs): *ProviderError.Class,
+// ErrBadResponse, timeout, còn lại là provider_refused. Lỗi dims là
+// store.ErrDimsMismatch mà worker embed thật sự trả. Ba mã không đến từ provider
+// (hash_stale, generation_not_receiving, generation_unconfigured) không bao giờ
+// là lỗi Go — worker embed xử lý bằng outcome/snooze — nên xem
+// ErrorClassForJobReason.
 func ErrorClass(err error) string {
 	switch {
 	case err == nil:
 		return ""
 	case errors.Is(err, store.ErrDimsMismatch):
 		return ErrorClassDimsMismatch
-	case errors.Is(err, ErrHashStale):
-		return ErrorClassHashStale
-	case errors.Is(err, ErrGenerationNotReceiving), errors.Is(err, generation.ErrGenerationNotFound):
-		return ErrorClassGenerationNotReceiving
-	case errors.Is(err, ErrGenerationUnconfigured), errors.Is(err, generation.ErrCalibrationMissing):
-		return ErrorClassGenerationUnconfigured
 	default:
 		return classifyBootProviderError(err)
+	}
+}
+
+// ErrorClassForJobReason nối nhãn lý do/outcome mà internal/embedding/jobs đã
+// dùng cho ba tình huống không phải lỗi provider với mã error_class tương ứng:
+// MismatchReasonHash → hash_stale, MismatchReasonUnconfigured →
+// generation_unconfigured, MismatchReasonDims → dims_mismatch và
+// OutcomeDiscardedGeneration → generation_not_receiving. Nhãn lạ → "".
+func ErrorClassForJobReason(reason string) string {
+	switch reason {
+	case jobs.MismatchReasonHash:
+		return ErrorClassHashStale
+	case jobs.MismatchReasonUnconfigured:
+		return ErrorClassGenerationUnconfigured
+	case jobs.MismatchReasonDims:
+		return ErrorClassDimsMismatch
+	case jobs.OutcomeDiscardedGeneration:
+		return ErrorClassGenerationNotReceiving
+	default:
+		return ""
 	}
 }
 
 // ErrorClassFromMessage là ErrorClass cho lỗi chỉ còn ở dạng chuỗi: River chỉ
 // lưu `AttemptError.Error` (không giữ giá trị lỗi Go), nên Subscribe phải nhận
 // mã từ chính các chuỗi lỗi an toàn của provider/store (không chứa input, URL,
-// khoá hay body — xem embedding.ProviderError). Chuỗi không nhận ra → mặc định
-// provider_refused, giống classifyBootProviderError/classifyJobError.
+// khoá hay body — xem embedding.ProviderError). Chỉ job lỗi mới tới River, nên
+// chỉ có mã provider và dims_mismatch; ba mã còn lại không bao giờ thành lỗi job.
+// Chuỗi không nhận ra → mặc định provider_refused, giống
+// classifyBootProviderError/classifyJobError.
 func ErrorClassFromMessage(msg string) string {
 	switch {
 	case msg == "":
@@ -90,14 +99,8 @@ func ErrorClassFromMessage(msg string) string {
 	case strings.Contains(msg, ErrorClassProviderBadResponse),
 		strings.Contains(msg, embedding.ErrBadResponse.Error()):
 		return ErrorClassProviderBadResponse
-	case strings.Contains(msg, store.ErrDimsMismatch.Error()), strings.Contains(msg, ErrorClassDimsMismatch):
+	case strings.Contains(msg, store.ErrDimsMismatch.Error()):
 		return ErrorClassDimsMismatch
-	case strings.Contains(msg, ErrorClassHashStale):
-		return ErrorClassHashStale
-	case strings.Contains(msg, ErrorClassGenerationNotReceiving):
-		return ErrorClassGenerationNotReceiving
-	case strings.Contains(msg, ErrorClassGenerationUnconfigured):
-		return ErrorClassGenerationUnconfigured
 	default:
 		return ErrorClassProviderRefused
 	}

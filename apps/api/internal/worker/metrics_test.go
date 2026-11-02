@@ -22,8 +22,8 @@ import (
 
 	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
-	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
+	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/store"
 	"github.com/zone17th/engram/apps/api/internal/obs"
 )
@@ -41,15 +41,21 @@ func counterValue(t *testing.T, vec *prometheus.CounterVec, labelValues ...strin
 	return m.GetCounter().GetValue()
 }
 
-// TestErrorClassMapping: chín mã lý do của plan mục 2.21 từ lỗi Go (ErrorClass)
-// và từ chuỗi lỗi mà River lưu (ErrorClassFromMessage).
+// TestErrorClassMapping: chín mã lý do của plan mục 2.21, chỉ từ giá trị mà code
+// production thật sự tạo ra: lỗi provider (embedding.ProviderError, ErrBadResponse,
+// deadline), lỗi dims (store.ErrDimsMismatch bọc như embed.go) và các hằng
+// lý do/outcome của internal/embedding/jobs cho ba mã không phải lỗi provider.
 func TestErrorClassMapping(t *testing.T) {
-	cases := []struct {
+	allowed := []string{
+		"provider_timeout", "provider_5xx", "provider_429", "provider_refused", "provider_bad_response",
+		"dims_mismatch", "hash_stale", "generation_not_receiving", "generation_unconfigured",
+	}
+	covered := map[string]bool{}
+
+	errCases := []struct {
 		name string
 		err  error
 		want string
-		// skipMsg: lỗi Go không có chuỗi mang mã nên ErrorClassFromMessage không áp dụng.
-		skipMsg bool
 	}{
 		{name: "timeout provider error", err: &embedding.ProviderError{Class: embedding.ClassTimeout, Detail: "request deadline exceeded"}, want: "provider_timeout"},
 		{name: "timeout bare deadline", err: fmt.Errorf("embed: %w", context.DeadlineExceeded), want: "provider_timeout"},
@@ -59,18 +65,10 @@ func TestErrorClassMapping(t *testing.T) {
 		{name: "refused unknown error", err: errors.New("boom"), want: "provider_refused"},
 		{name: "bad_response provider error", err: &embedding.ProviderError{Class: embedding.ClassBadResponse, Detail: "vector contains NaN or Inf", Err: embedding.ErrBadResponse}, want: "provider_bad_response"},
 		{name: "bad_response sentinel", err: fmt.Errorf("wrap: %w", embedding.ErrBadResponse), want: "provider_bad_response"},
-		{name: "dims", err: fmt.Errorf("%w: got 3, want 4", store.ErrDimsMismatch), want: "dims_mismatch"},
-		{name: "hash", err: fmt.Errorf("target changed: %w", ErrHashStale), want: "hash_stale"},
-		{name: "not receiving", err: ErrGenerationNotReceiving, want: "generation_not_receiving"},
-		{name: "generation not found", err: generation.ErrGenerationNotFound, want: "generation_not_receiving", skipMsg: true},
-		{name: "unconfigured", err: ErrGenerationUnconfigured, want: "generation_unconfigured"},
-		{name: "calibration missing", err: fmt.Errorf("boot: %w", generation.ErrCalibrationMissing), want: "generation_unconfigured", skipMsg: true},
+		// Đúng cách embed.go bọc lỗi dims: fmt.Errorf("%w: got %d, want %d", ...).
+		{name: "dims", err: fmt.Errorf("%w: got %d, want %d", store.ErrDimsMismatch, 3, 4), want: "dims_mismatch"},
 	}
-	allowed := []string{
-		"provider_timeout", "provider_5xx", "provider_429", "provider_refused", "provider_bad_response",
-		"dims_mismatch", "hash_stale", "generation_not_receiving", "generation_unconfigured",
-	}
-	for _, tc := range cases {
+	for _, tc := range errCases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ErrorClass(tc.err)
 			if got != tc.want {
@@ -79,14 +77,49 @@ func TestErrorClassMapping(t *testing.T) {
 			if !slices.Contains(allowed, got) {
 				t.Fatalf("ErrorClass %q is not one of the nine plan 2.21 codes", got)
 			}
+			covered[got] = true
 			// River chỉ giữ chuỗi lỗi: cùng mã khi chỉ còn chuỗi.
-			if !tc.skipMsg {
-				if msgClass := ErrorClassFromMessage(tc.err.Error()); msgClass != tc.want {
-					t.Fatalf("ErrorClassFromMessage(%q) = %q, want %q", tc.err.Error(), msgClass, tc.want)
+			if msgClass := ErrorClassFromMessage(tc.err.Error()); msgClass != tc.want {
+				t.Fatalf("ErrorClassFromMessage(%q) = %q, want %q", tc.err.Error(), msgClass, tc.want)
+			}
+			// Mã provider phải khớp metric outcome của chính nhà sản xuất lỗi.
+			if strings.HasPrefix(got, "provider_") {
+				if want, have := embedding.ErrorClass(got).MetricOutcome(), embedding.OutcomeForError(tc.err); have != want {
+					t.Fatalf("OutcomeForError(%v) = %q disagrees with class %q (outcome %q)", tc.err, have, got, want)
 				}
 			}
 		})
 	}
+
+	// Ba mã không phải lỗi provider: nhãn mà jobs/embed.go dùng.
+	reasonCases := []struct {
+		reason string
+		want   string
+	}{
+		{jobs.MismatchReasonHash, "hash_stale"},
+		{jobs.MismatchReasonUnconfigured, "generation_unconfigured"},
+		{jobs.MismatchReasonDims, "dims_mismatch"},
+		{jobs.OutcomeDiscardedGeneration, "generation_not_receiving"},
+	}
+	for _, tc := range reasonCases {
+		got := ErrorClassForJobReason(tc.reason)
+		if got != tc.want {
+			t.Errorf("ErrorClassForJobReason(%q) = %q, want %q", tc.reason, got, tc.want)
+		}
+		if !slices.Contains(allowed, got) {
+			t.Errorf("ErrorClassForJobReason(%q) = %q is not one of the nine codes", tc.reason, got)
+		}
+		covered[got] = true
+	}
+	if got := ErrorClassForJobReason(jobs.OutcomeUpserted); got != "" {
+		t.Errorf("ErrorClassForJobReason(upserted) = %q, want empty (not an error reason)", got)
+	}
+	for _, code := range allowed {
+		if !covered[code] {
+			t.Errorf("error_class %q is not covered by the mapping test", code)
+		}
+	}
+
 	if got := ErrorClass(nil); got != "" {
 		t.Fatalf("ErrorClass(nil) = %q, want empty", got)
 	}
