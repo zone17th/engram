@@ -17,7 +17,7 @@ import (
 // profile dataset with DefaultSeed (20261102) and DefaultPartitions (16).
 // If the generator or bench-lexicon.json changes, TestDatasetDeterministic
 // fails and prints the newly computed hash so it can be pinned from CI.
-const PinnedSmokeDatasetHash = "0000000000000000000000000000000000000000000000000000000000000000"
+const PinnedSmokeDatasetHash = "dbd476280948338ac693ad5d1001ece7dfdad08e86bab42a2dcc908fb6c2d31f"
 
 func TestDatasetDeterministic(t *testing.T) {
 	lex, err := LoadDefaultLexicon()
