@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"runtime"
 	"slices"
@@ -17,7 +18,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
-	"github.com/zone17th/engram/apps/api/internal/suggest"
 )
 
 // Entry points (contract with ci.yml, worker B):
@@ -659,8 +659,32 @@ func runLexicalCheck(t *testing.T, h *Harness, sr *SeedResult, limits map[int]in
 	return rep
 }
 
-// TestHarnessCatchesSlowLexical: a 50 ms delay injected through the production
-// suggest.TestHooks.BeforeBranch seam must turn the C1-L verdict into a FAIL
+// delayLexicalSuggest wraps the harness router with a test-only handler that
+// sleeps d (context-aware) before serving a lexical (semantic != 1) /suggest
+// request. The delay sits on the request path, in front of the router, so it adds
+// latency without touching the production branch budget.
+//
+// It is deliberately NOT injected through suggest.TestHooks.BeforeBranch: that hook
+// runs inside the lexical branch context whose budget is suggest.BranchTimeout
+// (50 ms). A 50 ms delay there consumes the whole budget, so the request exercises
+// the branch-timeout / partial-result path instead of "a slow but healthy
+// lexical branch", and some requests error (cloud job 125456907642: errors=2 of
+// 240).
+func delayLexicalSuggest(next http.Handler, d time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/suggest" && r.URL.Query().Get("semantic") != "1" {
+			select {
+			case <-time.After(d):
+			case <-r.Context().Done():
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// TestHarnessCatchesSlowLexical: a 50 ms delay on the lexical /suggest request
+// path (delayLexicalSuggest, in front of the router and outside the 50 ms branch
+// budget) must turn the C1-L verdict into a FAIL
 // (p95 < 40 ms), proving the harness measures the server and the aggregation
 // would catch a regression. Plan Task 10 BE-7a requires exactly that; it does
 // NOT require the undelayed tiny control to meet the absolute 40 ms target on a
@@ -695,17 +719,13 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	if !ok {
 		t.Fatalf("control run has no concurrency %d level", TargetConcurrency)
 	}
-	t.Logf("control (no delay, logged not asserted): %s - %s; pool max conns %d", cv.Status(), cv.Measured, h.PoolMax)
+	t.Logf("control (no delay, logged not asserted): %s - %s; pool max conns %d; statuses %v", cv.Status(), cv.Measured, h.PoolMax, cl.Statuses)
 
-	// Injected 50 ms delay in every lexical branch, same harness, same queries.
-	h.Service.SetTestHooks(&suggest.TestHooks{BeforeBranch: func(ctx context.Context, _ string) error {
-		select {
-		case <-time.After(50 * time.Millisecond):
-		case <-ctx.Done():
-		}
-		return nil
-	}})
-	t.Cleanup(func() { h.Service.SetTestHooks(nil) })
+	// Injected 50 ms delay on every lexical /suggest request, same harness, same
+	// queries. Outside the branch budget (see delayLexicalSuggest).
+	realRouter := h.Router
+	h.Router = delayLexicalSuggest(realRouter, time.Duration(injectedMs)*time.Millisecond)
+	t.Cleanup(func() { h.Router = realRouter })
 	slow := runLexicalCheck(t, h, sr, limits)
 	v := EvaluateScenario(slow, TargetC1LP95, minN)
 	t.Logf("injected 50 ms run: %s - %s", v.Status(), v.Measured)
@@ -720,11 +740,12 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	}
 	// The FAIL must be a latency FAIL, not an invalid/errored/undersized run.
 	if !slow.Valid || sl.Stats.Errors != 0 || sl.Stats.N < minN {
-		t.Fatalf("injected run is not valid latency evidence (valid=%v %q, errors=%d, n=%d): %+v", slow.Valid, slow.InvalidReason, sl.Stats.Errors, sl.Stats.N, v)
+		t.Fatalf("injected run is not valid latency evidence (valid=%v %q, errors=%d, n=%d, http statuses %v, lexical_partial %d): %+v",
+			slow.Valid, slow.InvalidReason, sl.Stats.Errors, sl.Stats.N, sl.Statuses, sl.LexicalPartial, v)
 	}
 	// (ii) the delay is in the measured p95 ...
 	if sl.Stats.P95Ms < injectedMs {
-		t.Fatalf("injected delay not visible in the measured p95: %.2f ms < %.0f ms (%+v)", sl.Stats.P95Ms, injectedMs, sl.Stats)
+		t.Fatalf("injected delay not visible in the measured p95: %.2f ms < %.0f ms (http statuses %v, %+v)", sl.Stats.P95Ms, injectedMs, sl.Statuses, sl.Stats)
 	}
 	// (iii) ... and stands out against the undelayed control of the same run.
 	// Medians, not p95: a single noisy control tail (78 ms p95 seen in CI) must
@@ -735,8 +756,8 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 	// delay (25 ms) still separates a real injection from runner noise.
 	t.Logf("control p50 %.2f ms p95 %.2f ms; injected p50 %.2f ms p95 %.2f ms", cl.Stats.P50Ms, cl.Stats.P95Ms, sl.Stats.P50Ms, sl.Stats.P95Ms)
 	if sl.Stats.P50Ms < cl.Stats.P50Ms+visibleDelta {
-		t.Fatalf("injected p50 %.2f ms is not at least %.0f ms above the control p50 %.2f ms (p95: injected %.2f ms, control %.2f ms)",
-			sl.Stats.P50Ms, visibleDelta, cl.Stats.P50Ms, sl.Stats.P95Ms, cl.Stats.P95Ms)
+		t.Fatalf("injected p50 %.2f ms is not at least %.0f ms above the control p50 %.2f ms (p95: injected %.2f ms, control %.2f ms; http statuses: injected %v, control %v)",
+			sl.Stats.P50Ms, visibleDelta, cl.Stats.P50Ms, sl.Stats.P95Ms, cl.Stats.P95Ms, sl.Statuses, cl.Statuses)
 	}
 }
 

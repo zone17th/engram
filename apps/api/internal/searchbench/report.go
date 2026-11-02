@@ -708,9 +708,12 @@ type LevelReport struct {
 	// SemanticOffReasons counts the response semantic_reason of the measured
 	// requests where semantic did not run (degraded, disabled_*, ...).
 	SemanticOffReasons map[string]int `json:"semantic_not_ran_reasons,omitempty"`
-	LexicalPartial     int            `json:"lexical_partial"`
-	CrossTenant        int            `json:"cross_tenant_rows"`
-	StubCalls          int64          `json:"stub_provider_calls"`
+	// Statuses counts the HTTP status codes of the measured requests, so a
+	// non-200 (errors > 0) run is diagnosable from the report.
+	Statuses       map[int]int `json:"http_statuses,omitempty"`
+	LexicalPartial int         `json:"lexical_partial"`
+	CrossTenant    int         `json:"cross_tenant_rows"`
+	StubCalls      int64       `json:"stub_provider_calls"`
 }
 
 // ScenarioReport is one C1 scenario across 1/8/32 clients.

@@ -540,7 +540,7 @@ func levelReport(r LoadResult) LevelReport {
 	return LevelReport{
 		Concurrency: r.Concurrency, Stats: Summarize(r.Latencies, r.Errors), Warmup: r.Warmup,
 		Wall: r.Wall.Seconds(), RPS: rps, SemanticRan: r.SemanticRan, SemanticOff: r.SemanticOff,
-		SemanticOffReasons: r.SemanticReason, LexicalPartial: r.LexicalPartial, CrossTenant: r.CrossTenant, StubCalls: r.StubCalls,
+		SemanticOffReasons: r.SemanticReason, Statuses: r.Statuses, LexicalPartial: r.LexicalPartial, CrossTenant: r.CrossTenant, StubCalls: r.StubCalls,
 	}
 }
 
