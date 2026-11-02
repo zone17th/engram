@@ -1,7 +1,9 @@
 import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { UI_WAIT_MS, expectVaultShut } from './vault-passkey-support';
+import { PASSWORD } from './helpers';
+import { CRYPTO_WAIT_MS, UI_WAIT_MS, expectVaultShut, gotoSettings } from './vault-passkey-support';
+import { fillSecret } from './vault-settings-secret';
 
 // Helpers for the P04-T21a acceptance specs (`content-journey.spec.ts`, `content-journey-p03.spec.ts`,
 // `content-artifacts.spec.ts`). Nothing here stubs `/api/**` (all calls reach the compose stack's real API
@@ -831,4 +833,266 @@ export async function expectOnUnlockPageAllowingReturnTo(page: Page): Promise<vo
   await expect(page).toHaveURL(/\/app\/unlock(?:\?returnTo=[^&#]*)?$/, { timeout: ACCEPTANCE_UI_WAIT_MS });
   await expect(page.getByTestId('vault-unlock-page')).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
   await expectVaultShut(page);
+}
+
+/**
+ * Dispatches a window `focus` event on `page` so `<ContentChangesSync />` runs its coalesced wake cycle
+ * (refetching active canonical sources, reconciling `GET /api/v1/vault`, and draining `/api/v1/entries/changes`).
+ */
+export async function triggerFocusWake(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+  });
+}
+
+/**
+ * Walks through the real Settings > Security "Reset vault" dialog (`#resetDlg`: step 1 "None of these work" ->
+ * step 2 "Checked backups" -> step 3 login password reauth via `fillSecret` -> step 4 type `RESET` + confirm),
+ * awaits the `204` `DELETE /api/v1/vault` response and `[data-view="rst-s5"]`, and clicks the dialog's
+ * "Create new vault" link to land on `/app/onboarding` (`content-sync.spec.ts:458-569`).
+ */
+export async function executeVaultResetAndClickCreateNewVault(
+  page: Page,
+  loginPassword = PASSWORD,
+): Promise<void> {
+  await gotoSettings(page);
+  await page.locator('[data-open-dialog="resetDlg"]').click();
+  const resetDialog = page.getByRole('dialog');
+  await expect(resetDialog).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+  await resetDialog
+    .getByRole('button', { name: /^(None of these work|Không đường nào dùng được)$/ })
+    .click();
+  await resetDialog
+    .getByRole('button', { name: /^(Checked backups|Đã kiểm tra backup)$/ })
+    .click();
+  await fillSecret(resetDialog.locator('#rst-reauth-pwd'), loginPassword, ACCEPTANCE_UI_WAIT_MS);
+  await resetDialog.getByRole('button', { name: /^(Continue|Tiếp tục)$/ }).click();
+  await resetDialog.locator('#rst-confirm-word').fill('RESET');
+  await expect(resetDialog.locator('#rstConfirmBtn')).toBeEnabled({ timeout: ACCEPTANCE_UI_WAIT_MS });
+
+  const deleteVaultPromise = page.waitForResponse(
+    (res) => res.request().method() === 'DELETE' && new URL(res.url()).pathname === '/api/v1/vault',
+    { timeout: CRYPTO_WAIT_MS },
+  );
+  await resetDialog.locator('#rstConfirmBtn').click();
+  expect((await deleteVaultPromise).status()).toBe(204);
+  await expect(resetDialog.locator('[data-view="rst-s5"]')).toBeVisible({
+    timeout: CRYPTO_WAIT_MS,
+  });
+
+  await resetDialog.getByRole('link', { name: /^(Create new vault|Tạo vault mới)$/ }).click();
+  await expect(page).toHaveURL(/\/app\/onboarding$/, { timeout: ACCEPTANCE_UI_WAIT_MS });
+}
+
+export interface ServerItemsAndTagsSnapshot {
+  readonly itemsStatus: number;
+  readonly tagsStatus: number;
+  readonly itemIds: readonly string[];
+  readonly tagIds: readonly string[];
+  readonly itemTagIdsByItem: Readonly<Record<string, readonly string[]>>;
+  readonly entryCountsByItem: Readonly<Record<string, number>>;
+}
+
+/**
+ * Fetches `GET /api/v1/items` and `GET /api/v1/tags` using the page's authenticated session and returns
+ * the sorted ID sets, per-item tag ID sets, and per-item `entry_count` map.
+ */
+export async function fetchServerItemsAndTagsSnapshot(
+  page: Page,
+): Promise<ServerItemsAndTagsSnapshot> {
+  return page.evaluate(async () => {
+    const [itemsRes, tagsRes] = await Promise.all([
+      fetch('/api/v1/items', { credentials: 'include' }),
+      fetch('/api/v1/tags', { credentials: 'include' }),
+    ]);
+    const itemsBody = (await itemsRes.json().catch(() => null)) as {
+      readonly items?: ReadonlyArray<{
+        readonly id: string;
+        readonly entry_count: number;
+        readonly tags?: ReadonlyArray<{ readonly id: string }>;
+      }>;
+    } | null;
+    const tagsBody = (await tagsRes.json().catch(() => null)) as {
+      readonly items?: ReadonlyArray<{ readonly id: string }>;
+    } | null;
+
+    const rawItems = itemsBody?.items ?? [];
+    const rawTags = tagsBody?.items ?? [];
+    const itemTagIdsByItem: Record<string, string[]> = {};
+    const entryCountsByItem: Record<string, number> = {};
+    for (const item of rawItems) {
+      itemTagIdsByItem[item.id] = (item.tags ?? []).map((t) => t.id).sort();
+      entryCountsByItem[item.id] = item.entry_count;
+    }
+
+    return {
+      itemsStatus: itemsRes.status,
+      tagsStatus: tagsRes.status,
+      itemIds: rawItems.map((it) => it.id).sort(),
+      tagIds: rawTags.map((t) => t.id).sort(),
+      itemTagIdsByItem,
+      entryCountsByItem,
+    };
+  });
+}
+
+/**
+ * Fetches `GET /api/v1/items/<id>` and `GET /api/v1/items/<id>/entries` for each item in `itemIds` and asserts
+ * that every item still exists with `entry_count === 0` and an empty `entries` list (`items: []`), and that
+ * `GET /api/v1/entries/<id>` returns `404` for every `deletedEntryIds` (P04-A9).
+ */
+export async function expectServerItemsHaveZeroEntries(
+  page: Page,
+  itemIds: readonly string[],
+  deletedEntryIds: readonly string[] = [],
+): Promise<void> {
+  const probe = await page.evaluate(
+    async ({ targetItemIds, targetEntryIds }) => {
+      const itemChecks = await Promise.all(
+        targetItemIds.map(async (id) => {
+          const [itemRes, entriesRes] = await Promise.all([
+            fetch(`/api/v1/items/${encodeURIComponent(id)}`, { credentials: 'include' }),
+            fetch(`/api/v1/items/${encodeURIComponent(id)}/entries`, { credentials: 'include' }),
+          ]);
+          const itemBody = (await itemRes.json().catch(() => null)) as {
+            readonly id?: string;
+            readonly entry_count?: number;
+          } | null;
+          const entriesBody = (await entriesRes.json().catch(() => null)) as {
+            readonly items?: ReadonlyArray<{ readonly id: string }>;
+          } | null;
+          return {
+            itemId: id,
+            itemStatus: itemRes.status,
+            entryCount: itemBody?.entry_count ?? -1,
+            entriesStatus: entriesRes.status,
+            entriesLen: (entriesBody?.items ?? []).length,
+          };
+        }),
+      );
+      const entryStatuses = await Promise.all(
+        targetEntryIds.map(async (entryId) => {
+          const res = await fetch(`/api/v1/entries/${encodeURIComponent(entryId)}`, {
+            credentials: 'include',
+          });
+          return { entryId, status: res.status };
+        }),
+      );
+      return { itemChecks, entryStatuses };
+    },
+    { targetItemIds: itemIds, targetEntryIds: deletedEntryIds },
+  );
+
+  for (const check of probe.itemChecks) {
+    expect(check.itemStatus).toBe(200);
+    expect(check.entryCount).toBe(0);
+    expect(check.entriesStatus).toBe(200);
+    expect(check.entriesLen).toBe(0);
+  }
+  for (const entryCheck of probe.entryStatuses) {
+    expect(entryCheck.status).toBe(404);
+  }
+}
+
+/**
+ * Probes the server API directly from the page's authenticated session with an envelope carrying `oldVaultKeyId`
+ * after a new vault has been created (`newVaultKeyId !== oldVaultKeyId`), proving the server rejects stale-key
+ * writes (`POST /api/v1/items/<id>/entries` and `POST /api/v1/items/<id>/entries/import-json`) with
+ * `409 entry_key_mismatch` (plan Task 8, P04-A9). Uses a fixed 17-byte dummy base64url ciphertext (`256` bucket)
+ * containing no secret material.
+ */
+export async function expectServerRejectsOldVaultKeyEntryWrites(
+  page: Page,
+  itemId: string,
+  oldVaultKeyId: string,
+): Promise<void> {
+  const result = await page.evaluate(
+    async ({ targetItemId, staleKeyId }) => {
+      let csrf: string | null = null;
+      for (const part of document.cookie.split(';')) {
+        const trimmed = part.trim();
+        if (trimmed.startsWith('sabk_csrf=')) {
+          csrf = decodeURIComponent(trimmed.slice('sabk_csrf='.length));
+          break;
+        }
+      }
+      const headers: Record<string, string> = {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+      };
+      // Well-formed envelope so the request passes ValidatePayload (apps/api/internal/entry/entry.go) and reaches the
+      // key_id comparison: 24 zero bytes base64url = 32 'A's (XChaCha20 nonce, vault.WrapNonceBytes);
+      // 17 zero bytes base64url = 23 'A's (1 B plaintext + 16 B tag -> bucket 256).
+      const dummyNonce = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+      const dummyCiphertext = 'AAAAAAAAAAAAAAAAAAAAAAA';
+
+      const createRes = await fetch(`/api/v1/items/${encodeURIComponent(targetItemId)}/entries`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          ...headers,
+          'Idempotency-Key': crypto.randomUUID(),
+        },
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          type: 'text',
+          envelope: {
+            v: 1,
+            alg: 'xchacha20poly1305-ietf',
+            key_id: staleKeyId,
+            nonce: dummyNonce,
+            ct_enc: 'utf8',
+          },
+          ciphertext: dummyCiphertext,
+          plaintext_len_bucket: 256,
+        }),
+      });
+      const createProblem = (await createRes.json().catch(() => null)) as {
+        readonly code?: string;
+      } | null;
+
+      const importRes = await fetch(
+        `/api/v1/items/${encodeURIComponent(targetItemId)}/entries/import-json`,
+        {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            ...headers,
+            'Idempotency-Key': crypto.randomUUID(),
+          },
+          body: JSON.stringify({
+            id: crypto.randomUUID(),
+            type: 'json',
+            source: 'file',
+            envelope: {
+              v: 1,
+              alg: 'xchacha20poly1305-ietf',
+              key_id: staleKeyId,
+              nonce: dummyNonce,
+              ct_enc: 'utf8',
+            },
+            ciphertext: dummyCiphertext,
+            plaintext_len_bucket: 256,
+          }),
+        },
+      );
+      const importProblem = (await importRes.json().catch(() => null)) as {
+        readonly code?: string;
+      } | null;
+
+      return {
+        createStatus: createRes.status,
+        createCode: createProblem?.code ?? null,
+        importStatus: importRes.status,
+        importCode: importProblem?.code ?? null,
+      };
+    },
+    { targetItemId: itemId, staleKeyId: oldVaultKeyId },
+  );
+
+  expect(result.createStatus).toBe(409);
+  expect(result.createCode).toBe('entry_key_mismatch');
+  expect(result.importStatus).toBe(409);
+  expect(result.importCode).toBe('entry_key_mismatch');
 }

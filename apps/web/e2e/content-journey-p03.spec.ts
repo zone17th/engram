@@ -1,13 +1,17 @@
-import { expect, test, type BrowserContext } from '@playwright/test';
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import en from '../messages/en.json';
 import {
   ACCEPTANCE_UI_WAIT_MS,
   createRequestPlaintextMonitor,
+  executeVaultResetAndClickCreateNewVault,
   expectInputEmptyBool,
   expectInputValueEqualsBool,
   expectNoDomOrStorageBodyLeaks,
   expectOnUnlockPageAllowingReturnTo,
+  expectServerItemsHaveZeroEntries,
+  expectServerRejectsOldVaultKeyEntryWrites,
   expectTextEqualsBool,
+  fetchServerItemsAndTagsSnapshot,
   saveAndVerifyItemHintPersisted,
   setQuietInputValue,
   timedJourneyStep,
@@ -65,7 +69,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
   test.describe.configure({ mode: 'serial' });
   test.skip(!process.env.E2E_STACK, 'needs the compose stack (E2E_STACK=1): real API, real database');
 
-  test('(a) locked state on /app and /app/items/<id>, (b) manual + auto-lock lifecycle wipes bodies and unlock restores them, (c) recovery with onboarding recovery key opens entry created BEFORE recovery', async ({
+  test('(a) locked state on /app and /app/items/<id>, (b) manual + auto-lock lifecycle wipes bodies and unlock restores them, (c) recovery with onboarding recovery key opens entry created BEFORE recovery, (d) vault reset with real entries keeps items/tags, deletes entries, and rejects old-key writes', async ({
     browser,
   }) => {
     test.setTimeout(P03_REAL_ENTRIES_TIMEOUT_MS);
@@ -78,6 +82,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
     const jsonRawBeforeRecovery = `{"service":"${jsonSecretTokenBeforeRecovery}","port":6379}`;
     const unsavedDraftOnP03Lock = `acceptance-p03-unsaved-draft-before-lock-${nonce}`;
     const omniboxDraftOnP03Lock = `acceptance-p03-omnibox-draft-before-lock-${nonce}`;
+    const p03PostResetPassphrase = `acceptance-p03-reset-vault-passphrase-${nonce}!`;
 
     const labeledSecrets = [
       { label: 'textBodyBeforeRecovery', value: textBodyBeforeRecovery },
@@ -86,6 +91,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
       { label: 'omniboxDraftOnP03Lock', value: omniboxDraftOnP03Lock },
       { label: 'vaultPassphrase', value: VAULT_PASSPHRASE },
       { label: 'recoveredPassphrase', value: RECOVERED_PASSPHRASE },
+      { label: 'p03PostResetPassphrase', value: p03PostResetPassphrase },
     ] as const;
     const monitor = createRequestPlaintextMonitor(labeledSecrets);
     const contexts: BrowserContext[] = [];
@@ -95,6 +101,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
     let itemId = '';
     let textEntryId = '';
     let jsonEntryId = '';
+    let pageB: Page | null = null;
 
     try {
       const contextA = await newContextWithRateLimit(browser);
@@ -320,7 +327,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         const contextB = await newContextWithRateLimit(browser);
         contexts.push(contextB);
         monitor.attachContext(contextB);
-        const pageB = await contextB.newPage();
+        pageB = await contextB.newPage();
 
         await loginViaUiSecret(pageB, email);
         await expectOnUnlockPageAllowingReturnTo(pageB);
@@ -345,7 +352,83 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
         monitor.assertNoLeaks();
       });
 
-      // T20: reset step with real entries goes here
+      await timedJourneyStep('5. (d) (T20) vault reset with real text + JSON entries -> create new vault -> items/tags/hint kept, entries gone on server & UI, and old-key write rejected with 409 entry_key_mismatch (A9)', async () => {
+        const activePageB = pageB!;
+        await freshRateBucket(activePageB);
+
+        const metaBeforeReset = await fetchVaultMetaViaPage(activePageB);
+        expect(metaBeforeReset.status).toBe(200);
+        expect(typeof metaBeforeReset.vaultKeyId).toBe('string');
+        const oldVaultKeyId = metaBeforeReset.vaultKeyId as string;
+
+        const preResetSnapshot = await fetchServerItemsAndTagsSnapshot(activePageB);
+        expect(preResetSnapshot.itemsStatus).toBe(200);
+        expect(preResetSnapshot.tagsStatus).toBe(200);
+        expect(preResetSnapshot.itemIds).toEqual([itemId]);
+        expect(preResetSnapshot.tagIds.length).toBe(1);
+        expect(preResetSnapshot.entryCountsByItem[itemId]).toBe(2);
+
+        await executeVaultResetAndClickCreateNewVault(activePageB);
+
+        const postResetKeys = await createVaultViaOnboarding(
+          activePageB,
+          p03PostResetPassphrase,
+          { kind: 'skip' },
+        );
+        monitor.registerSecret('postResetRecoveryKeySlot1', postResetKeys.slot1);
+        monitor.registerSecret('postResetRecoveryKeySlot2', postResetKeys.slot2);
+        await expectUnlockedOnApp(activePageB);
+
+        const metaAfterReset = await fetchVaultMetaViaPage(activePageB);
+        expect(metaAfterReset.status).toBe(200);
+        expect(typeof metaAfterReset.vaultKeyId).toBe('string');
+        expect(metaAfterReset.vaultKeyId !== oldVaultKeyId).toBe(true);
+
+        // Prove item and tag ID sets are preserved and server has 0 entries (both text + JSON deleted)
+        const postResetSnapshot = await fetchServerItemsAndTagsSnapshot(activePageB);
+        expect(postResetSnapshot.itemsStatus).toBe(200);
+        expect(postResetSnapshot.tagsStatus).toBe(200);
+        expect(postResetSnapshot.itemIds).toEqual(preResetSnapshot.itemIds);
+        expect(postResetSnapshot.tagIds).toEqual(preResetSnapshot.tagIds);
+        expect(postResetSnapshot.itemTagIdsByItem).toEqual(preResetSnapshot.itemTagIdsByItem);
+        expect(postResetSnapshot.entryCountsByItem[itemId]).toBe(0);
+
+        await expectServerItemsHaveZeroEntries(activePageB, [itemId], [textEntryId, jsonEntryId]);
+
+        // Prove UI shows item, hint, and tag #infra on `/app` and `/app/items/<id>` with empty entry state and 0 old cards
+        const cardOnHomeAfterReset = activePageB.locator(`[data-item-card="${itemId}"]`);
+        await expect(cardOnHomeAfterReset).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await expect(cardOnHomeAfterReset).toContainText(itemName);
+        await expect(cardOnHomeAfterReset).toContainText(itemHint);
+        await expect(cardOnHomeAfterReset).toContainText('#infra');
+        await cardOnHomeAfterReset.click();
+        await expect(activePageB).toHaveURL(new RegExp(`/app/items/${itemId}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expect(activePageB.getByTestId('item-name-input')).toHaveValue(itemName, {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expectInputValueEqualsBool(activePageB.getByTestId('item-hint-input'), itemHint);
+        await expect(activePageB.getByTestId('item-tags')).toContainText('#infra');
+        await expect(activePageB.getByTestId('item-entries-empty')).toBeVisible({
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expect(
+          activePageB.locator('[data-testid^="entry-card-"]:not([data-testid="entry-card-list"])'),
+        ).toHaveCount(0);
+        await expect(activePageB.getByTestId(`entry-card-${textEntryId}`)).toHaveCount(0);
+        await expect(activePageB.getByTestId(`entry-card-${jsonEntryId}`)).toHaveCount(0);
+        await expect(activePageB.getByTestId('entry-body')).toHaveCount(0);
+
+        // Prove an old-key write is rejected by the server (`409 entry_key_mismatch`):
+        // the product UI locks the Worker and disposes in-flight opGenerations on reset (`reset-vault-dialog.tsx:262`),
+        // so no UI path can emit a stale-key write; we assert the server rejection directly via same-origin fetch.
+        await expectServerRejectsOldVaultKeyEntryWrites(activePageB, itemId, oldVaultKeyId);
+        await expectServerItemsHaveZeroEntries(activePageB, [itemId], [textEntryId, jsonEntryId]);
+
+        await expectNoDomOrStorageBodyLeaks(activePageB, labeledSecrets);
+        monitor.assertNoLeaks();
+      });
     } finally {
       for (const ctx of contexts) {
         await ctx.close().catch(() => undefined);

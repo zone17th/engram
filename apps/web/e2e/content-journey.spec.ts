@@ -3,17 +3,21 @@ import en from '../messages/en.json';
 import {
   ACCEPTANCE_UI_WAIT_MS,
   createRequestPlaintextMonitor,
+  executeVaultResetAndClickCreateNewVault,
   expectEntryDecryptedPlaintextExactBool,
   expectInputEmptyBool,
   expectInputValueEqualsBool,
   expectNoDomOrStorageBodyLeaks,
+  expectOnUnlockPageAllowingReturnTo,
   expectServerItemAndLiveEntryIds,
+  expectServerItemsHaveZeroEntries,
   expectTextEqualsBool,
+  fetchServerItemsAndTagsSnapshot,
   setQuietInputValue,
   setQuietJsonFileInput,
   timedJourneyStep,
+  triggerFocusWake,
   verifyStorageAndCacheScannerPositiveControl,
-  expectOnUnlockPageAllowingReturnTo,
 } from './content-acceptance-support';
 import { newContextWithRateLimit, uniqueEmail } from './helpers';
 import {
@@ -55,7 +59,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
   test.describe.configure({ mode: 'serial' });
   test.skip(!process.env.E2E_STACK, 'needs the compose stack (E2E_STACK=1): real API, real database');
 
-  test('signup -> onboarding (skip passkey) -> omnibox quick-add 0/1/n (picker keyboard) -> item text edit (incl. offline draft retention + Retry) -> import JSON (CRLF file + nested objects + newline string + offline Retry idempotency) -> JSON composer & lossless cell edit (incl. offline Retry) -> new context unlock -> delete & Undo (entry toast + Ctrl+Z, item delete + Undo proven via server API) -> lock wipes open draft, DOM, and storage', async ({
+  test('signup -> onboarding (skip passkey) -> omnibox quick-add 0/1/n (picker keyboard) -> item text edit (incl. offline draft retention + Retry) -> import JSON (CRLF file + nested objects + newline string + offline Retry idempotency) -> JSON composer & lossless cell edit (incl. offline Retry) -> new context unlock -> delete & Undo (entry toast + Ctrl+Z, item delete + Undo proven via server API) -> lock wipes open draft, DOM, and storage -> multi-context focus sync + vault reset keeps items/tags and deletes all entries', async ({
     browser,
   }) => {
     test.setTimeout(JOURNEY_TIMEOUT_MS);
@@ -66,6 +70,8 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
     const bodyDupItem2Init = `acceptance-body-dup2-init-${nonce}`;
     const bodyMatchNPicked = `acceptance-body-matchN-picked-${nonce}`;
     const bodyMatch0Edited = `acceptance-body-match0-edited-${nonce}`;
+    const bodyMatch0SyncedFromA = `acceptance-body-match0-synced-from-A-${nonce}`;
+    const postResetVaultPassphrase = `acceptance-reset-vault-passphrase-${nonce}!`;
     const unsavedDraftBeforeLock = `acceptance-unsaved-draft-before-lock-${nonce}`;
     const omniboxDraftBeforeLock = `acceptance-omnibox-draft-before-lock-${nonce}`;
     const jsonSecretTokenInit = `acceptance-json-token-init-${nonce}`;
@@ -91,6 +97,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
       { label: 'bodyDupItem2Init', value: bodyDupItem2Init },
       { label: 'bodyMatchNPicked', value: bodyMatchNPicked },
       { label: 'bodyMatch0Edited', value: bodyMatch0Edited },
+      { label: 'bodyMatch0SyncedFromA', value: bodyMatch0SyncedFromA },
       { label: 'unsavedDraftBeforeLock', value: unsavedDraftBeforeLock },
       { label: 'omniboxDraftBeforeLock', value: omniboxDraftBeforeLock },
       { label: 'jsonSecretTokenInit', value: jsonSecretTokenInit },
@@ -101,6 +108,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
       { label: 'importJsonNoteLine1', value: importJsonNoteLine1 },
       { label: 'importJsonNoteLine2', value: importJsonNoteLine2 },
       { label: 'vaultPassphrase', value: VAULT_PASSPHRASE },
+      { label: 'postResetVaultPassphrase', value: postResetVaultPassphrase },
     ] as const;
 
     const monitor = createRequestPlaintextMonitor(labeledSecrets);
@@ -759,7 +767,156 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         monitor.assertNoLeaks();
       });
 
-      // T20: reset step goes here
+      await timedJourneyStep('8. (T20) multi-context sync on focus + vault reset in context A while context B has the item open -> B locks on focus with no old body -> create new vault in A -> exact item/tag ID sets preserved and zero entries on server & UI (A5, A8, A9)', async () => {
+        // Unlock context B from `/app` locked list and open `item1Id` via client-side card click
+        await unlockFromLockedList(pageB, VAULT_PASSPHRASE);
+        const cardItem1OnB = pageB.locator(`[data-item-card="${item1Id}"]`);
+        await expect(cardItem1OnB).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await cardItem1OnB.click();
+        await expect(pageB).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expect(pageB.getByTestId('entry-body')).toHaveCount(4, {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${entry0Id}`).getByTestId('entry-body'),
+          bodyMatch0Edited,
+        );
+
+        // Bootstrap B's changes watermark on the open item page
+        const bootstrapChangesOnB = pageB.waitForResponse(
+          (res) =>
+            res.request().method() === 'GET' &&
+            new URL(res.url()).pathname === '/api/v1/entries/changes' &&
+            res.status() === 200,
+          { timeout: ACCEPTANCE_UI_WAIT_MS },
+        );
+        await triggerFocusWake(pageB);
+        await bootstrapChangesOnB;
+
+        // Open a fresh context (`contextSyncA`) for the same user, unlock, and open `item1Id`
+        const contextSyncA = await newContextWithRateLimit(browser);
+        contexts.push(contextSyncA);
+        monitor.attachContext(contextSyncA);
+        const pageSyncA = await contextSyncA.newPage();
+
+        await loginViaUiSecret(pageSyncA, email);
+        await expectOnUnlockPageAllowingReturnTo(pageSyncA);
+        await submitUnlock(pageSyncA, VAULT_PASSPHRASE);
+        await expectUnlockedOnApp(pageSyncA);
+
+        const cardItem1OnSyncA = pageSyncA.locator(`[data-item-card="${item1Id}"]`);
+        await expect(cardItem1OnSyncA).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await cardItem1OnSyncA.click();
+        await expect(pageSyncA).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        const card0OnSyncA = pageSyncA.getByTestId(`entry-card-${entry0Id}`);
+        await expectTextEqualsBool(card0OnSyncA.getByTestId('entry-body'), bodyMatch0Edited);
+
+        // (a) Sync before reset: edit `entry0Id` in context A -> becomes visible in open context B after focus/visibility change (no reload, no goto)
+        await card0OnSyncA.getByTestId(`entry-edit-btn-${entry0Id}`).click();
+        const editTextareaSyncA = card0OnSyncA.getByTestId(`entry-edit-textarea-${entry0Id}`);
+        await expect(editTextareaSyncA).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await setQuietInputValue(editTextareaSyncA, bodyMatch0SyncedFromA);
+        const syncPutResPromise = pageSyncA.waitForResponse(
+          (res) =>
+            res.request().method() === 'PUT' &&
+            new URL(res.url()).pathname === `/api/v1/entries/${entry0Id}`,
+          { timeout: CRYPTO_WAIT_MS },
+        );
+        await card0OnSyncA.getByTestId(`entry-save-btn-${entry0Id}`).click();
+        expect((await syncPutResPromise).status()).toBe(200);
+        await expectTextEqualsBool(card0OnSyncA.getByTestId('entry-body'), bodyMatch0SyncedFromA);
+
+        await triggerFocusWake(pageB);
+        await expectTextEqualsBool(
+          pageB.getByTestId(`entry-card-${entry0Id}`).getByTestId('entry-body'),
+          bodyMatch0SyncedFromA,
+        );
+
+        // Record the pre-reset server item and tag ID sets via page fetch
+        const preResetSnapshot = await fetchServerItemsAndTagsSnapshot(pageSyncA);
+        expect(preResetSnapshot.itemsStatus).toBe(200);
+        expect(preResetSnapshot.tagsStatus).toBe(200);
+        expect(preResetSnapshot.itemIds).toEqual([item1Id, item2Id].sort());
+        expect(preResetSnapshot.tagIds.length).toBe(2);
+
+        // (b) Reset vault through the real Settings > Security reset dialog in context A while context B has `item1Id` open,
+        // and click the dialog's "Create new vault" link (`content-sync.spec.ts:458-569`)
+        await executeVaultResetAndClickCreateNewVault(pageSyncA);
+
+        // (c) Context B on focus is locked (P03) and shows no old body
+        await triggerFocusWake(pageB);
+        await expect(pageB).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expect(pageB.locator('.vault-pill').first()).toHaveAttribute(
+          'data-vault-state',
+          'locked',
+          { timeout: ACCEPTANCE_UI_WAIT_MS },
+        );
+        await expectVaultShut(pageB);
+        await expect(pageB.getByTestId('vault-locked-banner')).toBeVisible({
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expect(pageB.getByTestId('entry-body')).toHaveCount(0);
+        await expect(
+          pageB.locator('[data-testid^="entry-card-"]:not([data-testid="entry-card-list"])'),
+        ).toHaveCount(0, { timeout: ACCEPTANCE_UI_WAIT_MS });
+        await expectNoDomOrStorageBodyLeaks(pageB, labeledSecrets);
+
+        // (d) Complete creating the new vault in A from `/app/onboarding` (skip passkey)
+        const postResetKeys = await createVaultViaOnboarding(
+          pageSyncA,
+          postResetVaultPassphrase,
+          { kind: 'skip' },
+        );
+        monitor.registerSecret('postResetRecoveryKeySlot1', postResetKeys.slot1);
+        monitor.registerSecret('postResetRecoveryKeySlot2', postResetKeys.slot2);
+        await expectUnlockedOnApp(pageSyncA);
+
+        // (e) Prove items and tags still exist with exact ID sets equal to pre-reset sets, and server has zero entries
+        const postResetSnapshot = await fetchServerItemsAndTagsSnapshot(pageSyncA);
+        expect(postResetSnapshot.itemsStatus).toBe(200);
+        expect(postResetSnapshot.tagsStatus).toBe(200);
+        expect(postResetSnapshot.itemIds).toEqual(preResetSnapshot.itemIds);
+        expect(postResetSnapshot.tagIds).toEqual(preResetSnapshot.tagIds);
+        expect(postResetSnapshot.itemTagIdsByItem).toEqual(preResetSnapshot.itemTagIdsByItem);
+        expect(postResetSnapshot.entryCountsByItem[item1Id]).toBe(0);
+        expect(postResetSnapshot.entryCountsByItem[item2Id]).toBe(0);
+
+        await expectServerItemsHaveZeroEntries(
+          pageSyncA,
+          [item1Id, item2Id],
+          [entry0Id, entry1Id, entry2Id, importedJsonEntryId, jsonEntryId],
+        );
+
+        // Navigate to `item1Id` via client-side card click in A and verify UI shows the empty entry state and no old bodies
+        const cardItem1PostReset = pageSyncA.locator(`[data-item-card="${item1Id}"]`);
+        await expect(cardItem1PostReset).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+        await expect(cardItem1PostReset).toContainText('#ops');
+        await cardItem1PostReset.click();
+        await expect(pageSyncA).toHaveURL(new RegExp(`/app/items/${item1Id}$`), {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expect(pageSyncA.getByTestId('item-name-input')).toHaveValue(itemName, {
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expect(pageSyncA.getByTestId('item-tags')).toContainText('#ops');
+        await expect(pageSyncA.getByTestId('item-entries-empty')).toBeVisible({
+          timeout: ACCEPTANCE_UI_WAIT_MS,
+        });
+        await expect(
+          pageSyncA.locator('[data-testid^="entry-card-"]:not([data-testid="entry-card-list"])'),
+        ).toHaveCount(0);
+        await expect(pageSyncA.getByTestId('entry-body')).toHaveCount(0);
+
+        await expectNoDomOrStorageBodyLeaks(pageSyncA, labeledSecrets);
+        await expectNoDomOrStorageBodyLeaks(pageB, labeledSecrets);
+        monitor.assertNoLeaks();
+      });
     } finally {
       for (const ctx of contexts) {
         await ctx.close().catch(() => undefined);
