@@ -2,10 +2,13 @@ package db_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/zone17th/engram/apps/api/internal/db"
 	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
@@ -130,15 +133,25 @@ func TestEmbeddingMigration0009SchemaAndFunctions(t *testing.T) {
 	`
 
 	// CHECK constraints on embedding_generation:
-	// 1. id 0 and 10000 rejected.
+	// 1. id 0, 10000, and -1 rejected specifically by the id range CHECK
+	// (using table names derived from badID so item_table/tag_table CHECKs are satisfied).
 	for _, badID := range []int{0, 10000, -1} {
 		_, err := pool.Exec(ctx, insertGenSQL,
 			badID, "tei", "tei/bge-m3", "v1", "v1", "", "", 3, 0.5,
 			"docs/benchmarks/semantic-eval/report.json",
-			"item_embedding_g1", "tag_embedding_g1", "pending", false,
+			fmt.Sprintf("item_embedding_g%d", badID),
+			fmt.Sprintf("tag_embedding_g%d", badID),
+			"pending", false,
 		)
-		if !isCheckViolation(err) {
-			t.Fatalf("id=%d must fail CHECK, got err=%v", badID, err)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != "embedding_generation_id_check" {
+			t.Fatalf("id=%d must fail CHECK embedding_generation_id_check, got err=%v (constraint=%q)",
+				badID, err, func() string {
+					if pgErr != nil {
+						return pgErr.ConstraintName
+					}
+					return ""
+				}())
 		}
 	}
 
