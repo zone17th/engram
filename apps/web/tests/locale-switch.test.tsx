@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { AnchorHTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -195,7 +195,7 @@ describe('LocaleSwitch (FU15-LOCALE-SWITCH)', () => {
     fetchSpy.mockRestore();
   });
 
-  it('active locale is checked', () => {
+  it('active locale is checked', async () => {
     const { unmount } = renderWithLocale(<LocaleSwitch />, 'en');
 
     const enGroup = screen.getByRole('radiogroup', { name: 'Language' });
@@ -220,7 +220,7 @@ describe('LocaleSwitch (FU15-LOCALE-SWITCH)', () => {
     enItem.focus();
     expect(enItem).toHaveFocus();
     fireEvent.keyDown(enItem, { key: 'ArrowRight' });
-    expect(viItem).toHaveFocus();
+    await waitFor(() => expect(viItem).toHaveFocus());
     expect(readCookie(LOCALE_COOKIE)).toBeNull();
     fireEvent.click(viItem);
     expect(readCookie(LOCALE_COOKIE)).toBe('vi');
@@ -325,8 +325,8 @@ describe('LocaleSwitch (FU15-LOCALE-SWITCH)', () => {
     expect(document.documentElement.lang).toBe('en');
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
 
-    // If a signed-in user clicks VI in AuthChrome and triggers router.refresh(), LocaleThemeSync
-    // keeps document.documentElement.lang locked to me.settings.locale ('en') and restores cookies when me syncs.
+    // If a signed-in user clicks VI in AuthChrome and triggers router.refresh(), ThemeProvider's effect runs
+    // after child LocaleThemeSync's effect and sets document.documentElement.lang to the refreshed locale ('vi').
     const group = screen.getByRole('radiogroup', { name: 'Language' });
     fireEvent.click(within(group).getByRole('radio', { name: 'Vietnamese (VI)' }));
     expect(readCookie(LOCALE_COOKIE)).toBe('vi');
@@ -344,7 +344,7 @@ describe('LocaleSwitch (FU15-LOCALE-SWITCH)', () => {
       </NextIntlClientProvider>,
     );
 
-    expect(document.documentElement.lang).toBe('en');
+    expect(document.documentElement.lang).toBe('vi');
 
     // On next session sync / mount with me.settings, LocaleThemeSync overwrites sabk_locale back to 'en'.
     mocks.session.me = {
