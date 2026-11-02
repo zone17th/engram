@@ -1070,6 +1070,7 @@ jobs:
             --env MAIL_SINK_DIR \
             --env PLAYWRIGHT_NO_COPY_PROMPT \
             --env FAKEEMBED_CONTROL_URL \
+            --env TEI_INPUT_PREFIX_DOCUMENT \
             --env CI \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
