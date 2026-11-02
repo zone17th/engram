@@ -467,6 +467,18 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
       await yieldToReact();
     };
 
+    // RV-T17-1-FE3-1: a real user's textarea already has focus when Esc arrives, so `handleDiscardDraft` -> `focus()` is a
+    // no-op there. Focus it here first (the legitimate focus-on-empty `recent` /suggest, which carries no draft text), wait
+    // for that single call, then reset the spy so the "0 requests" window below only sees draft-driven traffic.
+    act(() => {
+      textarea.focus();
+    });
+    await waitFor(() => {
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+    });
+    expect(suggestSpy.mock.calls[0]?.[0]).not.toHaveProperty('q');
+    suggestSpy.mockClear();
+
     dispatchNativeTextEdit(textarea, {
       inputType: 'insertFromPaste',
       data: 'pasted-tainted',

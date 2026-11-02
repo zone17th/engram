@@ -924,7 +924,12 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
       expect(suggestSpy).toHaveBeenCalledTimes(1);
       const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
       expect(allSuggestArgs).not.toContain(secretBody);
-      expect(allSuggestArgs).not.toContain(':');
+      // RV-T17-1-FE3-2: JSON.stringify always writes `:` after every key, so assert on the `q` values themselves.
+      const sentQueries = suggestSpy.mock.calls.map(([p]) => p?.q);
+      expect(sentQueries).toEqual(['home']);
+      for (const q of sentQueries) {
+        expect(q ?? '').not.toMatch(/[:：]/);
+      }
       expect(searchSpy).not.toHaveBeenCalled();
       expect(itemsSpy).not.toHaveBeenCalled();
       expect(lookupSpy).not.toHaveBeenCalled();
