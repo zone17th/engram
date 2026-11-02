@@ -387,7 +387,8 @@ func TestClientSetBootFailureKeepsP04Worker(t *testing.T) {
 // TestWorkerBootInsertsOneReembedAll verifies plan P05 Task 15 / L8 / BE-4:
 // after Bootstrap and client.Start, worker.Run inserts exactly one boot
 // reembed_all {} job (the embedding queue may already have worked it, so every
-// state is counted).
+// state is counted). The before-Start hook must see none, so moving the insert
+// ahead of Start fails the test.
 func TestWorkerBootInsertsOneReembedAll(t *testing.T) {
 	dsn := newEmbeddingWorkerTestDSN(t)
 	ctx := context.Background()
@@ -416,9 +417,16 @@ func TestWorkerBootInsertsOneReembedAll(t *testing.T) {
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 
+	var beforeStartJobs int
+	var beforeStartErr error
 	var bootJobs int
 	var countErr error
 	err := Run(runCtx, cfg, discardLogger(), RunOptions{
+		beforeClientStart: func(hookCtx context.Context, pool *pgxpool.Pool) {
+			beforeStartErr = pool.QueryRow(hookCtx,
+				`SELECT count(*)::int FROM river_job WHERE kind = $1`,
+				jobargs.KindReembedAll).Scan(&beforeStartJobs)
+		},
 		afterClientStart: func(hookCtx context.Context, pool *pgxpool.Pool) {
 			countErr = pool.QueryRow(hookCtx,
 				`SELECT count(*)::int FROM river_job WHERE kind = $1 AND args = '{}'::jsonb`,
@@ -428,6 +436,12 @@ func TestWorkerBootInsertsOneReembedAll(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("worker.Run: %v", err)
+	}
+	if beforeStartErr != nil {
+		t.Fatalf("count reembed_all jobs before Start: %v", beforeStartErr)
+	}
+	if beforeStartJobs != 0 {
+		t.Fatalf("reembed_all jobs before client.Start = %d, want 0 (boot insert must follow Start)", beforeStartJobs)
 	}
 	if countErr != nil {
 		t.Fatalf("count reembed_all jobs: %v", countErr)
