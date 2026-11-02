@@ -4,6 +4,7 @@ package searchbench
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -503,8 +504,82 @@ func TestHybridDegradationHardAtTargetConcurrencyOnly(t *testing.T) {
 		if v := EvaluateScenario(s, TargetC1HP95, MinMeasuredPerScenario); v.Pass {
 			t.Fatalf("%s: invalid scenario must fail: %+v", id, v)
 		}
-		if hard := HardFailures(&Report{C1: []ScenarioReport{s}}); len(hard) != 1 || !strings.Contains(hard[0], "c=8") {
-			t.Fatalf("%s: want exactly the c=8 invalid entry, got %v", id, hard)
+		full := &Report{Run: RunInfo{Profile: string(ProfileFull)}, C1: []ScenarioReport{s}}
+		if hard := HardFailures(full); len(hard) != 1 || !strings.Contains(hard[0], "c=8") {
+			t.Fatalf("%s: profile full: want exactly the c=8 invalid entry as a hard failure, got %v", id, hard)
+		}
+		if w := DegradationWarnings(full); len(w) != 0 {
+			t.Fatalf("%s: profile full keeps it hard, no soft warning: %v", id, w)
+		}
+	}
+
+	// advisor-dec-310 / targets.md section 4: in profile smoke the same c=8 hybrid
+	// degradation is invalid evidence + a visible warning, NOT a hard failure.
+	for _, id := range []string{"C1-H", "C1-M"} {
+		s := build(id, hybridLevel(8, 2000, 1994, map[string]int{"degraded": 5, "disabled_budget": 1}))
+		smoke := &Report{Run: RunInfo{Profile: string(ProfileSmoke)}, C1: []ScenarioReport{s}}
+		if s.Valid || s.Evidence != "invalid as target evidence" || s.InvalidOther {
+			t.Fatalf("%s: degraded c=8 must be invalid target evidence caused by degradation only: %+v", id, s)
+		}
+		if d := s.Degradation; d == nil || d.Degraded != 6 || d.Measured != 2000 || d.Concurrency != 8 || d.Reasons["degraded"] != 5 {
+			t.Fatalf("%s: degradation record = %+v", id, s.Degradation)
+		}
+		if hard := HardFailures(smoke); len(hard) != 0 {
+			t.Fatalf("%s: smoke c=8 degradation must not be a hard failure: %v", id, hard)
+		}
+		v := EvaluateScenario(s, TargetC1HP95, MinMeasuredPerScenario)
+		if v.Pass || !v.Invalid || v.Status() != "invalid" {
+			t.Fatalf("%s: verdict must be invalid, never pass: %+v status=%s", id, v, v.Status())
+		}
+		warns := DegradationWarnings(smoke)
+		if len(warns) != 1 || !strings.Contains(warns[0], "6 of 2000") || !strings.Contains(warns[0], "degraded=5") || !strings.Contains(warns[0], "advisor-dec-310") {
+			t.Fatalf("%s: warning must carry the degraded count and reason counts: %v", id, warns)
+		}
+		smoke.Warnings = warns
+		smoke.Verdicts = []Verdict{v}
+		md := RenderMarkdown(smoke)
+		for _, want := range []string{"> **WARNING:**", "invalid as target evidence", "6 of 2000", "disabled_budget=1",
+			"**INVALID (invalid as target evidence)**", "**INVALID** |"} {
+			if !strings.Contains(md, want) {
+				t.Errorf("%s: Markdown must contain %q", id, want)
+			}
+		}
+		if strings.Contains(md, "| **PASS** |") {
+			t.Errorf("%s: Markdown must never show the invalid verdict as pass", id)
+		}
+		raw, err := json.Marshal(smoke)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"evidence":"invalid as target evidence"`, `"degraded_requests":6`, `"reason_counts":{"degraded":5,"disabled_budget":1}`, `"invalid_evidence":true`} {
+			if !strings.Contains(string(raw), want) {
+				t.Errorf("%s: JSON must contain %s: %s", id, want, raw)
+			}
+		}
+		// Smoke keeps every other hard failure: a c=8 request error next to the
+		// degradation, and a purity invariant violation.
+		withErr := s
+		withErr.Levels = append([]LevelReport(nil), s.Levels...)
+		for i := range withErr.Levels {
+			if withErr.Levels[i].Concurrency == TargetConcurrency {
+				withErr.Levels[i].Stats.Errors = 1
+				withErr.Levels[i].Statuses = map[int]int{200: 1999, 500: 1}
+			}
+		}
+		if hard := HardFailures(&Report{Run: RunInfo{Profile: string(ProfileSmoke)}, C1: []ScenarioReport{withErr}}); len(hard) != 1 || !strings.Contains(hard[0], "500=1") {
+			t.Fatalf("%s: smoke c=8 request error must stay hard: %v", id, hard)
+		}
+		purity := s
+		purity.Invalidate("3 provider calls during the run: not a pure cache-hit run (c=8)")
+		if hard := HardFailures(&Report{Run: RunInfo{Profile: string(ProfileSmoke)}, C1: []ScenarioReport{purity}}); len(hard) != 1 || !strings.Contains(hard[0], "provider calls") {
+			t.Fatalf("%s: smoke cache-purity invalidation must stay hard: %v", id, hard)
+		}
+	}
+	for _, id := range []string{"C1-L", "C1-H", "C1-M"} {
+		s := ScenarioReport{ID: id, Valid: true, Levels: []LevelReport{errLevel(8, 2000, 1, map[int]int{200: 1999, 500: 1}), c32}}
+		smoke := &Report{Run: RunInfo{Profile: string(ProfileSmoke)}, C1: []ScenarioReport{s}}
+		if hard := HardFailures(smoke); len(hard) != 1 || !strings.Contains(hard[0], "500=1") {
+			t.Fatalf("%s: smoke c=8 request error must be hard: %v", id, hard)
 		}
 	}
 	for _, id := range []string{"C1-L", "C1-H", "C1-M"} {
@@ -1258,6 +1333,10 @@ func TestSearchBench(t *testing.T) {
 	}
 	for _, h := range rep.Hard {
 		t.Errorf("hard failure: %s", h)
+	}
+	for _, w := range DegradationWarnings(rep) {
+		t.Logf("WARNING: %s", w)
+		fmt.Printf("::warning title=searchbench smoke::%s\n", w)
 	}
 	if env.Profile == ProfileFull {
 		for _, f := range TargetFailures(rep.Verdicts) {

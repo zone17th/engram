@@ -112,12 +112,19 @@ type Verdict struct {
 	Applicable bool   `json:"applicable"` // false: nothing to evaluate (e.g. no tenant class went ANN)
 	Pass       bool   `json:"pass"`
 	Note       string `json:"note,omitempty"`
+	// Invalid marks a verdict whose scenario is not valid target evidence (the
+	// setup/measurement was invalid, e.g. hybrid requests degraded at c=8). It
+	// never passes (Pass stays false) and is shown as "invalid", not "pass".
+	Invalid bool `json:"invalid_evidence,omitempty"`
 }
 
-// Status is "pass", "fail" or "n/a".
+// Status is "pass", "fail", "invalid" (not valid target evidence) or "n/a".
 func (v Verdict) Status() string {
 	if !v.Applicable {
 		return "n/a"
+	}
+	if v.Invalid {
+		return "invalid"
 	}
 	if v.Pass {
 		return "pass"
@@ -140,6 +147,7 @@ func EvaluateLatency(id, metric string, st LatencyStats, limit time.Duration, st
 	}
 	switch {
 	case !valid:
+		v.Invalid = true
 		v.Note = "scenario invalid: " + invalid
 	case st.Errors > 0:
 		v.Note = fmt.Sprintf("%d request errors", st.Errors)
@@ -718,22 +726,56 @@ type LevelReport struct {
 
 // ScenarioReport is one C1 scenario across 1/8/32 clients.
 type ScenarioReport struct {
-	ID            string        `json:"id"`
-	Description   string        `json:"description"`
-	Valid         bool          `json:"valid"`
-	InvalidReason string        `json:"invalid_reason,omitempty"`
-	Levels        []LevelReport `json:"levels"`
+	ID            string `json:"id"`
+	Description   string `json:"description"`
+	Valid         bool   `json:"valid"`
+	InvalidReason string `json:"invalid_reason,omitempty"`
+	// Evidence is "invalid as target evidence" once the scenario is invalid.
+	Evidence string `json:"evidence,omitempty"`
+	// Degradation records the hybrid semantic degradation at the target
+	// concurrency (degraded count + reason counts) that invalidated the scenario.
+	Degradation *HybridDegradation `json:"hybrid_degradation,omitempty"`
+	// InvalidOther is true when the scenario was invalidated by something other
+	// than c=8 hybrid degradation (cache-purity invariants, ...): always hard.
+	InvalidOther bool          `json:"invalid_other_than_degradation,omitempty"`
+	Levels       []LevelReport `json:"levels"`
 }
 
-// Invalidate marks the scenario as not valid target evidence. The first reason
-// stays first; later reasons are appended.
-func (s *ScenarioReport) Invalidate(reason string) {
+// HybridDegradation is the c=8 hybrid degradation of a C1-H / C1-M scenario.
+type HybridDegradation struct {
+	Concurrency int            `json:"concurrency"`
+	Measured    int            `json:"measured_requests"`
+	Degraded    int            `json:"degraded_requests"`
+	Reasons     map[string]int `json:"reason_counts,omitempty"`
+}
+
+// evidenceInvalid is the label of a scenario that is not valid target evidence.
+const evidenceInvalid = "invalid as target evidence"
+
+func (s *ScenarioReport) markInvalid(reason string) {
 	if s.Valid || s.InvalidReason == "" {
 		s.InvalidReason = reason
 	} else {
 		s.InvalidReason += "; " + reason
 	}
 	s.Valid = false
+	s.Evidence = evidenceInvalid
+}
+
+// Invalidate marks the scenario as not valid target evidence for a reason that
+// is a hard failure in every profile (cache-purity invariants, ...). The first
+// reason stays first; later reasons are appended.
+func (s *ScenarioReport) Invalidate(reason string) {
+	s.InvalidOther = true
+	s.markInvalid(reason)
+}
+
+// invalidateDegraded marks the scenario invalid because hybrid requests did not
+// run semantic at the target concurrency. Whether that fails the run depends on
+// the profile (HardFailures), not on the scenario.
+func (s *ScenarioReport) invalidateDegraded(l LevelReport, problem string) {
+	s.Degradation = &HybridDegradation{Concurrency: l.Concurrency, Measured: l.Stats.N, Degraded: l.SemanticOff, Reasons: l.SemanticOffReasons}
+	s.markInvalid(problem)
 }
 
 // reasonCounts renders reason counts deterministically ("degraded=3, none=1").
@@ -777,8 +819,27 @@ func (s *ScenarioReport) CheckHybridLevel(l LevelReport) {
 		return
 	}
 	if problem := HybridLevelProblem(l); problem != "" {
-		s.Invalidate(problem)
+		s.invalidateDegraded(l, problem)
 	}
+}
+
+// DegradationWarnings lists the c=8 hybrid degradation of a smoke run: the
+// scenario is invalid as target evidence (never pass) but the run does not fail
+// (advisor-dec-310; HardFailures). Other profiles return nil: there the same
+// condition is a hard failure.
+func DegradationWarnings(r *Report) []string {
+	if r.Run.Profile != string(ProfileSmoke) {
+		return nil
+	}
+	var out []string
+	for _, s := range r.C1 {
+		if d := s.Degradation; d != nil {
+			out = append(out, fmt.Sprintf("%s %s at c=%d: %d of %d measured requests degraded (%s). Verdict is INVALID, not pass. "+
+				"Smoke does not fail on this (advisor-dec-310); profile full does.",
+				s.ID, evidenceInvalid, d.Concurrency, d.Degraded, d.Measured, orUnknown(reasonCounts(d.Reasons))))
+		}
+	}
+	return out
 }
 
 // statusCounts renders HTTP status counts deterministically ("200=1998, 500=2").
@@ -1070,10 +1131,18 @@ func totalCrossTenant(cells []CellAgg) int {
 
 // HardFailures lists conditions that fail the run even for `smoke`: a harness
 // that cannot measure, or a hard target (C2-T).
+//
+// Profile scope (advisor-dec-310, targets.md section 4): smoke is not acceptance
+// evidence, so hybrid semantic degradation at c=8 only marks C1-H/C1-M invalid as
+// target evidence (DegradationWarnings) and is NOT a hard failure there. In
+// profile full the same condition stays hard. Request errors at c=8, C2-T,
+// colocation, the cache-purity invariants (C1-H 0 provider calls, C1-M >= 95 %)
+// and harness errors are hard in every profile.
 func HardFailures(r *Report) []string {
 	var out []string
+	smoke := r.Run.Profile == string(ProfileSmoke)
 	for _, s := range r.C1 {
-		if !s.Valid {
+		if !s.Valid && (!smoke || s.InvalidOther) {
 			out = append(out, fmt.Sprintf("%s invalid: %s", s.ID, s.InvalidReason))
 		}
 		for _, l := range s.Levels {
@@ -1224,6 +1293,9 @@ func RenderMarkdown(r *Report) string {
 	if r.Run.Profile == string(ProfileSmoke) {
 		w("> **smoke — not acceptance evidence.** Targets are reported below for information only (targets.md §4); smoke never claims a target was met or missed.\n\n")
 	}
+	for _, warn := range DegradationWarnings(r) {
+		w("> **WARNING:** %s\n\n", mdCell(warn))
+	}
 	w("> **Không phải host production `bro`.** CI runner numbers do not replace production latency.\n\n")
 
 	w("## Run\n\n| Item | Value |\n|---|---|\n")
@@ -1298,7 +1370,11 @@ func RenderMarkdown(r *Report) string {
 	for _, s := range r.C1 {
 		w("### %s - %s\n\n", s.ID, s.Description)
 		if !s.Valid {
-			w("**INVALID**: %s\n\n", s.InvalidReason)
+			w("**INVALID (%s)**: %s\n\n", evidenceInvalid, s.InvalidReason)
+			if d := s.Degradation; d != nil {
+				w("Hybrid degradation at c=%d: **%d of %d** measured requests did not run semantic (reasons: %s).\n\n",
+					d.Concurrency, d.Degraded, d.Measured, orUnknown(reasonCounts(d.Reasons)))
+			}
 		}
 		w("| Clients | n | p50 ms | p95 ms | p99 ms | max ms | errors | req/s | http statuses | semantic ran/off | semantic-off reasons | lexical_partial | stub calls | cross-tenant |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, l := range s.Levels {

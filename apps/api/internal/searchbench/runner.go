@@ -1198,7 +1198,9 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 func FinalizeReport(rep *Report, minMeasured int) {
 	rep.Verdicts = ConsolidateVerdicts(rep.C1, rep.C2, minMeasured, rep.Run.DatasetHash != "")
 	rep.Hard = HardFailures(rep)
-	rep.Warnings = nil
+	// Smoke: c=8 hybrid degradation is invalid evidence + a warning, not a hard
+	// failure (advisor-dec-310, targets.md section 4); see HardFailures.
+	rep.Warnings = DegradationWarnings(rep)
 	for _, s := range rep.C1 {
 		rep.Warnings = append(rep.Warnings, LevelWarnings(s)...)
 	}
