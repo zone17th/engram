@@ -15,7 +15,9 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db"
+	"github.com/zone17th/engram/apps/api/internal/embedding"
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
@@ -91,6 +93,7 @@ func writeReembedUsage(w io.Writer) {
 		_, _ = fmt.Fprintf(w, "  %s\n", n)
 	}
 	_, _ = fmt.Fprintln(w, "  all [--generation N] [--dry-run] | user --user <uuid> [--dry-run] | status | deadletter list|retry [--generation N]")
+	_, _ = fmt.Fprintln(w, "  applying all/user needs semantic search enabled and a non-noop provider; --dry-run, status and deadletter list always work")
 }
 
 // safeErr turns a database/library error into a privacy-safe one: the registry
@@ -104,6 +107,42 @@ func safeErr(what string, err error) error {
 		return fmt.Errorf("%s: database error (sqlstate %s)", what, pe.Code)
 	}
 	return fmt.Errorf("%s: failed", what)
+}
+
+// errReembedFlags is the only error a malformed command line produces: the
+// flag package echoes rejected values and flag names (which may be pasted names,
+// hints, queries or secrets), so its diagnostics are never printed or returned.
+var errReembedFlags = errors.New("invalid flags (run 'worker reembed help' for usage)")
+
+// errReembedEnqueueDisabled is returned when an applying run is requested while
+// the deployment does not enqueue embeddings (SPEC 6.6/6.10).
+var errReembedEnqueueDisabled = errors.New("embedding enqueue is disabled in this deployment (semantic search off or noop provider); nothing was written, use --dry-run to inspect")
+
+// parseReembedFlags parses args into fs without letting the flag package write
+// anything: its output is discarded and its error is replaced by a fixed
+// privacy-safe one. -h/--help prints the safe usage on stdout and returns
+// flag.ErrHelp (dispatch exits 0 and prints nothing more).
+func parseReembedFlags(fs *flag.FlagSet, env Env, args []string) error {
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
+	err := fs.Parse(args)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, flag.ErrHelp):
+		writeReembedUsage(env.Stdout)
+		return flag.ErrHelp
+	default:
+		return errReembedFlags
+	}
+}
+
+// enqueueAllowed reports whether the deployment enqueues embeddings: semantic
+// search enabled and a configured non-noop provider (same rule as the worker
+// boot wiring).
+func enqueueAllowed(cfg *config.Config) bool {
+	return cfg != nil && cfg.SearchSemanticEnabled &&
+		cfg.EmbeddingProvider != "" && cfg.EmbeddingProvider != embedding.ProviderNoop
 }
 
 func reembedPool(ctx context.Context, env Env) (*pgxpool.Pool, error) {
@@ -145,10 +184,9 @@ func receivingTargets(ctx context.Context, pool *pgxpool.Pool, genID int) ([]gen
 
 func reembedAllRun(ctx context.Context, env Env, args []string) error {
 	fs := flag.NewFlagSet("reembed all", flag.ContinueOnError)
-	fs.SetOutput(env.Stderr)
 	genID := fs.Int("generation", 0, "reconcile only this generation id (must be in the receiving set)")
 	dry := fs.Bool("dry-run", false, "count what would change; write nothing")
-	if err := fs.Parse(args); err != nil {
+	if err := parseReembedFlags(fs, env, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
@@ -162,10 +200,9 @@ func reembedAllRun(ctx context.Context, env Env, args []string) error {
 
 func reembedUserRun(ctx context.Context, env Env, args []string) error {
 	fs := flag.NewFlagSet("reembed user", flag.ContinueOnError)
-	fs.SetOutput(env.Stderr)
 	userRaw := fs.String("user", "", "user UUID (never an email)")
 	dry := fs.Bool("dry-run", false, "count what would change; write nothing")
-	if err := fs.Parse(args); err != nil {
+	if err := parseReembedFlags(fs, env, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
@@ -182,8 +219,14 @@ func reembedUserRun(ctx context.Context, env Env, args []string) error {
 }
 
 // reembedReconcile runs Reconcile synchronously in this process for every
-// targeted generation and prints counts only.
+// targeted generation and prints counts only. A dry run writes nothing and is
+// always allowed; an applying run honours the deployment enqueue gate (SPEC
+// 6.6/6.10): with semantic search disabled or a noop provider it refuses before
+// touching the database, with no operator override.
 func reembedReconcile(ctx context.Context, env Env, genID int, scope reconcile.Scope, dry bool) error {
+	if !dry && !enqueueAllowed(env.Cfg) {
+		return errReembedEnqueueDisabled
+	}
 	pool, err := reembedPool(ctx, env)
 	if err != nil {
 		return err
@@ -234,8 +277,7 @@ var riverJobStates = []string{"available", "pending", "retryable", "running", "s
 
 func reembedStatusRun(ctx context.Context, env Env, args []string) error {
 	fs := flag.NewFlagSet("reembed status", flag.ContinueOnError)
-	fs.SetOutput(env.Stderr)
-	if err := fs.Parse(args); err != nil {
+	if err := parseReembedFlags(fs, env, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
@@ -351,9 +393,8 @@ func reembedDeadletterRun(ctx context.Context, env Env, args []string) error {
 		return errors.New("deadletter needs list or retry")
 	}
 	fs := flag.NewFlagSet("reembed deadletter "+action, flag.ContinueOnError)
-	fs.SetOutput(env.Stderr)
 	genID := fs.Int("generation", 0, "only jobs of this generation id")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseReembedFlags(fs, env, args[1:]); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {

@@ -333,12 +333,24 @@ func (f *cliFixture) snapshot(t *testing.T) string {
 	return sb.String()
 }
 
-// run dispatches `worker reembed <args...>` through the real registry.
+// run dispatches `worker reembed <args...>` through the real registry with a
+// deployment that enqueues embeddings (semantic search on, tei provider).
 func (f *cliFixture) run(t *testing.T, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	return f.runCfg(t, true, embedding.ProviderTEI, args...)
+}
+
+// runCfg is run with an explicit deployment gate (SEARCH_SEMANTIC_ENABLED and
+// EMBEDDING_PROVIDER).
+func (f *cliFixture) runCfg(t *testing.T, semanticEnabled bool, provider string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	var out, errb bytes.Buffer
 	env := Env{
-		Cfg:    &config.Config{DatabaseURL: f.dsn},
+		Cfg: &config.Config{
+			DatabaseURL:           f.dsn,
+			SearchSemanticEnabled: semanticEnabled,
+			EmbeddingProvider:     provider,
+		},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Stdout: &out,
 		Stderr: &errb,
@@ -540,6 +552,33 @@ func TestCLIOutputHasNoNames(t *testing.T) {
 		{"deadletter", "list"},
 		{"deadletter", "list", "--generation", "1"},
 		{"deadletter", "retry"},
+		// EJT15-1: malformed flags must not echo rejected values or flag names.
+		{"all", "--generation", cliSecretName},
+		{"all", "--generation=" + cliSecretName},
+		{"all", "--dry-run=" + cliSecretHint},
+		{"all", "--" + cliSecretName},
+		{"all", "--" + cliSecretName + "=" + cliSecretHint},
+		{"all", "---" + cliSecretName},
+		{"all", "--=" + cliSecretName},
+		{"all", "--generation"},
+		{"user", "--user", f.userOn.String(), "--dry-run=" + cliSecretHint},
+		{"user", "--dry-run=" + cliSecretHint},
+		{"user", "--" + cliSecretTag},
+		{"user", "--generation", cliSecretName},
+		{"user", "--user"},
+		{"status", "--" + cliSecretName},
+		{"status", "--" + cliSecretName + "=" + cliSecretHint},
+		{"status", "---" + cliSecretEmail},
+		{"deadletter", "list", "--generation", cliSecretName},
+		{"deadletter", "list", "--dry-run=" + cliSecretHint},
+		{"deadletter", "retry", "--generation=" + cliSecretName},
+		{"deadletter", "retry", "--" + cliSecretName},
+		{"deadletter", "retry", "---" + cliSecretTag},
+		{"deadletter", cliSecretName},
+		{"all", "-h"},
+		{"user", "--help"},
+		{"status", "-help"},
+		{"deadletter", "list", "-h"},
 	}
 	for _, args := range invocations {
 		_, out, errb := f.run(t, args...)
@@ -549,6 +588,113 @@ func TestCLIOutputHasNoNames(t *testing.T) {
 				t.Fatalf("reembed %v leaked %q:\n%s", args, secret, combined)
 			}
 		}
+	}
+}
+
+// TestReembedFlagErrorsAreFixed (EJT15-1): a rejected flag value or name never
+// reaches stdout or stderr; the exit is 1 with the fixed message, and -h/--help
+// prints the safe usage and exits 0.
+func TestReembedFlagErrorsAreFixed(t *testing.T) {
+	f := newCLIFixture(t)
+	bad := [][]string{
+		{"all", "--generation", cliSecretName},
+		{"all", "--dry-run=" + cliSecretHint},
+		{"all", "--" + cliSecretName},
+		{"all", "---" + cliSecretName},
+		{"user", "--" + cliSecretTag},
+		{"user", "--dry-run=" + cliSecretHint},
+		{"status", "--" + cliSecretName},
+		{"deadletter", "list", "--generation", cliSecretName},
+		{"deadletter", "retry", "--" + cliSecretName},
+	}
+	for _, args := range bad {
+		code, out, errb := f.run(t, args...)
+		if code != 1 || out != "" {
+			t.Fatalf("reembed %v: exit=%d stdout=%q, want exit 1 and empty stdout", args, code, out)
+		}
+		if want := "reembed: " + errReembedFlags.Error() + "\n"; errb != want {
+			t.Fatalf("reembed %v: stderr=%q, want exactly %q", args, errb, want)
+		}
+	}
+	for _, args := range [][]string{{"all", "-h"}, {"user", "--help"}, {"status", "-help"}, {"deadletter", "list", "-h"}} {
+		code, out, errb := f.run(t, args...)
+		if code != 0 || errb != "" || !strings.Contains(out, "usage: worker reembed") {
+			t.Fatalf("reembed %v: exit=%d stdout=%q stderr=%q, want exit 0, usage on stdout, empty stderr", args, code, out, errb)
+		}
+	}
+}
+
+// TestReembedApplyHonoursEnqueueGate (EJT15-3): applying all/user while semantic
+// search is disabled or the provider is noop refuses with a fixed error and
+// writes nothing (no River insert, no vector delete); --dry-run, status and
+// deadletter list stay usable.
+func TestReembedApplyHonoursEnqueueGate(t *testing.T) {
+	f := newCLIFixture(t)
+	before := f.snapshot(t)
+
+	for _, tc := range []struct {
+		name     string
+		enabled  bool
+		provider string
+	}{
+		{"semantic_disabled", false, embedding.ProviderTEI},
+		{"noop_provider", true, embedding.ProviderNoop},
+		{"unset_provider", true, ""},
+		{"disabled_and_noop", false, embedding.ProviderNoop},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, args := range [][]string{
+				{"all"},
+				{"all", "--generation", "1"},
+				{"user", "--user", f.userOn.String()},
+				{"user", "--user", f.userOff.String()},
+			} {
+				code, out, errb := f.runCfg(t, tc.enabled, tc.provider, args...)
+				if code != 1 || out != "" {
+					t.Fatalf("reembed %v: exit=%d stdout=%q, want a refusal (exit 1, empty stdout)", args, code, out)
+				}
+				if want := "reembed: " + errReembedEnqueueDisabled.Error() + "\n"; errb != want {
+					t.Fatalf("reembed %v: stderr=%q, want exactly %q", args, errb, want)
+				}
+			}
+			if after := f.snapshot(t); after != before {
+				t.Fatalf("refused run changed state:\n before %s\n after  %s", before, after)
+			}
+			if n := f.jobCount(t); n != 0 {
+				t.Fatalf("river_job rows = %d after refused runs, want 0", n)
+			}
+			if !f.hasVector(t, f.gTEI, generation.CorpusItem, f.userOn, f.itemGone) ||
+				!f.hasVector(t, f.gOA, generation.CorpusItem, f.userOff, f.itemOff) {
+				t.Fatal("a refused run deleted a vector")
+			}
+
+			// Read-only paths keep working under the same gate.
+			code, out, errb := f.runCfg(t, tc.enabled, tc.provider, "all", "--dry-run")
+			if code != 0 || !strings.Contains(out, "mode=dry_run") {
+				t.Fatalf("dry-run exit=%d out=%q err=%q, want success", code, out, errb)
+			}
+			code, out, errb = f.runCfg(t, tc.enabled, tc.provider, "user", "--user", f.userOn.String(), "--dry-run")
+			if code != 0 || !strings.Contains(out, "mode=dry_run") {
+				t.Fatalf("user dry-run exit=%d out=%q err=%q, want success", code, out, errb)
+			}
+			code, out, errb = f.runCfg(t, tc.enabled, tc.provider, "status")
+			if code != 0 || !strings.Contains(out, "dead_letter_count=0") {
+				t.Fatalf("status exit=%d out=%q err=%q, want success", code, out, errb)
+			}
+			code, out, errb = f.runCfg(t, tc.enabled, tc.provider, "deadletter", "list")
+			if code != 0 || !strings.Contains(out, "dead_letter_count=0 listed=0") {
+				t.Fatalf("deadletter list exit=%d out=%q err=%q, want success", code, out, errb)
+			}
+			if after := f.snapshot(t); after != before {
+				t.Fatalf("read-only commands changed state:\n before %s\n after  %s", before, after)
+			}
+		})
+	}
+
+	// Control: the gate opened applies for real on the same fixture.
+	code, out, errb := f.runCfg(t, true, embedding.ProviderTEI, "all")
+	if code != 0 || f.jobCount(t) == 0 {
+		t.Fatalf("enabled run exit=%d jobs=%d out=%q err=%q, want applied changes", code, f.jobCount(t), out, errb)
 	}
 }
 
