@@ -41,11 +41,12 @@ const (
 // Lỗi mang mã lý do không đến từ provider. Worker embed (Task 11a) xử lý các
 // tình huống này bằng outcome (snooze/skip/discard) chứ không trả lỗi, nên các
 // sentinel này dành cho code muốn nêu chúng như một lỗi và vẫn nhận đúng
-// `error_class` qua ErrorClass.
+// `error_class` qua ErrorClass; chuỗi lỗi bắt đầu bằng chính mã nên River (chỉ
+// giữ chuỗi) cũng nhận ra qua ErrorClassFromMessage.
 var (
-	ErrHashStale              = errors.New("worker: embedding input hash is stale")
-	ErrGenerationNotReceiving = errors.New("worker: embedding generation is not receiving")
-	ErrGenerationUnconfigured = errors.New("worker: embedding generation has no matching configured client")
+	ErrHashStale              = errors.New("hash_stale: embedding input hash is stale")
+	ErrGenerationNotReceiving = errors.New("generation_not_receiving: embedding generation is not receiving")
+	ErrGenerationUnconfigured = errors.New("generation_unconfigured: embedding generation has no matching configured client")
 )
 
 // ErrorClass ánh xạ lỗi provider/job sang một trong chín mã lý do của plan
