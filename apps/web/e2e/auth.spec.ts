@@ -499,13 +499,25 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
     // 1. Login: switch EN -> VI, verify heading/button and reload persistence
     await page.goto('/app/auth/login');
     await waitForAuthPageReady(page);
-    const enGroup = page.getByRole('group', { name: 'Language' });
-    await expect(enGroup.getByRole('radio', { name: 'EN' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(enGroup.getByRole('radio', { name: 'VI' })).toHaveAttribute('aria-pressed', 'false');
+    const enGroup = page.getByRole('radiogroup', { name: 'Language' });
+    const enRadio = enGroup.getByRole('radio', { name: 'English (EN)' });
+    const viRadio = enGroup.getByRole('radio', { name: 'Vietnamese (VI)' });
+    await expect(enRadio).toHaveAttribute('aria-checked', 'true');
+    await expect(enRadio).toHaveAttribute('data-state', 'on');
+    await expect(enRadio).toHaveAttribute('lang', 'en');
+    await expect(viRadio).toHaveAttribute('aria-checked', 'false');
+    await expect(viRadio).toHaveAttribute('data-state', 'off');
+    await expect(viRadio).toHaveAttribute('lang', 'vi');
 
-    await enGroup.getByRole('radio', { name: 'VI' }).click();
-    const viGroup = page.getByRole('group', { name: 'Ngôn ngữ' });
-    await expect(viGroup.getByRole('radio', { name: 'VI' })).toHaveAttribute('aria-pressed', 'true', {
+    // RV-T25-FE1-9: roving focus moves with ArrowRight and Enter activates the focused option
+    await enRadio.focus();
+    await expect(enRadio).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await expect(viRadio).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    const viGroup = page.getByRole('radiogroup', { name: 'Ngôn ngữ' });
+    await expect(viGroup.getByRole('radio', { name: 'Tiếng Việt (VI)' })).toHaveAttribute('aria-checked', 'true', {
       timeout: 15_000,
     });
     await expect(page.getByRole('heading', { level: 1, name: 'Đăng nhập' })).toBeVisible();
@@ -515,20 +527,20 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
     await waitForAuthPageReady(page);
     await expect(page.getByRole('heading', { level: 1, name: 'Đăng nhập' })).toBeVisible();
     await expect(
-      page.getByRole('group', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'VI' }),
-    ).toHaveAttribute('aria-pressed', 'true');
+      page.getByRole('radiogroup', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'Tiếng Việt (VI)' }),
+    ).toHaveAttribute('aria-checked', 'true');
 
     // 2. Signup: verify VI persists, switch VI -> EN -> VI, reload keeps VI
     await page.goto('/app/auth/signup');
     await waitForAuthPageReady(page);
     await expect(page.getByRole('heading', { level: 1, name: 'Tạo tài khoản' })).toBeVisible();
-    await page.getByRole('group', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'EN' }).click();
+    await page.getByRole('radiogroup', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'English (EN)' }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'Create account' })).toBeVisible({
       timeout: 15_000,
     });
     await expect(page.getByRole('button', { name: 'Create account', exact: true })).toBeVisible();
 
-    await page.getByRole('group', { name: 'Language' }).getByRole('radio', { name: 'VI' }).click();
+    await page.getByRole('radiogroup', { name: 'Language' }).getByRole('radio', { name: 'Vietnamese (VI)' }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'Tạo tài khoản' })).toBeVisible({
       timeout: 15_000,
     });
@@ -542,7 +554,7 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
     await waitForAuthPageReady(page);
     await expect(page.getByRole('heading', { level: 1, name: 'Reset login password' })).toBeVisible();
 
-    await page.getByRole('group', { name: 'Language' }).getByRole('radio', { name: 'VI' }).click();
+    await page.getByRole('radiogroup', { name: 'Language' }).getByRole('radio', { name: 'Vietnamese (VI)' }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'Quên mật khẩu đăng nhập' })).toBeVisible({
       timeout: 15_000,
     });
