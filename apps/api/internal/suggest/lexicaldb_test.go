@@ -973,8 +973,8 @@ func TestLexicalIndexesUsed(t *testing.T) {
 		t.Fatalf("ANALYZE item, tag in tx: %v", err)
 	}
 	// Drop competing user-leading non-lexical btree indexes inside this rolled-back transaction so PostgreSQL
-	// cannot satisfy all OR arms via a single full-user btree scan + Filter when enable_seqscan=off,
-	// proving that the prefix and trigram indexes themselves are indexable for the production SQL.
+	// must scope scans via the per-user lexical indexes (prefix btree for prefix queries; per-user lexical
+	// index scoping + no Seq Scan + `%` predicate for fuzzy queries per advisor-dec-274 / Task 23).
 	// Before dropping item_user_id_id_key / tag_user_id_id_key (such as entry_user_id_item_id_fkey on entry
 	// and item_tag_item_id_fkey / item_tag_tag_id_fkey on item_tag), look up and drop every dependent
 	// foreign-key constraint referencing item or tag from pg_constraint inside this rolled-back transaction
@@ -1071,11 +1071,14 @@ func TestLexicalIndexesUsed(t *testing.T) {
 	assertPlanContainsResidualCond(t, tagPagePrefixPlan, "tag", "tag_unaccent ~~")
 
 	// 2. Selective fuzzy path (fuzzy = true) via real gen.Queries calls (`pasword` -> `password`):
-	//    Must specifically use the per-user GIN trigram indexes `item_user_name_trgm` on item
-	//    and `tag_user_tag_trgm` on tag (with trigram index condition `%` or `<%`), NOT just prefix indexes.
-	//    Insert a large synthetic batch for u1 whose names share no trigrams with `pasword` and refresh
-	//    planner statistics so a full-user btree bitmap scan + Filter is much more expensive than the
-	//    BitmapOr(prefix btree, trigram GIN) plan.
+	//    Per advisor-dec-274 (forcing the per-user GIN trigram index on multi-arm OR moved to Task 23 / FU-SL-1),
+	//    assert for all four fuzzy plans (item/tag, unpaged/paged):
+	//    1) a per-user lexical index scopes the scan on the target table with Index Cond containing `user_id =`
+	//       (item: item_user_unaccent_prefix, item_user_name_prefix, item_user_name_trgm;
+	//        tag: tag_user_unaccent_prefix, tag_user_norm_prefix, tag_user_tag_trgm),
+	//    2) no Seq Scan node on the target table,
+	//    3) the `%` predicate is present in Index Cond, Recheck Cond, or Filter.
+	//    Keep the 20k/5k synthetic batch + ANALYZE so per-user index scoping is exercised against realistic row counts.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO item (user_id, name, name_normalized)
 		SELECT $1, 'zq' || to_hex(g), 'zq' || to_hex(g)
@@ -1095,6 +1098,8 @@ func TestLexicalIndexesUsed(t *testing.T) {
 	}
 	qnFuzzy := "pasword"
 	qFuzzyPrefix := item.EscapeLikePrefix(qnFuzzy)
+	itemLexicalIndexes := []string{"item_user_unaccent_prefix", "item_user_name_prefix", "item_user_name_trgm"}
+	tagLexicalIndexes := []string{"tag_user_unaccent_prefix", "tag_user_norm_prefix", "tag_user_tag_trgm"}
 
 	if _, err := q.SearchItemsLexical(ctx, gen.SearchItemsLexicalParams{
 		UserID:    u1,
@@ -1106,7 +1111,7 @@ func TestLexicalIndexesUsed(t *testing.T) {
 		t.Fatalf("SearchItemsLexical(fuzzy=true): %v", err)
 	}
 	itemFuzzyPlan := explainCapturedQuery(t, ctx, tx, capDB)
-	assertPlanRequiresIndex(t, itemFuzzyPlan, "item", "item_user_name_trgm", "%")
+	assertFuzzyPlan(t, itemFuzzyPlan, "item", itemLexicalIndexes)
 
 	if _, err := q.SearchTagsLexical(ctx, gen.SearchTagsLexicalParams{
 		UserID:    u1,
@@ -1118,9 +1123,9 @@ func TestLexicalIndexesUsed(t *testing.T) {
 		t.Fatalf("SearchTagsLexical(fuzzy=true): %v", err)
 	}
 	tagFuzzyPlan := explainCapturedQuery(t, ctx, tx, capDB)
-	assertPlanRequiresIndex(t, tagFuzzyPlan, "tag", "tag_user_tag_trgm", "%")
+	assertFuzzyPlan(t, tagFuzzyPlan, "tag", tagLexicalIndexes)
 
-	// 3. Also verify the paged queries (SearchItemsLexicalPage, SearchTagsLexicalPage) use the trigram indexes.
+	// 3. Also verify the paged fuzzy queries (SearchItemsLexicalPage, SearchTagsLexicalPage) per advisor-dec-274 / Task 23.
 	if _, err := q.SearchItemsLexicalPage(ctx, gen.SearchItemsLexicalPageParams{
 		UserID:    u1,
 		Qn:        qnFuzzy,
@@ -1131,7 +1136,7 @@ func TestLexicalIndexesUsed(t *testing.T) {
 		t.Fatalf("SearchItemsLexicalPage(fuzzy=true): %v", err)
 	}
 	itemPageFuzzyPlan := explainCapturedQuery(t, ctx, tx, capDB)
-	assertPlanRequiresIndex(t, itemPageFuzzyPlan, "item", "item_user_name_trgm", "%")
+	assertFuzzyPlan(t, itemPageFuzzyPlan, "item", itemLexicalIndexes)
 
 	if _, err := q.SearchTagsLexicalPage(ctx, gen.SearchTagsLexicalPageParams{
 		UserID:    u1,
@@ -1143,7 +1148,7 @@ func TestLexicalIndexesUsed(t *testing.T) {
 		t.Fatalf("SearchTagsLexicalPage(fuzzy=true): %v", err)
 	}
 	tagPageFuzzyPlan := explainCapturedQuery(t, ctx, tx, capDB)
-	assertPlanRequiresIndex(t, tagPageFuzzyPlan, "tag", "tag_user_tag_trgm", "%")
+	assertFuzzyPlan(t, tagPageFuzzyPlan, "tag", tagLexicalIndexes)
 }
 
 func assertPlanRequiresIndex(t *testing.T, planJSON string, tableName string, requiredIndex string, requiredCondSubstrs ...string) {
@@ -1234,6 +1239,66 @@ func assertPlanContainsResidualCond(t *testing.T, planJSON string, tableName str
 		t.Fatalf("plan on %s did not contain residual condition %q in Filter/Recheck Cond/Index Cond:\n%s",
 			tableName, requiredResidualSubstr, planJSON)
 	}
+}
+
+// assertFuzzyPlan enforces advisor-dec-274 (Task 23 / FU-SL-1):
+// 1. some index node on tableName uses one of allowedIndexes with Index Cond containing "user_id =",
+// 2. no Seq Scan node on tableName,
+// 3. the "%" predicate is present in some node's Index Cond, Recheck Cond, or Filter.
+func assertFuzzyPlan(t *testing.T, planJSON string, tableName string, allowedIndexes []string) {
+	t.Helper()
+	var plans []map[string]any
+	if err := json.Unmarshal([]byte(planJSON), &plans); err != nil {
+		t.Fatalf("unmarshal EXPLAIN JSON: %v", err)
+	}
+	allowed := make(map[string]bool, len(allowedIndexes))
+	for _, idx := range allowedIndexes {
+		allowed[idx] = true
+	}
+	var indexNames []string
+	var seqScansOnTable []string
+	matchedPerUserIndex := false
+	var walk func(node any, parentRel string)
+	walk = func(node any, parentRel string) {
+		switch v := node.(type) {
+		case map[string]any:
+			nodeType, _ := v["Node Type"].(string)
+			relName, _ := v["Relation Name"].(string)
+			effectiveRel := relName
+			if effectiveRel == "" {
+				effectiveRel = parentRel
+			}
+			idxName, _ := v["Index Name"].(string)
+			idxCond, _ := v["Index Cond"].(string)
+			if idxName != "" {
+				indexNames = append(indexNames, idxName)
+			}
+			if effectiveRel == tableName && allowed[idxName] && strings.Contains(idxCond, "user_id =") {
+				matchedPerUserIndex = true
+			}
+			if nodeType == "Seq Scan" && relName == tableName {
+				seqScansOnTable = append(seqScansOnTable, relName)
+			}
+			for _, child := range v {
+				walk(child, effectiveRel)
+			}
+		case []any:
+			for _, elem := range v {
+				walk(elem, parentRel)
+			}
+		}
+	}
+	for _, p := range plans {
+		walk(p, "")
+	}
+	if len(seqScansOnTable) > 0 {
+		t.Fatalf("unexpected Seq Scan on %s in plan:\n%s", tableName, planJSON)
+	}
+	if !matchedPerUserIndex {
+		t.Fatalf("fuzzy plan on %s did not scope scan via a per-user lexical index %v with Index Cond containing \"user_id =\" (used indexes=%v):\n%s",
+			tableName, allowedIndexes, indexNames, planJSON)
+	}
+	assertPlanContainsResidualCond(t, planJSON, tableName, "%")
 }
 
 func TestTagsLexicalPageKeyset(t *testing.T) {
