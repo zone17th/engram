@@ -743,10 +743,13 @@
         - settings.search.semanticEnable409
           vi: "Không bật được tìm theo nghĩa"
           en: "Couldn't turn on meaning-based search"
+        - settings.search.semanticSaveFailed (PATCH failure other than 409; role="status" line, no toast; advisor-dec-283/288)
+          vi: "Không lưu được thay đổi. Thử lại sau."
+          en: "Couldn't save the change. Try again later."
 
      CSS Note (advisor-dec-270):
-     Task 17 ports `mockups/search.css` into `apps/web/styles/tokens.css` and folds
-     it back into `mockups/tokens.css` so `tokens.parity` covers it again.
+     The former `mockups/search.css` now lives in `mockups/tokens.css` (and is ported 1:1
+     into `apps/web/styles/tokens.css`), so `tokens.parity` covers it.
      ============================================================================ */
 
   const COPY_SEARCH_HINT_VI = 'Enter: tìm theo đầu tên · Ctrl+Enter: tạo mục tên này — chữ đã gõ gửi tới máy chủ, không mã hoá. Để lưu nội dung, gõ ';
