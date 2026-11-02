@@ -7,15 +7,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -156,7 +159,11 @@ func (e *suggestTestEnv) doSuggest(token string, params url.Values) *httptest.Re
 // validateSuggestResponseOpenAPIShape strictly validates the raw JSON bytes of a 200
 // `/suggest` response against the frozen OpenAPI schemas `SuggestResponse`,
 // `SuggestQuota`, `SuggestTag`, `SuggestItem`, `TagRef`, `SuggestNearRow`,
-// `SuggestMode`, `SuggestMatch`, and `SemanticReason`.
+// `SuggestLexicalCorpus`, `SearchScope`, `SuggestMode`, `SuggestMatch`, `SemanticReason`,
+// `ItemName`, and `TagDisplay` in `apps/api/api/openapi.yaml`.
+//
+// All schema checks run directly on raw untyped JSON (`json.Decoder` with `UseNumber()`)
+// rather than relying on round-tripping through the production DTO.
 func validateSuggestResponseOpenAPIShape(t testing.TB, rec *httptest.ResponseRecorder) suggest.SuggestResponse {
 	t.Helper()
 	if rec.Code != http.StatusOK {
@@ -170,13 +177,36 @@ func validateSuggestResponseOpenAPIShape(t testing.TB, rec *httptest.ResponseRec
 	}
 
 	rawBytes := rec.Body.Bytes()
-
-	// 1. Validate raw JSON top-level and nested object keys (additionalProperties: false,
-	// required fields present, non-null arrays, enum values, no hint/q/qn/cos fields).
-	var rawObj map[string]any
-	if err := json.Unmarshal(rawBytes, &rawObj); err != nil {
-		t.Fatalf("unmarshal raw JSON object: %v\nbody=%s", err, string(rawBytes))
+	if err := checkSuggestResponseOpenAPISchema(rawBytes); err != nil {
+		t.Fatalf("SuggestResponse OpenAPI schema violation: %v\nbody=%s", err, string(rawBytes))
 	}
+
+	var resp suggest.SuggestResponse
+	dec := json.NewDecoder(bytes.NewReader(rawBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode SuggestResponse after schema check: %v\nbody=%s", err, string(rawBytes))
+	}
+	return resp
+}
+
+func checkSuggestResponseOpenAPISchema(rawBytes []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(rawBytes))
+	dec.UseNumber()
+	var root any
+	if err := dec.Decode(&root); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("trailing JSON data after root value")
+	}
+
+	rawObj, ok := root.(map[string]any)
+	if !ok || rawObj == nil {
+		return fmt.Errorf("SuggestResponse root must be a non-null JSON object, got %T", root)
+	}
+
 	wantTopKeys := []string{
 		"generation",
 		"has_more",
@@ -191,171 +221,591 @@ func validateSuggestResponseOpenAPIShape(t testing.TB, rec *httptest.ResponseRec
 		"semantic_reason",
 		"tags",
 	}
-	gotTopKeys := make([]string, 0, len(rawObj))
-	for k := range rawObj {
-		gotTopKeys = append(gotTopKeys, k)
-	}
-	slices.Sort(gotTopKeys)
-	if !slices.Equal(gotTopKeys, wantTopKeys) {
-		t.Fatalf("SuggestResponse top-level keys = %v, want exact %v", gotTopKeys, wantTopKeys)
+	if err := checkExactObjectKeys("SuggestResponse", rawObj, wantTopKeys); err != nil {
+		return err
 	}
 
-	// Non-nullable array fields must never be JSON null.
-	for _, arrField := range []string{"tags", "items", "lexical_partial", "near"} {
-		if rawObj[arrField] == nil {
-			t.Fatalf("SuggestResponse.%s is JSON null, must be array []", arrField)
-		}
-		if _, ok := rawObj[arrField].([]any); !ok {
-			t.Fatalf("SuggestResponse.%s is not a JSON array: %T", arrField, rawObj[arrField])
-		}
+	// scope: SearchScope (string enum: [all, item, tag], required non-null).
+	scope, err := checkRequiredString(rawObj, "SuggestResponse.scope", "scope")
+	if err != nil {
+		return err
 	}
-
-	// Quota object keys.
-	quotaMap, ok := rawObj["quota"].(map[string]any)
-	if !ok {
-		t.Fatalf("SuggestResponse.quota is not an object: %T", rawObj["quota"])
-	}
-	wantQuotaKeys := []string{"lexical", "near", "tag"}
-	gotQuotaKeys := make([]string, 0, len(quotaMap))
-	for k := range quotaMap {
-		gotQuotaKeys = append(gotQuotaKeys, k)
-	}
-	slices.Sort(gotQuotaKeys)
-	if !slices.Equal(gotQuotaKeys, wantQuotaKeys) {
-		t.Fatalf("SuggestQuota keys = %v, want exact %v", gotQuotaKeys, wantQuotaKeys)
-	}
-
-	// Validate each tag and item object in `tags`, `items`, and `near`.
-	for i, elem := range rawObj["tags"].([]any) {
-		m, ok := elem.(map[string]any)
-		if !ok {
-			t.Fatalf("tags[%d] not an object", i)
-		}
-		validateSuggestTagMap(t, fmt.Sprintf("tags[%d]", i), m, false)
-	}
-	for i, elem := range rawObj["items"].([]any) {
-		m, ok := elem.(map[string]any)
-		if !ok {
-			t.Fatalf("items[%d] not an object", i)
-		}
-		validateSuggestItemMap(t, fmt.Sprintf("items[%d]", i), m, false)
-	}
-	for i, elem := range rawObj["near"].([]any) {
-		m, ok := elem.(map[string]any)
-		if !ok {
-			t.Fatalf("near[%d] not an object", i)
-		}
-		switch m["kind"] {
-		case "tag":
-			validateSuggestTagMap(t, fmt.Sprintf("near[%d]", i), m, true)
-		case "item":
-			validateSuggestItemMap(t, fmt.Sprintf("near[%d]", i), m, true)
-		default:
-			t.Fatalf("near[%d] has invalid discriminator kind=%v", i, m["kind"])
-		}
-	}
-
-	// 2. Decode into typed SuggestResponse with DisallowUnknownFields.
-	var resp suggest.SuggestResponse
-	dec := json.NewDecoder(bytes.NewReader(rawBytes))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&resp); err != nil {
-		t.Fatalf("strict decode SuggestResponse: %v\nbody=%s", err, string(rawBytes))
-	}
-
-	if !suggest.ValidSuggestScope(resp.Scope) {
-		t.Fatalf("invalid scope %q", resp.Scope)
-	}
-	if !suggest.ValidSuggestLimit(resp.Limit) {
-		t.Fatalf("invalid limit %d", resp.Limit)
-	}
-	switch resp.Mode {
-	case suggest.ModeRecent, suggest.ModePrefix, suggest.ModeFull:
+	switch scope {
+	case "all", "item", "tag":
 	default:
-		t.Fatalf("invalid mode %q", resp.Mode)
+		return fmt.Errorf("SuggestResponse.scope = %q, want one of [all, item, tag]", scope)
 	}
-	if resp.Semantic {
-		if resp.SemanticReason != nil {
-			t.Fatalf("semantic=true must have semantic_reason=null, got %q", *resp.SemanticReason)
+
+	// limit: integer enum [5, 8, 12], required non-null.
+	limit, err := checkRequiredInt(rawObj, "SuggestResponse.limit", "limit", 5, 12)
+	if err != nil {
+		return err
+	}
+	switch limit {
+	case 5, 8, 12:
+	default:
+		return fmt.Errorf("SuggestResponse.limit = %d, want one of [5, 8, 12]", limit)
+	}
+
+	// mode: SuggestMode (string enum: [recent, prefix, full], required non-null).
+	mode, err := checkRequiredString(rawObj, "SuggestResponse.mode", "mode")
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case "recent", "prefix", "full":
+	default:
+		return fmt.Errorf("SuggestResponse.mode = %q, want one of [recent, prefix, full]", mode)
+	}
+
+	// quota: SuggestQuota (object, required non-null, additionalProperties: false, required: [tag, lexical, near], each integer >= 0).
+	quotaMap, ok := rawObj["quota"].(map[string]any)
+	if !ok || quotaMap == nil {
+		return fmt.Errorf("SuggestResponse.quota must be a non-null object, got %T", rawObj["quota"])
+	}
+	if err := checkExactObjectKeys("SuggestQuota", quotaMap, []string{"lexical", "near", "tag"}); err != nil {
+		return err
+	}
+	for _, qField := range []string{"tag", "lexical", "near"} {
+		if _, err := checkRequiredInt(quotaMap, "SuggestQuota."+qField, qField, 0, math.MaxInt32); err != nil {
+			return err
+		}
+	}
+
+	// has_more: boolean, required non-null.
+	if _, err := checkRequiredBool(rawObj, "SuggestResponse.has_more", "has_more"); err != nil {
+		return err
+	}
+
+	// semantic: boolean, required non-null.
+	semantic, err := checkRequiredBool(rawObj, "SuggestResponse.semantic", "semantic")
+	if err != nil {
+		return err
+	}
+
+	// semantic_reason: oneOf [SemanticReason, null].
+	// OpenAPI contract: null when semantic=true; one of the 5 SemanticReason enum values when semantic=false.
+	semReasonRaw := rawObj["semantic_reason"]
+	if semantic {
+		if semReasonRaw != nil {
+			return fmt.Errorf("SuggestResponse.semantic_reason must be null when semantic=true, got %v", semReasonRaw)
 		}
 	} else {
-		if resp.SemanticReason == nil {
-			t.Fatal("semantic=false must have non-null semantic_reason")
+		semReason, ok := semReasonRaw.(string)
+		if !ok {
+			return fmt.Errorf("SuggestResponse.semantic_reason must be a non-null string when semantic=false, got %T (%v)", semReasonRaw, semReasonRaw)
 		}
-		switch *resp.SemanticReason {
-		case suggest.ReasonDisabledServer,
-			suggest.ReasonDisabledUser,
-			suggest.ReasonDegraded,
-			suggest.ReasonRequestLexical,
-			suggest.ReasonShortQuery:
+		switch semReason {
+		case "disabled_server", "disabled_user", "degraded", "request_lexical", "short_query":
 		default:
-			t.Fatalf("invalid semantic_reason %q", *resp.SemanticReason)
-		}
-		if resp.Generation != nil {
-			t.Fatalf("semantic=false must have generation=null, got %v", *resp.Generation)
+			return fmt.Errorf("SuggestResponse.semantic_reason = %q, want SemanticReason enum", semReason)
 		}
 	}
 
-	return resp
+	// generation: type [integer, null], minimum 1, maximum 9999.
+	// OpenAPI contract: integer 1..9999 when semantic=true; null when semantic=false.
+	genRaw := rawObj["generation"]
+	if semantic {
+		if genRaw == nil {
+			return fmt.Errorf("SuggestResponse.generation must be a non-null integer (1..9999) when semantic=true")
+		}
+		if _, err := checkRequiredInt(rawObj, "SuggestResponse.generation", "generation", 1, 9999); err != nil {
+			return err
+		}
+	} else {
+		if genRaw != nil {
+			return fmt.Errorf("SuggestResponse.generation must be null when semantic=false, got %v", genRaw)
+		}
+	}
+
+	// lexical_partial: array of SuggestLexicalCorpus ("item" | "tag"), non-null, maxItems: 2, uniqueItems: true.
+	partialArr, err := checkRequiredArray(rawObj, "SuggestResponse.lexical_partial", "lexical_partial")
+	if err != nil {
+		return err
+	}
+	if len(partialArr) > 2 {
+		return fmt.Errorf("SuggestResponse.lexical_partial len = %d, maxItems is 2", len(partialArr))
+	}
+	seenPartial := make(map[string]struct{}, len(partialArr))
+	for i, elem := range partialArr {
+		s, ok := elem.(string)
+		if !ok {
+			return fmt.Errorf("SuggestResponse.lexical_partial[%d] must be a string, got %T", i, elem)
+		}
+		switch s {
+		case "item", "tag":
+		default:
+			return fmt.Errorf("SuggestResponse.lexical_partial[%d] = %q, want \"item\" or \"tag\"", i, s)
+		}
+		if _, dup := seenPartial[s]; dup {
+			return fmt.Errorf("SuggestResponse.lexical_partial has duplicate item %q (uniqueItems: true)", s)
+		}
+		seenPartial[s] = struct{}{}
+	}
+
+	// tags: non-null array of SuggestTag.
+	tagsArr, err := checkRequiredArray(rawObj, "SuggestResponse.tags", "tags")
+	if err != nil {
+		return err
+	}
+	for i, elem := range tagsArr {
+		m, ok := elem.(map[string]any)
+		if !ok || m == nil {
+			return fmt.Errorf("SuggestResponse.tags[%d] must be a non-null object, got %T", i, elem)
+		}
+		if err := checkSuggestTagSchema(fmt.Sprintf("SuggestResponse.tags[%d]", i), m, false); err != nil {
+			return err
+		}
+	}
+
+	// items: non-null array of SuggestItem.
+	itemsArr, err := checkRequiredArray(rawObj, "SuggestResponse.items", "items")
+	if err != nil {
+		return err
+	}
+	for i, elem := range itemsArr {
+		m, ok := elem.(map[string]any)
+		if !ok || m == nil {
+			return fmt.Errorf("SuggestResponse.items[%d] must be a non-null object, got %T", i, elem)
+		}
+		if err := checkSuggestItemSchema(fmt.Sprintf("SuggestResponse.items[%d]", i), m, false); err != nil {
+			return err
+		}
+	}
+
+	// near: non-null array of SuggestNearRow (empty when semantic=false).
+	nearArr, err := checkRequiredArray(rawObj, "SuggestResponse.near", "near")
+	if err != nil {
+		return err
+	}
+	if !semantic && len(nearArr) != 0 {
+		return fmt.Errorf("SuggestResponse.near must be empty [] when semantic=false, got len=%d", len(nearArr))
+	}
+	for i, elem := range nearArr {
+		m, ok := elem.(map[string]any)
+		if !ok || m == nil {
+			return fmt.Errorf("SuggestResponse.near[%d] must be a non-null object, got %T", i, elem)
+		}
+		kind, err := checkRequiredString(m, fmt.Sprintf("SuggestResponse.near[%d].kind", i), "kind")
+		if err != nil {
+			return err
+		}
+		switch kind {
+		case "tag":
+			if err := checkSuggestTagSchema(fmt.Sprintf("SuggestResponse.near[%d]", i), m, true); err != nil {
+				return err
+			}
+		case "item":
+			if err := checkSuggestItemSchema(fmt.Sprintf("SuggestResponse.near[%d]", i), m, true); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("SuggestResponse.near[%d] has invalid discriminator kind=%q", i, kind)
+		}
+	}
+
+	return nil
 }
 
-func validateSuggestTagMap(t testing.TB, path string, m map[string]any, isNear bool) {
-	t.Helper()
+func checkSuggestTagSchema(path string, m map[string]any, isNear bool) error {
 	wantKeys := []string{"display", "id", "item_count", "kind", "last_used_at", "match"}
-	gotKeys := make([]string, 0, len(m))
-	for k := range m {
-		gotKeys = append(gotKeys, k)
+	if err := checkExactObjectKeys(path, m, wantKeys); err != nil {
+		return err
 	}
-	slices.Sort(gotKeys)
-	if !slices.Equal(gotKeys, wantKeys) {
-		t.Fatalf("%s keys = %v, want exact %v", path, gotKeys, wantKeys)
+	kind, err := checkRequiredString(m, path+".kind", "kind")
+	if err != nil {
+		return err
 	}
-	if m["kind"] != "tag" {
-		t.Fatalf("%s.kind = %v, want \"tag\"", path, m["kind"])
+	if kind != "tag" {
+		return fmt.Errorf("%s.kind = %q, want const \"tag\"", path, kind)
 	}
-	if isNear && m["match"] != suggest.MatchSemantic {
-		t.Fatalf("%s.match = %v, want \"semantic\"", path, m["match"])
+	if err := checkRequiredUUID(m, path+".id", "id"); err != nil {
+		return err
 	}
+	// display: TagDisplay (string, minLength: 1, maxLength: 50).
+	if err := checkRequiredBoundedString(m, path+".display", "display", 1, 50); err != nil {
+		return err
+	}
+	// item_count: integer, minimum: 0.
+	if _, err := checkRequiredInt(m, path+".item_count", "item_count", 0, math.MaxInt32); err != nil {
+		return err
+	}
+	// last_used_at: string, format: date-time.
+	if err := checkRequiredDateTime(m, path+".last_used_at", "last_used_at"); err != nil {
+		return err
+	}
+	// match: SuggestMatch enum [prefix, prefix_folded, fuzzy, semantic].
+	if err := checkSuggestMatch(m, path+".match", "match", isNear); err != nil {
+		return err
+	}
+	return nil
 }
 
-func validateSuggestItemMap(t testing.TB, path string, m map[string]any, isNear bool) {
-	t.Helper()
+func checkSuggestItemSchema(path string, m map[string]any, isNear bool) error {
 	wantKeys := []string{"created_at", "entry_count", "id", "kind", "last_used_at", "match", "name", "tag_total", "tags"}
-	gotKeys := make([]string, 0, len(m))
-	for k := range m {
-		gotKeys = append(gotKeys, k)
+	if err := checkExactObjectKeys(path, m, wantKeys); err != nil {
+		return err
 	}
-	slices.Sort(gotKeys)
-	if !slices.Equal(gotKeys, wantKeys) {
-		t.Fatalf("%s keys = %v, want exact %v (must never include hint)", path, gotKeys, wantKeys)
+	kind, err := checkRequiredString(m, path+".kind", "kind")
+	if err != nil {
+		return err
 	}
-	if m["kind"] != "item" {
-		t.Fatalf("%s.kind = %v, want \"item\"", path, m["kind"])
+	if kind != "item" {
+		return fmt.Errorf("%s.kind = %q, want const \"item\"", path, kind)
 	}
-	if isNear && m["match"] != suggest.MatchSemantic {
-		t.Fatalf("%s.match = %v, want \"semantic\"", path, m["match"])
+	if err := checkRequiredUUID(m, path+".id", "id"); err != nil {
+		return err
 	}
-	tagsRaw, ok := m["tags"].([]any)
-	if !ok {
-		t.Fatalf("%s.tags is not a non-null array: %T", path, m["tags"])
+	// name: ItemName (string, minLength: 1, maxLength: 200).
+	if err := checkRequiredBoundedString(m, path+".name", "name", 1, 200); err != nil {
+		return err
+	}
+	// entry_count: integer, minimum: 0, maximum: 200.
+	if _, err := checkRequiredInt(m, path+".entry_count", "entry_count", 0, 200); err != nil {
+		return err
+	}
+	// created_at, last_used_at: string, format: date-time.
+	if err := checkRequiredDateTime(m, path+".created_at", "created_at"); err != nil {
+		return err
+	}
+	if err := checkRequiredDateTime(m, path+".last_used_at", "last_used_at"); err != nil {
+		return err
+	}
+	// tags: non-null array of TagRef, maxItems: 3.
+	tagsRaw, err := checkRequiredArray(m, path+".tags", "tags")
+	if err != nil {
+		return err
 	}
 	if len(tagsRaw) > 3 {
-		t.Fatalf("%s.tags len = %d, maxItems is 3", path, len(tagsRaw))
+		return fmt.Errorf("%s.tags len = %d, maxItems is 3", path, len(tagsRaw))
 	}
 	for i, tr := range tagsRaw {
 		trMap, ok := tr.(map[string]any)
-		if !ok {
-			t.Fatalf("%s.tags[%d] not an object", path, i)
+		if !ok || trMap == nil {
+			return fmt.Errorf("%s.tags[%d] must be a non-null object, got %T", path, i, tr)
 		}
-		wantRefKeys := []string{"display", "id"}
-		gotRefKeys := make([]string, 0, len(trMap))
-		for k := range trMap {
-			gotRefKeys = append(gotRefKeys, k)
+		refPath := fmt.Sprintf("%s.tags[%d]", path, i)
+		if err := checkExactObjectKeys(refPath, trMap, []string{"display", "id"}); err != nil {
+			return err
 		}
-		slices.Sort(gotRefKeys)
-		if !slices.Equal(gotRefKeys, wantRefKeys) {
-			t.Fatalf("%s.tags[%d] keys = %v, want %v", path, i, gotRefKeys, wantRefKeys)
+		if err := checkRequiredUUID(trMap, refPath+".id", "id"); err != nil {
+			return err
 		}
+		if err := checkRequiredBoundedString(trMap, refPath+".display", "display", 1, 50); err != nil {
+			return err
+		}
+	}
+	// tag_total: integer, minimum: 0, maximum: 20.
+	if _, err := checkRequiredInt(m, path+".tag_total", "tag_total", 0, 20); err != nil {
+		return err
+	}
+	// match: SuggestMatch enum [prefix, prefix_folded, fuzzy, semantic].
+	if err := checkSuggestMatch(m, path+".match", "match", isNear); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkSuggestMatch(m map[string]any, path, key string, isNear bool) error {
+	match, err := checkRequiredString(m, path, key)
+	if err != nil {
+		return err
+	}
+	switch match {
+	case suggest.MatchPrefix, suggest.MatchPrefixFolded, suggest.MatchFuzzy, suggest.MatchSemantic:
+	default:
+		return fmt.Errorf("%s = %q, want SuggestMatch enum [prefix, prefix_folded, fuzzy, semantic]", path, match)
+	}
+	if isNear {
+		if match != suggest.MatchSemantic {
+			return fmt.Errorf("%s = %q on near row, want %q", path, match, suggest.MatchSemantic)
+		}
+	} else {
+		if match == suggest.MatchSemantic {
+			return fmt.Errorf("%s = %q on lexical row, want one of [prefix, prefix_folded, fuzzy]", path, match)
+		}
+	}
+	return nil
+}
+
+func checkExactObjectKeys(path string, m map[string]any, wantSorted []string) error {
+	got := make([]string, 0, len(m))
+	for k := range m {
+		got = append(got, k)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, wantSorted) {
+		return fmt.Errorf("%s keys = %v, want exact %v", path, got, wantSorted)
+	}
+	return nil
+}
+
+func checkRequiredString(m map[string]any, path, key string) (string, error) {
+	v, exists := m[key]
+	if !exists || v == nil {
+		return "", fmt.Errorf("%s is required and non-null, got %v", path, v)
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("%s must be a string, got %T (%v)", path, v, v)
+	}
+	return s, nil
+}
+
+func checkRequiredBoundedString(m map[string]any, path, key string, minRunes, maxRunes int) error {
+	s, err := checkRequiredString(m, path, key)
+	if err != nil {
+		return err
+	}
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("%s is not valid UTF-8", path)
+	}
+	n := utf8.RuneCountInString(s)
+	if n < minRunes || n > maxRunes {
+		return fmt.Errorf("%s rune length = %d, want %d..%d", path, n, minRunes, maxRunes)
+	}
+	return nil
+}
+
+func checkRequiredUUID(m map[string]any, path, key string) error {
+	s, err := checkRequiredString(m, path, key)
+	if err != nil {
+		return err
+	}
+	if _, err := uuid.Parse(s); err != nil {
+		return fmt.Errorf("%s = %q is not a valid UUID: %w", path, s, err)
+	}
+	return nil
+}
+
+func checkRequiredDateTime(m map[string]any, path, key string) error {
+	s, err := checkRequiredString(m, path, key)
+	if err != nil {
+		return err
+	}
+	if _, err := time.Parse(time.RFC3339Nano, s); err != nil {
+		return fmt.Errorf("%s = %q is not a valid RFC3339 date-time: %w", path, s, err)
+	}
+	return nil
+}
+
+func checkRequiredBool(m map[string]any, path, key string) (bool, error) {
+	v, exists := m[key]
+	if !exists || v == nil {
+		return false, fmt.Errorf("%s is required and non-null, got %v", path, v)
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false, fmt.Errorf("%s must be a boolean, got %T (%v)", path, v, v)
+	}
+	return b, nil
+}
+
+func checkRequiredInt(m map[string]any, path, key string, minVal, maxVal int64) (int64, error) {
+	v, exists := m[key]
+	if !exists || v == nil {
+		return 0, fmt.Errorf("%s is required and non-null, got %v", path, v)
+	}
+	num, ok := v.(json.Number)
+	if !ok {
+		return 0, fmt.Errorf("%s must be an integer number, got %T (%v)", path, v, v)
+	}
+	raw := string(num)
+	if strings.ContainsAny(raw, ".eE") {
+		return 0, fmt.Errorf("%s = %q must be an integer, not float", path, raw)
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s = %q is not a valid integer: %w", path, raw, err)
+	}
+	if parsed < minVal || parsed > maxVal {
+		return 0, fmt.Errorf("%s = %d out of bounds [%d..%d]", path, parsed, minVal, maxVal)
+	}
+	return parsed, nil
+}
+
+func checkRequiredArray(m map[string]any, path, key string) ([]any, error) {
+	v, exists := m[key]
+	if !exists || v == nil {
+		return nil, fmt.Errorf("%s must be a non-null JSON array, got %v", path, v)
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be a JSON array, got %T", path, v)
+	}
+	return arr, nil
+}
+
+// TestSuggestOpenAPISchemaValidatorSelfTest verifies RV-T3-BE-3:
+// The OpenAPI schema checker rejects invalid recent/lexical `match`, null required
+// scalars, out-of-range counts/quotas/generation, invalid UUID/date-time/string bounds,
+// and extra or missing keys.
+func TestSuggestOpenAPISchemaValidatorSelfTest(t *testing.T) {
+	validJSON := `{
+		"scope": "all",
+		"limit": 8,
+		"mode": "recent",
+		"quota": {"tag": 3, "lexical": 8, "near": 0},
+		"tags": [{
+			"kind": "tag",
+			"id": "00000000-0011-4000-8000-000000000001",
+			"display": "nhà-riêng",
+			"item_count": 2,
+			"last_used_at": "2026-10-20T12:00:00Z",
+			"match": "prefix"
+		}],
+		"items": [{
+			"kind": "item",
+			"id": "00000000-0001-4000-8000-000000000001",
+			"name": "wifi nhà",
+			"entry_count": 3,
+			"created_at": "2026-10-20T12:00:00Z",
+			"last_used_at": "2026-10-20T12:00:00Z",
+			"tags": [{"id": "00000000-0011-4000-8000-000000000001", "display": "nhà-riêng"}],
+			"tag_total": 1,
+			"match": "prefix"
+		}],
+		"has_more": false,
+		"lexical_partial": [],
+		"semantic": false,
+		"semantic_reason": "disabled_server",
+		"near": [],
+		"generation": null
+	}`
+	if err := checkSuggestResponseOpenAPISchema([]byte(validJSON)); err != nil {
+		t.Fatalf("expected baseline valid JSON to pass schema check, got: %v", err)
+	}
+
+	negativeCases := []struct {
+		name    string
+		mutate  func(m map[string]any)
+		wantSub string
+	}{
+		{
+			name: "invalid recent lexical item match",
+			mutate: func(m map[string]any) {
+				items := m["items"].([]any)
+				items[0].(map[string]any)["match"] = "bogus_match"
+			},
+			wantSub: "SuggestResponse.items[0].match",
+		},
+		{
+			name: "invalid recent lexical tag match",
+			mutate: func(m map[string]any) {
+				tags := m["tags"].([]any)
+				tags[0].(map[string]any)["match"] = "recent"
+			},
+			wantSub: "SuggestResponse.tags[0].match",
+		},
+		{
+			name: "lexical row with semantic match rejected",
+			mutate: func(m map[string]any) {
+				items := m["items"].([]any)
+				items[0].(map[string]any)["match"] = "semantic"
+			},
+			wantSub: "SuggestResponse.items[0].match",
+		},
+		{
+			name: "null required top-level scalar has_more",
+			mutate: func(m map[string]any) {
+				m["has_more"] = nil
+			},
+			wantSub: "SuggestResponse.has_more",
+		},
+		{
+			name: "null required item entry_count",
+			mutate: func(m map[string]any) {
+				items := m["items"].([]any)
+				items[0].(map[string]any)["entry_count"] = nil
+			},
+			wantSub: "SuggestResponse.items[0].entry_count",
+		},
+		{
+			name: "out-of-range entry_count > 200",
+			mutate: func(m map[string]any) {
+				items := m["items"].([]any)
+				items[0].(map[string]any)["entry_count"] = json.Number("201")
+			},
+			wantSub: "SuggestResponse.items[0].entry_count",
+		},
+		{
+			name: "negative entry_count",
+			mutate: func(m map[string]any) {
+				items := m["items"].([]any)
+				items[0].(map[string]any)["entry_count"] = json.Number("-1")
+			},
+			wantSub: "SuggestResponse.items[0].entry_count",
+		},
+		{
+			name: "out-of-range tag_total > 20",
+			mutate: func(m map[string]any) {
+				items := m["items"].([]any)
+				items[0].(map[string]any)["tag_total"] = json.Number("21")
+			},
+			wantSub: "SuggestResponse.items[0].tag_total",
+		},
+		{
+			name: "negative tag item_count",
+			mutate: func(m map[string]any) {
+				tags := m["tags"].([]any)
+				tags[0].(map[string]any)["item_count"] = json.Number("-1")
+			},
+			wantSub: "SuggestResponse.tags[0].item_count",
+		},
+		{
+			name: "negative quota lexical",
+			mutate: func(m map[string]any) {
+				m["quota"].(map[string]any)["lexical"] = json.Number("-1")
+			},
+			wantSub: "SuggestQuota.lexical",
+		},
+		{
+			name: "out-of-range generation > 9999 when semantic=true",
+			mutate: func(m map[string]any) {
+				m["semantic"] = true
+				m["semantic_reason"] = nil
+				m["generation"] = json.Number("10000")
+			},
+			wantSub: "SuggestResponse.generation",
+		},
+		{
+			name: "extra top-level key rejected",
+			mutate: func(m map[string]any) {
+				m["q"] = "wifi"
+			},
+			wantSub: "SuggestResponse keys",
+		},
+		{
+			name: "extra item hint key rejected",
+			mutate: func(m map[string]any) {
+				items := m["items"].([]any)
+				items[0].(map[string]any)["hint"] = "secret"
+			},
+			wantSub: "SuggestResponse.items[0] keys",
+		},
+	}
+
+	for _, tc := range negativeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dec := json.NewDecoder(strings.NewReader(validJSON))
+			dec.UseNumber()
+			var obj map[string]any
+			if err := dec.Decode(&obj); err != nil {
+				t.Fatalf("decode baseline: %v", err)
+			}
+			tc.mutate(obj)
+			mutatedBytes, err := json.Marshal(obj)
+			if err != nil {
+				t.Fatalf("marshal mutated: %v", err)
+			}
+			err = checkSuggestResponseOpenAPISchema(mutatedBytes)
+			if err == nil {
+				t.Fatalf("expected schema error containing %q, got nil", tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("schema error = %q, want substring %q", err.Error(), tc.wantSub)
+			}
+		})
 	}
 }
 
