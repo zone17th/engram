@@ -2650,7 +2650,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
   );
 
   it(
-    'FU11 (advisor-dec-216/217/221/223/224/228/254): applies 44x44 coarse-pointer classes, fine-pointer sticky action column with coarse static full-cell override, cell wrap, nested overflow-x-auto, and non-overlapping .chip-x rules',
+    'FU11 (advisor-dec-216/217/221/223/224/228/254/263): applies 44x44 coarse-pointer classes, fine-pointer sticky action column with coarse static full-cell override, coarse full-cell single-button key/value cells, cell wrap, nested overflow-x-auto, and non-overlapping .chip-x rules',
     async () => {
       const longTag50 = `${'tag-chip-50-rune-'.repeat(2)}tail50`.padEnd(50, 'q').slice(0, 50);
       expect(Array.from(longTag50).length).toBe(50);
@@ -2762,6 +2762,28 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
         /\.json-table\s+td\.json-col-act\s+\.btn-sm\s*\{\s*display:\s*flex;\s*width:\s*100%;\s*height:\s*100%;\s*min-width:\s*44px;\s*min-height:\s*44px;\s*margin:\s*0;\s*border-radius:\s*0;\s*\}/,
       );
       expect(tokensCss).not.toMatch(/json-col-act\s+\.btn-sm\s*\{[^}]*position:\s*relative/);
+      // FU11 r3 (advisor-dec-263): single-button key/value/missing cells use the same fill-the-cell
+      // pattern under coarse pointer; padding moves from the cell to the button (10/18 + 1 px border
+      // = old 8/12 cell + 2/6 button + 1 px border) and the width is `stretch`, not a percentage.
+      const coarseBlock = tokensCss.slice(tokensCss.indexOf('@media (pointer: coarse) {'));
+      expect(coarseBlock).toMatch(
+        /\.json-table\s+td:has\(>\s*\.json-cell-btn:only-child\)\s*\{\s*height:\s*1px;\s*padding:\s*0;\s*vertical-align:\s*middle;\s*\}/,
+      );
+      expect(coarseBlock).toMatch(
+        /\.json-table\s+td\s*>\s*\.json-cell-btn:only-child\s*\{\s*display:\s*block;\s*width:\s*100%;\s*width:\s*-webkit-fill-available;\s*width:\s*stretch;\s*height:\s*100%;\s*min-width:\s*44px;\s*min-height:\s*44px;\s*margin:\s*0;\s*padding:\s*10px 18px;\s*border-radius:\s*0;\s*\}/,
+      );
+      // Fine pointer must not change: the fill-the-cell selectors exist only inside the coarse block.
+      const fineCss = tokensCss.slice(0, tokensCss.indexOf('@media (pointer: coarse) {'));
+      expect(fineCss).not.toMatch(/td:has\(>\s*\.json-cell-btn/);
+      expect(fineCss).not.toMatch(/td\s*>\s*\.json-cell-btn:only-child/);
+      expect(tokensCss.match(/td:has\(>\s*\.json-cell-btn:only-child\)/g)).toHaveLength(1);
+      expect(tokensCss.match(/td\s*>\s*\.json-cell-btn:only-child\s*\{/g)).toHaveLength(1);
+      expect(coarseBlock).not.toMatch(/\.json-col-idx\s*\{[^}]*width:\s*68px/);
+      // The cell button stays the only element child of its key/value cell (what the :has() rule keys on).
+      const keyCellBtn = within(card).getByTestId('json-cell-btn-root.k1');
+      expect(keyCellBtn.parentElement?.tagName).toBe('TD');
+      expect(keyCellBtn.parentElement?.children).toHaveLength(1);
+      expect(within(card).getByTestId('json-cell-btn-root.p1').parentElement?.children).toHaveLength(1);
       expect(tokensCss).toMatch(
         /\.json-table\s+\.json-nest\s+\.json-table\s+thead\s*~\s*tbody\s*>\s*tr\s*>\s*td:not\(\.k\):not\(\.json-col-act\):not\(\[colspan\]\)\s*\{\s*min-width:\s*0;\s*\}/,
       );
