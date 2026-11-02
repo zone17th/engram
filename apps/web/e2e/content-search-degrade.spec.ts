@@ -32,20 +32,28 @@ process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
 const TEST_TIMEOUT_MS = 300_000;
 const UI_WAIT_MS = ACCEPTANCE_UI_WAIT_MS;
 /**
- * Recovery bound. The API embedding breaker opens on the FIRST provider failure (threshold 1, `embedding/breaker.go`)
- * and stays open for 60 s counted from that failure; it admits one half-open trial to the first request at or after
- * `T_open + 60 s` (plan 2.21: one half-open probe per process per 60 s). `T_open` is during the `down` typing step, which
- * is EARLIER than the `{"mode":"ok"}` POST (`T_ok`) that starts our clock, so the breaker is closable no later than
- * `T_ok + 60 s`. We poll every 500 ms, so the first poll at/after that instant starts at most one interval later, and
- * it needs one alias POST + one /suggest round trip (cache miss, real fakeembed call) to return. The asserted bound is
- * therefore `RECOVERY_BUDGET_MS (60 s) + RECOVERY_MARGIN_MS (3 s)` measured from the `ok` POST to the first poll that
- * returns `semantic === true` with the near row; the 3 s margin = 500 ms poll interval + request latency headroom.
+ * Recovery bound, derived from the breaker cooldown (no free-standing budget literal).
+ * SPEC §6.6 "breaker 60 s": the API embedding breaker opens on the FIRST provider failure and admits its first half-open
+ * probe `embedding.BreakerOpenWindow` later (`apps/api/internal/embedding/breaker.go:18`, fixed, not configurable).
+ * So the user-visible contract is "semantic returns within the 60 s breaker window after the provider recovers": once the
+ * provider is `ok`, the first request at or after `breakerOpenedAt + 60 s` closes the breaker and returns `semantic: true`.
+ *
+ * `breakerOpenedAt` is the instant the first down-mode `/suggest` response with `semantic_reason: "degraded"` reached the
+ * browser; that is an UPPER bound of the true breaker-open instant (the breaker opened server-side before that response
+ * was sent), so the assertion can only be looser than reality by one response latency, never tighter.
+ * Asserted: `tRecovered - breakerOpenedAt <= BREAKER_OPEN_WINDOW_MS + RECOVERY_POLL_MS + RECOVERY_REQUEST_SLACK_MS`
+ * (first poll at/after the window starts at most one poll interval late, plus one alias POST + /suggest round trip).
  */
-const RECOVERY_BUDGET_MS = 60_000;
-const RECOVERY_MARGIN_MS = 3_000;
+/** SPEC §6.6 / `embedding/breaker.go:18` `BreakerOpenWindow` (strict: the spec fixes 60 s). */
+const BREAKER_OPEN_WINDOW_MS = 60_000;
 const RECOVERY_POLL_MS = 500;
-/** Upper cap for the failure-only cleanup poll (breaker window 60 s + margin). */
-const CLEANUP_RECOVERY_MS = 65_000;
+/** One request round-trip allowance: the recovering poll is an alias POST then a /suggest cache-miss provider call. */
+const RECOVERY_REQUEST_SLACK_MS = 2_000;
+const RECOVERY_BOUND_MS = BREAKER_OPEN_WINDOW_MS + RECOVERY_POLL_MS + RECOVERY_REQUEST_SLACK_MS;
+/** Polling continues this long past the bound only so a late recovery fails the explicit assertion with its numbers. */
+const RECOVERY_FAILURE_REPORT_MS = 10_000;
+/** Upper cap for the failure-only cleanup poll: the breaker window plus the same poll/request allowances. */
+const CLEANUP_RECOVERY_MS = RECOVERY_BOUND_MS + RECOVERY_FAILURE_REPORT_MS;
 
 const NEAR_ROW = '[data-zone="near"] [data-opt-kind="item"]';
 const LEXICAL_ITEM_ROW = '[data-zone="items"] [data-opt-kind="item"]';
@@ -203,10 +211,39 @@ test.describe('P05-T20b @semantic degrade: provider down mid-session', () => {
     // lexical item by prefix, so lexical must keep working while the provider is down.
     const downQuery = `${lexToken}-bank`;
 
+    // Upper bound of the breaker-open instant: first down-mode `/suggest?semantic=1` response flagged `degraded`.
+    const breaker: { openedAt: number | null } = { openedAt: null };
+
     await test.step('provider down mid-session; a NEW never-sent query reaches fakeembed (stats counter grows)', async () => {
       const statsBefore = await fakeembedStats();
+      const onResponse = (res: PageResponse): void => {
+        const receivedAt = Date.now();
+        if (breaker.openedAt !== null) {
+          return;
+        }
+        const url = new URL(res.url());
+        if (url.pathname !== '/api/v1/suggest' || url.searchParams.get('semantic') !== '1') {
+          return;
+        }
+        res
+          .json()
+          .then((body: { semantic?: boolean; semantic_reason?: string | null } | null) => {
+            if (breaker.openedAt === null && body?.semantic === false && body.semantic_reason === 'degraded') {
+              breaker.openedAt = receivedAt;
+            }
+          })
+          .catch(() => {
+            // body unavailable (navigation / aborted request): not a degraded observation
+          });
+      };
+      page.on('response', onResponse);
       await fakeembedSetMode('down');
-      const downResponse = await typeCleanQuery(page, omnibox, downQuery);
+      let downResponse: PageResponse;
+      try {
+        downResponse = await typeCleanQuery(page, omnibox, downQuery);
+      } finally {
+        page.off('response', onResponse);
+      }
       // The final request is what the user sees: degraded by reason code (breaker open after a prefix failure, or the
       // provider failing on this very query), never a silent `semantic: true`.
       const downFlags = await semanticFlags(downResponse);
@@ -218,6 +255,14 @@ test.describe('P05-T20b @semantic degrade: provider down mid-session', () => {
           message: 'fakeembed query_requests must grow: the provider path was really called (cache miss)',
         })
         .toBeGreaterThan(statsBefore.query_requests);
+      // The provider was really hit (counter grew) and a down-mode response came back degraded: that response instant is
+      // the recovery clock's origin. The listener resolves from the response body, so give it a moment to settle.
+      await expect
+        .poll(() => breaker.openedAt !== null, {
+          timeout: UI_WAIT_MS,
+          message: 'a down-mode /suggest response with semantic_reason "degraded" must have been observed',
+        })
+        .toBe(true);
     });
 
     await test.step('degraded: lexical row served, no near/≈ badge, no toast, muted degraded line outside the listbox', async () => {
@@ -267,12 +312,17 @@ test.describe('P05-T20b @semantic degrade: provider down mid-session', () => {
       expect(lookup.total).toBe(1);
     });
 
-    await test.step('provider ok again: semantic returns within 60 s (new query per poll)', async () => {
+    await test.step('provider ok again: semantic returns within the 60 s breaker window (new query per poll)', async () => {
+      const breakerOpenedAt = breaker.openedAt;
+      if (breakerOpenedAt === null) {
+        throw new Error('breaker-open instant was not recorded in the down step');
+      }
       await fakeembedSetMode('ok');
-      // Clock starts when the `ok` POST has returned; see RECOVERY_* above for why 60 s + 3 s is the exact bound.
-      const recoveryStart = Date.now();
+      // Clock origin is `breakerOpenedAt` (not the `ok` POST): the cooldown runs from the failure, see RECOVERY_* above.
       let attempts = 0;
       let elapsedMs = Number.POSITIVE_INFINITY;
+      // Poll past the bound only to fail with the measured numbers; the assertion below stays strict.
+      const pollDeadline = breakerOpenedAt + RECOVERY_BOUND_MS + RECOVERY_FAILURE_REPORT_MS;
       await expect
         .poll(
           async () => {
@@ -285,18 +335,18 @@ test.describe('P05-T20b @semantic degrade: provider down mid-session', () => {
               (response.body as { semantic?: boolean } | null)?.semantic === true &&
               suggestNearContains(response.body, nearId);
             if (recovered) {
-              elapsedMs = Date.now() - recoveryStart;
+              elapsedMs = Date.now() - breakerOpenedAt;
             }
             return recovered;
           },
-          // Longer than the asserted bound so a late recovery fails the explicit elapsed assertion below with the number.
-          { timeout: RECOVERY_BUDGET_MS + RECOVERY_MARGIN_MS + 10_000, intervals: [RECOVERY_POLL_MS] },
+          { timeout: Math.max(pollDeadline - Date.now(), 1_000), intervals: [RECOVERY_POLL_MS] },
         )
         .toBe(true);
       expect(
         elapsedMs,
-        `semantic recovered after ${elapsedMs} ms (${attempts} polls); bound ${RECOVERY_BUDGET_MS + RECOVERY_MARGIN_MS} ms`,
-      ).toBeLessThanOrEqual(RECOVERY_BUDGET_MS + RECOVERY_MARGIN_MS);
+        `semantic recovered ${elapsedMs} ms after the breaker opened (${attempts} polls); bound ${RECOVERY_BOUND_MS} ms = ` +
+          `${BREAKER_OPEN_WINDOW_MS} breaker window + ${RECOVERY_POLL_MS} poll + ${RECOVERY_REQUEST_SLACK_MS} request slack`,
+      ).toBeLessThanOrEqual(RECOVERY_BOUND_MS);
     });
 
     await test.step('after recovery another NEW query shows near + ≈ badge again, degraded line gone', async () => {
