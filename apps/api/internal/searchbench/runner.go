@@ -1081,7 +1081,7 @@ func FinalizeReport(rep *Report, minMeasured int) {
 	rep.Verdicts = ConsolidateVerdicts(rep.C1, rep.C2, minMeasured, rep.Run.DatasetHash != "")
 	rep.Hard = HardFailures(rep)
 	if rep.Run.Profile == string(ProfileSmoke) {
-		rep.Notes = append(rep.Notes, "smoke - not acceptance evidence (targets.md §4): verdicts above are informational and must not be used to claim a target met or missed.")
+		rep.Notes = append(rep.Notes, "smoke — not acceptance evidence (targets.md §4): verdicts above are informational and must not be used to claim a target met or missed.")
 	}
 	rep.Notes = append(rep.Notes, "Query text is synthetic and is never logged or written to this report; only counts, kinds and statistics appear.")
 	if rep.Run.TargetsCommit == "" {

@@ -757,7 +757,7 @@ type DiskPrecheck struct {
 // ReportLabel is the evidence label of a profile (targets.md §4).
 func ReportLabel(p ProfileName) string {
 	if p == ProfileSmoke {
-		return "smoke - not acceptance evidence"
+		return "smoke — not acceptance evidence"
 	}
 	return "full - acceptance candidate (targets apply)"
 }
@@ -940,7 +940,7 @@ func RenderMarkdown(r *Report) string {
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
 	w("# P05 search benchmark - %s\n\n", r.Label)
 	if r.Run.Profile == string(ProfileSmoke) {
-		w("> **smoke - not acceptance evidence.** Targets are reported below for information only (targets.md §4); smoke never claims a target was met or missed.\n\n")
+		w("> **smoke — not acceptance evidence.** Targets are reported below for information only (targets.md §4); smoke never claims a target was met or missed.\n\n")
 	}
 	w("> **Không phải host production `bro`.** CI runner numbers do not replace production latency.\n\n")
 
@@ -986,7 +986,7 @@ func RenderMarkdown(r *Report) string {
 
 	w("## Targets at concurrency 8\n\n")
 	if r.Run.Profile == string(ProfileSmoke) {
-		w("_smoke - not acceptance evidence: verdicts are informational._\n\n")
+		w("_smoke — not acceptance evidence: verdicts are informational._\n\n")
 	}
 	w("| ID | Metric | Target | Measured | Verdict |\n|---|---|---|---|---|\n")
 	for _, v := range r.Verdicts {
