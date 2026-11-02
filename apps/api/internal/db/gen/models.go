@@ -114,6 +114,42 @@ type EmailVerification struct {
 	CreatedAt            pgtype.Timestamptz
 }
 
+type EmbeddingActive struct {
+	Singleton     bool
+	GenerationID  int32
+	FlippedAt     pgtype.Timestamptz
+	FlippedReason *string
+}
+
+type EmbeddingGeneration struct {
+	ID                 int32
+	Provider           string
+	Model              string
+	ModelVersion       string
+	Preprocessing      string
+	QueryPrefix        string
+	DocPrefix          string
+	Dims               int32
+	Partitions         int32
+	HnswM              int32
+	HnswEfConstruction int32
+	SemanticMinCos     float32
+	CalibrationRef     string
+	Canary             []byte
+	ItemTable          string
+	TagTable           string
+	State              string
+	Bootstrap          bool
+	RollbackUntil      pgtype.Timestamptz
+	IndexReady         bool
+	VerifiedAt         pgtype.Timestamptz
+	VerifyReport       []byte
+	CreatedAt          pgtype.Timestamptz
+	ActivatedAt        pgtype.Timestamptz
+	RetiredAt          pgtype.Timestamptz
+	DroppedAt          pgtype.Timestamptz
+}
+
 type Entry struct {
 	ID                 uuid.UUID
 	UserID             uuid.UUID
