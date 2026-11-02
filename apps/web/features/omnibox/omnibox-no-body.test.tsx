@@ -23,6 +23,8 @@ import {
 import type { Me } from '@/lib/api/auth';
 import * as contentApi from '@/lib/api/content';
 import type { ItemSummary, Tag } from '@/lib/api/content';
+import * as searchApi from '@/lib/api/search';
+import type { SuggestResponse } from '@/lib/api/search';
 import type { CreateVaultResult } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
 import type { Sodium } from '@/lib/crypto/sodium';
@@ -265,6 +267,74 @@ function bodyDataInCache(qc: QueryClient): unknown[] {
     .map((query) => query.queryKey);
 }
 
+function makeEmptySuggestResponse(): SuggestResponse {
+  return {
+    scope: 'all',
+    limit: 8,
+    mode: 'full',
+    quota: { tag: 3, lexical: 6, near: 2 },
+    tags: [],
+    items: [],
+    has_more: false,
+    lexical_partial: [],
+    semantic: false,
+    semantic_reason: 'disabled_server',
+    near: [],
+    generation: null,
+  };
+}
+
+function dispatchNativeTextEdit(
+  textarea: HTMLElement,
+  params: {
+    readonly inputType: string;
+    readonly data?: string | null;
+    readonly nextValue: string;
+    readonly isComposing?: boolean;
+  },
+) {
+  const el = textarea as HTMLTextAreaElement;
+  el.dispatchEvent(
+    new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: params.inputType,
+      data: params.data ?? null,
+      isComposing: params.isComposing ?? false,
+    }),
+  );
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    'value',
+  )?.set;
+  setter?.call(el, params.nextValue);
+  el.dispatchEvent(
+    new InputEvent('input', {
+      bubbles: true,
+      inputType: params.inputType,
+      data: params.data ?? null,
+      isComposing: params.isComposing ?? false,
+    }),
+  );
+}
+
+function typeNativeString(textarea: HTMLElement, text: string) {
+  const el = textarea as HTMLTextAreaElement;
+  for (const ch of text) {
+    dispatchNativeTextEdit(el, {
+      inputType: 'insertText',
+      data: ch,
+      nextValue: el.value + ch,
+      isComposing: false,
+    });
+  }
+}
+
+function delayMs(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
 describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches body previews in any vault state', () => {
   const shims: Array<{ close: () => void }> = [];
 
@@ -300,6 +370,19 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
         ? MOCKED_API_TAGS.filter((t) => normalizeForPrefixMatch(t.display).startsWith(normQ))
         : MOCKED_API_TAGS;
       return { items: filtered, next_cursor: null };
+    });
+    vi.spyOn(searchApi, 'suggest').mockResolvedValue(makeEmptySuggestResponse());
+    vi.spyOn(searchApi, 'search').mockResolvedValue({
+      scope: 'all',
+      limit: 20,
+      mode: 'full',
+      items: [],
+      tags: [],
+      next_cursor: null,
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
     });
   });
 
@@ -760,5 +843,227 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     expect(bodyDataInCache(qc)).toEqual([]);
     expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
     assertNoPlaintextAttrs(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS]);
+  });
+
+  describe('P05-T17 PR 17-1 — negative privacy invariants (advisor-dec-244 FE-1)', () => {
+    function renderStandaloneOmnibox() {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+      const searchSpy = vi.spyOn(searchApi, 'search').mockResolvedValue({
+        scope: 'all',
+        limit: 20,
+        mode: 'full',
+        items: [],
+        tags: [],
+        next_cursor: null,
+        semantic: false,
+        semantic_reason: 'disabled_server',
+        near: [],
+        generation: null,
+      });
+      const itemsSpy = vi.spyOn(contentApi, 'itemsList');
+      const lookupSpy = vi.spyOn(contentApi, 'itemsLookupExact');
+      const tagsSpy = vi.spyOn(contentApi, 'tagsList');
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      qc.setQueryData(['auth', 'me', 0], {
+        user: { id: '11111111-1111-4111-8111-111111111111' },
+        settings: { semantic_suggest: true },
+        features: { semantic_available: true, semantic_external: false },
+      });
+
+      render(
+        <NextIntlClientProvider locale="en" messages={en}>
+          <QueryClientProvider client={qc}>
+            <UndoToastProvider>
+              <Omnibox />
+            </UndoToastProvider>
+          </QueryClientProvider>
+        </NextIntlClientProvider>,
+      );
+      const textarea = screen.getByRole('textbox', { name: 'Search or save' });
+      return { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy };
+    }
+
+    it('"#home:secretbody" sends no request with text after colon', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const secretBody = 'secretbody-tag-colon-9001';
+      const signals: AbortSignal[] = [];
+      // RV-T17-1-FE2-2: hold the `home` request pending so the abort on `:` is real (a settled request has already
+      // removed its controller, so aborting an empty set would leave `signals[0].aborted === false`).
+      const { promise: heldHomeSuggest, resolve: resolveHeldHomeSuggest } =
+        Promise.withResolvers<SuggestResponse>();
+      suggestSpy.mockImplementation((params, opts) => {
+        if (opts?.signal) {
+          signals.push(opts.signal);
+        }
+        if (params?.q === 'home') {
+          return heldHomeSuggest;
+        }
+        return Promise.resolve(makeEmptySuggestResponse());
+      });
+
+      // Realistic timing: type `#home`, wait for the request, then type `:secretbody` -> aborts signal and sends nothing after colon
+      typeNativeString(textarea, '#home');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(signals[0]?.aborted).toBe(false);
+
+      typeNativeString(textarea, `:${secretBody}`);
+      expect(signals[0]?.aborted).toBe(true);
+      await delayMs(160);
+      resolveHeldHomeSuggest(makeEmptySuggestResponse());
+
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+      const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
+      expect(allSuggestArgs).not.toContain(secretBody);
+      // RV-T17-1-FE3-2: JSON.stringify always writes `:` after every key, so assert on the `q` values themselves.
+      const sentQueries = suggestSpy.mock.calls.map(([p]) => p?.q);
+      expect(sentQueries).toEqual(['home']);
+      for (const q of sentQueries) {
+        expect(q ?? '').not.toMatch(/[:：]/);
+      }
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('"#home secret:x" sends nothing after colon', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const secretSuffix = 'secret-after-colon-9002';
+      const signals: AbortSignal[] = [];
+      // RV-T17-1-FE2-2: hold the `home` request pending so the abort on `:` is real (a settled request has already
+      // removed its controller, so aborting an empty set would leave `signals[0].aborted === false`).
+      const { promise: heldHomeSuggest, resolve: resolveHeldHomeSuggest } =
+        Promise.withResolvers<SuggestResponse>();
+      suggestSpy.mockImplementation((params, opts) => {
+        if (opts?.signal) {
+          signals.push(opts.signal);
+        }
+        if (params?.q === 'home') {
+          return heldHomeSuggest;
+        }
+        return Promise.resolve(makeEmptySuggestResponse());
+      });
+
+      // Type `#home secret` -> after debounce, sends only `q: 'home'` (never `secret`)
+      typeNativeString(textarea, '#home secret');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(signals[0]?.aborted).toBe(false);
+
+      // Now type `:${secretSuffix}` -> aborts the in-flight/previous request and sends no further request
+      typeNativeString(textarea, `:${secretSuffix}`);
+      expect(signals[0]?.aborted).toBe(true);
+      await delayMs(160);
+      resolveHeldHomeSuggest(makeEmptySuggestResponse());
+
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+      const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
+      expect(allSuggestArgs).not.toContain(secretSuffix);
+      expect(allSuggestArgs).not.toContain('secret');
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('"name: body" sends nothing after colon', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const secretBody = 'body-secret-payload-9003';
+
+      typeNativeString(textarea, `name: ${secretBody}`);
+      await delayMs(160);
+
+      const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
+      expect(allSuggestArgs).not.toContain(secretBody);
+      expect(allSuggestArgs).not.toContain('name:');
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('pasted text (insertFromPaste) is never sent', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const pastedSecret = 'pasted-clipboard-passphrase-9004';
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertFromPaste',
+        data: pastedSecret,
+        nextValue: pastedSecret,
+      });
+      await delayMs(160);
+
+      expect(suggestSpy).not.toHaveBeenCalled();
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('paste then type name: sends nothing before Enter', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const pastedSecret = 'pasted-first-secret-9005';
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertFromPaste',
+        data: pastedSecret,
+        nextValue: pastedSecret,
+      });
+      // Prepend / type `name: ` so draft is `name: pasted-first-secret-9005` without pressing Enter
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertText',
+        data: ':',
+        nextValue: `name: ${pastedSecret}`,
+      });
+      await delayMs(160);
+
+      expect(suggestSpy).not.toHaveBeenCalled();
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('full-width colon ("wifi： mật khẩu") and "http://x" lock the gate and send nothing after colon', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const fullWidthSecret = 'mật-khẩu-ff1a-9006';
+
+      typeNativeString(textarea, `wifi： ${fullWidthSecret}`);
+      await delayMs(160);
+      expect(suggestSpy).not.toHaveBeenCalled();
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      typeNativeString(textarea, 'http://x');
+      await delayMs(160);
+
+      expect(suggestSpy).not.toHaveBeenCalled();
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
   });
 });

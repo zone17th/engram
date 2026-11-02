@@ -16,6 +16,7 @@ import { UndoToastProvider } from '../components/ui/undo-toast';
 import { contentQueryKeys } from '../features/items/query-keys';
 import * as contentApi from '../lib/api/content';
 import type { Tag } from '../lib/api/content';
+import * as searchApi from '../lib/api/search';
 import enMessages from '../messages/en.json';
 import viMessages from '../messages/vi.json';
 
@@ -403,6 +404,32 @@ describe('Omnibox', () => {
     vi.restoreAllMocks();
     mockRouterPush.mockClear();
     mockRouterReplace.mockClear();
+    vi.spyOn(searchApi, 'suggest').mockResolvedValue({
+      scope: 'all',
+      limit: 8,
+      mode: 'full',
+      quota: { tag: 3, lexical: 6, near: 2 },
+      tags: [],
+      items: [],
+      has_more: false,
+      lexical_partial: [],
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
+    });
+    vi.spyOn(searchApi, 'search').mockResolvedValue({
+      scope: 'all',
+      limit: 20,
+      mode: 'full',
+      items: [],
+      tags: [],
+      next_cursor: null,
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
+    });
   });
 
   function renderOmnibox(ui: ReactNode = <Omnibox />) {
