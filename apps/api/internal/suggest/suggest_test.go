@@ -76,11 +76,19 @@ func (a *suggestTestAuth) addToken(token string, userID uuid.UUID) {
 
 func newSuggestTestEnv(t *testing.T, pool *pgxpool.Pool) *suggestTestEnv {
 	t.Helper()
+	return newSuggestTestEnvWarm(t, pool, 2)
+}
+
+// newSuggestTestEnvWarm is newSuggestTestEnv with an explicit number of connections to pre-open.
+// warmConns must not exceed the pool's MaxConns (a 1-connection pool passes 1, else the second
+// Acquire would wait for the first and fail after its 5 s timeout).
+func newSuggestTestEnvWarm(t *testing.T, pool *pgxpool.Pool, warmConns int) *suggestTestEnv {
+	t.Helper()
 	clk := clock.NewFixed(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
-	// Warm two concurrent pool connections so parallel item/tag lexical branches
+	// Warm concurrent pool connections so parallel item/tag lexical branches
 	// (50 ms per-branch budget) do not pay cold TCP/auth handshake overhead on CI.
-	if pool != nil {
-		warmPoolConns(t, pool, 2)
+	if pool != nil && warmConns > 0 {
+		warmPoolConns(t, pool, warmConns)
 	}
 	reg, metrics := obs.NewRegistry()
 	cursorKey, err := suggest.DeriveCursorKey([]byte("0123456789abcdef0123456789abcdef"))
@@ -2133,6 +2141,32 @@ func (d *delayTxStarter) BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.T
 	return d.inner.BeginTx(ctx, opts)
 }
 
+// newSingleConnPool opens a pgxpool limited to ONE connection, configured like dbtest.Pool
+// (MinConns=0, statement_timeout so Close cannot hang), and closes it on cleanup.
+func newSingleConnPool(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	cfg.MaxConns = 1
+	cfg.MinConns = 0
+	cfg.MaxConnIdleTime = time.Minute
+	cfg.HealthCheckPeriod = 30 * time.Second
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "15000"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("NewPool (single connection): %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 // TestSuggestSlowAcquireRealDBStillReturnsLexicalRows is the real-driver regression of FU-SB-2
 // (RV-SB2-BE-3): BeginTx takes 120 ms, longer than the whole 50 ms query budget, and then hands a
 // real pgx transaction to the branch. Before the fix the 50 ms context also covered acquire+BEGIN,
@@ -2140,17 +2174,25 @@ func (d *delayTxStarter) BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.T
 // setup has its own bound and the query gets a fresh 50 ms, so the real SET LOCAL and the real
 // query still return the fixture rows and nothing is partial.
 //
-// The query path is warmed with one normal settled request first, so a cold first Parse/plan (the
-// FU-SB-2b residual owned by Task 23) is not the condition under test. There is deliberately no
-// elapsed-time ceiling: the assertions are on rows, `lexical_partial` and the begin count.
+// Backend selection is deterministic (RV-SB2-BE-4): pgx prepares statements per connection, so
+// the service runs on a dedicated pool with MaxConns=1. The seed uses the ordinary test pool; the
+// warm-up (a settled scope=all request, which runs the item query, its tag-reference follow-up and
+// the tag query) and the measured request then execute on the SAME single connection, so every
+// statement of the measured request was already prepared there and a cold first Parse/plan (the
+// FU-SB-2b residual owned by Task 23) is not the condition under test. With one connection the
+// two branches serialize on acquire; that wait is setup (BranchSetupTimeout) and outside the 50 ms
+// query budget. There is deliberately no elapsed-time ceiling: the assertions are on rows,
+// `lexical_partial` and the begin count.
 func TestSuggestSlowAcquireRealDBStillReturnsLexicalRows(t *testing.T) {
 	dsn := startTestDB(t) // skips under -short like the other DB tests
 	dbtest.MigrateUp(t, dsn)
-	pool := dbtest.Pool(t, dsn)
+	seedPool := dbtest.Pool(t, dsn)
 	ctx := context.Background()
 
-	_, users := loadAndSeedCorpus(t, ctx, pool)
-	env := newSuggestTestEnv(t, pool)
+	_, users := loadAndSeedCorpus(t, ctx, seedPool)
+
+	pool := newSingleConnPool(t, dsn)
+	env := newSuggestTestEnvWarm(t, pool, 1)
 	env.auth.addToken("tok-u1", users["u1"])
 
 	params := url.Values{"q": {"wifi"}, "scope": {"all"}, "limit": {"8"}}
