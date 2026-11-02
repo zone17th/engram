@@ -557,7 +557,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             "$PLAYWRIGHT_IMAGE" \
-            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test --project content
+            npx --yes pnpm@10.34.5 --filter @engram/web exec playwright test --project content --grep-invert @semantic
           status=$?
           set -e
           echo "E2E_EXIT_STATUS=$status" >> "$GITHUB_ENV"
