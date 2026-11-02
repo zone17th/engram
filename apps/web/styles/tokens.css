@@ -976,9 +976,28 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
   }
   .tag-menu-trigger, .btn-icon { min-width: 44px; }
   .chip-x::after {
-    content: ''; position: absolute; left: 50%; top: 50%;
-    width: 44px; height: 44px; transform: translate(-50%, -50%);
+    content: none;
   }
+  .chip-x {
+    min-width: 44px; min-height: 44px;
+  }
+  .json-cell-input { min-height: 44px; }
+  .json-col-idx, .json-table td.json-col-act { width: 68px; min-width: 68px; }
+  /* FU11-COARSE-STICKY (advisor-dec-254): Chromium fails to hit-test the bottom band of buttons
+     inside a `position: sticky` table cell within an `overflow-x: auto` scroller (CI 41376832862,
+     41379208126). Under a coarse pointer, drop sticky positioning on the action column and let
+     nested tables fit within the root table width so the action column stays on-screen. */
+  .json-table th.json-col-idx:last-child,
+  .json-table td.json-col-act {
+    position: static;
+    right: auto;
+    z-index: auto;
+    box-shadow: none;
+  }
+  .json-table td.json-col-act .btn-sm { display: flex; margin-left: auto; min-width: 44px; min-height: 44px; }
+  .json-table .json-nest .json-table thead ~ tbody > tr > td:not(.k):not(.json-col-act):not([colspan]) { min-width: 0; }
+  .json-cell-btn, .json-type-btn,
+  .json-cell-edit-wrap .btn-sm, .json-table-toolbar .btn-sm { min-width: 44px; }
 }
 
 :focus-visible {

@@ -472,4 +472,108 @@ test.describe('P04 authui completeness, legal pages, and mocked forgot/reset flo
     await expect(page.getByTestId('login-reset-banner')).toBeVisible();
     await expect(page).not.toHaveURL(/reset=done/);
   });
+
+  test('FU15-LOCALE-SWITCH: auth header EN/VI toggle updates login, signup, and forgot-password, persists across reloads, and sends locale in forgot request', async ({
+    page,
+  }) => {
+    const origin = new URL(process.env.BASE_URL ?? 'http://127.0.0.1:3000').origin;
+    await page.context().addCookies([{ name: 'sabk_locale', value: 'en', url: `${origin}/` }]);
+
+    await page.route('**/api/v1/auth/config', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          oauth_providers: ['google'],
+          email_verification_required: false,
+          captcha_site_key: null,
+          mail_delivery_available: true,
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/auth/password/forgot', async (route) => {
+      await route.fulfill({ status: 202, body: '' });
+    });
+
+    // 1. Login: switch EN -> VI, verify heading/button and reload persistence
+    await page.goto('/app/auth/login');
+    await waitForAuthPageReady(page);
+    const enGroup = page.getByRole('radiogroup', { name: 'Language' });
+    const enRadio = enGroup.getByRole('radio', { name: 'English (EN)' });
+    const viRadio = enGroup.getByRole('radio', { name: 'Vietnamese (VI)' });
+    await expect(enRadio).toHaveAttribute('aria-checked', 'true');
+    await expect(enRadio).toHaveAttribute('data-state', 'on');
+    await expect(enRadio).toHaveAttribute('lang', 'en');
+    await expect(viRadio).toHaveAttribute('aria-checked', 'false');
+    await expect(viRadio).toHaveAttribute('data-state', 'off');
+    await expect(viRadio).toHaveAttribute('lang', 'vi');
+
+    // RV-T25-FE1-9: roving focus moves with ArrowRight and Enter activates the focused option
+    await enRadio.focus();
+    await expect(enRadio).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await expect(viRadio).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    const viGroup = page.getByRole('radiogroup', { name: 'Ngôn ngữ' });
+    await expect(viGroup.getByRole('radio', { name: 'Tiếng Việt (VI)' })).toHaveAttribute('aria-checked', 'true', {
+      timeout: 15_000,
+    });
+    await expect(page.getByRole('heading', { level: 1, name: 'Đăng nhập' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Đăng nhập', exact: true })).toBeVisible();
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForAuthPageReady(page);
+    await expect(page.getByRole('heading', { level: 1, name: 'Đăng nhập' })).toBeVisible();
+    await expect(
+      page.getByRole('radiogroup', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'Tiếng Việt (VI)' }),
+    ).toHaveAttribute('aria-checked', 'true');
+
+    // 2. Signup: verify VI persists, switch VI -> EN -> VI, reload keeps VI
+    await page.goto('/app/auth/signup');
+    await waitForAuthPageReady(page);
+    await expect(page.getByRole('heading', { level: 1, name: 'Tạo tài khoản' })).toBeVisible();
+    await page.getByRole('radiogroup', { name: 'Ngôn ngữ' }).getByRole('radio', { name: 'English (EN)' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Create account' })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole('button', { name: 'Create account', exact: true })).toBeVisible();
+
+    await page.getByRole('radiogroup', { name: 'Language' }).getByRole('radio', { name: 'Vietnamese (VI)' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Tạo tài khoản' })).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForAuthPageReady(page);
+    await expect(page.getByRole('heading', { level: 1, name: 'Tạo tài khoản' })).toBeVisible();
+
+    // 3. Forgot-password: start in EN, switch to VI, reload keeps it, and POST /auth/password/forgot carries locale: 'vi'
+    await page.context().addCookies([{ name: 'sabk_locale', value: 'en', url: `${origin}/` }]);
+    await page.goto('/app/auth/forgot-password');
+    await waitForAuthPageReady(page);
+    await expect(page.getByRole('heading', { level: 1, name: 'Reset login password' })).toBeVisible();
+
+    await page.getByRole('radiogroup', { name: 'Language' }).getByRole('radio', { name: 'Vietnamese (VI)' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Quên mật khẩu đăng nhập' })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole('button', { name: 'Gửi hướng dẫn đặt lại' })).toBeVisible();
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await waitForAuthPageReady(page);
+    await expect(page.getByRole('heading', { level: 1, name: 'Quên mật khẩu đăng nhập' })).toBeVisible();
+
+    await page.getByRole('textbox', { name: 'Email', exact: true }).fill('switched.locale@example.test');
+    const forgotRequestPromise = page.waitForRequest(
+      (req) => req.method() === 'POST' && req.url().includes('/auth/password/forgot'),
+    );
+    await page.getByRole('button', { name: 'Gửi hướng dẫn đặt lại' }).click();
+    const forgotRequest = await forgotRequestPromise;
+    expect(forgotRequest.postDataJSON()).toMatchObject({
+      email: 'switched.locale@example.test',
+      locale: 'vi',
+    });
+    await expect(page.getByTestId('forgot-sent')).toBeVisible();
+  });
 });
