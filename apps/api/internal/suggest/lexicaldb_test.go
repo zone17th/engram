@@ -975,7 +975,26 @@ func TestLexicalIndexesUsed(t *testing.T) {
 	// Drop competing user-leading non-lexical btree indexes inside this rolled-back transaction so PostgreSQL
 	// cannot satisfy all OR arms via a single full-user btree scan + Filter when enable_seqscan=off,
 	// proving that the prefix and trigram indexes themselves are indexable for the production SQL.
+	// Before dropping item_user_id_id_key / tag_user_id_id_key (such as entry_user_id_item_id_fkey on entry
+	// and item_tag_item_id_fkey / item_tag_tag_id_fkey on item_tag), look up and drop every dependent
+	// foreign-key constraint referencing item or tag from pg_constraint inside this rolled-back transaction
+	// so both current (0006_content.up.sql) and future migrations are handled without broad CASCADE.
 	if _, err := tx.Exec(ctx, `
+		DO $$
+		DECLARE
+			r record;
+		BEGIN
+			FOR r IN
+				SELECT c.conrelid::regclass AS tbl, c.conname
+				FROM pg_constraint c
+				WHERE c.contype = 'f'
+				  AND c.confrelid IN ('item'::regclass, 'tag'::regclass)
+				ORDER BY c.conrelid::regclass::text, c.conname
+			LOOP
+				EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.conname);
+			END LOOP;
+		END
+		$$;
 		ALTER TABLE item DROP CONSTRAINT IF EXISTS item_user_id_id_key;
 		ALTER TABLE tag DROP CONSTRAINT IF EXISTS tag_user_id_id_key;
 		DROP INDEX IF EXISTS
