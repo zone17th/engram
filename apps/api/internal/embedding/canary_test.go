@@ -54,7 +54,7 @@ func TestCanaryFirstRunIdenticalAndPerturbedDrift(t *testing.T) {
 		context.Background(),
 		embedding.ClientConfig{
 			Provider:         embedding.ProviderOpenAICompat,
-			BaseURL:          srv.URL() + "/v1",
+			BaseURL:          embedding.NewEndpoint(srv.URL() + "/v1"),
 			APIKey:           embedding.NewSecret("sk-canary-test-key"),
 			Model:            "openrouter/qwen/qwen3-embedding-8b",
 			Dims:             16,
@@ -157,7 +157,7 @@ func TestCanaryFirstRunIdenticalAndPerturbedDrift(t *testing.T) {
 
 func TestCanaryDriftWarningDoesNotLogProviderResponseStrings(t *testing.T) {
 	const (
-		sensitiveModelMarker = "confidential-model-id-http://internal.example.invalid:8080/secret-model"
+		sensitiveModelMarker = "confidential-model-id/internal.example.invalid:8080/secret-model"
 		sensitiveSHAMarker   = "confidential-sha-marker-sk-secret-99887766"
 	)
 
@@ -172,7 +172,7 @@ func TestCanaryDriftWarningDoesNotLogProviderResponseStrings(t *testing.T) {
 		context.Background(),
 		embedding.ClientConfig{
 			Provider:    embedding.ProviderTEI,
-			BaseURL:     srv.URL(),
+			BaseURL:     embedding.NewEndpoint(srv.URL()),
 			Dims:        16,
 			QueryPrefix: "query: ",
 			DocPrefix:   "passage: ",

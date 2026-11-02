@@ -67,7 +67,7 @@ func TestProviderLogsAndErrorsContainNoSensitiveData(t *testing.T) {
 	openAIProv, err := embedding.NewOpenAICompat(
 		embedding.ClientConfig{
 			Provider:         embedding.ProviderOpenAICompat,
-			BaseURL:          fullBaseURL,
+			BaseURL:          embedding.NewEndpoint(fullBaseURL),
 			APIKey:           embedding.NewSecret(secretAPIKey),
 			Model:            "openrouter/qwen/qwen3-embedding-8b",
 			Dims:             8,
@@ -86,7 +86,7 @@ func TestProviderLogsAndErrorsContainNoSensitiveData(t *testing.T) {
 		context.Background(),
 		embedding.ClientConfig{
 			Provider:        embedding.ProviderTEI,
-			BaseURL:         fullBaseURL,
+			BaseURL:         embedding.NewEndpoint(fullBaseURL),
 			Dims:            8,
 			QueryPrefix:     "query: ",
 			DocPrefix:       "passage: ",
@@ -226,14 +226,17 @@ func TestProviderLogsAndErrorsContainNoSensitiveData(t *testing.T) {
 
 func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 	const (
-		secretAPIKey   = "sk-live-value-format-sentinel-key-99887766"
-		secretPathSlug = "/secret-gateway-marker-776655/v1"
+		secretAPIKey       = "sk-live-value-format-sentinel-key-99887766"
+		secretPathSlug     = "/secret-gateway-marker-776655/v1"
+		sensitiveTEIModel  = "BAAI/bge-m3-sensitive-info-marker-445566"
+		sensitiveTEISHA    = "sha-sensitive-revision-marker-778899"
+		sensitiveOpenAIMod = "openrouter/qwen/qwen3-embedding-8b-marker-112233"
 	)
 
 	embedSrv := embedtest.NewServer(embedtest.Options{
 		Dims:     8,
-		ModelID:  "BAAI/bge-m3",
-		ModelSHA: "sha-redact-test",
+		ModelID:  sensitiveTEIModel,
+		ModelSHA: sensitiveTEISHA,
 	})
 	defer embedSrv.Close()
 
@@ -251,9 +254,9 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 
 	openAICfg := embedding.ClientConfig{
 		Provider:         embedding.ProviderOpenAICompat,
-		BaseURL:          fullBaseURL,
+		BaseURL:          embedding.NewEndpoint(fullBaseURL),
 		APIKey:           embedding.NewSecret(secretAPIKey),
-		Model:            "openrouter/qwen/qwen3-embedding-8b",
+		Model:            sensitiveOpenAIMod,
 		Dims:             8,
 		QueryInstruction: "Retrieve matching items",
 	}
@@ -265,7 +268,7 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 
 	teiCfg := embedding.ClientConfig{
 		Provider:    embedding.ProviderTEI,
-		BaseURL:     fullBaseURL,
+		BaseURL:     embedding.NewEndpoint(fullBaseURL),
 		Dims:        8,
 		QueryPrefix: "query: ",
 		DocPrefix:   "passage: ",
@@ -275,7 +278,12 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 		t.Fatalf("NewTEI: %v", err)
 	}
 	teiVal := *teiPtr
-
+	if teiPtr.Model() != "tei/"+sensitiveTEIModel || !strings.HasPrefix(teiPtr.ModelVersion(), sensitiveTEISHA+";") {
+		t.Fatalf("TEI identity methods changed: Model()=%q ModelVersion()=%q", teiPtr.Model(), teiPtr.ModelVersion())
+	}
+	if openAIPtr.Model() != "openai_compat/"+sensitiveOpenAIMod {
+		t.Fatalf("OpenAICompat.Model() = %q", openAIPtr.Model())
+	}
 	var textLogBuf, jsonLogBuf bytes.Buffer
 	textLogger := slog.New(slog.NewTextHandler(&textLogBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	jsonLogger := slog.New(slog.NewJSONHandler(&jsonLogBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -315,9 +323,10 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 	}
 
 	unexportedSecretHolder := struct{ key embedding.Secret }{key: openAICfg.APIKey}
+	unexportedEndpointHolder := struct{ ep embedding.Endpoint }{ep: openAICfg.BaseURL}
 	unexportedProviderHolder := struct{ prov embedding.OpenAICompat }{prov: openAIVal}
+	unexportedTEIHolder := struct{ prov embedding.TEI }{prov: teiVal}
 	unexportedCfgHolder := struct{ cfg embedding.ClientConfig }{cfg: openAICfg}
-
 	representations := map[string]string{
 		"openai_ptr_%v":            fmt.Sprintf("%v", openAIPtr),
 		"openai_ptr_%+v":           fmt.Sprintf("%+v", openAIPtr),
@@ -332,18 +341,28 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 		"unexported_secret_%v":     fmt.Sprintf("%v", unexportedSecretHolder),
 		"unexported_secret_%+v":    fmt.Sprintf("%+v", unexportedSecretHolder),
 		"unexported_secret_%#v":    fmt.Sprintf("%#v", unexportedSecretHolder),
+		"unexported_endpoint_%v":   fmt.Sprintf("%v", unexportedEndpointHolder),
+		"unexported_endpoint_%+v":  fmt.Sprintf("%+v", unexportedEndpointHolder),
+		"unexported_endpoint_%#v":  fmt.Sprintf("%#v", unexportedEndpointHolder),
 		"unexported_prov_%v":       fmt.Sprintf("%v", unexportedProviderHolder),
 		"unexported_prov_%+v":      fmt.Sprintf("%+v", unexportedProviderHolder),
 		"unexported_prov_%#v":      fmt.Sprintf("%#v", unexportedProviderHolder),
+		"unexported_tei_%v":        fmt.Sprintf("%v", unexportedTEIHolder),
+		"unexported_tei_%+v":       fmt.Sprintf("%+v", unexportedTEIHolder),
+		"unexported_tei_%#v":       fmt.Sprintf("%#v", unexportedTEIHolder),
 		"unexported_clientcfg_%v":  fmt.Sprintf("%v", unexportedCfgHolder),
 		"unexported_clientcfg_%+v": fmt.Sprintf("%+v", unexportedCfgHolder),
 		"unexported_clientcfg_%#v": fmt.Sprintf("%#v", unexportedCfgHolder),
 		"tei_ptr_%v":               fmt.Sprintf("%v", teiPtr),
 		"tei_ptr_%+v":              fmt.Sprintf("%+v", teiPtr),
 		"tei_ptr_%#v":              fmt.Sprintf("%#v", teiPtr),
+		"tei_ptr_%s":               fmt.Sprintf("%s", teiPtr),
+		"tei_ptr_%q":               fmt.Sprintf("%q", teiPtr),
 		"tei_val_%v":               fmt.Sprintf("%v", teiVal),
 		"tei_val_%+v":              fmt.Sprintf("%+v", teiVal),
 		"tei_val_%#v":              fmt.Sprintf("%#v", teiVal),
+		"tei_val_%s":               fmt.Sprintf("%s", teiVal),
+		"tei_val_%q":               fmt.Sprintf("%q", teiVal),
 		"cfg_%v":                   fmt.Sprintf("%v", openAICfg),
 		"cfg_%+v":                  fmt.Sprintf("%+v", openAICfg),
 		"cfg_%#v":                  fmt.Sprintf("%#v", openAICfg),
@@ -370,11 +389,51 @@ func TestProviderValueAndPointerRedactionInFmtJSONAndSlog(t *testing.T) {
 		{name: "full base URL", value: fullBaseURL},
 		{name: "server base URL", value: muxSrv.URL},
 	}
-
 	for label, repr := range representations {
 		for _, sentinel := range forbidden {
 			if strings.Contains(repr, sentinel.value) {
 				t.Fatalf("%s leaked sentinel %s", label, sentinel.name)
+			}
+		}
+	}
+
+	// RV52B-BE2-2: Direct fmt and slog of TEI and OpenAICompat providers (value and pointer)
+	// must not publish /info response strings (model_id, model_sha) or raw model strings.
+	providerDiagnosticSurfaces := map[string]string{
+		"openai_ptr_%v":  representations["openai_ptr_%v"],
+		"openai_ptr_%+v": representations["openai_ptr_%+v"],
+		"openai_ptr_%#v": representations["openai_ptr_%#v"],
+		"openai_ptr_%s":  representations["openai_ptr_%s"],
+		"openai_ptr_%q":  representations["openai_ptr_%q"],
+		"openai_val_%v":  representations["openai_val_%v"],
+		"openai_val_%+v": representations["openai_val_%+v"],
+		"openai_val_%#v": representations["openai_val_%#v"],
+		"openai_val_%s":  representations["openai_val_%s"],
+		"openai_val_%q":  representations["openai_val_%q"],
+		"tei_ptr_%v":     representations["tei_ptr_%v"],
+		"tei_ptr_%+v":    representations["tei_ptr_%+v"],
+		"tei_ptr_%#v":    representations["tei_ptr_%#v"],
+		"tei_ptr_%s":     representations["tei_ptr_%s"],
+		"tei_ptr_%q":     representations["tei_ptr_%q"],
+		"tei_val_%v":     representations["tei_val_%v"],
+		"tei_val_%+v":    representations["tei_val_%+v"],
+		"tei_val_%#v":    representations["tei_val_%#v"],
+		"tei_val_%s":     representations["tei_val_%s"],
+		"tei_val_%q":     representations["tei_val_%q"],
+		"slog_text":      representations["slog_text"],
+		"slog_json":      representations["slog_json"],
+	}
+	responseMarkers := []struct {
+		name  string
+		value string
+	}{
+		{name: "TEI /info model_id marker", value: sensitiveTEIModel},
+		{name: "TEI /info model_sha marker", value: sensitiveTEISHA},
+	}
+	for label, repr := range providerDiagnosticSurfaces {
+		for _, marker := range responseMarkers {
+			if strings.Contains(repr, marker.value) {
+				t.Fatalf("%s leaked %s", label, marker.name)
 			}
 		}
 	}

@@ -42,7 +42,7 @@ func TestOpenAICompatRequestShapeAndNormalization(t *testing.T) {
 
 	cfg := embedding.ClientConfig{
 		Provider:         embedding.ProviderOpenAICompat,
-		BaseURL:          srv.URL() + "/v1",
+		BaseURL:          embedding.NewEndpoint(srv.URL() + "/v1"),
 		APIKey:           embedding.NewSecret(apiKey),
 		Model:            modelName,
 		Dims:             16,
@@ -150,7 +150,7 @@ func TestOpenAICompatBatchLimit(t *testing.T) {
 
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider: embedding.ProviderOpenAICompat,
-		BaseURL:  srv.URL(),
+		BaseURL:  embedding.NewEndpoint(srv.URL()),
 		APIKey:   embedding.NewSecret("sk-test-batch-limit"),
 		Model:    "qwen",
 		Dims:     8,
@@ -177,7 +177,7 @@ func TestOpenAICompatBadResponseAndFaultModes(t *testing.T) {
 
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider:        embedding.ProviderOpenAICompat,
-		BaseURL:         srv.URL() + "/v1",
+		BaseURL:         embedding.NewEndpoint(srv.URL() + "/v1"),
 		APIKey:          embedding.NewSecret("sk-test-faults"),
 		Model:           "qwen",
 		Dims:            8,
@@ -228,7 +228,7 @@ func TestOpenAICompatBadResponseAndFaultModes(t *testing.T) {
 
 		p2, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 			Provider: embedding.ProviderOpenAICompat,
-			BaseURL:  wrongCountSrv.URL,
+			BaseURL:  embedding.NewEndpoint(wrongCountSrv.URL),
 			APIKey:   embedding.NewSecret("sk-test"),
 			Model:    "qwen",
 			Dims:     8,
@@ -255,7 +255,7 @@ func TestOpenAICompatBadResponseAndFaultModes(t *testing.T) {
 			}))
 			pNull, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 				Provider: embedding.ProviderOpenAICompat,
-				BaseURL:  nullSrv.URL,
+				BaseURL:  embedding.NewEndpoint(nullSrv.URL),
 				APIKey:   embedding.NewSecret("sk-test-null"),
 				Model:    "qwen",
 				Dims:     8,
@@ -327,7 +327,7 @@ func TestOpenAICompatRedirectNotFollowed(t *testing.T) {
 
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider: embedding.ProviderOpenAICompat,
-		BaseURL:  srv.URL() + "/v1",
+		BaseURL:  embedding.NewEndpoint(srv.URL() + "/v1"),
 		APIKey:   embedding.NewSecret("sk-redirect-secret"),
 		Model:    "qwen",
 		Dims:     8,
@@ -358,7 +358,7 @@ func TestNewClientFromConfigComputesFullIdentity(t *testing.T) {
 
 	primaryCfg := embedding.ClientConfig{
 		Provider:         embedding.ProviderOpenAICompat,
-		BaseURL:          srv.URL() + "/v1",
+		BaseURL:          embedding.NewEndpoint(srv.URL() + "/v1"),
 		APIKey:           embedding.NewSecret("sk-primary-key"),
 		Model:            "openrouter/qwen/qwen3-embedding-8b",
 		Dims:             16,
@@ -366,7 +366,7 @@ func TestNewClientFromConfigComputesFullIdentity(t *testing.T) {
 	}
 	shadowCfg := embedding.ClientConfig{
 		Provider:    embedding.ProviderTEI,
-		BaseURL:     srv.URL(),
+		BaseURL:     embedding.NewEndpoint(srv.URL()),
 		Dims:        16,
 		QueryPrefix: "query: ",
 		DocPrefix:   "passage: ",
@@ -434,19 +434,33 @@ func TestOpenAICompatNon2xxDoesNotBlockOnStalledBody(t *testing.T) {
 		stalledSrv.Close()
 	}()
 
+	const provTimeout = 5 * time.Second
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider:     embedding.ProviderOpenAICompat,
-		BaseURL:      stalledSrv.URL,
+		BaseURL:      embedding.NewEndpoint(stalledSrv.URL),
 		APIKey:       embedding.NewSecret("sk-stalled-429"),
 		Model:        "qwen",
 		Dims:         8,
-		QueryTimeout: 50 * time.Millisecond,
+		QueryTimeout: provTimeout,
 	})
 	if err != nil {
 		t.Fatalf("NewOpenAICompat: %v", err)
 	}
 
-	_, err = prov.EmbedQuery(context.Background(), "wifi")
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, callErr := prov.EmbedQuery(context.Background(), "wifi")
+		done <- callErr
+	}()
+	select {
+	case err = <-done:
+	case <-time.After(provTimeout / 2):
+		t.Fatal("EmbedQuery blocked waiting on stalled 429 body instead of returning on status headers")
+	}
+	if elapsed := time.Since(start); elapsed >= provTimeout/2 {
+		t.Fatalf("stalled 429 took %v (>= %v), expected early return before provider timeout", elapsed, provTimeout/2)
+	}
 	var pe *embedding.ProviderError
 	if !errors.As(err, &pe) || pe.Class != embedding.Class429 || pe.HTTPStatus != http.StatusTooManyRequests || pe.RetryAfter != 18*time.Second {
 		t.Fatalf("stalled 429 err = %v (%+v), want Class429 status 429 RetryAfter=18s", err, pe)
@@ -460,7 +474,7 @@ func TestOpenAICompatCallerCancelPreservesCanceledSentinel(t *testing.T) {
 
 	prov, err := embedding.NewOpenAICompat(embedding.ClientConfig{
 		Provider:     embedding.ProviderOpenAICompat,
-		BaseURL:      srv.URL() + "/v1",
+		BaseURL:      embedding.NewEndpoint(srv.URL() + "/v1"),
 		APIKey:       embedding.NewSecret("sk-cancel-secret-key"),
 		Model:        "qwen",
 		Dims:         8,
@@ -505,7 +519,7 @@ func TestFactoryEnforcesTransportPolicyAndTrimmedProviderPrefixes(t *testing.T) 
 		context.Background(),
 		embedding.ClientConfig{
 			Provider:         "  openai_compat  ",
-			BaseURL:          "http://rebind-factory.example.invalid:8080/v1",
+			BaseURL:          embedding.NewEndpoint("http://rebind-factory.example.invalid:8080/v1"),
 			APIKey:           embedding.NewSecret("sk-factory-policy"),
 			Model:            "qwen",
 			Dims:             8,
@@ -537,7 +551,7 @@ func TestFactoryEnforcesTransportPolicyAndTrimmedProviderPrefixes(t *testing.T) 
 		context.Background(),
 		embedding.ClientConfig{
 			Provider: " tei ",
-			BaseURL:  "http://tei-public.example.invalid:8080",
+			BaseURL:  embedding.NewEndpoint("http://tei-public.example.invalid:8080"),
 			Dims:     8,
 		},
 		embedding.RolePrimary,
@@ -559,7 +573,7 @@ func TestFactoryEnforcesTransportPolicyAndTrimmedProviderPrefixes(t *testing.T) 
 		context.Background(),
 		embedding.ClientConfig{
 			Provider:    "  tei\t",
-			BaseURL:     srv.URL(),
+			BaseURL:     embedding.NewEndpoint(srv.URL()),
 			Dims:        8,
 			QueryPrefix: "query: ",
 			DocPrefix:   "passage: ",

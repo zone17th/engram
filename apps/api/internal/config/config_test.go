@@ -842,7 +842,7 @@ func TestP05ProviderValidationAndDefaultTimeouts(t *testing.T) {
 					t.Fatalf("EmbeddingQueryTimeout = %v, muốn 300ms", cfg.EmbeddingQueryTimeout)
 				}
 				prim := cfg.EmbeddingPrimary()
-				if prim.Provider != "tei" || prim.BaseURL != "http://10.0.0.5:8080" || prim.QueryPrefix != "query: " || prim.DocPrefix != "passage: " || prim.QueryTimeout != 300*time.Millisecond {
+				if prim.Provider != "tei" || prim.BaseURL.Reveal() != "http://10.0.0.5:8080" || prim.QueryPrefix != "query: " || prim.DocPrefix != "passage: " || prim.QueryTimeout != 300*time.Millisecond {
 					t.Fatalf("EmbeddingPrimary() = %+v", prim)
 				}
 			})
@@ -1147,9 +1147,11 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 		const distinctiveShadowKey = "sk-test-distinctive-shadow-secret-112233"
 		const primaryURL = "https://primary-router.example.invalid/v1/secret-path"
 		const shadowURL = "https://shadow-router.example.invalid/v1/secret-path"
+		const teiURL = "https://tei-internal.example.invalid/v1/secret-tei-path"
 
 		setEnv(t, map[string]string{
 			"EMBEDDING_PROVIDER":        "openai_compat",
+			"TEI_URL":                   teiURL,
 			"EMBEDDING_BASE_URL":        primaryURL,
 			"EMBEDDING_API_KEY":         distinctivePrimaryKey,
 			"EMBEDDING_SHADOW_PROVIDER": "openai_compat",
@@ -1182,6 +1184,9 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 		}
 		if cfg.EmbeddingAPIKey.Reveal() != distinctivePrimaryKey || cfg.EmbeddingShadowAPIKey.Reveal() != distinctiveShadowKey {
 			t.Fatal("cfg.EmbeddingAPIKey / EmbeddingShadowAPIKey Reveal() không khớp")
+		}
+		if cfg.TEIURL.Reveal() != teiURL || cfg.EmbeddingBaseURL.Reveal() != primaryURL || cfg.EmbeddingShadowBaseURL.Reveal() != shadowURL {
+			t.Fatal("cfg.TEIURL / EmbeddingBaseURL / EmbeddingShadowBaseURL Reveal() không khớp")
 		}
 
 		cfgJSON, err := json.Marshal(cfg)
@@ -1222,8 +1227,10 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 
 		unexportedSecretPrimary := struct{ key embedding.Secret }{key: cfg.EmbeddingAPIKey}
 		unexportedSecretShadow := struct{ key embedding.Secret }{key: cfg.EmbeddingShadowAPIKey}
+		unexportedEndpointTEI := struct{ ep embedding.Endpoint }{ep: cfg.TEIURL}
+		unexportedEndpointPrimary := struct{ ep embedding.Endpoint }{ep: cfg.EmbeddingBaseURL}
+		unexportedEndpointShadow := struct{ ep embedding.Endpoint }{ep: cfg.EmbeddingShadowBaseURL}
 		unexportedCfgHolder := struct{ cfg config.Config }{cfg: *cfg}
-
 		formattedParts := []string{
 			fmt.Sprint(redacted),
 			fmtMap(redacted),
@@ -1231,6 +1238,9 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 			fmt.Sprintf("%v|%s|%+v|%#v", *cfg, *cfg, *cfg, *cfg),
 			fmt.Sprintf("%v|%+v|%#v", unexportedSecretPrimary, unexportedSecretPrimary, unexportedSecretPrimary),
 			fmt.Sprintf("%v|%+v|%#v", unexportedSecretShadow, unexportedSecretShadow, unexportedSecretShadow),
+			fmt.Sprintf("%v|%+v|%#v", unexportedEndpointTEI, unexportedEndpointTEI, unexportedEndpointTEI),
+			fmt.Sprintf("%v|%+v|%#v", unexportedEndpointPrimary, unexportedEndpointPrimary, unexportedEndpointPrimary),
+			fmt.Sprintf("%v|%+v|%#v", unexportedEndpointShadow, unexportedEndpointShadow, unexportedEndpointShadow),
 			fmt.Sprintf("%v|%+v|%#v", unexportedCfgHolder, unexportedCfgHolder, unexportedCfgHolder),
 			fmt.Sprintf("%v|%s|%+v|%#v|%q", primaryClient, primaryClient, primaryClient, primaryClient, primaryClient),
 			fmt.Sprintf("%v|%s|%+v|%#v|%q", &primaryClient, &primaryClient, &primaryClient, &primaryClient, &primaryClient),
@@ -1253,6 +1263,7 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 			{name: "shadow API key", value: distinctiveShadowKey},
 			{name: "primary URL", value: primaryURL},
 			{name: "shadow URL", value: shadowURL},
+			{name: "TEI URL", value: teiURL},
 		}
 		for partIdx, part := range formattedParts {
 			for _, sentinel := range sentinels {
@@ -1261,7 +1272,7 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 				}
 			}
 		}
-		for _, sentinel := range sentinels[:2] {
+		for _, sentinel := range sentinels {
 			if strings.Contains(string(cfgJSON), sentinel.value) {
 				t.Fatalf("json.Marshal(cfg) làm lộ sentinel %s", sentinel.name)
 			}
@@ -1295,11 +1306,33 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 				t.Fatalf("errCase[%d]: Load() = nil, muốn lỗi", i)
 			}
 			errStr := loadErr.Error()
-			for _, sentinel := range sentinels[:2] {
+			for _, sentinel := range sentinels {
 				if strings.Contains(errStr, sentinel.value) {
 					t.Fatalf("errCase[%d]: lỗi Load() làm lộ sentinel %s", i, sentinel.name)
 				}
 			}
+		}
+
+		// Zero-value Secret and Endpoint regression: nil-pointer safe Reveal, IsEmpty, fmt, JSON, text, slog.
+		var zeroSecret embedding.Secret
+		var zeroEndpoint embedding.Endpoint
+		if !zeroSecret.IsEmpty() || zeroSecret.Reveal() != "" {
+			t.Fatalf("zero Secret: IsEmpty=%t Reveal=%q", zeroSecret.IsEmpty(), zeroSecret.Reveal())
+		}
+		if !zeroEndpoint.IsEmpty() || zeroEndpoint.Reveal() != "" {
+			t.Fatalf("zero Endpoint: IsEmpty=%t Reveal=%q", zeroEndpoint.IsEmpty(), zeroEndpoint.Reveal())
+		}
+		if embedding.NewSecret("   ").Reveal() != "" || !embedding.NewSecret("   ").IsEmpty() {
+			t.Fatal("whitespace Secret phải chuẩn hoá về zero Secret")
+		}
+		if embedding.NewEndpoint("   ").Reveal() != "" || !embedding.NewEndpoint("   ").IsEmpty() {
+			t.Fatal("whitespace Endpoint phải chuẩn hoá về zero Endpoint")
+		}
+		if fmt.Sprintf("%v|%#v|%q", zeroSecret, zeroSecret, zeroSecret) != `[redacted]|[redacted]|"[redacted]"` {
+			t.Fatalf("zero Secret fmt = %s", fmt.Sprintf("%v|%#v|%q", zeroSecret, zeroSecret, zeroSecret))
+		}
+		if fmt.Sprintf("%v|%#v|%q", zeroEndpoint, zeroEndpoint, zeroEndpoint) != `[redacted]|[redacted]|"[redacted]"` {
+			t.Fatalf("zero Endpoint fmt = %s", fmt.Sprintf("%v|%#v|%q", zeroEndpoint, zeroEndpoint, zeroEndpoint))
 		}
 	})
 }

@@ -3,15 +3,15 @@ package embedding_test
 import (
 	"context"
 	"errors"
+	"github.com/zone17th/engram/apps/api/internal/embedding"
+	"github.com/zone17th/engram/apps/api/internal/embedding/embedtest"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/zone17th/engram/apps/api/internal/embedding"
-	"github.com/zone17th/engram/apps/api/internal/embedding/embedtest"
 )
 
 func TestTEIBootInfoPrefixesAndNormalization(t *testing.T) {
@@ -25,7 +25,7 @@ func TestTEIBootInfoPrefixesAndNormalization(t *testing.T) {
 
 	cfg := embedding.ClientConfig{
 		Provider:        embedding.ProviderTEI,
-		BaseURL:         srv.URL(),
+		BaseURL:         embedding.NewEndpoint(srv.URL()),
 		Dims:            16,
 		QueryPrefix:     "query: ",
 		DocPrefix:       "passage: ",
@@ -111,7 +111,7 @@ func TestTEIDimsMismatchAndBootFailure(t *testing.T) {
 	// Configured dims = 32, server returns 16 -> dims mismatch error.
 	prov, err := embedding.NewTEI(context.Background(), embedding.ClientConfig{
 		Provider: embedding.ProviderTEI,
-		BaseURL:  srv.URL(),
+		BaseURL:  embedding.NewEndpoint(srv.URL()),
 		Dims:     32,
 	})
 	if err != nil {
@@ -131,7 +131,7 @@ func TestTEIDimsMismatchAndBootFailure(t *testing.T) {
 	srv.Set5xx(503)
 	_, err = embedding.NewTEI(context.Background(), embedding.ClientConfig{
 		Provider: embedding.ProviderTEI,
-		BaseURL:  srv.URL(),
+		BaseURL:  embedding.NewEndpoint(srv.URL()),
 		Dims:     16,
 	})
 	if err == nil {
@@ -152,6 +152,12 @@ func TestTEIRejectsMissingNullOrWhitespaceRevisionInBootInfo(t *testing.T) {
 		{"empty_model_sha", `{"model_id":"BAAI/bge-m3","model_sha":"","model_type":"embedding"}`},
 		{"whitespace_model_sha", `{"model_id":"BAAI/bge-m3","model_sha":"   \t\n  ","model_type":"embedding"}`},
 		{"unrelated_sha_without_model_sha", `{"model_id":"BAAI/bge-m3","sha":"server-build-sha","model_type":"embedding"}`},
+		{"invalid_charset_model_id_space", `{"model_id":"BAAI/bge m3 secret","model_sha":"sha-ok"}`},
+		{"invalid_charset_model_id_query", `{"model_id":"BAAI/bge-m3?token=secret","model_sha":"sha-ok"}`},
+		{"invalid_charset_model_sha_newline", `{"model_id":"BAAI/bge-m3","model_sha":"sha\nsecret"}`},
+		{"invalid_charset_leading_punct", `{"model_id":".hidden-model","model_sha":"sha-ok"}`},
+		{"invalid_overlong_model_id", `{"model_id":"` + strings.Repeat("a", 129) + `","model_sha":"sha-ok"}`},
+		{"invalid_overlong_model_sha", `{"model_id":"BAAI/bge-m3","model_sha":"` + strings.Repeat("b", 129) + `"}`},
 	}
 
 	for _, tc := range cases {
@@ -168,7 +174,7 @@ func TestTEIRejectsMissingNullOrWhitespaceRevisionInBootInfo(t *testing.T) {
 
 			_, err := embedding.NewTEI(context.Background(), embedding.ClientConfig{
 				Provider: embedding.ProviderTEI,
-				BaseURL:  infoSrv.URL,
+				BaseURL:  embedding.NewEndpoint(infoSrv.URL),
 				Dims:     16,
 			})
 			if err == nil {
@@ -180,6 +186,9 @@ func TestTEIRejectsMissingNullOrWhitespaceRevisionInBootInfo(t *testing.T) {
 			var pe *embedding.ProviderError
 			if !errors.As(err, &pe) || pe.Class != embedding.ClassBadResponse {
 				t.Fatalf("%s: ProviderError = %+v, want ClassBadResponse", tc.name, pe)
+			}
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "hidden-model") || strings.Contains(err.Error(), infoSrv.URL) {
+				t.Fatalf("%s: error leaked response marker or URL: %v", tc.name, err)
 			}
 		})
 	}
@@ -206,7 +215,7 @@ func TestTEIDefensiveL2NormalizationAndNullCoordinateRejection(t *testing.T) {
 
 	prov, err := embedding.NewTEI(context.Background(), embedding.ClientConfig{
 		Provider: embedding.ProviderTEI,
-		BaseURL:  srv.URL,
+		BaseURL:  embedding.NewEndpoint(srv.URL),
 		Dims:     2,
 	})
 	if err != nil {
@@ -269,7 +278,7 @@ func TestTEIRedirectNotFollowedAndStalledNon2xxBody(t *testing.T) {
 
 	prov, err := embedding.NewTEI(context.Background(), embedding.ClientConfig{
 		Provider: embedding.ProviderTEI,
-		BaseURL:  srv.URL(),
+		BaseURL:  embedding.NewEndpoint(srv.URL()),
 		Dims:     8,
 	})
 	if err != nil {
@@ -310,13 +319,27 @@ func TestTEIRedirectNotFollowedAndStalledNon2xxBody(t *testing.T) {
 		stalledSrv.Close()
 	}()
 
+	const provTimeout = 5 * time.Second
 	// Boot /info returns 503 immediately without waiting on stalled body.
-	_, err = embedding.NewTEI(context.Background(), embedding.ClientConfig{
-		Provider:        embedding.ProviderTEI,
-		BaseURL:         stalledSrv.URL,
-		Dims:            8,
-		DocumentTimeout: 50 * time.Millisecond,
-	})
+	infoDone := make(chan error, 1)
+	infoStart := time.Now()
+	go func() {
+		_, callErr := embedding.NewTEI(context.Background(), embedding.ClientConfig{
+			Provider:        embedding.ProviderTEI,
+			BaseURL:         embedding.NewEndpoint(stalledSrv.URL),
+			Dims:            8,
+			DocumentTimeout: provTimeout,
+		})
+		infoDone <- callErr
+	}()
+	select {
+	case err = <-infoDone:
+	case <-time.After(provTimeout / 2):
+		t.Fatal("NewTEI /info blocked waiting on stalled 503 body instead of returning on status headers")
+	}
+	if elapsed := time.Since(infoStart); elapsed >= provTimeout/2 {
+		t.Fatalf("stalled /info 503 took %v (>= %v), expected early return before provider timeout", elapsed, provTimeout/2)
+	}
 	var pe *embedding.ProviderError
 	if !errors.As(err, &pe) || pe.Class != embedding.Class5xx || pe.HTTPStatus != http.StatusServiceUnavailable {
 		t.Fatalf("stalled /info 503 err = %v (%+v), want Class5xx 503", err, pe)
@@ -326,15 +349,28 @@ func TestTEIRedirectNotFollowedAndStalledNon2xxBody(t *testing.T) {
 	failInfo.Store(false)
 	provStalled, err := embedding.NewTEI(context.Background(), embedding.ClientConfig{
 		Provider:        embedding.ProviderTEI,
-		BaseURL:         stalledSrv.URL,
+		BaseURL:         embedding.NewEndpoint(stalledSrv.URL),
 		Dims:            8,
-		QueryTimeout:    50 * time.Millisecond,
-		DocumentTimeout: 100 * time.Millisecond,
+		QueryTimeout:    provTimeout,
+		DocumentTimeout: provTimeout,
 	})
 	if err != nil {
 		t.Fatalf("NewTEI: %v", err)
 	}
-	_, err = provStalled.EmbedQuery(context.Background(), "wifi")
+	embedDone := make(chan error, 1)
+	embedStart := time.Now()
+	go func() {
+		_, callErr := provStalled.EmbedQuery(context.Background(), "wifi")
+		embedDone <- callErr
+	}()
+	select {
+	case err = <-embedDone:
+	case <-time.After(provTimeout / 2):
+		t.Fatal("TEI /embed blocked waiting on stalled 503 body instead of returning on status headers")
+	}
+	if elapsed := time.Since(embedStart); elapsed >= provTimeout/2 {
+		t.Fatalf("stalled /embed 503 took %v (>= %v), expected early return before provider timeout", elapsed, provTimeout/2)
+	}
 	if !errors.As(err, &pe) || pe.Class != embedding.Class5xx || pe.HTTPStatus != http.StatusServiceUnavailable {
 		t.Fatalf("stalled /embed 503 err = %v (%+v), want Class5xx 503", err, pe)
 	}
