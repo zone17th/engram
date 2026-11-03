@@ -2787,6 +2787,41 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       expect(tokensCss).toMatch(
         /\.json-table\s+\.json-nest\s+\.json-table\s+thead\s*~\s*tbody\s*>\s*tr\s*>\s*td:not\(\.k\):not\(\.json-col-act\):not\(\[colspan\]\)\s*\{\s*min-width:\s*0;\s*\}/,
       );
+      // FU11-VALUE-CELL-HITTEST r4 (advisor-dec-266): every remaining rounded probed control (cell
+      // button fallback, in-cell editor input/type select/commit/cancel, add-field toolbar controls)
+      // gets a coarse-only radius <= 2 px with two-class specificity (beats `.rounded`, `.btn-sm`,
+      // `.field-input` and the global `:focus-visible` radius); the toggle is square. Fine pointer
+      // is untouched: none of these selectors exist outside the coarse block.
+      const radiusRule = coarseBlock.match(
+        /((?:\s*\.json-(?:table|cell-edit-wrap|table-toolbar)\s+\.(?:json-cell-btn|json-type-btn|json-cell-input|btn-sm),?)+)\s*\{\s*border-radius:\s*(\d+)px;\s*\}/,
+      );
+      expect(radiusRule).not.toBeNull();
+      expect(Number(radiusRule![2])).toBeLessThanOrEqual(2);
+      const radiusSelectors = radiusRule![1]!.split(',').map((s) => s.trim().replace(/\s+/g, ' '));
+      expect(radiusSelectors).toEqual(
+        expect.arrayContaining([
+          '.json-table .json-cell-btn',
+          '.json-table .json-type-btn',
+          '.json-cell-edit-wrap .json-cell-input',
+          '.json-cell-edit-wrap .json-type-btn',
+          '.json-cell-edit-wrap .btn-sm',
+          '.json-table-toolbar .json-cell-input',
+          '.json-table-toolbar .json-type-btn',
+          '.json-table-toolbar .btn-sm',
+        ]),
+      );
+      expect(coarseBlock).toMatch(/\.json-table\s+\.json-toggle\s*\{\s*border-radius:\s*0;\s*\}/);
+      expect(fineCss).not.toMatch(/\.json-cell-edit-wrap\s+\.(json-cell-input|json-type-btn|btn-sm)/);
+      expect(fineCss).not.toMatch(/\.json-table-toolbar\s+\.(json-cell-input|json-type-btn|btn-sm)/);
+      expect(fineCss).not.toMatch(/\.json-table\s+\.(json-cell-btn|json-type-btn|json-toggle)\s*[,{]/);
+      // The probed editor / toolbar controls live under those scopes in the DOM.
+      for (const control of [cellInput, typeSelect, commitBtn, cancelBtn]) {
+        expect(control.closest('.json-cell-edit-wrap')).not.toBeNull();
+      }
+      expect(cellInput.classList.contains('json-cell-input')).toBe(true);
+      expect(typeSelect.classList.contains('json-type-btn')).toBe(true);
+      expect(commitBtn.classList.contains('btn-sm')).toBe(true);
+      expect(cancelBtn.classList.contains('btn-sm')).toBe(true);
       // 6. Open Import JSON dialog and verify dec-228 coarse-pointer classes on parse-error jump and format checkbox label
       fireEvent.click(screen.getByTestId('btn-import-json'));
       const importDialog = screen.getByTestId('import-json-dialog');

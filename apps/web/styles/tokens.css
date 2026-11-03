@@ -1037,6 +1037,25 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
     padding: 10px 18px;
     border-radius: 0;
   }
+  /* FU11-VALUE-CELL-HITTEST r4 (advisor-dec-266, CI 41399827031 hit grid): Chromium hit-tests the
+     pixel-snapped ROUNDED border box, and the spec probes each control 1.5 px inside its box
+     corners. After snapping a fractional box edge (.38) the probe sits ~1.05 px from the edges,
+     which is outside the corner arc for a radius >= ~4 px (r = 6: distance 4.1 > 4 misses). Every
+     remaining probed control therefore gets a coarse-only radius of 2 px (worst case ~1.4 < 2 hits).
+     Selectors carry two classes (0,2,0) so they beat Tailwind `.rounded` (0,1,0, emitted later),
+     `.btn-sm` / `.field-input` and the global `:focus-visible { border-radius }` rule (0,1,0) that
+     re-rounds the auto-focused editor and add-field inputs to 6 px. Radius only: no box change. */
+  .json-table .json-cell-btn,
+  .json-table .json-type-btn,
+  .json-cell-edit-wrap .json-cell-input,
+  .json-cell-edit-wrap .json-type-btn,
+  .json-cell-edit-wrap .btn-sm,
+  .json-table-toolbar .json-cell-input,
+  .json-table-toolbar .json-type-btn,
+  .json-table-toolbar .btn-sm {
+    border-radius: 2px;
+  }
+  .json-table .json-toggle { border-radius: 0; }
   .json-table .json-nest .json-table thead ~ tbody > tr > td:not(.k):not(.json-col-act):not([colspan]) { min-width: 0; }
   .json-cell-btn, .json-type-btn,
   .json-cell-edit-wrap .btn-sm, .json-table-toolbar .btn-sm { min-width: 44px; }
