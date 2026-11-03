@@ -1071,12 +1071,17 @@ async function assertCoarseNearRows(browser: Browser, sourcePage: Page): Promise
   }
 }
 
-async function captureSettingsWidths(ctx: CaptureContext, state: string): Promise<void> {
+async function captureSettingsWidths(
+  ctx: CaptureContext,
+  state: string,
+  assertBeforeCapture?: (width: Width) => Promise<void>,
+): Promise<void> {
   const section = ctx.page.locator('#timkiem');
   for (const { width } of WIDTHS) {
     await setWidth(ctx.page, width);
     await section.scrollIntoViewIfNeeded();
     await expectNoHorizontalScroll(ctx, state, width);
+    await assertBeforeCapture?.(width);
     await saveCapture(ctx, state, width, section);
   }
 }
@@ -1278,7 +1283,11 @@ async function runSemanticVisualGroup(
       ).toBe(409);
       await expect(live.getByTestId('settings-semantic-status')).toHaveText(messages.settings.search.semanticEnable409);
       await expect(toggle).toHaveAttribute('aria-checked', 'false');
-      await captureSettingsWidths(ctx, 'settings-semantic-409');
+      // RV-T22-2-FE1-3: the 409 copy must still be on screen at every width (a resize re-render must not clear it).
+      await captureSettingsWidths(ctx, 'settings-semantic-409', async () => {
+        await expect(live.getByTestId('settings-semantic-status')).toHaveText(messages.settings.search.semanticEnable409);
+        await expect(toggle).toHaveAttribute('aria-checked', 'false');
+      });
     });
 
     await a11yStep(`[search-visual-sem ${label}] settings #timkiem with semantic available and ON (after the breaker recovers)`, async () => {
