@@ -283,19 +283,29 @@ type CellAgg struct {
 	Plan *PlanEvidence `json:"ann_plan,omitempty"`
 }
 
+// TenantPlanEvidence records the ANN SQL plan verdict for one ANN-entering
+// tenant in a C2 cell.
+type TenantPlanEvidence struct {
+	TenantIdx int          `json:"tenant_index"`
+	Partition string       `json:"partition"`
+	Verdict   string       `json:"verdict"`
+	Plan      PlanEvidence `json:"plan"`
+}
+
 // PlanEvidence records whether the plan of the actual ANN SQL
 // (store.ANNSearchSQL) scans the pruned partition through its HNSW index. It
 // keeps a benchmark from silently measuring a sequential scan + exact sort as
 // "ANN" (SBW3-1-1).
 type PlanEvidence struct {
-	UsesHNSW       bool     `json:"uses_hnsw"`
-	Index          string   `json:"index,omitempty"`
-	IndexAM        string   `json:"index_am,omitempty"`
-	Relation       string   `json:"relation,omitempty"`
-	EmbeddingScans int      `json:"embedding_scans"` // scans of embedding relations in the plan (1 = pruned to one partition)
-	SeqScans       int      `json:"embedding_seq_scans"`
-	Problem        string   `json:"problem,omitempty"` // why the plan is not an HNSW scan of one partition
-	Plan           []string `json:"plan,omitempty"`    // plan text, only when UsesHNSW is false (vector literals scrubbed)
+	UsesHNSW       bool                 `json:"uses_hnsw"`
+	Index          string               `json:"index,omitempty"`
+	IndexAM        string               `json:"index_am,omitempty"`
+	Relation       string               `json:"relation,omitempty"`
+	EmbeddingScans int                  `json:"embedding_scans"` // scans of embedding relations in the plan (1 = pruned to one partition)
+	SeqScans       int                  `json:"embedding_seq_scans"`
+	Problem        string               `json:"problem,omitempty"` // why the plan is not an HNSW scan of one partition
+	Plan           []string             `json:"plan,omitempty"`    // plan text, only when UsesHNSW is false (vector literals scrubbed)
+	Tenants        []TenantPlanEvidence `json:"tenants,omitempty"` // per-tenant plan evidence when multiple ANN tenants exist (cap 3)
 }
 
 var (
@@ -308,6 +318,8 @@ var (
 // name to its access method ("hnsw"). The plan "uses HNSW" iff exactly one
 // embedding relation is scanned (the hash partition of the tenant, so partition
 // pruning applied), by a plain Index Scan whose index is an hnsw index.
+// A `Bitmap Index Scan on <index>` is the child of a `Bitmap Heap Scan` on the
+// same partition and is not counted as a second embedding relation scan.
 func ParseANNPlan(lines []string, parent string, indexAM func(string) string) PlanEvidence {
 	ev := PlanEvidence{}
 	type scan struct{ node, index, rel string }
@@ -316,6 +328,9 @@ func ParseANNPlan(lines []string, parent string, indexAM func(string) string) Pl
 		m := planScanRe.FindStringSubmatch(l)
 		if m == nil || !strings.Contains(m[4], "_embedding_g") {
 			continue // scans of item/tag (the live join) are not the vector scan
+		}
+		if m[1] == "Bitmap Index Scan" {
+			continue // child of a Bitmap Heap Scan on the same partition
 		}
 		rel := m[4]
 		if i := strings.LastIndex(rel, "."); i >= 0 {
@@ -357,15 +372,85 @@ func ParseANNPlan(lines []string, parent string, indexAM func(string) string) Pl
 	return ev
 }
 
+// Verdict returns the short single-plan verdict string.
+func (ev PlanEvidence) Verdict() string {
+	if ev.UsesHNSW {
+		return "HNSW (" + ev.Relation + ")"
+	}
+	if ev.Problem == "no ANN tenant in this cell" {
+		return ev.Problem
+	}
+	return "NOT HNSW: " + ev.Problem
+}
+
+// CombineTenantPlanEvidence summarizes up to 3 per-tenant ANN plan evaluations
+// for a cell. When len(tenants) == 0, it reports "no ANN tenant in this cell".
+// When len(tenants) == 1, it preserves the single-plan fields while attaching
+// the tenant record. When len(tenants) > 1, it aggregates UsesHNSW (true iff
+// all explained tenants use HNSW), sums EmbeddingScans and SeqScans, and
+// formats per-tenant (tenant index, partition, verdict) summaries.
+func CombineTenantPlanEvidence(tenants []TenantPlanEvidence) *PlanEvidence {
+	if len(tenants) == 0 {
+		return &PlanEvidence{Problem: "no ANN tenant in this cell"}
+	}
+	for i := range tenants {
+		if tenants[i].Verdict == "" {
+			tenants[i].Verdict = tenants[i].Plan.Verdict()
+		}
+	}
+	if len(tenants) == 1 {
+		ev := tenants[0].Plan
+		ev.Tenants = tenants
+		return &ev
+	}
+	allHNSW := true
+	var parts, nonHNSW, rels, plans []string
+	var embScans, seqScans int
+	for _, t := range tenants {
+		parts = append(parts, fmt.Sprintf("t%d (%s): %s", t.TenantIdx, t.Partition, t.Verdict))
+		rels = append(rels, fmt.Sprintf("t%d:%s", t.TenantIdx, t.Partition))
+		embScans += t.Plan.EmbeddingScans
+		seqScans += t.Plan.SeqScans
+		if !t.Plan.UsesHNSW {
+			allHNSW = false
+			nonHNSW = append(nonHNSW, fmt.Sprintf("t%d (%s): %s", t.TenantIdx, t.Partition, t.Plan.Problem))
+			plans = append(plans, fmt.Sprintf("--- t%d (%s) ---", t.TenantIdx, t.Partition))
+			plans = append(plans, t.Plan.Plan...)
+		}
+	}
+	ev := &PlanEvidence{
+		UsesHNSW:       allHNSW,
+		Relation:       strings.Join(rels, ", "),
+		EmbeddingScans: embScans,
+		SeqScans:       seqScans,
+		Tenants:        tenants,
+	}
+	if allHNSW {
+		ev.IndexAM = "hnsw"
+	} else {
+		ev.Problem = strings.Join(nonHNSW, "; ")
+		ev.Plan = plans
+	}
+	return ev
+}
+
 // PlanLabel is the short plan cell of the C2 table.
 func (c CellAgg) PlanLabel() string {
 	switch {
 	case c.Plan == nil:
 		return "-"
-	case c.Plan.UsesHNSW:
-		return "HNSW (" + c.Plan.Relation + ")"
+	case len(c.Plan.Tenants) > 1:
+		parts := make([]string, len(c.Plan.Tenants))
+		for i, t := range c.Plan.Tenants {
+			v := t.Verdict
+			if v == "" {
+				v = t.Plan.Verdict()
+			}
+			parts[i] = fmt.Sprintf("t%d (%s): %s", t.TenantIdx, t.Partition, v)
+		}
+		return strings.Join(parts, "; ")
 	default:
-		return "NOT HNSW: " + c.Plan.Problem
+		return c.Plan.Verdict()
 	}
 }
 
@@ -751,6 +836,13 @@ type LogClassCount struct {
 type ServerLogSummary struct {
 	Classes []LogClassCount `json:"classes,omitempty"`
 	Samples []string        `json:"sample_lines,omitempty"`
+	// Partials aggregates the "suggest lexical branch partial" lines (FU-SB-2b):
+	// count by (corpus, mode, phase) and p50/p95/max of setup/set_local/query ms.
+	Partials         []PartialAgg `json:"lexical_partials,omitempty"`
+	PartialsOverflow int          `json:"lexical_partial_overflow,omitempty"`
+	// PartialsRejected counts partial lines the parser refused (missing field, value
+	// out of enum or range): they are in the class count but not in Partials.
+	PartialsRejected int `json:"lexical_partial_rejected,omitempty"`
 }
 
 // errorCodeCounts renders (status, problem code) counts deterministically
@@ -1044,7 +1136,7 @@ type KnobSet struct {
 	EfSearch      int    `json:"ef_search"`
 	MaxScanTuples int    `json:"max_scan_tuples"`
 	ExactMax      int    `json:"search_exact_max_vectors"`
-	FallbackMax   int    `json:"search_exact_fallback_max_vectors"` // 0 = max(20000, ExactMax) except in forced-ANN self-checks
+	FallbackMax   int    `json:"search_exact_fallback_max_vectors"` // 0 = max(store.DefaultExactFallbackMaxVectors, ExactMax) except in forced-ANN self-checks
 	Iterative     string `json:"hnsw_iterative_scan"`
 	ForceNoFallbk bool   `json:"fallback_exact_disabled"`
 }
@@ -1142,7 +1234,10 @@ type Report struct {
 	C1Info   *OpenAICompatInfo `json:"c1_openai_compat_informational,omitempty"`
 	C2       *C2Report         `json:"c2,omitempty"`
 	Verdicts []Verdict         `json:"verdicts_concurrency_8"`
-	Hard     []string          `json:"hard_failures"`
+	// Extras are the Task 23 full-volume additions (connect probe, lexical plan,
+	// flip/rollback scan cost, Reconcile time); none is part of a target.
+	Extras *Task23Extras `json:"task23_extras,omitempty"`
+	Hard   []string      `json:"hard_failures"`
 	// Warnings are informational per-level problems outside the target
 	// concurrency (degraded hybrid level, request errors at c=1/32).
 	Warnings []string `json:"warnings,omitempty"`
@@ -1479,6 +1574,7 @@ func RenderMarkdown(r *Report) string {
 		w("### openai_compat cache miss (~2.3 s) - %s\n\n", r.C1Info.Label)
 		w("Estimated p50 %.0f ms, p95 %.0f ms. Basis: %s\n\n", r.C1Info.EstimatedP50Ms, r.C1Info.EstimatedP95Ms, r.C1Info.Basis)
 	}
+	renderPartialTables(w, r)
 
 	if r.C2 != nil {
 		c := r.C2
@@ -1543,6 +1639,15 @@ func RenderMarkdown(r *Report) string {
 		}
 	}
 
+	if r.Extras != nil {
+		if r.Extras.LexicalPlan != nil {
+			renderLexicalPlan(w, r.Extras.LexicalPlan)
+		}
+		if r.Extras.ConnectProbe != nil {
+			renderConnectProbe(w, r.Extras.ConnectProbe)
+		}
+	}
+
 	if r.Seed != nil {
 		s := r.Seed
 		w("## Dataset, sizes and build times\n\n| Item | Value |\n|---|---|\n")
@@ -1563,6 +1668,8 @@ func RenderMarkdown(r *Report) string {
 			w("\n</details>\n\n")
 		}
 	}
+
+	renderTask23Summary(w, r)
 
 	if z := r.Sizing; z != nil {
 		w("## Sizing table (FS-15, L17) - measured on `%s`, extrapolated to `full`\n\n", z.MeasuredProfile)

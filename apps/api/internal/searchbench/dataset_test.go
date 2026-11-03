@@ -3,6 +3,7 @@ package searchbench
 import (
 	"context"
 	"math"
+	"math/rand/v2"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -17,7 +18,13 @@ import (
 // profile dataset with DefaultSeed (20261102) and DefaultPartitions (16).
 // If the generator or bench-lexicon.json changes, TestDatasetDeterministic
 // fails and prints the newly computed hash so it can be pinned from CI.
-const PinnedSmokeDatasetHash = "dbd476280948338ac693ad5d1001ece7dfdad08e86bab42a2dcc908fb6c2d31f"
+//
+// Superseded dbd476280948338ac693ad5d1001ece7dfdad08e86bab42a2dcc908fb6c2d31f:
+// the dataset before 3adf508 (rand.Rand.NormFloat64), which differed between
+// amd64 and arm64 (arm64 computed 5cdcf316...). The value below comes from the
+// arch-independent gaussianSample dataset; amd64 smoke run 41562620203 (job
+// 125676517329) and arm64 full run 41562619063 (job 125676940872) both printed it.
+const PinnedSmokeDatasetHash = "2359ed243afb49f4f7ae77a98c01f83f5b145513a7f58a7da77d26867311e748"
 
 func TestDatasetDeterministic(t *testing.T) {
 	lex, err := LoadDefaultLexicon()
@@ -463,4 +470,76 @@ func mustJSON(t *testing.T, words []string) string {
 	}
 	sb.WriteByte(']')
 	return sb.String()
+}
+
+// gaussianGoldenBits are the math.Float64bits of the first 8 gaussianSample draws of
+// rand.New(rand.NewPCG(20261102, 42)). They are fixed numbers, so a sampler (or PCG)
+// change fails here, on every architecture, with a direct message, not only as a
+// whole-dataset hash mismatch (RV-W4-1-8). Derived off-line from Go's math/rand/v2
+// PCG-DXSM (re-implemented with big integers and checked against the stdlib's
+// NewPCG(1, 2) test vectors) and gaussianSample's integer sum of 12 draws >> 11,
+// scaled by 2^-53 and shifted by -6; IEEE-754 binary64 arithmetic, so identical on
+// amd64 and arm64.
+var gaussianGoldenBits = [8]uint64{
+	0x3ffb45b9b0dac648, // 1.7045227917082162
+	0x3fe9bc6de727df20, // 0.8042516245613776
+	0xbfe3c29aeea07fe0, // -0.6175055180246964
+	0xbfe3c68468188c90, // -0.6179830582735963
+	0x3ff514831b2daa60, // 1.3175078450828082
+	0xbfe01227cf233948, // -0.5022162480980024
+	0x4000dae6e8d7a2c4, // 2.106885737496073
+	0x3fd747ff13e8cc10, // 0.3637693113734608
+}
+
+// TestGaussianSampleMoments: the arch-independent Gaussian sampler that feeds the
+// dataset hash (gaussianSample, R0 41561911393) is unit-variance, zero-mean,
+// bounded at 6 sigma and deterministic for a fixed PCG stream, and its first draws
+// are pinned bit for bit (gaussianGoldenBits).
+func TestGaussianSampleMoments(t *testing.T) {
+	golden := rand.New(rand.NewPCG(20261102, 42))
+	var observed [8]uint64
+	var mismatch bool
+	for i := range observed {
+		observed[i] = math.Float64bits(gaussianSample(golden))
+		if observed[i] != gaussianGoldenBits[i] {
+			mismatch = true
+		}
+	}
+	if mismatch {
+		// Print the observed bits of all 8 draws so a deliberate sampler change can be re-pinned.
+		for i, got := range observed {
+			t.Errorf("golden draw %d: Float64bits = 0x%016x (%v), want 0x%016x (%v)", i, got, math.Float64frombits(got), gaussianGoldenBits[i], math.Float64frombits(gaussianGoldenBits[i]))
+		}
+		t.Fatalf("gaussianSample no longer reproduces the pinned stream of NewPCG(20261102, 42): the dataset hash changes on every architecture")
+	}
+
+	const n = 200_000
+	draw := func() []float64 {
+		rng := rand.New(rand.NewPCG(20261102, 42))
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = gaussianSample(rng)
+		}
+		return out
+	}
+	a, b := draw(), draw()
+	var sum, sumSq float64
+	for i, x := range a {
+		if x != b[i] {
+			t.Fatalf("sample %d differs between identical streams: %v != %v", i, x, b[i])
+		}
+		if x < -6 || x >= 6 {
+			t.Fatalf("sample %d = %v outside [-6, 6)", i, x)
+		}
+		sum += x
+		sumSq += x * x
+	}
+	mean := sum / n
+	variance := sumSq/n - mean*mean
+	if math.Abs(mean) > 0.02 {
+		t.Errorf("mean = %.4f, want |mean| <= 0.02", mean)
+	}
+	if variance < 0.97 || variance > 1.03 {
+		t.Errorf("variance = %.4f, want within [0.97, 1.03]", variance)
+	}
 }

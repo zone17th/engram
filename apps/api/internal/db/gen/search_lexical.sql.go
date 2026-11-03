@@ -188,67 +188,137 @@ func (q *Queries) RecentTagsForSuggest(ctx context.Context, arg RecentTagsForSug
 
 const searchItemsLexical = `-- name: SearchItemsLexical :many
 
-WITH q AS (
+WITH prefix_ranked AS (
   SELECT
-    $5::text AS qn,
-    immutable_unaccent($5::text) AS qa,
-    replace(
-      replace(
-        replace(immutable_unaccent($5::text), '\', '\\'),
-        '%',
-        '\%'
-      ),
-      '_',
-      '\_'
-    ) || '%' AS qa_prefix
+    i.id,
+    i.name,
+    i.entry_count,
+    i.last_used_at,
+    i.created_at,
+    (CASE
+      WHEN i.name_normalized LIKE $2::text ESCAPE '\' THEN 3
+      ELSE 2
+    END)::int AS tier,
+    round(
+      GREATEST(
+        similarity(i.name_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), i.name_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
+  FROM item AS i
+  WHERE i.user_id = $4
+    AND i.deleted_at IS NULL
+    AND (
+      i.name_normalized LIKE $2::text ESCAPE '\'
+      OR i.name_unaccent LIKE (
+        replace(
+          replace(
+            replace(immutable_unaccent($3::text), '\', '\\'),
+            '%',
+            '\%'
+          ),
+          '_',
+          '\_'
+        ) || '%'
+      ) ESCAPE '\'
+    )
+  ORDER BY
+    tier DESC,
+    score DESC,
+    i.last_used_at DESC,
+    i.entry_count DESC,
+    i.id ASC
+  LIMIT $1
+),
+fuzzy_ranked AS (
+  SELECT
+    i.id,
+    i.name,
+    i.entry_count,
+    i.last_used_at,
+    i.created_at,
+    1::int AS tier,
+    round(
+      GREATEST(
+        similarity(i.name_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), i.name_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
+  FROM item AS i
+  WHERE $5::bool
+    AND i.user_id = $4
+    AND i.deleted_at IS NULL
+    AND (
+      i.name_unaccent % immutable_unaccent($3::text)
+      OR immutable_unaccent($3::text) <% i.name_unaccent
+    )
+    AND NOT (
+      i.name_normalized LIKE $2::text ESCAPE '\'
+      OR i.name_unaccent LIKE (
+        replace(
+          replace(
+            replace(immutable_unaccent($3::text), '\', '\\'),
+            '%',
+            '\%'
+          ),
+          '_',
+          '\_'
+        ) || '%'
+      ) ESCAPE '\'
+    )
+  ORDER BY
+    score DESC,
+    i.last_used_at DESC,
+    i.entry_count DESC,
+    i.id ASC
+  LIMIT GREATEST(0, $1::int - (SELECT count(*)::int FROM prefix_ranked))
 )
 SELECT
-  i.id,
-  i.name,
-  i.entry_count,
-  i.last_used_at,
-  i.created_at,
-  (CASE
-    WHEN i.name_normalized LIKE $1::text ESCAPE '\' THEN 3
-    WHEN i.name_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
-    ELSE 1
-  END)::int AS tier,
-  round(
-    GREATEST(
-      similarity(i.name_unaccent, q.qa),
-      word_similarity(q.qa, i.name_unaccent)
-    )::numeric,
-    2
-  )::float8 AS score
-FROM item AS i, q
-WHERE i.user_id = $2
-  AND i.deleted_at IS NULL
-  AND (
-    i.name_normalized LIKE $1::text ESCAPE '\'
-    OR i.name_unaccent LIKE q.qa_prefix ESCAPE '\'
-    OR (
-      $3::bool
-      AND (
-        i.name_unaccent % q.qa
-        OR q.qa <% i.name_unaccent
-      )
-    )
-  )
+  combined.id,
+  combined.name,
+  combined.entry_count,
+  combined.last_used_at,
+  combined.created_at,
+  combined.tier,
+  combined.score
+FROM (
+  SELECT
+    prefix_ranked.id,
+    prefix_ranked.name,
+    prefix_ranked.entry_count,
+    prefix_ranked.last_used_at,
+    prefix_ranked.created_at,
+    prefix_ranked.tier,
+    prefix_ranked.score
+  FROM prefix_ranked
+  UNION ALL
+  SELECT
+    fuzzy_ranked.id,
+    fuzzy_ranked.name,
+    fuzzy_ranked.entry_count,
+    fuzzy_ranked.last_used_at,
+    fuzzy_ranked.created_at,
+    fuzzy_ranked.tier,
+    fuzzy_ranked.score
+  FROM fuzzy_ranked
+) AS combined
 ORDER BY
-  tier DESC,
-  score DESC,
-  i.last_used_at DESC,
-  i.entry_count DESC,
-  i.id ASC
-LIMIT $4
+  combined.tier DESC,
+  combined.score DESC,
+  combined.last_used_at DESC,
+  combined.entry_count DESC,
+  combined.id ASC
+LIMIT $1
 `
 
 type SearchItemsLexicalParams struct {
+	PageLimit int32
 	QPrefix   string
+	Qn        string
 	UserID    uuid.UUID
 	Fuzzy     bool
-	PageLimit int32
-	Qn        string
 }
 
 type SearchItemsLexicalRow struct {
@@ -271,11 +341,16 @@ type SearchItemsLexicalRow struct {
 //     (escapes `\`, `%`, `_` then appends `%`) and is used ONLY for the exact-accent
 //     arm (`name_normalized` / `normalized` with `LIKE ... ESCAPE '\'`, matching
 //     `item_user_name_prefix` / `tag_user_norm_prefix` (`text_pattern_ops`)).
-//   - The folded arm computes `qa_prefix` in the CTE by escaping `\`, `%`, `_`
+//   - The folded arm computes the unaccented prefix by escaping `\`, `%`, `_`
 //     AFTER `immutable_unaccent(qn)` (because PostgreSQL `unaccent` transliterates
 //     full-width `％`/`＿`/`＼` to ASCII LIKE metacharacters — RV-T2-BE-3, lead call A)
-//     and uses `qa_prefix` with `LIKE ... ESCAPE '\'` on `name_unaccent` / `tag_unaccent`
-//     (`item_user_unaccent_prefix` / `tag_user_unaccent_prefix` (`text_pattern_ops`)).
+//     and inlines the `IMMUTABLE` expression with `LIKE ... ESCAPE '\'` on
+//     `name_unaccent` / `tag_unaccent` so the planner constant-folds it onto
+//     `item_user_unaccent_prefix` / `tag_user_unaccent_prefix` (`text_pattern_ops`).
+//   - Tiered prefix-first short-circuit (L2-B, advisor-dec-353):
+//     `prefix_ranked` fetches up to `page_limit` Tier 3 + Tier 2 prefix matches first,
+//     and `fuzzy_ranked` runs with `LIMIT GREATEST(0, page_limit - count(prefix_ranked))`
+//     so PostgreSQL short-circuits the GIN trigram scan whenever prefix matches fill `page_limit`.
 //   - Read transactions set `statement_timeout = '50ms'`,
 //     `pg_trgm.similarity_threshold = 0.35`, and
 //     `pg_trgm.word_similarity_threshold = 0.5` via `SET LOCAL`.
@@ -283,11 +358,11 @@ type SearchItemsLexicalRow struct {
 // =============================================================================
 func (q *Queries) SearchItemsLexical(ctx context.Context, arg SearchItemsLexicalParams) ([]SearchItemsLexicalRow, error) {
 	rows, err := q.db.Query(ctx, searchItemsLexical,
+		arg.PageLimit,
 		arg.QPrefix,
+		arg.Qn,
 		arg.UserID,
 		arg.Fuzzy,
-		arg.PageLimit,
-		arg.Qn,
 	)
 	if err != nil {
 		return nil, err
@@ -316,21 +391,7 @@ func (q *Queries) SearchItemsLexical(ctx context.Context, arg SearchItemsLexical
 }
 
 const searchItemsLexicalPage = `-- name: SearchItemsLexicalPage :many
-WITH q AS (
-  SELECT
-    $7::text AS qn,
-    immutable_unaccent($7::text) AS qa,
-    replace(
-      replace(
-        replace(immutable_unaccent($7::text), '\', '\\'),
-        '%',
-        '\%'
-      ),
-      '_',
-      '\_'
-    ) || '%' AS qa_prefix
-),
-ranked AS (
+WITH prefix_all AS (
   SELECT
     i.id,
     i.name,
@@ -338,85 +399,209 @@ ranked AS (
     i.last_used_at,
     i.created_at,
     (CASE
-      WHEN i.name_normalized LIKE $8::text ESCAPE '\' THEN 3
-      WHEN i.name_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
-      ELSE 1
+      WHEN i.name_normalized LIKE $2::text ESCAPE '\' THEN 3
+      ELSE 2
     END)::int AS tier,
     round(
       GREATEST(
-        similarity(i.name_unaccent, q.qa),
-        word_similarity(q.qa, i.name_unaccent)
+        similarity(i.name_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), i.name_unaccent)
       )::numeric,
       2
     )::float8 AS score
-  FROM item AS i, q
-  WHERE i.user_id = $9
+  FROM item AS i
+  WHERE i.user_id = $4
     AND i.deleted_at IS NULL
     AND (
-      i.name_normalized LIKE $8::text ESCAPE '\'
-      OR i.name_unaccent LIKE q.qa_prefix ESCAPE '\'
-      OR (
-        $10::bool
-        AND (
-          i.name_unaccent % q.qa
-          OR q.qa <% i.name_unaccent
-        )
-      )
+      $5::uuid IS NULL
+      OR $6::int >= 2
     )
+    AND (
+      i.name_normalized LIKE $2::text ESCAPE '\'
+      OR i.name_unaccent LIKE (
+        replace(
+          replace(
+            replace(immutable_unaccent($3::text), '\', '\\'),
+            '%',
+            '\%'
+          ),
+          '_',
+          '\_'
+        ) || '%'
+      ) ESCAPE '\'
+    )
+),
+prefix_ranked AS (
+  SELECT
+    p.id,
+    p.name,
+    p.entry_count,
+    p.last_used_at,
+    p.created_at,
+    p.tier,
+    p.score
+  FROM prefix_all AS p
+  WHERE
+    $5::uuid IS NULL
+    OR p.tier < $6::int
+    OR (
+      p.tier = $6::int
+      AND p.score < $7::float8
+    )
+    OR (
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at < $8::timestamptz
+    )
+    OR (
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at = $8::timestamptz
+      AND p.entry_count < $9::int
+    )
+    OR (
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at = $8::timestamptz
+      AND p.entry_count = $9::int
+      AND p.id > $5::uuid
+    )
+  ORDER BY
+    p.tier DESC,
+    p.score DESC,
+    p.last_used_at DESC,
+    p.entry_count DESC,
+    p.id ASC
+  LIMIT $1
+),
+fuzzy_all AS (
+  SELECT
+    i.id,
+    i.name,
+    i.entry_count,
+    i.last_used_at,
+    i.created_at,
+    1::int AS tier,
+    round(
+      GREATEST(
+        similarity(i.name_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), i.name_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
+  FROM item AS i
+  WHERE $10::bool
+    AND i.user_id = $4
+    AND i.deleted_at IS NULL
+    AND (
+      i.name_unaccent % immutable_unaccent($3::text)
+      OR immutable_unaccent($3::text) <% i.name_unaccent
+    )
+    AND NOT (
+      i.name_normalized LIKE $2::text ESCAPE '\'
+      OR i.name_unaccent LIKE (
+        replace(
+          replace(
+            replace(immutable_unaccent($3::text), '\', '\\'),
+            '%',
+            '\%'
+          ),
+          '_',
+          '\_'
+        ) || '%'
+      ) ESCAPE '\'
+    )
+),
+fuzzy_ranked AS (
+  SELECT
+    f.id,
+    f.name,
+    f.entry_count,
+    f.last_used_at,
+    f.created_at,
+    f.tier,
+    f.score
+  FROM fuzzy_all AS f
+  WHERE
+    $5::uuid IS NULL
+    OR f.tier < $6::int
+    OR (
+      f.tier = $6::int
+      AND f.score < $7::float8
+    )
+    OR (
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at < $8::timestamptz
+    )
+    OR (
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at = $8::timestamptz
+      AND f.entry_count < $9::int
+    )
+    OR (
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at = $8::timestamptz
+      AND f.entry_count = $9::int
+      AND f.id > $5::uuid
+    )
+  ORDER BY
+    f.score DESC,
+    f.last_used_at DESC,
+    f.entry_count DESC,
+    f.id ASC
+  LIMIT GREATEST(0, $1::int - (SELECT count(*)::int FROM prefix_ranked))
 )
 SELECT
-  ranked.id,
-  ranked.name,
-  ranked.entry_count,
-  ranked.last_used_at,
-  ranked.created_at,
-  ranked.tier,
-  ranked.score
-FROM ranked
-WHERE
-  $1::uuid IS NULL
-  OR ranked.tier < $2::int
-  OR (
-    ranked.tier = $2::int
-    AND ranked.score < $3::float8
-  )
-  OR (
-    ranked.tier = $2::int
-    AND ranked.score = $3::float8
-    AND ranked.last_used_at < $4::timestamptz
-  )
-  OR (
-    ranked.tier = $2::int
-    AND ranked.score = $3::float8
-    AND ranked.last_used_at = $4::timestamptz
-    AND ranked.entry_count < $5::int
-  )
-  OR (
-    ranked.tier = $2::int
-    AND ranked.score = $3::float8
-    AND ranked.last_used_at = $4::timestamptz
-    AND ranked.entry_count = $5::int
-    AND ranked.id > $1::uuid
-  )
+  combined.id,
+  combined.name,
+  combined.entry_count,
+  combined.last_used_at,
+  combined.created_at,
+  combined.tier,
+  combined.score
+FROM (
+  SELECT
+    prefix_ranked.id,
+    prefix_ranked.name,
+    prefix_ranked.entry_count,
+    prefix_ranked.last_used_at,
+    prefix_ranked.created_at,
+    prefix_ranked.tier,
+    prefix_ranked.score
+  FROM prefix_ranked
+  UNION ALL
+  SELECT
+    fuzzy_ranked.id,
+    fuzzy_ranked.name,
+    fuzzy_ranked.entry_count,
+    fuzzy_ranked.last_used_at,
+    fuzzy_ranked.created_at,
+    fuzzy_ranked.tier,
+    fuzzy_ranked.score
+  FROM fuzzy_ranked
+) AS combined
 ORDER BY
-  ranked.tier DESC,
-  ranked.score DESC,
-  ranked.last_used_at DESC,
-  ranked.entry_count DESC,
-  ranked.id ASC
-LIMIT $6
+  combined.tier DESC,
+  combined.score DESC,
+  combined.last_used_at DESC,
+  combined.entry_count DESC,
+  combined.id ASC
+LIMIT $1
 `
 
 type SearchItemsLexicalPageParams struct {
+	PageLimit        int32
+	QPrefix          string
+	Qn               string
+	UserID           uuid.UUID
 	CursorID         *uuid.UUID
 	CursorTier       *int32
 	CursorScore      *float64
 	CursorLastUsedAt pgtype.Timestamptz
 	CursorCount      *int32
-	PageLimit        int32
-	Qn               string
-	QPrefix          string
-	UserID           uuid.UUID
 	Fuzzy            bool
 }
 
@@ -432,15 +617,15 @@ type SearchItemsLexicalPageRow struct {
 
 func (q *Queries) SearchItemsLexicalPage(ctx context.Context, arg SearchItemsLexicalPageParams) ([]SearchItemsLexicalPageRow, error) {
 	rows, err := q.db.Query(ctx, searchItemsLexicalPage,
+		arg.PageLimit,
+		arg.QPrefix,
+		arg.Qn,
+		arg.UserID,
 		arg.CursorID,
 		arg.CursorTier,
 		arg.CursorScore,
 		arg.CursorLastUsedAt,
 		arg.CursorCount,
-		arg.PageLimit,
-		arg.Qn,
-		arg.QPrefix,
-		arg.UserID,
 		arg.Fuzzy,
 	)
 	if err != nil {
@@ -470,66 +655,132 @@ func (q *Queries) SearchItemsLexicalPage(ctx context.Context, arg SearchItemsLex
 }
 
 const searchTagsLexical = `-- name: SearchTagsLexical :many
-WITH q AS (
+WITH prefix_ranked AS (
   SELECT
-    $5::text AS qn,
-    immutable_unaccent($5::text) AS qa,
-    replace(
-      replace(
-        replace(immutable_unaccent($5::text), '\', '\\'),
-        '%',
-        '\%'
-      ),
-      '_',
-      '\_'
-    ) || '%' AS qa_prefix
+    t.id,
+    t.display,
+    t.item_count,
+    t.last_used_at,
+    (CASE
+      WHEN t.normalized LIKE $2::text ESCAPE '\' THEN 3
+      ELSE 2
+    END)::int AS tier,
+    round(
+      GREATEST(
+        similarity(t.tag_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), t.tag_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
+  FROM tag AS t
+  WHERE t.user_id = $4
+    AND t.deleted_at IS NULL
+    AND (
+      t.normalized LIKE $2::text ESCAPE '\'
+      OR t.tag_unaccent LIKE (
+        replace(
+          replace(
+            replace(immutable_unaccent($3::text), '\', '\\'),
+            '%',
+            '\%'
+          ),
+          '_',
+          '\_'
+        ) || '%'
+      ) ESCAPE '\'
+    )
+  ORDER BY
+    tier DESC,
+    score DESC,
+    t.last_used_at DESC,
+    t.item_count DESC,
+    t.id ASC
+  LIMIT $1
+),
+fuzzy_ranked AS (
+  SELECT
+    t.id,
+    t.display,
+    t.item_count,
+    t.last_used_at,
+    1::int AS tier,
+    round(
+      GREATEST(
+        similarity(t.tag_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), t.tag_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
+  FROM tag AS t
+  WHERE $5::bool
+    AND t.user_id = $4
+    AND t.deleted_at IS NULL
+    AND (
+      t.tag_unaccent % immutable_unaccent($3::text)
+      OR immutable_unaccent($3::text) <% t.tag_unaccent
+    )
+    AND NOT (
+      t.normalized LIKE $2::text ESCAPE '\'
+      OR t.tag_unaccent LIKE (
+        replace(
+          replace(
+            replace(immutable_unaccent($3::text), '\', '\\'),
+            '%',
+            '\%'
+          ),
+          '_',
+          '\_'
+        ) || '%'
+      ) ESCAPE '\'
+    )
+  ORDER BY
+    score DESC,
+    t.last_used_at DESC,
+    t.item_count DESC,
+    t.id ASC
+  LIMIT GREATEST(0, $1::int - (SELECT count(*)::int FROM prefix_ranked))
 )
 SELECT
-  t.id,
-  t.display,
-  t.item_count,
-  t.last_used_at,
-  (CASE
-    WHEN t.normalized LIKE $1::text ESCAPE '\' THEN 3
-    WHEN t.tag_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
-    ELSE 1
-  END)::int AS tier,
-  round(
-    GREATEST(
-      similarity(t.tag_unaccent, q.qa),
-      word_similarity(q.qa, t.tag_unaccent)
-    )::numeric,
-    2
-  )::float8 AS score
-FROM tag AS t, q
-WHERE t.user_id = $2
-  AND t.deleted_at IS NULL
-  AND (
-    t.normalized LIKE $1::text ESCAPE '\'
-    OR t.tag_unaccent LIKE q.qa_prefix ESCAPE '\'
-    OR (
-      $3::bool
-      AND (
-        t.tag_unaccent % q.qa
-        OR q.qa <% t.tag_unaccent
-      )
-    )
-  )
+  combined.id,
+  combined.display,
+  combined.item_count,
+  combined.last_used_at,
+  combined.tier,
+  combined.score
+FROM (
+  SELECT
+    prefix_ranked.id,
+    prefix_ranked.display,
+    prefix_ranked.item_count,
+    prefix_ranked.last_used_at,
+    prefix_ranked.tier,
+    prefix_ranked.score
+  FROM prefix_ranked
+  UNION ALL
+  SELECT
+    fuzzy_ranked.id,
+    fuzzy_ranked.display,
+    fuzzy_ranked.item_count,
+    fuzzy_ranked.last_used_at,
+    fuzzy_ranked.tier,
+    fuzzy_ranked.score
+  FROM fuzzy_ranked
+) AS combined
 ORDER BY
-  tier DESC,
-  score DESC,
-  t.last_used_at DESC,
-  t.item_count DESC,
-  t.id ASC
-LIMIT $4
+  combined.tier DESC,
+  combined.score DESC,
+  combined.last_used_at DESC,
+  combined.item_count DESC,
+  combined.id ASC
+LIMIT $1
 `
 
 type SearchTagsLexicalParams struct {
+	PageLimit int32
 	QPrefix   string
+	Qn        string
 	UserID    uuid.UUID
 	Fuzzy     bool
-	PageLimit int32
-	Qn        string
 }
 
 type SearchTagsLexicalRow struct {
@@ -543,11 +794,11 @@ type SearchTagsLexicalRow struct {
 
 func (q *Queries) SearchTagsLexical(ctx context.Context, arg SearchTagsLexicalParams) ([]SearchTagsLexicalRow, error) {
 	rows, err := q.db.Query(ctx, searchTagsLexical,
+		arg.PageLimit,
 		arg.QPrefix,
+		arg.Qn,
 		arg.UserID,
 		arg.Fuzzy,
-		arg.PageLimit,
-		arg.Qn,
 	)
 	if err != nil {
 		return nil, err
@@ -575,105 +826,210 @@ func (q *Queries) SearchTagsLexical(ctx context.Context, arg SearchTagsLexicalPa
 }
 
 const searchTagsLexicalPage = `-- name: SearchTagsLexicalPage :many
-WITH q AS (
-  SELECT
-    $7::text AS qn,
-    immutable_unaccent($7::text) AS qa,
-    replace(
-      replace(
-        replace(immutable_unaccent($7::text), '\', '\\'),
-        '%',
-        '\%'
-      ),
-      '_',
-      '\_'
-    ) || '%' AS qa_prefix
-),
-ranked AS (
+WITH prefix_all AS (
   SELECT
     t.id,
     t.display,
     t.item_count,
     t.last_used_at,
     (CASE
-      WHEN t.normalized LIKE $8::text ESCAPE '\' THEN 3
-      WHEN t.tag_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
-      ELSE 1
+      WHEN t.normalized LIKE $2::text ESCAPE '\' THEN 3
+      ELSE 2
     END)::int AS tier,
     round(
       GREATEST(
-        similarity(t.tag_unaccent, q.qa),
-        word_similarity(q.qa, t.tag_unaccent)
+        similarity(t.tag_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), t.tag_unaccent)
       )::numeric,
       2
     )::float8 AS score
-  FROM tag AS t, q
-  WHERE t.user_id = $9
+  FROM tag AS t
+  WHERE t.user_id = $4
     AND t.deleted_at IS NULL
     AND (
-      t.normalized LIKE $8::text ESCAPE '\'
-      OR t.tag_unaccent LIKE q.qa_prefix ESCAPE '\'
-      OR (
-        $10::bool
-        AND (
-          t.tag_unaccent % q.qa
-          OR q.qa <% t.tag_unaccent
-        )
-      )
+      $5::uuid IS NULL
+      OR $6::int >= 2
     )
+    AND (
+      t.normalized LIKE $2::text ESCAPE '\'
+      OR t.tag_unaccent LIKE (
+        replace(
+          replace(
+            replace(immutable_unaccent($3::text), '\', '\\'),
+            '%',
+            '\%'
+          ),
+          '_',
+          '\_'
+        ) || '%'
+      ) ESCAPE '\'
+    )
+),
+prefix_ranked AS (
+  SELECT
+    p.id,
+    p.display,
+    p.item_count,
+    p.last_used_at,
+    p.tier,
+    p.score
+  FROM prefix_all AS p
+  WHERE
+    $5::uuid IS NULL
+    OR p.tier < $6::int
+    OR (
+      p.tier = $6::int
+      AND p.score < $7::float8
+    )
+    OR (
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at < $8::timestamptz
+    )
+    OR (
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at = $8::timestamptz
+      AND p.item_count < $9::int
+    )
+    OR (
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at = $8::timestamptz
+      AND p.item_count = $9::int
+      AND p.id > $5::uuid
+    )
+  ORDER BY
+    p.tier DESC,
+    p.score DESC,
+    p.last_used_at DESC,
+    p.item_count DESC,
+    p.id ASC
+  LIMIT $1
+),
+fuzzy_all AS (
+  SELECT
+    t.id,
+    t.display,
+    t.item_count,
+    t.last_used_at,
+    1::int AS tier,
+    round(
+      GREATEST(
+        similarity(t.tag_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), t.tag_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
+  FROM tag AS t
+  WHERE $10::bool
+    AND t.user_id = $4
+    AND t.deleted_at IS NULL
+    AND (
+      t.tag_unaccent % immutable_unaccent($3::text)
+      OR immutable_unaccent($3::text) <% t.tag_unaccent
+    )
+    AND NOT (
+      t.normalized LIKE $2::text ESCAPE '\'
+      OR t.tag_unaccent LIKE (
+        replace(
+          replace(
+            replace(immutable_unaccent($3::text), '\', '\\'),
+            '%',
+            '\%'
+          ),
+          '_',
+          '\_'
+        ) || '%'
+      ) ESCAPE '\'
+    )
+),
+fuzzy_ranked AS (
+  SELECT
+    f.id,
+    f.display,
+    f.item_count,
+    f.last_used_at,
+    f.tier,
+    f.score
+  FROM fuzzy_all AS f
+  WHERE
+    $5::uuid IS NULL
+    OR f.tier < $6::int
+    OR (
+      f.tier = $6::int
+      AND f.score < $7::float8
+    )
+    OR (
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at < $8::timestamptz
+    )
+    OR (
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at = $8::timestamptz
+      AND f.item_count < $9::int
+    )
+    OR (
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at = $8::timestamptz
+      AND f.item_count = $9::int
+      AND f.id > $5::uuid
+    )
+  ORDER BY
+    f.score DESC,
+    f.last_used_at DESC,
+    f.item_count DESC,
+    f.id ASC
+  LIMIT GREATEST(0, $1::int - (SELECT count(*)::int FROM prefix_ranked))
 )
 SELECT
-  ranked.id,
-  ranked.display,
-  ranked.item_count,
-  ranked.last_used_at,
-  ranked.tier,
-  ranked.score
-FROM ranked
-WHERE
-  $1::uuid IS NULL
-  OR ranked.tier < $2::int
-  OR (
-    ranked.tier = $2::int
-    AND ranked.score < $3::float8
-  )
-  OR (
-    ranked.tier = $2::int
-    AND ranked.score = $3::float8
-    AND ranked.last_used_at < $4::timestamptz
-  )
-  OR (
-    ranked.tier = $2::int
-    AND ranked.score = $3::float8
-    AND ranked.last_used_at = $4::timestamptz
-    AND ranked.item_count < $5::int
-  )
-  OR (
-    ranked.tier = $2::int
-    AND ranked.score = $3::float8
-    AND ranked.last_used_at = $4::timestamptz
-    AND ranked.item_count = $5::int
-    AND ranked.id > $1::uuid
-  )
+  combined.id,
+  combined.display,
+  combined.item_count,
+  combined.last_used_at,
+  combined.tier,
+  combined.score
+FROM (
+  SELECT
+    prefix_ranked.id,
+    prefix_ranked.display,
+    prefix_ranked.item_count,
+    prefix_ranked.last_used_at,
+    prefix_ranked.tier,
+    prefix_ranked.score
+  FROM prefix_ranked
+  UNION ALL
+  SELECT
+    fuzzy_ranked.id,
+    fuzzy_ranked.display,
+    fuzzy_ranked.item_count,
+    fuzzy_ranked.last_used_at,
+    fuzzy_ranked.tier,
+    fuzzy_ranked.score
+  FROM fuzzy_ranked
+) AS combined
 ORDER BY
-  ranked.tier DESC,
-  ranked.score DESC,
-  ranked.last_used_at DESC,
-  ranked.item_count DESC,
-  ranked.id ASC
-LIMIT $6
+  combined.tier DESC,
+  combined.score DESC,
+  combined.last_used_at DESC,
+  combined.item_count DESC,
+  combined.id ASC
+LIMIT $1
 `
 
 type SearchTagsLexicalPageParams struct {
+	PageLimit        int32
+	QPrefix          string
+	Qn               string
+	UserID           uuid.UUID
 	CursorID         *uuid.UUID
 	CursorTier       *int32
 	CursorScore      *float64
 	CursorLastUsedAt pgtype.Timestamptz
 	CursorCount      *int32
-	PageLimit        int32
-	Qn               string
-	QPrefix          string
-	UserID           uuid.UUID
 	Fuzzy            bool
 }
 
@@ -688,15 +1044,15 @@ type SearchTagsLexicalPageRow struct {
 
 func (q *Queries) SearchTagsLexicalPage(ctx context.Context, arg SearchTagsLexicalPageParams) ([]SearchTagsLexicalPageRow, error) {
 	rows, err := q.db.Query(ctx, searchTagsLexicalPage,
+		arg.PageLimit,
+		arg.QPrefix,
+		arg.Qn,
+		arg.UserID,
 		arg.CursorID,
 		arg.CursorTier,
 		arg.CursorScore,
 		arg.CursorLastUsedAt,
 		arg.CursorCount,
-		arg.PageLimit,
-		arg.Qn,
-		arg.QPrefix,
-		arg.UserID,
 		arg.Fuzzy,
 	)
 	if err != nil {

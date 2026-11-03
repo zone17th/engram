@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"time"
@@ -133,13 +134,32 @@ func ResortHitsByDistAndID(hits []Hit) {
 	})
 }
 
-func buildANNSetLocalStatements(cfg VectorSearchKnobs, budget time.Duration) (
-	iterSQL string,
-	efSQL string,
-	maxScanSQL string,
-	timeoutSQL string,
-	err error,
-) {
+// FormatANNRandomPageCostSQL returns the validated `SET LOCAL random_page_cost = <v>`
+// statement for the read-only ANN transaction, or "" when disabled via
+// ANNRandomPageCostOff (-1). Zero defaults to DefaultANNRandomPageCost (1.1).
+// Values outside [MinANNRandomPageCost, MaxANNRandomPageCost] (0.5..4.0) return
+// ErrInvalidKnobs.
+func FormatANNRandomPageCostSQL(cost float64) (string, error) {
+	if cost == ANNRandomPageCostOff {
+		return "", nil
+	}
+	if cost == 0 {
+		cost = DefaultANNRandomPageCost
+	}
+	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost < MinANNRandomPageCost || cost > MaxANNRandomPageCost {
+		return "", fmt.Errorf("%w: RandomPageCost out of range", ErrInvalidKnobs)
+	}
+	// #nosec G202 -- cost is a validated finite float64 in [0.5, 4.0] formatted via strconv.FormatFloat.
+	return `SET LOCAL random_page_cost = ` + strconv.FormatFloat(cost, 'f', -1, 64), nil
+}
+
+// ANNSetLocalStatements returns the ordered list of SET LOCAL statements
+// executed inside the read-only ANN transaction before ANNSearchSQL (advisor-dec-348).
+func ANNSetLocalStatements(cfg VectorSearchKnobs, budget time.Duration) ([]string, error) {
+	return buildANNSetLocalStatements(cfg, budget)
+}
+
+func buildANNSetLocalStatements(cfg VectorSearchKnobs, budget time.Duration) ([]string, error) {
 	var iterLiteral string
 	switch cfg.IterativeScan {
 	case IterativeScanOff:
@@ -149,26 +169,34 @@ func buildANNSetLocalStatements(cfg VectorSearchKnobs, budget time.Duration) (
 	case IterativeScanStrictOrder:
 		iterLiteral = IterativeScanStrictOrder
 	default:
-		return "", "", "", "", fmt.Errorf("%w: invalid IterativeScan mode", ErrInvalidKnobs)
+		return nil, fmt.Errorf("%w: invalid IterativeScan mode", ErrInvalidKnobs)
 	}
 	if cfg.EfSearch < MinHNSWEfSearch || cfg.EfSearch > MaxHNSWEfSearch {
-		return "", "", "", "", fmt.Errorf("%w: EfSearch out of range", ErrInvalidKnobs)
+		return nil, fmt.Errorf("%w: EfSearch out of range", ErrInvalidKnobs)
 	}
 	if cfg.MaxScanTuples < MinHNSWMaxScanTuples || cfg.MaxScanTuples > MaxHNSWMaxScanTuples {
-		return "", "", "", "", fmt.Errorf("%w: MaxScanTuples out of range", ErrInvalidKnobs)
+		return nil, fmt.Errorf("%w: MaxScanTuples out of range", ErrInvalidKnobs)
+	}
+	costSQL, err := FormatANNRandomPageCostSQL(cfg.RandomPageCost)
+	if err != nil {
+		return nil, err
 	}
 
 	timeoutLiteral := formatStatementTimeoutMS(budget)
 
-	// #nosec G202 -- SET LOCAL values come exclusively from validated enum/integer config bounds.
-	iterSQL = `SET LOCAL hnsw.iterative_scan = ` + iterLiteral
+	stmts := make([]string, 0, 5)
+	// #nosec G202 -- SET LOCAL values come exclusively from validated enum/integer/float config bounds.
+	stmts = append(stmts, `SET LOCAL hnsw.iterative_scan = `+iterLiteral)
 	// #nosec G202 -- EfSearch is a validated int in [1, 2000].
-	efSQL = `SET LOCAL hnsw.ef_search = ` + strconv.Itoa(cfg.EfSearch)
+	stmts = append(stmts, `SET LOCAL hnsw.ef_search = `+strconv.Itoa(cfg.EfSearch))
 	// #nosec G202 -- MaxScanTuples is a validated int in [1, 1000000].
-	maxScanSQL = `SET LOCAL hnsw.max_scan_tuples = ` + strconv.Itoa(cfg.MaxScanTuples)
+	stmts = append(stmts, `SET LOCAL hnsw.max_scan_tuples = `+strconv.Itoa(cfg.MaxScanTuples))
+	if costSQL != "" {
+		stmts = append(stmts, costSQL)
+	}
 	// #nosec G202 -- timeoutLiteral is formatted strictly from a clamped integer millisecond duration.
-	timeoutSQL = `SET LOCAL statement_timeout = '` + timeoutLiteral + `'`
-	return iterSQL, efSQL, maxScanSQL, timeoutSQL, nil
+	stmts = append(stmts, `SET LOCAL statement_timeout = '`+timeoutLiteral+`'`)
+	return stmts, nil
 }
 
 func runANNSearchTx(
@@ -187,7 +215,7 @@ func runANNSearchTx(
 	if err != nil {
 		return nil, 0, err
 	}
-	iterSQL, efSQL, maxScanSQL, timeoutSQL, err := buildANNSetLocalStatements(cfg, budget)
+	setLocalStmts, err := buildANNSetLocalStatements(cfg, budget)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -201,10 +229,9 @@ func runANNSearchTx(
 	}()
 
 	var batch pgx.Batch
-	batch.Queue(iterSQL)
-	batch.Queue(efSQL)
-	batch.Queue(maxScanSQL)
-	batch.Queue(timeoutSQL)
+	for _, stmt := range setLocalStmts {
+		batch.Queue(stmt)
+	}
 	batch.Queue(querySQL, userID, qvec, minCos, k)
 
 	br := tx.SendBatch(ctx, &batch)
@@ -220,7 +247,7 @@ func runANNSearchTx(
 		_ = closeBatch()
 	}()
 
-	for range 4 {
+	for range len(setLocalStmts) {
 		if _, err := br.Exec(); err != nil {
 			return nil, 0, fmt.Errorf("store: ann set local: %w", sanitizeQueryErr(err))
 		}

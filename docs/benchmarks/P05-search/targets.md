@@ -56,3 +56,11 @@ Ràng buộc đóng băng cho generator dataset (Task 10): query gần item (70 
 - Đổi target (hoặc `min_cos`, hoặc định nghĩa mục 2) chỉ bằng `user-dec` **ghi trước** run kế tiếp, dẫn trong report của run đó.
 - Benchmark fail không được đánh dấu Done vì demo ít dữ liệu trông nhanh (phase doc P05 Gate).
 - Profile `smoke` không phải bằng chứng acceptance và không dùng để tuyên bố đạt hay trượt target.
+
+## 5. Ngoại lệ runner CI đã ghi nhận — exception advisor-dec-354 (user-dec-015)
+
+- **Không đổi giá trị target:** `C1-L` (`p95 < 40 ms` ở `c=8`) và `C1-H` (`p95 < 100 ms` ở `c=8`) ở mục 1 giữ nguyên là target production.
+- **Số đo ghi nhận ở Task 23 trên shared CI runner 4-CPU (`ubuntu-24.04-arm`, 4 logical vCPU, không phải host `bro`):** tại head `5bc77b3` (R6), T23 ghi nhận **`C1-L` `p95 = 54.4 ms`** (`54.42 ms` ở `c=8`, `p50 = 18.19 ms`, `partials = 144/4000` measured / `158/4300` tính cả warm-up) và **`C1-H` `p95 = 115.5 ms`** (`115.48 ms` ở `c=8`, `p50 = 71.38 ms`, **`0/4000 degraded`, valid**); ở **`c=1`** đạt **`21.8 / 43 ms`** (`C1-L` `p95 = 21.75 ms < 40 ms`, `C1-H` `p95 = 43.15 ms < 100 ms`).
+- **Bằng chứng bão hoà CPU trên runner 4-CPU:** thông lượng `C1-L` chạm trần cứng **`357 vs 358 req/s` tại `c=8`/`c=32`** (`16` nhánh DB song song + Go API tranh chấp 4 vCPU, kéo giãn latency ~2,5× so với `c=1`); toàn bộ các chỉ số `C1-M` (`p95 = 133.13 ms < 350 ms`) và `C2-R`/`C2-Q`/`C2-U`/`C2-B`/`C2-T`/`C2-FP` ở bộ knob mặc định (`ef64_scan250_exact3000`) đều **PASS** (`recall@20 = 1.0000`, `underfill = 0.00%`, `branch p95` **ANN-only** `= 22.0–23.0 ms` [`22.04–23.02 ms`]; **all-path** `= 5.27–46.34 ms`, với ô exact cao nhất `tag/medium_colocated = 46.34 ms <= 80 ms`).
+- **Chuỗi run bằng chứng:** R2 `41567750625` / R4 `41575503986` / R5 `41591601264` / R6 `41598130936` (báo cáo tổng hợp: [results/2026-11-03-T23-full.md](results/2026-11-03-T23-full.md), báo cáo R6: [results/2026-11-03-5bc77b3-full-arm64.md](results/2026-11-03-5bc77b3-full-arm64.md)).
+- **Follow-up:** **`FU-T23-RUNNER`** — đo lại `C1` trên máy/runner có `>= 8` CPU trước/sau bước rollout 24-2.

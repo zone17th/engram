@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 
 	"github.com/zone17th/engram/apps/api/internal/embedding"
+	"github.com/zone17th/engram/apps/api/internal/embedding/store"
 )
 
 const minSecretLen = 32
@@ -64,11 +67,13 @@ type Config struct {
 
 	// Các knob tìm kiếm P05 (SPEC §4.4, §6.3, §6.4, §6.6, plan P05 mục 2.13).
 	SearchSemanticEnabled         bool          `envconfig:"SEARCH_SEMANTIC_ENABLED" default:"true"`
-	SearchExactMaxVectors         int           `envconfig:"SEARCH_EXACT_MAX_VECTORS" default:"5000" validate:"min=0,max=1000000"`
-	SearchExactFallbackMaxVectors int           `envconfig:"SEARCH_EXACT_FALLBACK_MAX_VECTORS" default:"20000" validate:"min=0,max=1000000"`
+	SearchExactMaxVectors         int           `envconfig:"SEARCH_EXACT_MAX_VECTORS" default:"3000" validate:"min=0,max=1000000"`
+	SearchExactFallbackMaxVectors int           `envconfig:"SEARCH_EXACT_FALLBACK_MAX_VECTORS" default:"3000" validate:"min=0,max=1000000"`
 	SearchHNSWEfSearch            int           `envconfig:"SEARCH_HNSW_EF_SEARCH" default:"64" validate:"min=1,max=2000"`
-	SearchHNSWMaxScanTuples       int           `envconfig:"SEARCH_HNSW_MAX_SCAN_TUPLES" default:"20000" validate:"min=1,max=1000000"`
+	SearchHNSWMaxScanTuples       int           `envconfig:"SEARCH_HNSW_MAX_SCAN_TUPLES" default:"250" validate:"min=1,max=1000000"`
 	SearchHNSWIterativeScan       string        `envconfig:"SEARCH_HNSW_ITERATIVE_SCAN" default:"relaxed_order" validate:"oneof=off relaxed_order strict_order"`
+	SearchANNRandomPageCost       float64       `ignored:"true"`
+	SearchLexicalForceCustomPlan  bool          `ignored:"true"`
 	SearchVectorBranchTimeout     time.Duration `envconfig:"SEARCH_VECTOR_BRANCH_TIMEOUT" default:"80ms"`
 	SearchVectorFallbackMinBudget time.Duration `envconfig:"SEARCH_VECTOR_FALLBACK_MIN_BUDGET" default:"30ms"`
 	SearchRollbackWindow          time.Duration `envconfig:"SEARCH_ROLLBACK_WINDOW" default:"168h"`
@@ -120,6 +125,9 @@ type Config struct {
 	rawBootstrapFlipInterval       string           `ignored:"true"`
 	rawEmbeddingQueryTimeout       string           `ignored:"true"`
 	rawEmbeddingShadowQueryTimeout string           `ignored:"true"`
+	rawSearchANNRandomPageCost     string           `ignored:"true"`
+	rawLexicalForceCustomPlan      string           `ignored:"true"`
+	lexicalCustomPlanLoaded        bool             `ignored:"true"`
 }
 
 type secretEnv struct {
@@ -142,6 +150,8 @@ type proxyEnv struct {
 	BootstrapFlipInterval       string `envconfig:"EMBEDDING_BOOTSTRAP_FLIP_INTERVAL"`
 	EmbeddingQueryTimeout       string `envconfig:"EMBEDDING_QUERY_TIMEOUT"`
 	EmbeddingShadowQueryTimeout string `envconfig:"EMBEDDING_SHADOW_QUERY_TIMEOUT"`
+	SearchANNRandomPageCost     string `envconfig:"SEARCH_ANN_RANDOM_PAGE_COST"`
+	LexicalForceCustomPlan      string `envconfig:"SEARCH_LEXICAL_FORCE_CUSTOM_PLAN"`
 }
 
 // Load đọc env, áp default rồi validate. Lỗi cấu hình phải làm process chết ngay
@@ -180,6 +190,8 @@ func Load() (*Config, error) {
 	cfg.rawBootstrapFlipInterval = strings.TrimSpace(proxies.BootstrapFlipInterval)
 	cfg.rawEmbeddingQueryTimeout = strings.TrimSpace(proxies.EmbeddingQueryTimeout)
 	cfg.rawEmbeddingShadowQueryTimeout = strings.TrimSpace(proxies.EmbeddingShadowQueryTimeout)
+	cfg.rawSearchANNRandomPageCost = strings.TrimSpace(proxies.SearchANNRandomPageCost)
+	cfg.rawLexicalForceCustomPlan = strings.TrimSpace(proxies.LexicalForceCustomPlan)
 
 	if err := cfg.loadSecrets(); err != nil {
 		return nil, err
@@ -367,7 +379,9 @@ func (c *Config) validateWebAuthnPolicy() error {
 //
 // Các biên dương cho knob P05:
 //   - SEARCH_HNSW_EF_SEARCH: 1..2000 (mặc định 64)
-//   - SEARCH_HNSW_MAX_SCAN_TUPLES: 1..1000000 (mặc định 20000)
+//   - SEARCH_HNSW_MAX_SCAN_TUPLES: 1..1000000 (mặc định 250)
+//   - SEARCH_ANN_RANDOM_PAGE_COST: 0.5..4.0 (mặc định 1.1; "off" hoặc 0 tắt SET LOCAL random_page_cost)
+//   - SEARCH_LEXICAL_FORCE_CUSTOM_PLAN: true/on/1 hoặc false/off/0 (mặc định true khi rỗng; tắt sẽ bỏ qua SET LOCAL plan_cache_mode = force_custom_plan)
 //   - EMBEDDING_QUERY_TIMEOUT / SHADOW: 1ms..5m (mặc định 300ms cho tei, 4s cho openai_compat)
 //   - EMBEDDING_DOCUMENT_TIMEOUT / SHADOW: 1ms..10m (mặc định 30s)
 //   - SEARCH_VECTOR_BRANCH_TIMEOUT: 1ms..30s (mặc định 80ms)
@@ -468,6 +482,17 @@ func (c *Config) validateP05Policy() error {
 		return fmt.Errorf("SEARCH_EXACT_FALLBACK_MAX_VECTORS (%d) phải >= SEARCH_EXACT_MAX_VECTORS (%d)",
 			c.SearchExactFallbackMaxVectors, c.SearchExactMaxVectors)
 	}
+	annRandomPageCost, err := parseSearchANNRandomPageCost(c.rawSearchANNRandomPageCost)
+	if err != nil {
+		return err
+	}
+	c.SearchANNRandomPageCost = annRandomPageCost
+	lexicalForceCustomPlan, err := parseSearchLexicalForceCustomPlan(c.rawLexicalForceCustomPlan)
+	if err != nil {
+		return err
+	}
+	c.SearchLexicalForceCustomPlan = lexicalForceCustomPlan
+	c.lexicalCustomPlanLoaded = true
 	if c.SearchVectorBranchTimeout < time.Millisecond || c.SearchVectorBranchTimeout > 30*time.Second {
 		return fmt.Errorf("SEARCH_VECTOR_BRANCH_TIMEOUT phải trong khoảng 1ms..30s")
 	}
@@ -510,6 +535,47 @@ func parseOrDefaultDuration(name, raw string, def, min, max time.Duration) (time
 		return 0, fmt.Errorf("%s phải trong khoảng %s..%s", name, min, max)
 	}
 	return d, nil
+}
+
+func parseSearchANNRandomPageCost(raw string) (float64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return store.DefaultANNRandomPageCost, nil
+	}
+	if strings.EqualFold(raw, "off") {
+		return store.ANNRandomPageCostOff, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("SEARCH_ANN_RANDOM_PAGE_COST phải trong khoảng 0.5..4.0 hoặc 'off'/0")
+	}
+	if v == 0 {
+		return store.ANNRandomPageCostOff, nil
+	}
+	if v < store.MinANNRandomPageCost || v > store.MaxANNRandomPageCost {
+		return 0, fmt.Errorf("SEARCH_ANN_RANDOM_PAGE_COST phải trong khoảng 0.5..4.0 hoặc 'off'/0")
+	}
+	return v, nil
+}
+
+func parseSearchLexicalForceCustomPlan(raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "true", "on", "1":
+		return true, nil
+	case "false", "off", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("SEARCH_LEXICAL_FORCE_CUSTOM_PLAN phải là true/on/1 hoặc false/off/0 (rỗng = mặc định bật)")
+	}
+}
+
+// LexicalForceCustomPlanEnabled trả giá trị hiệu lực của SEARCH_LEXICAL_FORCE_CUSTOM_PLAN
+// (mặc định true cả khi Config được khởi tạo trực tiếp bằng struct literal trong test).
+func (c *Config) LexicalForceCustomPlanEnabled() bool {
+	if c == nil || !c.lexicalCustomPlanLoaded {
+		return true
+	}
+	return c.SearchLexicalForceCustomPlan
 }
 
 func parseStrictOrigin(raw string) (*url.URL, error) {
@@ -833,6 +899,8 @@ func (c *Config) Redacted() map[string]any {
 		"search_hnsw_ef_search":             c.SearchHNSWEfSearch,
 		"search_hnsw_max_scan_tuples":       c.SearchHNSWMaxScanTuples,
 		"search_hnsw_iterative_scan":        c.SearchHNSWIterativeScan,
+		"search_ann_random_page_cost":       c.SearchANNRandomPageCost,
+		"search_lexical_force_custom_plan":  c.SearchLexicalForceCustomPlan,
 		"search_vector_branch_timeout":      c.SearchVectorBranchTimeout.String(),
 		"search_vector_fallback_min_budget": c.SearchVectorFallbackMinBudget.String(),
 		"search_rollback_window":            c.SearchRollbackWindow.String(),

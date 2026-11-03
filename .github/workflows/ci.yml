@@ -899,7 +899,11 @@ jobs:
             TestMixKindProportions TestQuerySetsAreDeterministic \
             TestC2UnderfillIsOverEveryMeasuredQuery TestC2BranchLatencyCoversEveryRequest \
             TestHybridScenarioRequiresEverySemanticSuccess TestMarkdownTablesEscapePipes \
-            TestParseANNPlan TestBenchHarnessUsesDefaultPlanner; do
+            TestParseANNPlan TestBenchHarnessUsesDefaultPlanner \
+            TestGaussianSampleMoments TestLexicalPartialAggregation TestServerLogsFileHasOnlyAllowlistedTokens \
+            TestLexicalPlanParser TestLexicalPlanQueriesAreDeterministic TestLexicalSQLCapture \
+            TestCoverageGapClassification TestErrTagHidesText TestTask23SummaryAndMarkdown \
+            TestGenericPlanSQLAndEligibility TestExtrasBudgetAndTestDeadline TestExtrasLogCarriesTagsNotErrorText; do
             if ! grep -Eq "^[[:space:]]*--- PASS: ${name} \(" "$SEARCH_BENCH_OUT_DIR/self-checks.log"; then
               echo "::error::self-check ${name} has no '--- PASS:' line (skipped, filtered out or failed)"
               status=1
@@ -931,7 +935,9 @@ jobs:
         run: docker rm -f "$SEARCH_BENCH_PG_CONTAINER" || true
 
       # Allowlist: only the report files (*.json, *.md). The .log files stay in
-      # the job log and are not uploaded.
+      # the job log and are not uploaded. `*.json` includes the sanitized API-log
+      # artifact `<base>-server-logs.json` (FU-SB-2b: allowlisted tokens and numbers
+      # only, scrubbed before it is written); the raw logs are never uploaded.
       - name: Upload search-bench results
         if: always()
         uses: actions/upload-artifact@v4

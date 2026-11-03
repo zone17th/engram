@@ -464,3 +464,166 @@ func TestExactSearchSQLRejectsInvalidCorpus(t *testing.T) {
 		t.Fatalf("ExactSearchSQL invalid corpus = %v, want ErrInvalidCorpus", err)
 	}
 }
+
+func TestExactSearchSQLDistanceFilterPushdownShape(t *testing.T) {
+	for _, tc := range []struct {
+		corpus   generation.Corpus
+		tbl      string
+		liveJoin string
+		orderKey string
+	}{
+		{
+			corpus:   generation.CorpusItem,
+			tbl:      `"item_embedding_g1"`,
+			liveJoin: "JOIN item i ON i.id = e.target_id AND i.user_id = e.user_id",
+			orderKey: "ORDER BY e.dist ASC, i.id ASC",
+		},
+		{
+			corpus:   generation.CorpusTag,
+			tbl:      `"tag_embedding_g1"`,
+			liveJoin: "JOIN tag t ON t.id = e.target_id AND t.user_id = e.user_id",
+			orderKey: "ORDER BY e.dist ASC, t.id ASC",
+		},
+	} {
+		t.Run(string(tc.corpus), func(t *testing.T) {
+			sqlStr, err := store.ExactSearchSQL(tc.tbl, tc.corpus)
+			if err != nil {
+				t.Fatalf("ExactSearchSQL(%s): %v", tc.corpus, err)
+			}
+			cteStart := strings.Index(sqlStr, "WITH tenant_vecs AS MATERIALIZED (")
+			outerStart := strings.Index(sqlStr, "\n)\nSELECT")
+			joinIdx := strings.Index(sqlStr, tc.liveJoin)
+			if cteStart < 0 || outerStart <= cteStart || joinIdx <= outerStart {
+				t.Fatalf("unexpected SQL structure:\n%s", sqlStr)
+			}
+			cteBody := sqlStr[cteStart : outerStart+2]
+			outerBody := sqlStr[outerStart+3:]
+			// 1. Distance and threshold filter must be inside the MATERIALIZED CTE before the join.
+			if !strings.Contains(cteBody, "(embedding <=> $2) AS dist") {
+				t.Fatalf("expected MATERIALIZED CTE to project (embedding <=> $2) AS dist:\n%s", cteBody)
+			}
+			if !strings.Contains(cteBody, "AND 1 - (embedding <=> $2) >= $3") {
+				t.Fatalf("expected MATERIALIZED CTE to filter 1 - (embedding <=> $2) >= $3 before join:\n%s", cteBody)
+			}
+			if !strings.Contains(cteBody, "ORDER BY user_id, target_id") {
+				t.Fatalf("expected MATERIALIZED CTE to preserve ORDER BY user_id, target_id:\n%s", cteBody)
+			}
+
+			// 2. Outer query must reuse e.dist and never re-evaluate <=> or detoast e.embedding.
+			if strings.Contains(outerBody, "<=>") || strings.Contains(outerBody, "embedding") {
+				t.Fatalf("outer query after MATERIALIZED CTE must not reference embedding or <=>:\n%s", outerBody)
+			}
+			if !strings.Contains(outerBody, "1 - e.dist AS cos") {
+				t.Fatalf("expected outer query to compute 1 - e.dist AS cos:\n%s", outerBody)
+			}
+			if !strings.Contains(outerBody, tc.orderKey) {
+				t.Fatalf("expected outer query to order by %q:\n%s", tc.orderKey, outerBody)
+			}
+		})
+	}
+}
+
+func TestExactSearchPushdownPreservesIDsAndOrder(t *testing.T) {
+	if testing.Short() {
+		return
+	}
+	ctx := context.Background()
+	pool := newTestPool(t)
+	q := gen.New(pool)
+
+	g1, pin := seedGenerationForVectorSearch(t, ctx, pool, 1, 4, 4, 0.50, true)
+	u, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "exact-pushdown-order@example.com", Locale: "en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	idBest := uuid.MustParse("00000000-0000-0000-0000-000000000011")
+	idTieA := uuid.MustParse("00000000-0000-0000-0000-000000000012")
+	idTieB := uuid.MustParse("00000000-0000-0000-0000-000000000013")
+	idNearMin := uuid.MustParse("00000000-0000-0000-0000-000000000014")
+	idExactMin := uuid.MustParse("00000000-0000-0000-0000-000000000015")
+	idBelowMin := uuid.MustParse("00000000-0000-0000-0000-000000000016")
+
+	hash := makeHash(0x69)
+	// Insert in reverse/mixed order to verify deterministic (dist ASC, id ASC),
+	// exact equality at semantic_min_cos (0.50), and truncation across a tie.
+	fixture := []struct {
+		id  uuid.UUID
+		vec []float32
+	}{
+		{id: idBelowMin, vec: []float32{0.40, 0.916515, 0, 0}},   // cos = 0.40 < 0.50 (filtered out inside CTE)
+		{id: idExactMin, vec: []float32{0.50, 0.50, 0.50, 0.50}}, // cos = 0.50 == 0.50 (exact threshold boundary, included)
+		{id: idNearMin, vec: []float32{0.60, 0.80, 0, 0}},        // cos = 0.60 >= 0.50
+		{id: idTieB, vec: []float32{0.80, 0.60, 0, 0}},           // cos = 0.80 (tie, higher UUID)
+		{id: idBest, vec: []float32{1.0, 0.0, 0, 0}},             // cos = 1.00
+		{id: idTieA, vec: []float32{0.80, 0.60, 0, 0}},           // cos = 0.80 (tie, lower UUID)
+	}
+	for idx, f := range fixture {
+		_, err := q.InsertItem(ctx, gen.InsertItemParams{
+			ID:             &f.id,
+			UserID:         u.ID,
+			Name:           "Pushdown Item " + string(rune('A'+idx)),
+			NameNormalized: "pushdown item " + string(rune('a'+idx)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Upsert(ctx, pool, g1, generation.CorpusItem, u.ID, f.id, f.vec, hash); err != nil {
+			t.Fatal(err)
+		}
+		_, err = pool.Exec(ctx,
+			`INSERT INTO tag (id, user_id, display, normalized) VALUES ($1, $2, $3, $4)`,
+			f.id, u.ID, "PushdownTag"+string(rune('A'+idx)), "pushdowntag"+string(rune('a'+idx)),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Upsert(ctx, pool, g1, generation.CorpusTag, u.ID, f.id, f.vec, hash); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	knobs := store.DefaultVectorSearchKnobs()
+	knobs.ExactMaxVectors = 10
+	knobs.FallbackMaxVectors = 20
+	qvec := []float32{1, 0, 0, 0}
+
+	cases := []struct {
+		name    string
+		k       int
+		wantIDs []uuid.UUID
+	}{
+		{
+			name:    "full_eligible_includes_exact_threshold_boundary",
+			k:       10,
+			wantIDs: []uuid.UUID{idBest, idTieA, idTieB, idNearMin, idExactMin},
+		},
+		{
+			name:    "limit_cuts_through_distance_tie_by_id_asc",
+			k:       2,
+			wantIDs: []uuid.UUID{idBest, idTieA},
+		},
+	}
+
+	for _, corpus := range []generation.Corpus{generation.CorpusItem, generation.CorpusTag} {
+		for _, tc := range cases {
+			hits, stats, err := store.VectorSearch(
+				ctx, pool, pin, u.ID, corpus, qvec, tc.k, time.Now().Add(2*time.Second), knobs,
+			)
+			if err != nil {
+				t.Fatalf("VectorSearch (%s/%s): %v", corpus, tc.name, err)
+			}
+			if stats.Path != store.VectorPathExact {
+				t.Fatalf("stats.Path (%s/%s) = %q, want exact", corpus, tc.name, stats.Path)
+			}
+			if len(hits) != len(tc.wantIDs) {
+				t.Fatalf("len(hits) (%s/%s) = %d, want %d (hits=%+v)", corpus, tc.name, len(hits), len(tc.wantIDs), hits)
+			}
+			for i, wantID := range tc.wantIDs {
+				if hits[i].ID != wantID {
+					t.Fatalf("hits[%d].ID (%s/%s) = %s, want %s (hits=%+v)", i, corpus, tc.name, hits[i].ID, wantID, hits)
+				}
+			}
+		}
+	}
+}

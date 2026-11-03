@@ -21,19 +21,24 @@ import (
 //     (user_id, target_id) — the composite primary key on each partition —
 //     which blocks the Postgres planner from choosing the per-partition HNSW
 //     index (`ORDER BY embedding <=> $2`) when count <= ExactMaxVectors.
+//   - Projects `(embedding <=> $2) AS dist` and filters
+//     `1 - (embedding <=> $2) >= $3` (`semantic_min_cos`) inside the
+//     MATERIALIZED CTE before joining the live target table, so the outer
+//     query reuses `e.dist` without re-reading `embedding` and skips
+//     live-table index probes for rows below threshold.
 //   - Joins the live target table (`item` or `tag`) on `id = target_id AND
 //     user_id = user_id` with `deleted_at IS NULL`, so soft-deleted rows and
 //     other tenants' rows are never returned.
-//   - Filters `1 - (e.embedding <=> $2) >= $3` (`semantic_min_cos`).
 //   - Orders deterministically by `dist ASC, id ASC` with `LIMIT $4`.
 func ExactSearchSQL(tbl string, corpus generation.Corpus) (string, error) {
 	switch corpus {
 	case generation.CorpusItem:
 		// #nosec G202 -- tbl is validated against allowlist ^(item|tag)_embedding_g[1-9][0-9]{0,3}$ and quoted via pgx.Identifier.Sanitize().
 		return `WITH tenant_vecs AS MATERIALIZED (
-	SELECT user_id, target_id, embedding
+	SELECT user_id, target_id, (embedding <=> $2) AS dist
 	FROM ` + tbl + `
 	WHERE user_id = $1
+	  AND 1 - (embedding <=> $2) >= $3
 	ORDER BY user_id, target_id
 )
 SELECT
@@ -42,21 +47,21 @@ SELECT
 	i.entry_count,
 	i.last_used_at,
 	i.created_at,
-	(e.embedding <=> $2) AS dist,
-	1 - (e.embedding <=> $2) AS cos
+	e.dist,
+	1 - e.dist AS cos
 FROM tenant_vecs e
 JOIN item i ON i.id = e.target_id AND i.user_id = e.user_id
 WHERE i.deleted_at IS NULL
-  AND 1 - (e.embedding <=> $2) >= $3
-ORDER BY dist ASC, i.id ASC
+ORDER BY e.dist ASC, i.id ASC
 LIMIT $4`, nil
 
 	case generation.CorpusTag:
 		// #nosec G202 -- tbl is validated against allowlist ^(item|tag)_embedding_g[1-9][0-9]{0,3}$ and quoted via pgx.Identifier.Sanitize().
 		return `WITH tenant_vecs AS MATERIALIZED (
-	SELECT user_id, target_id, embedding
+	SELECT user_id, target_id, (embedding <=> $2) AS dist
 	FROM ` + tbl + `
 	WHERE user_id = $1
+	  AND 1 - (embedding <=> $2) >= $3
 	ORDER BY user_id, target_id
 )
 SELECT
@@ -65,13 +70,12 @@ SELECT
 	t.item_count,
 	t.last_used_at,
 	t.created_at,
-	(e.embedding <=> $2) AS dist,
-	1 - (e.embedding <=> $2) AS cos
+	e.dist,
+	1 - e.dist AS cos
 FROM tenant_vecs e
 JOIN tag t ON t.id = e.target_id AND t.user_id = e.user_id
 WHERE t.deleted_at IS NULL
-  AND 1 - (e.embedding <=> $2) >= $3
-ORDER BY dist ASC, t.id ASC
+ORDER BY e.dist ASC, t.id ASC
 LIMIT $4`, nil
 
 	default:

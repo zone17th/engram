@@ -370,7 +370,9 @@ func (h *Harness) token(t int) string {
 // undiagnosable. LogSink is an in-memory slog.Handler that keeps ONLY an
 // allowlist of attributes (see allowedLogKey) and drops everything else, so no
 // q text, names, ids, SQL or error strings can reach the report (privacy lens).
-// Log messages are fixed constants by project convention and are kept (capped).
+// Log messages are fixed lower-case constants by project convention and are kept
+// (capped) when they fit the message vocabulary (safeLogMessage); any other message is
+// counted under "other" and its text is dropped.
 
 const (
 	maxLogSamples    = 5   // sanitized sample lines kept per drained run
@@ -380,18 +382,44 @@ const (
 )
 
 // allowedLogKey is the attribute allowlist: error_class, problem code, status,
-// route pattern, corpus/branch and counts. Level and message are record fields,
-// always kept. Every other key (q, name, sql, request_id, err, ...) is dropped.
+// route pattern, corpus/branch, counts and (FU-SB-2b, advisor-dec-337) the fields
+// of the "suggest lexical branch partial" line: the enum tokens mode and phase
+// and the integer millisecond timings setup_ms, set_local_ms and query_ms. Level
+// and message are record fields, always kept. Every other key (q, name, sql,
+// request_id, err, user id, ...) is dropped.
 func allowedLogKey(k string) bool {
 	switch k {
-	case "error_class", "code", "problem_code", "status", "route", "corpus", "branch", "count":
+	case "error_class", "code", "problem_code", "status", "route", "corpus", "branch", "count",
+		"mode", "phase", "setup_ms", "set_local_ms", "query_ms":
 		return true
 	}
 	return strings.HasSuffix(k, "_count")
 }
 
 func numericLogKey(k string) bool {
-	return k == "status" || k == "count" || strings.HasSuffix(k, "_count")
+	switch k {
+	case "status", "count", "setup_ms", "set_local_ms", "query_ms":
+		return true
+	}
+	return strings.HasSuffix(k, "_count")
+}
+
+// enumLogValues pins the keys whose value is a closed enum in production code
+// (suggest.CorpusItem/CorpusTag, suggest.ModePrefix/ModeFull/ModeRecent, the
+// phases of runBranch). A value outside the enum is dropped even though it would
+// pass safeLogToken, so a hostile or mistaken value (a corpus or mode that is
+// really a user-chosen name) can never reach the report or the artifact.
+var enumLogValues = map[string]map[string]bool{
+	"corpus": {"item": true, "tag": true},
+	"mode":   {"prefix": true, "full": true, "recent": true},
+	"phase":  {"setup": true, "set_local": true, "query": true},
+}
+
+// enumLogValueOK reports whether v is allowed for key k (always true for keys
+// that are not pinned to an enum).
+func enumLogValueOK(k, v string) bool {
+	allowed, pinned := enumLogValues[k]
+	return !pinned || allowed[v]
 }
 
 // safeLogToken accepts only short fixed-vocabulary tokens (codes, route
@@ -433,7 +461,7 @@ func appendSanitized(out []string, a slog.Attr) []string {
 		}
 		return out
 	}
-	if v.Kind() == slog.KindString && safeLogToken(v.String()) {
+	if v.Kind() == slog.KindString && safeLogToken(v.String()) && enumLogValueOK(a.Key, v.String()) {
 		return append(out, a.Key+"="+v.String())
 	}
 	return out
@@ -443,10 +471,13 @@ type logClassKey struct{ level, message, errorClass string }
 
 // LogSink collects sanitized server log records; safe for concurrent use.
 type LogSink struct {
-	mu      sync.Mutex
-	counts  map[logClassKey]int
-	samples []string
-	seen    map[string]bool
+	mu       sync.Mutex
+	counts   map[logClassKey]int
+	samples  []string
+	seen     map[string]bool
+	partials []PartialRecord // FU-SB-2b: parsed "suggest lexical branch partial" lines
+	overflow int             // partial lines beyond maxPartialRecords
+	rejected int             // partial lines the parser refused (field or enum drift)
 }
 
 // NewLogSink returns an empty sink.
@@ -482,9 +513,15 @@ func (s *LogSink) Drain() ServerLogSummary {
 		out.Classes = out.Classes[:maxLogClasses]
 	}
 	out.Samples = append(out.Samples, s.samples...)
+	out.Partials = AggregatePartials(s.partials)
+	out.PartialsOverflow = s.overflow
+	out.PartialsRejected = s.rejected
+	s.rejected = 0
 	s.counts = map[logClassKey]int{}
 	s.samples = nil
 	s.seen = map[string]bool{}
+	s.partials = nil
+	s.overflow = 0
 	return out
 }
 
@@ -492,6 +529,8 @@ func (s *LogSink) record(level slog.Level, msg string, kv []string) {
 	if len(msg) > maxLogMessageLen {
 		msg = msg[:maxLogMessageLen]
 	}
+	// Outside the message vocabulary the text is not kept, only the count (RV-W4-1-5).
+	msg = safeLogMessage(msg)
 	class := ""
 	for _, p := range kv {
 		if v, ok := strings.CutPrefix(p, "error_class="); ok {
@@ -505,6 +544,17 @@ func (s *LogSink) record(level slog.Level, msg string, kv []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counts[logClassKey{level.String(), msg, class}]++
+	if msg == PartialLogMessage {
+		if rec, ok := parsePartialRecord(kv); !ok {
+			// Counted, never dropped silently: a changed partial line shape must not
+			// read as "0 partial branches" (RV-W4-1-3).
+			s.rejected++
+		} else if len(s.partials) < maxPartialRecords {
+			s.partials = append(s.partials, rec)
+		} else {
+			s.overflow++
+		}
+	}
 	// Samples: first distinct WARN+ lines only (the INFO access log is counted, not sampled).
 	if level >= slog.LevelWarn && len(s.samples) < maxLogSamples && !s.seen[line] {
 		s.seen[line] = true
@@ -916,15 +966,20 @@ func NewKnob(ef, scan, exactMax int) KnobSet {
 	}
 }
 
-// DefaultKnob is the production default (SPEC §6.4: ef 64, scan 20000, exact 5000).
+// DefaultKnob is the production default (O1b: ef 64, scan 250, exact 3000, fallback 3000).
 func DefaultKnob() KnobSet {
 	return NewKnob(store.DefaultHNSWEfSearch, store.DefaultHNSWMaxScanTuples, store.DefaultExactMaxVectors)
 }
 
-// FullKnobMatrix is the whole plan 2.23 matrix: ef_search {40,64,100} x
-// max_scan_tuples {20000, 50000, unlimited} x SEARCH_EXACT_MAX_VECTORS {5000,10000,20000}.
+// FullKnobMatrix is the plan 2.23 3x3x3 matrix (ef_search {40,64,100} x
+// max_scan_tuples {20000, 50000, unlimited} x SEARCH_EXACT_MAX_VECTORS {5000,10000,20000})
+// plus the O1b default knob set (ef64/scan250/exact3000) and bracket set
+// (ef64/scan400/exact3000).
 func FullKnobMatrix() []KnobSet {
-	var out []KnobSet
+	out := []KnobSet{
+		DefaultKnob(),
+		NewKnob(64, 400, 3000),
+	}
 	for _, ex := range []int{5000, 10000, 20000} {
 		for _, scan := range []int{20000, 50000, unlimitedScan} {
 			for _, ef := range []int{40, 64, 100} {
@@ -938,7 +993,7 @@ func FullKnobMatrix() []KnobSet {
 // SmokeKnobMatrix is the documented smoke subset: the production default plus
 // ef_search {40,64,100} x max_scan_tuples {20000, unlimited} at
 // SEARCH_EXACT_MAX_VECTORS=1000, which forces the 10k item and 2k tag corpora of
-// the smoke tenant onto ANN (the default 5000 keeps the 2k tag corpus exact).
+// the smoke tenant onto ANN (the default 3000 keeps the 2k tag corpus exact).
 func SmokeKnobMatrix() []KnobSet {
 	out := []KnobSet{DefaultKnob()}
 	for _, scan := range []int{20000, unlimitedScan} {
@@ -1102,11 +1157,15 @@ func annKnobStatements(k KnobSet) []string {
 	if scan == 0 {
 		scan = store.DefaultHNSWMaxScanTuples
 	}
-	return []string{
+	stmts := []string{
 		"SET LOCAL hnsw.iterative_scan = " + iter,
 		fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", ef),
 		fmt.Sprintf("SET LOCAL hnsw.max_scan_tuples = %d", scan),
 	}
+	if costSQL, err := store.FormatANNRandomPageCostSQL(store.DefaultANNRandomPageCost); err == nil && costSQL != "" {
+		stmts = append(stmts, costSQL)
+	}
+	return stmts
 }
 
 // explainANNSQL runs EXPLAIN of the ACTUAL ANN SQL (store.ANNSearchSQL, with its
@@ -1185,6 +1244,88 @@ func (h *Harness) ANNPlanEvidence(ctx context.Context, corpus generation.Corpus,
 	return &ev
 }
 
+// MaxANNPlanTenants caps the number of distinct ANN-entering tenants explained
+// per C2 cell.
+const MaxANNPlanTenants = 3
+
+// tenantVectorCount returns the seeded vector count for tenant tIdx in corpus,
+// honoring the optional truncation map `limits`.
+func tenantVectorCount(spec ProfileSpec, corpus generation.Corpus, tIdx int, limits map[int]int) int {
+	if tIdx < 0 || tIdx >= len(spec.Tenants) {
+		return 0
+	}
+	c := spec.Tenants[tIdx].ItemCount
+	if corpus == generation.CorpusTag {
+		c = spec.Tenants[tIdx].TagCount
+	}
+	if l := limits[tIdx]; l > 0 && l < c {
+		c = l
+	}
+	return c
+}
+
+// tenantEntersANN reports whether a tenant with `count` vectors enters the ANN
+// branch under `knob` (matching store.VectorSearch: ExactMax == 0 forces ANN,
+// otherwise count > ExactMax).
+func tenantEntersANN(count int, knob KnobSet) bool {
+	if knob.ExactMax <= 0 {
+		return count > 0
+	}
+	return count > knob.ExactMax
+}
+
+// SelectANNPlanJobs returns the first job for each distinct tenant in `jobs`
+// whose seeded vector count enters the ANN branch under `knob` (count >
+// knob.ExactMax, or count > 0 when knob.ExactMax == 0), capped at
+// MaxANNPlanTenants (3).
+func SelectANNPlanJobs(spec ProfileSpec, corpus generation.Corpus, jobs []vqJob, knob KnobSet, limits map[int]int) []vqJob {
+	seen := map[int]struct{}{}
+	var out []vqJob
+	for _, j := range jobs {
+		tIdx := j.q.TenantIdx
+		if _, ok := seen[tIdx]; ok {
+			continue
+		}
+		seen[tIdx] = struct{}{}
+		if !tenantEntersANN(tenantVectorCount(spec, corpus, tIdx, limits), knob) {
+			continue
+		}
+		out = append(out, j)
+		if len(out) >= MaxANNPlanTenants {
+			break
+		}
+	}
+	return out
+}
+
+// CellANNPlanEvidence runs ANNPlanEvidence on up to 3 distinct ANN-entering
+// tenants in `jobs` and combines the per-tenant (tenant index, partition,
+// verdict) results. If no tenant in `jobs` enters ANN, it returns a
+// PlanEvidence with Problem "no ANN tenant in this cell".
+func (h *Harness) CellANNPlanEvidence(ctx context.Context, corpus generation.Corpus, jobs []vqJob, knob KnobSet, limits map[int]int) *PlanEvidence {
+	selected := SelectANNPlanJobs(h.Seed.Spec, corpus, jobs, knob, limits)
+	if len(selected) == 0 {
+		return CombineTenantPlanEvidence(nil)
+	}
+	tbl, _ := h.tableOf(corpus)
+	tenants := make([]TenantPlanEvidence, 0, len(selected))
+	for _, j := range selected {
+		tSpec := h.Seed.Spec.Tenants[j.q.TenantIdx]
+		ev := h.ANNPlanEvidence(ctx, corpus, tSpec.UserID, j.q.Vec, knob)
+		part := ev.Relation
+		if part == "" {
+			part = fmt.Sprintf("%s_p%d", tbl, tSpec.PartitionRemainder)
+		}
+		tenants = append(tenants, TenantPlanEvidence{
+			TenantIdx: j.q.TenantIdx,
+			Partition: part,
+			Verdict:   ev.Verdict(),
+			Plan:      *ev,
+		})
+	}
+	return CombineTenantPlanEvidence(tenants)
+}
+
 // explainANN is the representative EXPLAIN (ANALYZE, BUFFERS) of the ANN SQL under
 // the production default knobs. Vector literals (planner constants) are scrubbed.
 func (h *Harness) explainANN(ctx context.Context, corpus generation.Corpus, user uuid.UUID, vec []float32) ([]string, error) {
@@ -1251,8 +1392,7 @@ func (h *Harness) RunC2(ctx context.Context, cfg C2Config) (*C2Report, error) {
 				// the planner's plan for the ANN SQL is an HNSW scan of the pruned
 				// partition, so a sequential scan can never be reported as "ANN".
 				if cell.ANNQueries > 0 && len(jobs) > 0 {
-					user := h.Seed.Spec.Tenants[jobs[0].q.TenantIdx].UserID
-					cell.Plan = h.ANNPlanEvidence(ctx, corpus, user, jobs[0].q.Vec, knob)
+					cell.Plan = h.CellANNPlanEvidence(ctx, corpus, jobs, knob, limits)
 				}
 				rep.Cells = append(rep.Cells, cell)
 			}
@@ -1324,7 +1464,7 @@ func ConfigFor(p ProfileName) BenchConfig {
 		return BenchConfig{
 			Plan:       ScenarioPlan{Levels: []LoadLevel{{1, 200, 2000}, {8, 300, 4000}, {32, 300, 4000}}},
 			LexQueries: 1000, HitQueries: 400, C2Queries: 500,
-			C2Matrix: FullKnobMatrix(), MatrixNote: "Full matrix: ef_search {40,64,100} x max_scan_tuples {20000,50000,unlimited(1e6)} x SEARCH_EXACT_MAX_VECTORS {5000,10000,20000}; verdicts for the production default knob set.",
+			C2Matrix: FullKnobMatrix(), MatrixNote: "Full matrix: O1b default (ef64_scan250_exact3000) + bracket (ef64_scan400_exact3000) + ef_search {40,64,100} x max_scan_tuples {20000,50000,unlimited(1e6)} x SEARCH_EXACT_MAX_VECTORS {5000,10000,20000}; verdicts for the production default knob set.",
 			RequestsNote: "c=1: 2000, c=8: 4000, c=32: 4000 measured (+ warm-up discarded)", MinMeasured: MinMeasuredPerScenario,
 		}
 	}
@@ -1346,12 +1486,16 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 	}
 	defer h.Close()
 
+	lexPlanCacheMode := "force_custom_plan"
+	if !h.Service.LexicalForceCustomPlan() {
+		lexPlanCacheMode = "auto (off)"
+	}
 	rep.Harness = HarnessKnobs{
 		MinCos: float64(MinCos), GenerationID: BenchGenerationID, Partitions: sr.Spec.Partitions,
 		HnswM: generation.DefaultHnswM, HnswEfConstr: generation.DefaultHnswEfConstruction,
 		StubDelayMs: ms(StubEmbedDelay), RateLimitCapacity: BenchBucketCapacity, RateLimitRefill: BenchBucketRefill,
 		PoolMaxConns: h.PoolMax, Concurrency: []int{1, 8, 32}, Requests: cfg.RequestsNote,
-		ProductionKnobs: "ef_search 64, max_scan_tuples 20000, iterative_scan relaxed_order, exact max 5000, fallback max 20000, branch timeout 80 ms, fallback min budget 30 ms, lexical branch timeout 50 ms",
+		ProductionKnobs: "ef_search 64, max_scan_tuples 250, iterative_scan relaxed_order, exact max 3000, fallback max 3000, branch timeout 80 ms, fallback min budget 30 ms, lexical branch timeout 50 ms, lexical plan_cache_mode " + lexPlanCacheMode,
 		SearchEndpoint:  "GET /api/v1/suggest (limit default, scope all)",
 		Notes: []string{
 			"Requests go through httpx.NewRouter + semantic.RequestScopeMiddleware + suggest.Mount with the production auth.SessionStore (real JWT parse and session/user DB lookups; validator clock frozen at start so the 10-minute access token never expires mid-run). No network listener.",
@@ -1418,11 +1562,15 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 		Classes: classes, CountSamples: 30, Explain: true,
 	})
 	rep.C2 = c2
-	if err != nil {
-		return err
+	if err == nil {
+		logf("C2 done")
 	}
-	logf("C2 done")
-	return nil
+	// Task 23 additions (advisor-dec-337): quiet phase after every measured cell, on
+	// their own connections. They run even when C2 failed, so the evidence is not
+	// lost, and a failed section is recorded without failing the benchmark. With no
+	// time left every section is recorded as skipped_budget (RV-W4-1-2).
+	rep.Extras = RunExtras(ctx, dsn, sr, classes, ExtrasConfigFor(env.Profile), logf)
+	return err
 }
 
 // FinalizeReport fills verdicts, hard failures and derived sections.
@@ -1434,6 +1582,11 @@ func FinalizeReport(rep *Report, minMeasured int) {
 	rep.Warnings = DegradationWarnings(rep)
 	for _, s := range rep.C1 {
 		rep.Warnings = append(rep.Warnings, LevelWarnings(s)...)
+	}
+	if rep.Extras != nil {
+		for _, e := range rep.Extras.Errors {
+			rep.Warnings = append(rep.Warnings, "Task 23 extra failed (not part of any target): "+e)
+		}
 	}
 	if rep.C2 != nil {
 		if cells := NonHNSWANNCells(rep.C2.Cells); len(cells) > 0 {
