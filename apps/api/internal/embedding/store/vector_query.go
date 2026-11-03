@@ -66,6 +66,12 @@ const (
 	MinHNSWMaxScanTuples     = 1
 	MaxHNSWMaxScanTuples     = 1000000
 
+	DefaultANNRandomPageCost = 1.1
+	MinANNRandomPageCost     = 0.5
+	MaxANNRandomPageCost     = 4.0
+	// ANNRandomPageCostOff disables SET LOCAL random_page_cost inside the ANN tx.
+	ANNRandomPageCostOff = -1.0
+
 	DefaultVectorBranchTimeout     = 80 * time.Millisecond
 	DefaultVectorFallbackMinBudget = 30 * time.Millisecond
 	MinVectorTimeout               = time.Millisecond
@@ -111,6 +117,10 @@ type VectorSearchKnobs struct {
 	// "strict_order"; default "relaxed_order").
 	IterativeScan string
 
+	// RandomPageCost is SEARCH_ANN_RANDOM_PAGE_COST (0.5..4.0, default 1.1;
+	// ANNRandomPageCostOff = -1 skips SET LOCAL random_page_cost).
+	RandomPageCost float64
+
 	// BranchTimeout is SEARCH_VECTOR_BRANCH_TIMEOUT (default 80ms). Used when
 	// the caller passes a zero deadline or to cap the remaining budget.
 	BranchTimeout time.Duration
@@ -142,6 +152,7 @@ func DefaultVectorSearchKnobs() VectorSearchKnobs {
 		EfSearch:           DefaultHNSWEfSearch,
 		MaxScanTuples:      DefaultHNSWMaxScanTuples,
 		IterativeScan:      IterativeScanRelaxedOrder,
+		RandomPageCost:     DefaultANNRandomPageCost,
 		BranchTimeout:      DefaultVectorBranchTimeout,
 		FallbackMinBudget:  DefaultVectorFallbackMinBudget,
 	}
@@ -157,6 +168,9 @@ func (k VectorSearchKnobs) withDefaultsAndValidate() (VectorSearchKnobs, error) 
 	}
 	if out.IterativeScan == "" {
 		out.IterativeScan = IterativeScanRelaxedOrder
+	}
+	if out.RandomPageCost == 0 {
+		out.RandomPageCost = DefaultANNRandomPageCost
 	}
 	if out.BranchTimeout == 0 {
 		out.BranchTimeout = DefaultVectorBranchTimeout
@@ -184,6 +198,9 @@ func (k VectorSearchKnobs) withDefaultsAndValidate() (VectorSearchKnobs, error) 
 	case IterativeScanOff, IterativeScanRelaxedOrder, IterativeScanStrictOrder:
 	default:
 		return VectorSearchKnobs{}, fmt.Errorf("%w: invalid IterativeScan mode", ErrInvalidKnobs)
+	}
+	if _, err := FormatANNRandomPageCostSQL(out.RandomPageCost); err != nil {
+		return VectorSearchKnobs{}, err
 	}
 	if out.BranchTimeout < MinVectorTimeout || out.BranchTimeout > MaxVectorTimeout {
 		return VectorSearchKnobs{}, fmt.Errorf("%w: BranchTimeout out of range", ErrInvalidKnobs)

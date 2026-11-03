@@ -1152,11 +1152,15 @@ func annKnobStatements(k KnobSet) []string {
 	if scan == 0 {
 		scan = store.DefaultHNSWMaxScanTuples
 	}
-	return []string{
+	stmts := []string{
 		"SET LOCAL hnsw.iterative_scan = " + iter,
 		fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", ef),
 		fmt.Sprintf("SET LOCAL hnsw.max_scan_tuples = %d", scan),
 	}
+	if costSQL, err := store.FormatANNRandomPageCostSQL(store.DefaultANNRandomPageCost); err == nil && costSQL != "" {
+		stmts = append(stmts, costSQL)
+	}
+	return stmts
 }
 
 // explainANNSQL runs EXPLAIN of the ACTUAL ANN SQL (store.ANNSearchSQL, with its
