@@ -192,8 +192,10 @@ type ServerLogsLevel struct {
 	Classes     []LogClassCount `json:"classes,omitempty"`
 	// PartialLines is the number of partial lines aggregated into Partials;
 	// PartialsOverflow counts the ones beyond the per-level record cap.
-	PartialLines     int          `json:"lexical_partial_lines"`
-	PartialsOverflow int          `json:"lexical_partial_overflow,omitempty"`
+	PartialLines     int `json:"lexical_partial_lines"`
+	PartialsOverflow int `json:"lexical_partial_overflow,omitempty"`
+	// PartialsRejected counts partial lines the parser refused (not in Partials).
+	PartialsRejected int          `json:"lexical_partial_rejected,omitempty"`
 	Partials         []PartialAgg `json:"lexical_partials,omitempty"`
 	Samples          []string     `json:"sample_lines,omitempty"`
 }
@@ -231,7 +233,8 @@ func BuildServerLogsDoc(r *Report) ServerLogsDoc {
 			sc.Levels = append(sc.Levels, ServerLogsLevel{
 				Concurrency: l.Concurrency, Classes: l.ServerLogs.Classes,
 				PartialLines: partialTotal(l.ServerLogs.Partials), PartialsOverflow: l.ServerLogs.PartialsOverflow,
-				Partials: l.ServerLogs.Partials, Samples: l.ServerLogs.Samples,
+				PartialsRejected: l.ServerLogs.PartialsRejected,
+				Partials:         l.ServerLogs.Partials, Samples: l.ServerLogs.Samples,
 			})
 		}
 		doc.Scenarios = append(doc.Scenarios, sc)
@@ -277,6 +280,9 @@ func ScrubServerLogsDoc(doc *ServerLogsDoc) int {
 		}
 		for li := range sc.Levels {
 			l := &sc.Levels[li]
+			if l.PartialsRejected < 0 || l.PartialsOverflow < 0 || l.PartialLines < 0 {
+				l.PartialsRejected, l.PartialsOverflow, l.PartialLines, dropped = 0, 0, 0, dropped+1
+			}
 			classes := l.Classes[:0:0]
 			for _, c := range l.Classes {
 				if okLogLevel(c.Level) && logMessageRE.MatchString(c.Message) && (c.ErrorClass == "" || safeLogToken(c.ErrorClass)) && c.Count >= 0 {
@@ -341,8 +347,11 @@ func renderPartialTables(w func(string, ...any), r *Report) {
 	w("## Lexical branch partials (FU-SB-2b)\n\n")
 	w("Aggregated from the INFO line `%s` of the API log (one line per degraded lexical branch; `phase` is the phase that expired; durations are whole milliseconds of the finished phases, warm-up requests included). Query phase = the 50 ms budget; setup = acquire + BEGIN, set_local = the SET LOCALs.\n\n", PartialLogMessage)
 	printed := false
+	var classLines, rejected int // PartialLogMessage lines by class count / refused by the parser
 	for _, s := range r.C1 {
 		for _, l := range s.Levels {
+			classLines += partialClassCount(l.ServerLogs.Classes)
+			rejected += l.ServerLogs.PartialsRejected
 			if len(l.ServerLogs.Partials) == 0 {
 				continue
 			}
@@ -359,10 +368,29 @@ func renderPartialTables(w func(string, ...any), r *Report) {
 			}
 		}
 	}
-	if !printed {
+	switch {
+	case !printed && classLines == 0 && rejected == 0:
+		// Based on the class count of the message, not on the aggregate: the claim is
+		// "no such line was logged", which the aggregate alone cannot show.
 		w("No `%s` line was logged by any level of this run (0 partial branches).\n", PartialLogMessage)
+	case !printed:
+		w("`%s` was logged %d time(s) but no line could be aggregated: %d rejected by the parser (a field missing or out of its enum/range, e.g. a changed log shape). Treat the partial evidence as MISSING, not as zero.\n", PartialLogMessage, classLines, rejected)
+	}
+	if rejected > 0 {
+		w("\n- **%d partial line(s) rejected by the parser** (counted in the log classes, not in the table above); a non-zero value means the partial line shape drifted from `logBranchPartial`.\n", rejected)
 	}
 	w("\n")
+}
+
+// partialClassCount sums the log class counts of the partial line message (any level).
+func partialClassCount(classes []LogClassCount) int {
+	n := 0
+	for _, c := range classes {
+		if c.Message == PartialLogMessage {
+			n += c.Count
+		}
+	}
+	return n
 }
 
 func msTriple(s MsStats) string { return fmt.Sprintf("%.0f / %.0f / %.0f", s.P50Ms, s.P95Ms, s.MaxMs) }

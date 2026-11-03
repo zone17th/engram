@@ -475,6 +475,7 @@ type LogSink struct {
 	seen     map[string]bool
 	partials []PartialRecord // FU-SB-2b: parsed "suggest lexical branch partial" lines
 	overflow int             // partial lines beyond maxPartialRecords
+	rejected int             // partial lines the parser refused (field or enum drift)
 }
 
 // NewLogSink returns an empty sink.
@@ -512,6 +513,8 @@ func (s *LogSink) Drain() ServerLogSummary {
 	out.Samples = append(out.Samples, s.samples...)
 	out.Partials = AggregatePartials(s.partials)
 	out.PartialsOverflow = s.overflow
+	out.PartialsRejected = s.rejected
+	s.rejected = 0
 	s.counts = map[logClassKey]int{}
 	s.samples = nil
 	s.seen = map[string]bool{}
@@ -538,12 +541,14 @@ func (s *LogSink) record(level slog.Level, msg string, kv []string) {
 	defer s.mu.Unlock()
 	s.counts[logClassKey{level.String(), msg, class}]++
 	if msg == PartialLogMessage {
-		if rec, ok := parsePartialRecord(kv); ok {
-			if len(s.partials) < maxPartialRecords {
-				s.partials = append(s.partials, rec)
-			} else {
-				s.overflow++
-			}
+		if rec, ok := parsePartialRecord(kv); !ok {
+			// Counted, never dropped silently: a changed partial line shape must not
+			// read as "0 partial branches" (RV-W4-1-3).
+			s.rejected++
+		} else if len(s.partials) < maxPartialRecords {
+			s.partials = append(s.partials, rec)
+		} else {
+			s.overflow++
 		}
 	}
 	// Samples: first distinct WARN+ lines only (the INFO access log is counted, not sampled).
