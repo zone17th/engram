@@ -46,6 +46,35 @@ type ExtrasConfig struct {
 	ScanTimeout   time.Duration
 	ShortTimeout  time.Duration
 	PlanStatement string // statement_timeout of the EXPLAIN tx (harness bound, not production's 50 ms)
+	// TotalBudget caps ALL extras together; a section that has not started when it
+	// is spent is recorded as "<section>: skipped_budget". 0 = no extra cap.
+	TotalBudget time.Duration
+}
+
+// Budgets of the extras per profile (RV-W4-1-2): the extras run after the measured
+// cells, so they must never eat the time the report needs.
+const (
+	extrasBudgetFull  = 25 * time.Minute
+	extrasBudgetSmoke = 4 * time.Minute
+	// testDeadlineReserve is left between the benchmark context and the `go test
+	// -timeout` for the t.Cleanup writes (report, server logs, database drop): on a
+	// test timeout go test panics and cleanups do not run.
+	testDeadlineReserve = 5 * time.Minute
+	// skippedBudgetTag is the report tag of a section that never started.
+	skippedBudgetTag = "skipped_budget"
+)
+
+// BenchContext bounds the benchmark: limit, and, when the test has a deadline,
+// deadline - reserve, whichever is earlier, so the measured results are written
+// by t.Cleanup before `go test -timeout` kills the process.
+func BenchContext(parent context.Context, limit time.Duration, testDeadline time.Time, hasDeadline bool, reserve time.Duration) (context.Context, context.CancelFunc) {
+	end := time.Now().Add(limit)
+	if hasDeadline {
+		if d := testDeadline.Add(-reserve); d.Before(end) {
+			end = d
+		}
+	}
+	return context.WithDeadline(parent, end)
 }
 
 // ExtrasConfigFor returns the extras of a profile: smoke (< 20 min job) probes
@@ -53,7 +82,9 @@ type ExtrasConfig struct {
 // and a medium tenant.
 func ExtrasConfigFor(p ProfileName) ExtrasConfig {
 	c := ExtrasConfig{ProbeN: 5, PlanQueries: 3, ScanTimeout: 30 * time.Minute, ShortTimeout: 10 * time.Minute, PlanStatement: "10s"}
+	c.TotalBudget = extrasBudgetSmoke
 	if p == ProfileFull {
+		c.TotalBudget = extrasBudgetFull
 		c.ProbeN = 20
 		c.PlanMedium = true
 		c.ProbeMedium = true
@@ -99,6 +130,20 @@ func RunExtras(ctx context.Context, dsn string, sr *SeedResult, classes map[Tena
 		logf("task23 extra %s failed: %v", section, err)
 		ex.Errors = append(ex.Errors, section+": "+errTag(err))
 	}
+	if cfg.TotalBudget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.TotalBudget)
+		defer cancel()
+	}
+	if ctx.Err() != nil {
+		// No time left at all (the benchmark used its whole context): record every
+		// section as skipped so the report says so.
+		for _, name := range extraSectionNames {
+			ex.Errors = append(ex.Errors, skippedBudget(name))
+		}
+		logf("task23 extras skipped: no budget left")
+		return ex
+	}
 	pool, err := db.NewPool(ctx, dsn)
 	if err != nil {
 		fail("pool", err)
@@ -111,38 +156,63 @@ func RunExtras(ctx context.Context, dsn string, sr *SeedResult, classes map[Tena
 		return ex
 	}
 
-	run := func(section string, timeout time.Duration, fn func(ctx context.Context) error) {
-		if ctx.Err() != nil {
-			fail(section, ctx.Err())
-			return
-		}
-		sctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		t0 := time.Now()
-		if err := fn(sctx); err != nil {
-			fail(section, err)
-			return
-		}
-		logf("task23 extra %s done in %.1fs", section, time.Since(t0).Seconds())
-	}
-
-	run("reconcile_full", cfg.ScanTimeout, func(ctx context.Context) (err error) {
-		ex.Reconcile, err = RunReconcileFull(ctx, pool, g)
-		return err
-	})
-	run("flip_cost_scan", cfg.ScanTimeout, func(ctx context.Context) (err error) {
-		ex.FlipCost, err = RunFlipCostScan(ctx, pool, g)
-		return err
-	})
-	run("lexical_plan", cfg.ShortTimeout, func(ctx context.Context) (err error) {
-		ex.LexicalPlan, err = RunLexicalPlan(ctx, dsn, sr, classes, cfg)
-		return err
-	})
-	run("connect_probe", cfg.ShortTimeout, func(ctx context.Context) (err error) {
-		ex.ConnectProbe, err = RunConnectProbe(ctx, dsn, sr, classes, cfg)
-		return err
-	})
+	ex.Errors = append(ex.Errors, runExtraSections(ctx, []extraSection{
+		{"reconcile_full", cfg.ScanTimeout, func(ctx context.Context) (err error) {
+			ex.Reconcile, err = RunReconcileFull(ctx, pool, g)
+			return err
+		}},
+		{"flip_cost_scan", cfg.ScanTimeout, func(ctx context.Context) (err error) {
+			ex.FlipCost, err = RunFlipCostScan(ctx, pool, g)
+			return err
+		}},
+		{"lexical_plan", cfg.ShortTimeout, func(ctx context.Context) (err error) {
+			ex.LexicalPlan, err = RunLexicalPlan(ctx, dsn, sr, classes, cfg)
+			return err
+		}},
+		{"connect_probe", cfg.ShortTimeout, func(ctx context.Context) (err error) {
+			ex.ConnectProbe, err = RunConnectProbe(ctx, dsn, sr, classes, cfg)
+			return err
+		}},
+	}, logf)...)
 	return ex
+}
+
+// extraSectionNames are the sections of RunExtras, in run order.
+var extraSectionNames = []string{"reconcile_full", "flip_cost_scan", "lexical_plan", "connect_probe"}
+
+func skippedBudget(section string) string { return section + ": " + skippedBudgetTag }
+
+// extraSection is one timed extra.
+type extraSection struct {
+	name    string
+	timeout time.Duration
+	fn      func(ctx context.Context) error
+}
+
+// runExtraSections runs the sections in order, each under its own timeout and the
+// shared ctx (which carries the total budget). A section that fails is recorded by
+// class tag and the rest still run; a section that has not started when ctx is done
+// is recorded as "<section>: skipped_budget" and not run. It returns the tags.
+func runExtraSections(ctx context.Context, secs []extraSection, logf func(string, ...any)) []string {
+	var errs []string
+	for _, s := range secs {
+		if ctx.Err() != nil {
+			logf("task23 extra %s skipped: no budget left", s.name)
+			errs = append(errs, skippedBudget(s.name))
+			continue
+		}
+		sctx, cancel := context.WithTimeout(ctx, s.timeout)
+		t0 := time.Now()
+		err := s.fn(sctx)
+		cancel()
+		if err != nil {
+			logf("task23 extra %s failed: %v", s.name, err)
+			errs = append(errs, s.name+": "+errTag(err))
+			continue
+		}
+		logf("task23 extra %s done in %.1fs", s.name, time.Since(t0).Seconds())
+	}
+	return errs
 }
 
 // ---- 4. Reconcile full time --------------------------------------------------

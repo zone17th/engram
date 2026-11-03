@@ -1464,10 +1464,9 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 	}
 	// Task 23 additions (advisor-dec-337): quiet phase after every measured cell, on
 	// their own connections. They run even when C2 failed, so the evidence is not
-	// lost, and a failed section is recorded without failing the benchmark.
-	if ctx.Err() == nil {
-		rep.Extras = RunExtras(ctx, dsn, sr, classes, ExtrasConfigFor(env.Profile), logf)
-	}
+	// lost, and a failed section is recorded without failing the benchmark. With no
+	// time left every section is recorded as skipped_budget (RV-W4-1-2).
+	rep.Extras = RunExtras(ctx, dsn, sr, classes, ExtrasConfigFor(env.Profile), logf)
 	return err
 }
 

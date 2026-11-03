@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -447,5 +448,69 @@ func TestTask23SummaryAndMarkdown(t *testing.T) {
 	}
 	if cfg := ExtrasConfigFor(ProfileFull); cfg.ProbeN != 20 || !cfg.PlanMedium || !cfg.ProbeMedium || cfg.PlanQueries != 3 {
 		t.Errorf("full extras = %+v, want N=20, whale + medium, 3 queries", cfg)
+	}
+}
+
+// TestExtrasBudgetAndTestDeadline (RV-W4-1-2): the benchmark context ends before the
+// `go test -timeout` (so t.Cleanup can still write the report), the extras carry a
+// per-profile total budget, a section that never started is recorded as
+// "<section>: skipped_budget", and a failing section does not stop the next one.
+func TestExtrasBudgetAndTestDeadline(t *testing.T) {
+	now := time.Now()
+	ctx, cancel := BenchContext(context.Background(), 5*time.Hour, now.Add(140*time.Minute), true, testDeadlineReserve)
+	dl, _ := ctx.Deadline()
+	cancel()
+	if want := now.Add(135 * time.Minute); dl.Before(want.Add(-time.Second)) || dl.After(want.Add(time.Second)) {
+		t.Errorf("deadline = %v, want test deadline - 5m (%v)", dl, want)
+	}
+	ctx, cancel = BenchContext(context.Background(), time.Minute, now.Add(140*time.Minute), true, testDeadlineReserve)
+	dl, _ = ctx.Deadline()
+	cancel()
+	if dl.After(now.Add(time.Minute + time.Second)) {
+		t.Errorf("the own limit must win when it is earlier: %v", dl)
+	}
+	ctx, cancel = BenchContext(context.Background(), time.Hour, time.Time{}, false, testDeadlineReserve)
+	dl, _ = ctx.Deadline()
+	cancel()
+	if dl.After(now.Add(time.Hour + time.Second)) {
+		t.Errorf("without a test deadline the own limit applies: %v", dl)
+	}
+
+	if full, smoke := ExtrasConfigFor(ProfileFull).TotalBudget, ExtrasConfigFor(ProfileSmoke).TotalBudget; full != 25*time.Minute || smoke != 4*time.Minute {
+		t.Errorf("extras budgets = full %v smoke %v, want 25m and 4m", full, smoke)
+	}
+
+	var ran []string
+	logf := func(string, ...any) {}
+	section := func(name string, fn func(context.Context) error) extraSection {
+		return extraSection{name, time.Hour, func(ctx context.Context) error {
+			ran = append(ran, name)
+			return fn(ctx)
+		}}
+	}
+	// Budget of 50 ms: the first section waits for it, the next two never start.
+	bctx, bcancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer bcancel()
+	errs := runExtraSections(bctx, []extraSection{
+		section("reconcile_full", func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }),
+		section("flip_cost_scan", func(context.Context) error { return nil }),
+		section("lexical_plan", func(context.Context) error { return nil }),
+	}, logf)
+	want := []string{"reconcile_full: deadline_exceeded", "flip_cost_scan: skipped_budget", "lexical_plan: skipped_budget"}
+	if strings.Join(errs, "|") != strings.Join(want, "|") || len(ran) != 1 {
+		t.Errorf("errors = %v (ran %v), want %v and only the first section started", errs, ran, want)
+	}
+
+	// A failing section does not stop the next one; a clean run records nothing.
+	ran = nil
+	errs = runExtraSections(context.Background(), []extraSection{
+		section("a", func(context.Context) error { return errors.New("boom") }),
+		section("b", func(context.Context) error { return nil }),
+	}, logf)
+	if len(errs) != 1 || errs[0] != "a: error" || len(ran) != 2 {
+		t.Errorf("errors = %v ran = %v, want a: error and both sections run", errs, ran)
+	}
+	if got := skippedBudget("connect_probe"); got != "connect_probe: skipped_budget" {
+		t.Errorf("tag = %q", got)
 	}
 }
