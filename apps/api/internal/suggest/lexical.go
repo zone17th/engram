@@ -39,17 +39,51 @@ type tagBranchOutcome struct {
 	err     error
 }
 
-// configureLexicalTx sets the required transaction-local GUCs on a read-only lexical tx
-// (SPEC §6.3, plan P05 mục 2.3).
-func configureLexicalTx(ctx context.Context, tx pgx.Tx, includeTrgmThresholds bool) error {
-	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = '50ms'`); err != nil {
-		return err
+// DefaultLexicalForceCustomPlan is the default of SEARCH_LEXICAL_FORCE_CUSTOM_PLAN (advisor-dec-350).
+const DefaultLexicalForceCustomPlan = true
+
+// SetLexicalForceCustomPlan configures whether lexical read transactions issue
+// `SET LOCAL plan_cache_mode = force_custom_plan` (SEARCH_LEXICAL_FORCE_CUSTOM_PLAN,
+// default true; advisor-dec-350).
+func (s *Service) SetLexicalForceCustomPlan(enabled bool) {
+	if s == nil {
+		return
 	}
+	s.lexicalCustomPlanOff.Store(!enabled)
+}
+
+// LexicalForceCustomPlan reports whether lexical read transactions issue
+// `SET LOCAL plan_cache_mode = force_custom_plan` (default true).
+func (s *Service) LexicalForceCustomPlan() bool {
+	if s == nil {
+		return DefaultLexicalForceCustomPlan
+	}
+	return !s.lexicalCustomPlanOff.Load()
+}
+
+// LexicalTxStatements returns the ordered transaction-local SET LOCAL statements
+// executed on a read-only lexical branch transaction (SPEC §6.3, plan P05 mục 2.3,
+// advisor-dec-350).
+func LexicalTxStatements(includeTrgmThresholds, forceCustomPlan bool) []string {
+	stmts := make([]string, 0, 4)
+	stmts = append(stmts, `SET LOCAL statement_timeout = '50ms'`)
 	if includeTrgmThresholds {
-		if _, err := tx.Exec(ctx, `SET LOCAL pg_trgm.similarity_threshold = 0.35`); err != nil {
-			return err
+		stmts = append(stmts,
+			`SET LOCAL pg_trgm.similarity_threshold = 0.35`,
+			`SET LOCAL pg_trgm.word_similarity_threshold = 0.5`,
+		)
+		if forceCustomPlan {
+			stmts = append(stmts, `SET LOCAL plan_cache_mode = force_custom_plan`)
 		}
-		if _, err := tx.Exec(ctx, `SET LOCAL pg_trgm.word_similarity_threshold = 0.5`); err != nil {
+	}
+	return stmts
+}
+
+// configureLexicalTx sets the required transaction-local GUCs on a read-only lexical tx
+// (SPEC §6.3, plan P05 mục 2.3, advisor-dec-350).
+func configureLexicalTx(ctx context.Context, tx pgx.Tx, includeTrgmThresholds, forceCustomPlan bool) error {
+	for _, stmt := range LexicalTxStatements(includeTrgmThresholds, forceCustomPlan) {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return err
 		}
 	}

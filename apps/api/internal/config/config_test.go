@@ -750,6 +750,9 @@ func TestP05EmbeddingAndSearchDefaults(t *testing.T) {
 	if cfg.SearchANNRandomPageCost != 1.1 {
 		t.Errorf("SearchANNRandomPageCost = %v, muốn 1.1", cfg.SearchANNRandomPageCost)
 	}
+	if !cfg.SearchLexicalForceCustomPlan || !cfg.LexicalForceCustomPlanEnabled() {
+		t.Errorf("SearchLexicalForceCustomPlan = %v (enabled=%v), muốn true", cfg.SearchLexicalForceCustomPlan, cfg.LexicalForceCustomPlanEnabled())
+	}
 	if cfg.SearchVectorBranchTimeout != 80*time.Millisecond {
 		t.Errorf("SearchVectorBranchTimeout = %v, muốn 80ms", cfg.SearchVectorBranchTimeout)
 	}
@@ -1082,6 +1085,50 @@ func TestP05SearchKnobsAndBootstrapFlipIntervalValidation(t *testing.T) {
 			setEnv(t, map[string]string{"SEARCH_ANN_RANDOM_PAGE_COST": bad})
 			if _, err := config.Load(); err == nil {
 				t.Fatalf("SEARCH_ANN_RANDOM_PAGE_COST=%q phải bị từ chối", bad)
+			}
+		}
+	})
+
+	t.Run("lexical_force_custom_plan_parse_and_off_switch", func(t *testing.T) {
+		if !(new(config.Config)).LexicalForceCustomPlanEnabled() {
+			t.Fatal("zero-value Config.LexicalForceCustomPlanEnabled() phải mặc định true")
+		}
+		for _, tc := range []struct {
+			raw  string
+			want bool
+		}{
+			{"", true},
+			{"on", true},
+			{"ON", true},
+			{"true", true},
+			{"TRUE", true},
+			{"1", true},
+			{"  on  ", true},
+			{"off", false},
+			{"OFF", false},
+			{"false", false},
+			{"FALSE", false},
+			{"0", false},
+			{"  off  ", false},
+		} {
+			setEnv(t, map[string]string{"SEARCH_LEXICAL_FORCE_CUSTOM_PLAN": tc.raw})
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("SEARCH_LEXICAL_FORCE_CUSTOM_PLAN=%q bị từ chối: %v", tc.raw, err)
+			}
+			if cfg.SearchLexicalForceCustomPlan != tc.want || cfg.LexicalForceCustomPlanEnabled() != tc.want {
+				t.Fatalf("SEARCH_LEXICAL_FORCE_CUSTOM_PLAN=%q -> %v (enabled=%v), muốn %v",
+					tc.raw, cfg.SearchLexicalForceCustomPlan, cfg.LexicalForceCustomPlanEnabled(), tc.want)
+			}
+			if got := cfg.Redacted()["search_lexical_force_custom_plan"]; got != tc.want {
+				t.Fatalf("Redacted()[search_lexical_force_custom_plan]=%v, muốn %v", got, tc.want)
+			}
+		}
+
+		for _, bad := range []string{"yes", "no", "2", "-1", "auto", "force_custom_plan", "force_generic_plan", "invalid", "on; SET role postgres"} {
+			setEnv(t, map[string]string{"SEARCH_LEXICAL_FORCE_CUSTOM_PLAN": bad})
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("SEARCH_LEXICAL_FORCE_CUSTOM_PLAN=%q phải bị từ chối", bad)
 			}
 		}
 	})

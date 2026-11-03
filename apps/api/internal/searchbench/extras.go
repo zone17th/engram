@@ -573,6 +573,7 @@ func captureLexicalSQL(ctx context.Context, c LexPlanCase, userID uuid.UUID, lim
 var lexicalThresholdSQL = []string{
 	`SET LOCAL pg_trgm.similarity_threshold = 0.35`,
 	`SET LOCAL pg_trgm.word_similarity_threshold = 0.5`,
+	`SET LOCAL plan_cache_mode = force_custom_plan`,
 }
 
 // LexPlanRow is the plan evidence of one case.
@@ -600,10 +601,11 @@ type LexPlanTenant struct {
 
 // LexPlanReport is the FU-SL-1 section.
 type LexPlanReport struct {
-	Tenants         []LexPlanTenant `json:"tenants"`
-	FetchLimit      int32           `json:"fetch_limit"`
-	Rows            []LexPlanRow    `json:"rows"`
-	IndexesRestored bool            `json:"global_trgm_indexes_restored_after_rollback"`
+	Tenants             []LexPlanTenant `json:"tenants"`
+	FetchLimit          int32           `json:"fetch_limit"`
+	ServerPlanCacheMode string          `json:"server_plan_cache_mode,omitempty"`
+	Rows                []LexPlanRow    `json:"rows"`
+	IndexesRestored     bool            `json:"global_trgm_indexes_restored_after_rollback"`
 	// GenericErrors lists the generic-plan EXPLAINs that failed, as class tags only.
 	GenericErrors []string `json:"generic_plan_errors,omitempty"`
 	Notes         []string `json:"notes"`
@@ -763,7 +765,7 @@ func RunLexicalPlan(ctx context.Context, dsn string, sr *SeedResult, classes map
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 
-	rep := &LexPlanReport{FetchLimit: limit}
+	rep := &LexPlanReport{FetchLimit: limit, ServerPlanCacheMode: "force_custom_plan"}
 	for _, t := range tenants {
 		rep.Tenants = append(rep.Tenants, LexPlanTenant{Class: t.Class, Items: spec.Tenants[t.Index].ItemCount, Tags: spec.Tenants[t.Index].TagCount})
 	}
@@ -853,8 +855,8 @@ func RunLexicalPlan(ctx context.Context, dsn string, sr *SeedResult, classes map
 		rep.Rows = append(rep.Rows, row)
 	}
 	rep.Notes = []string{
-		"The SQL is the exact statement of gen.Queries.SearchItemsLexical / SearchTagsLexical captured from sqlc, with the server's parameter shapes (qn, escaped prefix, fuzzy flag, LIMIT = corpus cap + 1 of /suggest scope=all limit=8) and the server's pg_trgm thresholds.",
-		"Planner: Postgres defaults, no enable_* setting. The first table is a custom plan (EXPLAIN binds the parameter values). A pgx-prepared server statement can switch to a generic plan after 5 executions (plan_cache_mode=auto), so each case is also planned as a generic plan (second table): PREPARE, SET LOCAL plan_cache_mode = force_generic_plan inside the EXPLAIN-only transaction, EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE, DEALLOCATE. The setting is never applied to a measured pool.",
+		"The SQL is the exact statement of gen.Queries.SearchItemsLexical / SearchTagsLexical captured from sqlc, with the server's parameter shapes (qn, escaped prefix, fuzzy flag, LIMIT = corpus cap + 1 of /suggest scope=all limit=8), the server's pg_trgm thresholds, and server setting: force_custom_plan (SET LOCAL plan_cache_mode = force_custom_plan inside the lexical read tx).",
+		"Planner: Postgres defaults, no enable_* setting. The first table is a custom plan (EXPLAIN binds the parameter values; server setting: force_custom_plan, which is the plan the server actually executes). Under plan_cache_mode=auto a pgx-prepared statement can switch to a generic plan after 5 executions, so each case is also planned as a generic plan (second table): PREPARE, SET LOCAL plan_cache_mode = force_generic_plan inside the EXPLAIN-only transaction, EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE, DEALLOCATE. The setting is never applied to a measured pool.",
 		"Each case runs EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) twice and keeps the second (warm) run; statement_timeout is " + cfg.PlanStatement + " (harness bound), not the server's 50 ms, so a slow plan still completes.",
 		"prefix = suggest mode prefix (1-rune query, fuzzy=false). fuzzy = mode full (>= 3-rune synthetic query: name prefix, folded word, typo; fuzzy=true), the shape of nearly every production query.",
 		"after 0010 (simulated): item_name_trgm and tag_norm_trgm dropped inside a transaction that was rolled back (verified restored); nothing persisted.",
@@ -1016,7 +1018,7 @@ func RunConnectProbe(ctx context.Context, dsn string, sr *SeedResult, classes ma
 	}
 	rep.Notes = []string{
 		"Each iteration opens a fresh single-connection pool (not the measured pool), so every connect is a NEW backend with cold relation/plan caches; the first and second queries run on that same backend.",
-		"connect = pgxpool Acquire of the new backend (dial + handshake); begin_set_local = BEGIN READ ONLY + the server's three SET LOCALs of the first query; first/second query = the sqlc item query with the server's 50 ms statement_timeout (a timeout is counted, its elapsed time is kept).",
+		"connect = pgxpool Acquire of the new backend (dial + handshake); begin_set_local = BEGIN READ ONLY + the server's four SET LOCALs of the first query (50 ms statement_timeout, both pg_trgm thresholds, plan_cache_mode = force_custom_plan); first/second query = the sqlc item query with the server's 50 ms statement_timeout (a timeout is counted, its elapsed time is kept).",
 		"Shapes: whale_prefix = mode prefix (1-rune, fuzzy=false) on the whale tenant, whale_fuzzy = mode full (fuzzy=true) on the whale tenant, medium_fuzzy = mode full on the median medium tenant (full profile only). Queries cycle the 3 representative synthetic queries of the shape; the same query is used for the first and second run of an iteration.",
 		"Not part of any target. Input to the FU-SB-2b warm-up decision: a first-query p95 far above the second-query p95 is the cold-backend planning cost.",
 	}

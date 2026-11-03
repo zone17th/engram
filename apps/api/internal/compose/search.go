@@ -62,6 +62,7 @@ func NewSearch(
 	}
 	bucket := httpx.NewSearchReadBucket(clk)
 	svc := suggest.NewService(pool, clk, near, metrics, cursorKey)
+	svc.SetLexicalForceCustomPlan(cfg.LexicalForceCustomPlanEnabled())
 	handler := suggest.NewHandler(svc, bucket)
 
 	s := &Search{

@@ -18,7 +18,7 @@ func planCells(p LexPlanInfo) string {
 // renderLexicalPlan renders the "Lexical plan (FU-SL-1)" section.
 func renderLexicalPlan(w func(string, ...any), p *LexPlanReport) {
 	w("## Lexical plan (FU-SL-1)\n\n")
-	w("Exact lexical SQL of the server on the default planner at real volume, `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`, warm run. Tenants: ")
+	w("Exact lexical SQL of the server on the default planner at real volume, `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`, warm run (server setting: force_custom_plan — `SET LOCAL plan_cache_mode = force_custom_plan` inside the lexical read tx, so the server executes the custom plan in the first table). Tenants: ")
 	for i, t := range p.Tenants {
 		if i > 0 {
 			w(", ")
@@ -26,7 +26,7 @@ func renderLexicalPlan(w func(string, ...any), p *LexPlanReport) {
 		w("%s (%d items, %d tags)", t.Class, t.Items, t.Tags)
 	}
 	w(". Fetch limit %d. Index classes: `per-user` = the per-user lexical indexes (0006 `item_user_name_prefix` / `tag_user_norm_prefix`, 0008 `*_unaccent_prefix` and per-user trigram), `global-trgm` = `item_name_trgm` / `tag_norm_trgm` (the 0010 candidates).\n\n", p.FetchLimit)
-	w("| Case | Default: indexes | seq scan | ms | shared hit / read | After 0010 (simulated): indexes | seq scan | ms | shared hit / read |\n|---|---|---|---|---|---|---|---|---|\n")
+	w("| Case | Default (server setting: force_custom_plan): indexes | seq scan | ms | shared hit / read | After 0010 (simulated): indexes | seq scan | ms | shared hit / read |\n|---|---|---|---|---|---|---|---|---|\n")
 	var defGlobal, defSeq, afterSeq int
 	var defMs, afterMs float64
 	for _, r := range p.Rows {
@@ -47,7 +47,7 @@ func renderLexicalPlan(w func(string, ...any), p *LexPlanReport) {
 		}
 		defMs += r.Default.ExecMs
 	}
-	w("\n- Default planner: the global trigram index is used in **%d of %d** cases; a sequential scan of item/tag in %d. Sum of execution times %.1f ms (default) vs %.1f ms (after 0010, simulated; %d sequential scans).\n", defGlobal, len(p.Rows), defSeq, defMs, afterMs, afterSeq)
+	w("\n- Default planner (custom plan; server setting: force_custom_plan): the global trigram index is used in **%d of %d** cases; a sequential scan of item/tag in %d. Sum of execution times %.1f ms (default) vs %.1f ms (after 0010, simulated; %d sequential scans).\n", defGlobal, len(p.Rows), defSeq, defMs, afterMs, afterSeq)
 	w("- Global trigram indexes restored after the rolled-back simulation: %v.\n", p.IndexesRestored)
 	renderGenericPlans(w, p)
 	for _, n := range p.Notes {
@@ -69,7 +69,7 @@ func optPlanCells(p *LexPlanInfo) string {
 // executions) and the 0010 eligibility line, which needs BOTH the custom and the
 // generic default plan to be free of the global trigram indexes.
 func renderGenericPlans(w func(string, ...any), p *LexPlanReport) {
-	w("\n**Generic plans** (`PREPARE` + `plan_cache_mode = force_generic_plan`, `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE`, warm run): the plan the server's prepared statement can switch to after 5 executions; the parameter values are not known at plan time.\n\n")
+	w("\n**Generic plans** (`PREPARE` + `plan_cache_mode = force_generic_plan`, `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE`, warm run; diagnostic only — server setting: force_custom_plan keeps production on the custom plan above): the plan a prepared statement would switch to after 5 executions under `plan_cache_mode = auto`; the parameter values are not known at plan time.\n\n")
 	w("| Case | Default, generic: indexes | seq scan | ms | shared hit / read | After 0010 (simulated), generic: indexes | seq scan | ms | shared hit / read |\n|---|---|---|---|---|---|---|---|---|\n")
 	var defGlobal, defSeq int
 	for _, r := range p.Rows {
