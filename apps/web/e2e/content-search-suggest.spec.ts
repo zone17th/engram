@@ -5,6 +5,7 @@ import { bootstrapUnlockedUser } from './content-a11y-support';
 import {
   SEARCH_CORPUS_ONE,
   SEARCH_CORPUS_TWO,
+  SEARCH_QUIET_WINDOW_MS,
   SEARCH_TEST_TIMEOUT_MS,
   SEARCH_UI_WAIT_MS,
   attachSearchRequestRecorder,
@@ -18,13 +19,25 @@ import {
   rowKeys,
   searchOmnibox,
   seedSearchCorpus,
+  toggleSemanticSetting,
   typeKeys,
+  waitForSuggestLegResponse,
   waitForSuggestResponse,
   type ListboxInfo,
+  type SearchCorpus,
   type SeededCorpus,
   type SearchRequestRecorder,
   type SuggestCapture,
 } from './content-search-support';
+import {
+  documentInput,
+  fakeembedSetAliases,
+  fakeembedStats,
+  itemDocumentText,
+  nextProbeQuery,
+  uniqueSemanticQuery,
+  waitForEmbedded,
+} from './content-search-semantic-support';
 
 // Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs: the omnibox holds the
 // typed draft and a failure snapshot must never serialize it to disk.
@@ -277,10 +290,9 @@ test.describe('P05-T22 search suggest (lexical, real stack)', () => {
       expect(info.activeDescendantId).not.toBeNull();
     });
 
-    // 22-2: near rows, the Gần nghĩa zone with its ≈ badge, the ≈ toggle, near-pending / degraded / enable-409 lines and the
-    // cursor page ("Xem thêm") are `@semantic` (job `e2e-search-semantic`, real `fakeembed`) or need the semantic stack and
-    // land in PR 22-2. They go right after the lexical probes above, with the same typeProbe/waitForSuggestResponse
-    // helpers; this spec must stay lexical-only (no `semantic=1`, no `page.route` stub, advisor-dec-323 Q2).
+    // This test stays lexical-only (no `semantic=1`, no `page.route` stub, advisor-dec-323 Q2). The near zone, its ≈ badge,
+    // the near-only hit, the per-user near isolation and the user-off case are the `@semantic` tests in the second
+    // `describe` at the bottom of this file (PR 22-2a, job `Search semantic e2e (fake provider)`).
 
     // The recorder saw only GET /suggest for the omnibox: no /search, no legacy GET /items?q= or GET /tags?q=.
     await recorder.flush();
@@ -329,6 +341,254 @@ test.describe('P05-T22 search suggest (lexical, real stack)', () => {
       } finally {
         await context2.close();
       }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// @semantic tests (P05 Task 22, PR 22-2a). Real semantic server + CI-only `fakeembed`, job `Search semantic e2e (fake
+// provider)`; `Content e2e` skips them through `--grep-invert @semantic`. No `page.route` anywhere.
+// Order (plan Task 22 / 20b, N1): seed -> waitForEmbedded -> alias the NEW query to the target -> type it once.
+// ---------------------------------------------------------------------------------------------------------------------------
+
+const NEAR_ZONE_SELECTOR = '#omni-listbox [data-zone="near"]';
+/** Same name (so the same plan 2.14 document text and the same vector) for both users in the isolation case. */
+const NEAR_TARGET_NAME = 'quiet harbor lamp';
+
+/** Clears the draft, types `query` with real key events and resolves with BOTH legs of that query (lexical, near). */
+async function typeSemanticQuery(
+  page: Page,
+  omnibox: Locator,
+  query: string,
+): Promise<{ readonly lexical: SuggestCapture; readonly near: SuggestCapture }> {
+  await clearDraft(page, omnibox);
+  const lexicalLeg = waitForSuggestLegResponse(page, { q: query, semantic: 0, scope: 'all' });
+  const nearLeg = waitForSuggestLegResponse(page, { q: query, semantic: 1, scope: 'all' });
+  await typeKeys(page, query);
+  const [lexical, near] = await Promise.all([lexicalLeg, nearLeg]);
+  expect(lexical.status).toBe(200);
+  expect(near.status).toBe(200);
+  return { lexical, near };
+}
+
+function nearKeysOf(capture: SuggestCapture): string[] {
+  return capture.body.near.map((n) => `${n.kind}:${n.id}`);
+}
+
+test.describe('P05-T22 search suggest (@semantic, real fakeembed)', () => {
+  // Locally without the stack: skip. In CI never skip: a misconfigured semantic job must go red, not green-by-skipping.
+  test.skip(
+    !process.env.E2E_STACK && !process.env.CI,
+    'needs the compose stack (E2E_STACK=1) with profile semantic-fake: real API, real fakeembed provider',
+  );
+
+  test('@semantic near zone follows the lexical groups with the ≈ badge and no highlight; a near-only hit shows in it; a second user never sees user one near rows', async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(SEARCH_TEST_TIMEOUT_MS);
+    const recorder = attachSearchRequestRecorder(page.context());
+    await bootstrapUnlockedUser(page, uniqueEmail('content-search-suggest-sem'), 'en', 'light');
+
+    // `token` hits a tag and two items lexically (tags, items zones) and is aliased to the target, which has no lexical
+    // relation to it (near zone). `onlyQuery` hits nothing lexically and is aliased to the same target (near-only).
+    const token = uniqueSemanticQuery('sug');
+    const onlyQuery = uniqueSemanticQuery('only');
+    const corpus: SearchCorpus = {
+      tags: [`${token}-tag`],
+      items: [
+        { ref: 'target', name: NEAR_TARGET_NAME },
+        { ref: 'alpha', name: `${token} alpha` },
+        { ref: 'beta', name: `${token} beta` },
+      ],
+    };
+    const seeded = await seedSearchCorpus(page, corpus);
+    const targetId = seeded.itemId('target');
+    const targetKey = seeded.itemKey('target');
+    const omnibox = searchOmnibox(page);
+    await expect(omnibox).toBeVisible({ timeout: SEARCH_UI_WAIT_MS });
+
+    await test.step('waitForEmbedded, then alias both new queries to the target', async () => {
+      await waitForEmbedded(page, [{ id: targetId, probeQuery: nextProbeQuery() }]);
+      const targetInput = documentInput(itemDocumentText(NEAR_TARGET_NAME, null));
+      await fakeembedSetAliases({ [token]: targetInput, [onlyQuery]: targetInput });
+    });
+
+    await test.step('lexical groups first, then the near zone with the ≈ badge and no highlight mark', async () => {
+      const mark = recorder.mark();
+      const statsBefore = await fakeembedStats();
+      const { lexical, near } = await typeSemanticQuery(page, omnibox, token);
+      expect(near.body.semantic, 'near leg is served by the real provider').toBe(true);
+      expect(lexical.body.near).toEqual([]);
+      expect(lexical.body.tags.map((t) => t.display)).toEqual([`${token}-tag`]);
+      expect(lexical.body.items.map((i) => i.name).sort()).toEqual([`${token} alpha`, `${token} beta`].sort());
+      expect(nearKeysOf(near), 'the aliased target is the near row').toEqual([targetKey]);
+      await expect
+        .poll(async () => (await fakeembedStats()).query_requests, {
+          timeout: SEARCH_UI_WAIT_MS,
+          message: 'fakeembed query_requests must grow: a brand-new query reached the provider',
+        })
+        .toBeGreaterThan(statsBefore.query_requests);
+
+      const nearRow = page.locator(`${NEAR_ZONE_SELECTOR} [data-opt-key="${targetKey}"]`);
+      await expect(nearRow).toBeVisible({ timeout: SEARCH_UI_WAIT_MS });
+      const info = await readListbox(page);
+      expectGroupedMarkup(info);
+      expect(zoneIds(info).filter((z) => z !== 'actions'), 'tags, items, then near').toEqual(['tags', 'items', 'near']);
+      const near1 = info.zones.find((z) => z.id === 'near');
+      expect(near1?.keys).toEqual([targetKey]);
+      expect(near1?.heading).toBe(search.group.near);
+      expect(info.ariaLabel).toBe(search.listbox.suggestAriaLabel);
+      // Lexical rows keep the server order; the near key is the last row key (the CTA group follows it).
+      expect(rowKeys(info)).toEqual(expectedKeysFromSuggest({ ...lexical.body, near: near.body.near }));
+
+      // Plan 2.8 rule 5: the ≈ badge only on near rows; a near row is never highlighted (semantic, like fuzzy, has no mark)
+      // and never carries the lexical `fuzzy` badge; lexical prefix rows keep their highlight and no ≈ badge.
+      await expect(nearRow.locator('.sugg-near-badge')).toHaveText(search.match.semantic);
+      await expect(nearRow.locator('mark')).toHaveCount(0);
+      await expect(nearRow.locator('.sugg-match-badge')).toHaveCount(0);
+      await expect(page.locator('#omni-listbox .sugg-near-badge')).toHaveCount(1);
+      const lexicalRows = page.locator('#omni-listbox [data-zone="items"] [data-opt-kind="item"]');
+      await expect(lexicalRows).toHaveCount(2);
+      for (const row of await lexicalRows.all()) {
+        await expect(row.locator('mark')).toHaveCount(1);
+        await expect(row.locator('.sugg-near-badge')).toHaveCount(0);
+      }
+
+      // Real wire: both legs of the query went out, the near leg as `semantic=1`.
+      await recorder.flush();
+      const legs = recorder.suggestSince(mark, { withQuery: true }).filter((r) => queryParamOf(r, 'q') === token);
+      expect(new Set(legs.map((r) => queryParamOf(r, 'semantic')))).toEqual(new Set(['0', '1']));
+    });
+
+    await test.step('near-only: a query with no lexical match shows only the near zone', async () => {
+      const { lexical, near } = await typeSemanticQuery(page, omnibox, onlyQuery);
+      expect(lexical.body.items).toEqual([]);
+      expect(lexical.body.tags).toEqual([]);
+      expect(near.body.semantic).toBe(true);
+      expect(nearKeysOf(near)).toEqual([targetKey]);
+      const nearRow = page.locator(`${NEAR_ZONE_SELECTOR} [data-opt-key="${targetKey}"]`);
+      await expect(nearRow).toBeVisible({ timeout: SEARCH_UI_WAIT_MS });
+      await expect(nearRow.locator('.sugg-near-badge')).toHaveText(search.match.semantic);
+      await expect(page.getByTestId('omnibox-search-empty')).toHaveCount(0);
+      const info = await readListbox(page);
+      expectGroupedMarkup(info);
+      expect(zoneIds(info).filter((z) => z !== 'actions')).toEqual(['near']);
+      expect(rowKeys(info)).toEqual([targetKey]);
+    });
+
+    await test.step('second user: same query, own near row only, none of user one', async () => {
+      const context2 = await newClipboardContext(browser);
+      try {
+        const page2 = await context2.newPage();
+        await bootstrapUnlockedUser(page2, uniqueEmail('content-search-suggest-sem-b'), 'en', 'light');
+        // Same name => same document text => cos 1 against the alias, so user two HAS a near hit (never an empty green),
+        // and it must be user two's own row, never user one's.
+        const seededTwo = await seedSearchCorpus(page2, {
+          tags: [],
+          items: [{ ref: 'target', name: NEAR_TARGET_NAME }],
+        });
+        const targetTwoKey = seededTwo.itemKey('target');
+        expect(targetTwoKey).not.toBe(targetKey);
+        const omnibox2 = searchOmnibox(page2);
+        await expect(omnibox2).toBeVisible({ timeout: SEARCH_UI_WAIT_MS });
+        await waitForEmbedded(page2, [{ id: seededTwo.itemId('target'), probeQuery: nextProbeQuery() }]);
+
+        const { lexical, near } = await typeSemanticQuery(page2, omnibox2, token);
+        expect(lexical.body.items).toEqual([]);
+        expect(lexical.body.tags).toEqual([]);
+        expect(near.body.semantic).toBe(true);
+        expect(nearKeysOf(near), 'user two sees exactly their own near row').toEqual([targetTwoKey]);
+        for (const body of [JSON.stringify(lexical.body), JSON.stringify(near.body)]) {
+          for (const foreignId of seeded.allKeys) {
+            expect(body.includes(foreignId.slice(foreignId.indexOf(':') + 1)), 'a user one id leaked into user two suggest').toBe(
+              false,
+            );
+          }
+        }
+        await expect(page2.locator(`${NEAR_ZONE_SELECTOR} [data-opt-key="${targetTwoKey}"]`)).toBeVisible({
+          timeout: SEARCH_UI_WAIT_MS,
+        });
+        const info = await readListbox(page2);
+        expect(rowKeys(info)).toEqual([targetTwoKey]);
+        for (const key of seeded.allKeys) {
+          expect(info.options.some((o) => o.key === key), 'user two must never see a user one row').toBe(false);
+        }
+      } finally {
+        await context2.close();
+      }
+    });
+  });
+
+  test('@semantic user turns ≈ off (real PATCH false): no near request, no near zone, no pending/degraded line, the provider is not called', async ({
+    page,
+  }) => {
+    test.setTimeout(SEARCH_TEST_TIMEOUT_MS);
+    const recorder = attachSearchRequestRecorder(page.context());
+    await bootstrapUnlockedUser(page, uniqueEmail('content-search-suggest-off'), 'en', 'light');
+
+    // Both queries are aliased to the target, so a near row WOULD exist if the near leg were sent; `onQuery` proves it
+    // exists while ≈ is on, `offQuery` is typed after the user turned ≈ off.
+    const onQuery = uniqueSemanticQuery('on');
+    const offQuery = uniqueSemanticQuery('off');
+    const seeded = await seedSearchCorpus(page, {
+      tags: [],
+      items: [
+        { ref: 'target', name: NEAR_TARGET_NAME },
+        { ref: 'onHit', name: `${onQuery} thing` },
+        { ref: 'offHit', name: `${offQuery} thing` },
+      ],
+    });
+    const targetKey = seeded.itemKey('target');
+    const omnibox = searchOmnibox(page);
+    await expect(omnibox).toBeVisible({ timeout: SEARCH_UI_WAIT_MS });
+    await waitForEmbedded(page, [{ id: seeded.itemId('target'), probeQuery: nextProbeQuery() }]);
+    const targetInput = documentInput(itemDocumentText(NEAR_TARGET_NAME, null));
+    await fakeembedSetAliases({ [onQuery]: targetInput, [offQuery]: targetInput });
+
+    await test.step('≈ on (default): the near row shows', async () => {
+      const toggle = page.getByTestId('omnibox-semantic-toggle');
+      await expect(toggle).toHaveAttribute('aria-pressed', 'true', { timeout: SEARCH_UI_WAIT_MS });
+      const { near } = await typeSemanticQuery(page, omnibox, onQuery);
+      expect(nearKeysOf(near)).toEqual([targetKey]);
+      await expect(page.locator(`${NEAR_ZONE_SELECTOR} [data-opt-key="${targetKey}"]`)).toBeVisible({
+        timeout: SEARCH_UI_WAIT_MS,
+      });
+    });
+
+    await test.step('≈ off through the real PATCH: the near zone is hidden at once', async () => {
+      await toggleSemanticSetting(page, false);
+      await expect(page.locator(NEAR_ZONE_SELECTOR)).toHaveCount(0, { timeout: SEARCH_UI_WAIT_MS });
+    });
+
+    await test.step('a new aliased query after ≈ off: lexical leg only, provider untouched', async () => {
+      await recorder.flush();
+      const mark = recorder.mark();
+      const statsBefore = await fakeembedStats();
+      await clearDraft(page, omnibox);
+      const lexicalLeg = waitForSuggestLegResponse(page, { q: offQuery, semantic: 0, scope: 'all' });
+      await typeKeys(page, offQuery);
+      const lexical = await lexicalLeg;
+      expect(lexical.status).toBe(200);
+      expect(lexical.body.items.map((i) => i.name)).toEqual([`${offQuery} thing`]);
+      expect(lexical.body.near).toEqual([]);
+      await expectRowKeys(page, [`item:${seeded.itemId('offHit')}`]);
+
+      // The "wait >= 1 s with no request" case of the plan: a near leg of this query would have been sent with the lexical one.
+      await page.waitForTimeout(SEARCH_QUIET_WINDOW_MS);
+      await recorder.flush();
+      const sent = recorder.suggestSince(mark, { withQuery: true }).filter((r) => queryParamOf(r, 'q') === offQuery);
+      expect(sent.length).toBeGreaterThanOrEqual(1);
+      expect(sent.every((r) => queryParamOf(r, 'semantic') === '0'), 'no semantic=1 request after ≈ off').toBe(true);
+      expect(recorder.suggestSince(mark).filter((r) => queryParamOf(r, 'semantic') === '1')).toHaveLength(0);
+      expect((await fakeembedStats()).query_requests, 'the provider is not called for a user who turned ≈ off').toBe(
+        statsBefore.query_requests,
+      );
+
+      await expect(page.locator(NEAR_ZONE_SELECTOR)).toHaveCount(0);
+      await expect(page.getByTestId('omnibox-status-near-pending')).toHaveCount(0);
+      await expect(page.getByTestId('omnibox-status-degraded')).toHaveCount(0);
+      await expect(page.getByTestId('omnibox-semantic-toggle')).toHaveAttribute('aria-pressed', 'false');
     });
   });
 });

@@ -483,6 +483,53 @@ export function waitForSuggestResponse(
     }));
 }
 
+/**
+ * Like `waitForSuggestResponse`, but also pins the `semantic` leg of the request (`0` = lexical leg, `1` = lexical + near
+ * leg). With `≈` on the omnibox sends both legs for one query, so `@semantic` specs wait for each leg separately: the
+ * lexical leg lands first, the near leg after the provider answered (plan 2.1, 2.8). Create the promise BEFORE the
+ * keystroke that triggers it.
+ */
+export function waitForSuggestLegResponse(
+  page: Page,
+  matcher: { readonly q: string; readonly semantic: 0 | 1; readonly scope?: string },
+  timeout = SEARCH_UI_WAIT_MS,
+): Promise<SuggestCapture> {
+  return page
+    .waitForResponse(
+      (res) => {
+        if (res.request().method() !== 'GET' || pathnameOf(res.url()) !== `${API_PREFIX}/suggest`) return false;
+        const params = new URL(res.url()).searchParams;
+        if (params.get('q') !== matcher.q) return false;
+        if (params.get('semantic') !== String(matcher.semantic)) return false;
+        if (matcher.scope !== undefined && params.get('scope') !== matcher.scope) return false;
+        return true;
+      },
+      { timeout },
+    )
+    .then(async (res) => ({
+      url: res.url(),
+      status: res.status(),
+      body: (await res.json()) as SuggestResponse,
+    }));
+}
+
+/**
+ * Clicks the omnibox `≈` button once and waits for the real `PATCH /me/settings` (200), then for `aria-pressed` to equal
+ * `nextPressed`. `nextPressed` is the state the click is expected to produce; the click never moves the textarea focus
+ * (the button prevents default on mousedown), so the listbox and the draft stay as they were.
+ */
+export async function toggleSemanticSetting(page: Page, nextPressed: boolean): Promise<void> {
+  const toggle = page.getByTestId('omnibox-semantic-toggle');
+  await expect(toggle).toHaveAttribute('aria-pressed', String(!nextPressed), { timeout: SEARCH_UI_WAIT_MS });
+  const patched = page.waitForResponse(
+    (res) => res.request().method() === 'PATCH' && pathnameOf(res.url()) === `${API_PREFIX}/me/settings`,
+    { timeout: SEARCH_UI_WAIT_MS },
+  );
+  await toggle.click();
+  expect((await patched).status(), 'PATCH /me/settings status').toBe(200);
+  await expect(toggle).toHaveAttribute('aria-pressed', String(nextPressed), { timeout: SEARCH_UI_WAIT_MS });
+}
+
 /** `GET /api/v1/search` response (Enter search) matching an optional exact `q` / `scope`. */
 export function waitForSearchResponse(
   page: Page,
