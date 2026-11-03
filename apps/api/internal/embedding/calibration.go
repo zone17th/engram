@@ -4,7 +4,10 @@
 package embedding
 
 import (
+	"errors"
+	"fmt"
 	"math"
+	"regexp"
 	"strings"
 
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
@@ -69,7 +72,10 @@ type CalibrationEntry struct {
 // In W1 only the CI fake model entry is registered here so that E2E profile
 // semantic-fake can bootstrap g1 in development/staging while failing closed in
 // production. Real production model entries are added by lane rollout in Task 24
-// (FS-16) after running worker semeval on the deploy host.
+// (FS-16) after running worker semeval on the deploy host: fill
+// calProductionPending (below), check it with calValidateProductionEntry, and
+// append it here. Until then no production entry exists, so CalibrationLookupFor
+// never serves a real identity and generation create/bootstrap fail closed.
 var calEntries = []CalibrationEntry{
 	{
 		Provider:          FakeEmbedProvider,
@@ -100,10 +106,22 @@ func CalibrationEntries() []CalibrationEntry {
 // accepted only when appEnv is explicitly "development" or "staging";
 // "production", empty strings, and any unknown environment fail closed.
 func CalibrationLookupFor(appEnv string) embedid.CalibrationLookup {
+	return calLookup(calEntries, appEnv)
+}
+
+// calLookup is CalibrationLookupFor over an explicit table (the tests pass
+// their own so they never mutate calEntries).
+func calLookup(entries []CalibrationEntry, appEnv string) embedid.CalibrationLookup {
 	allowNonProd := calAllowsNonProduction(appEnv)
 	return func(id embedid.Identity) (minCos float64, reportPath string, ok bool) {
-		for _, entry := range calEntries {
+		for _, entry := range entries {
 			if !calEntryMatchesIdentity(entry, id) {
+				continue
+			}
+			// Fail closed: a non-fake entry is served only if it passes the same
+			// guard the CI validator applies, so an unfilled or malformed
+			// production entry is never served in any environment.
+			if !calIsFakeEntry(entry) && calValidateProductionEntry(entry) != nil {
 				continue
 			}
 			if entry.NonProductionOnly && !allowNonProd {
@@ -227,4 +245,102 @@ func SelectThreshold(results []EvalResult) ThresholdDecision {
 	}
 
 	return ThresholdDecision{Decision: CalDecisionRequired}
+}
+
+// Production calibration entry: guard and placeholder (plan P05 mục 2.20, Task
+// 24 stage 24-1; gate 5; SPEC §6.7; ADR 0007 §10; FS-16).
+//
+// The real entry for the production model is produced once on the deploy host by
+// `worker semeval` and committed by lane rollout in stage 24-2 together with its
+// report. Until then calEntries holds only the CI fake entry, so the lookup
+// serves nothing for a real model and generation create/bootstrap refuse
+// (fail closed). The checks below are the one contract a filled entry must meet;
+// the lookup applies them at serve time and TestCalibrationEntriesHaveReports
+// applies them (plus the report checks) in CI to every non-fake entry.
+
+const (
+	// calReportDirPrefix is the only directory real reports may live in.
+	calReportDirPrefix = "docs/benchmarks/semantic-eval/report-"
+	calReportSuffix    = ".json"
+)
+
+var (
+	// "dims=<d>;instr=<sha8>" exactly as OpenAIModelVersion formats it.
+	calOpenAIModelVersionRE = regexp.MustCompile(`^dims=[1-9][0-9]{0,3};instr=[0-9a-f]{8}$`)
+	// "<model_sha>;qp=<sha8>;dp=<sha8>" exactly as TEIModelVersion formats it. The
+	// model_sha part follows isValidTEIInfoToken (tei.go): first char alnum, then
+	// [A-Za-z0-9._/:@+-], at most 128 chars in all.
+	calTEIModelVersionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,127};qp=[0-9a-f]{8};dp=[0-9a-f]{8}$`)
+	// report-<slug>-<dims>-<yyyymmdd>.json, flat in the report directory.
+	calReportPathRE = regexp.MustCompile(`^docs/benchmarks/semantic-eval/report-[a-z0-9][a-z0-9._-]*\.json$`)
+)
+
+// calProductionPending is the unfilled slot for the production model entry.
+//
+// TODO(T24-host): stage 24-2 (small PR by lane rollout, FS-16) fills this on the
+// deploy host after `worker semeval` returned decision "ok" and the Advisor
+// recorded the threshold (gate 5), then moves it into calEntries:
+//
+//	Provider:     "openai_compat"
+//	Model:        "openai_compat/<EMBEDDING_MODEL>"  (the client's Model())
+//	ModelVersion: "dims=<d>;instr=<sha8>"            (OpenAIModelVersion(d, instruction))
+//	MinCos:       the report's threshold, on the 0.30..0.90 grid
+//	ReportPath:   "docs/benchmarks/semantic-eval/report-<slug>-<dims>-<yyyymmdd>.json"
+//	NonProductionOnly: false
+//
+// While every field is empty the guard below rejects it. It is deliberately NOT
+// in calEntries: moving it there unfilled makes TestCalibrationEntriesHaveReports
+// and the lookup reject it, and TestCalibrationProductionPendingFailsClosed pins
+// that.
+//
+// TODO(T24-host) test delta for the stage 24-2 PR: TestCalibrationProductionPendingFailsClosed
+// WILL go red once the real entry is registered, by design (it is the guard
+// test, not a guard rejection; do not weaken the guard to make it pass). In
+// that same PR replace its two "nothing real is served" assertions (the
+// "calEntries holds only fake entries" loop and the "real openai_compat identity
+// is not served in any env" loop) with "the registered real entry is served in
+// production and passes calValidateProductionEntry", and keep the placeholder
+// and malformed-entry sub-cases unchanged.
+var calProductionPending = CalibrationEntry{}
+
+// calValidateProductionEntry reports why e is not an acceptable real
+// (non-fake) calibration entry, or nil when it is. The CI fake entry is out of
+// scope: callers check calIsFakeEntry first.
+func calValidateProductionEntry(e CalibrationEntry) error {
+	if e.NonProductionOnly {
+		return errors.New("real entry must have NonProductionOnly=false")
+	}
+	switch e.Provider {
+	case ProviderOpenAICompat, ProviderTEI:
+	default:
+		return fmt.Errorf("provider %q is not openai_compat or tei (pending placeholder?)", e.Provider)
+	}
+	prefix := e.Provider + "/"
+	if !strings.HasPrefix(e.Model, prefix) || len(e.Model) == len(prefix) {
+		return fmt.Errorf("model %q must be %s<model>", e.Model, prefix)
+	}
+	if e.Model == FakeEmbedModel {
+		return errors.New("real entry must not use the fakeembed model")
+	}
+	re := calOpenAIModelVersionRE
+	if e.Provider == ProviderTEI {
+		re = calTEIModelVersionRE
+	}
+	if !re.MatchString(e.ModelVersion) {
+		return fmt.Errorf("model_version %q does not match %s", e.ModelVersion, re)
+	}
+	if strings.HasPrefix(e.ModelVersion, FakeEmbedModelVersionPrefix) {
+		return errors.New("real entry must not use the fakeembed model_version")
+	}
+	if math.IsNaN(e.MinCos) || math.IsInf(e.MinCos, 0) ||
+		e.MinCos < CalGridMin-calFloatEps || e.MinCos > CalGridMax+calFloatEps {
+		return fmt.Errorf("MinCos %v is outside the calibration grid [%.2f, %.2f]", e.MinCos, CalGridMin, CalGridMax)
+	}
+	if math.Abs(e.MinCos*100-math.Round(e.MinCos*100)) > 1e-6 {
+		return fmt.Errorf("MinCos %v is not a 0.01 grid step", e.MinCos)
+	}
+	if !calReportPathRE.MatchString(e.ReportPath) {
+		return fmt.Errorf("ReportPath %q must be %s<slug>%s directly in that directory", e.ReportPath, calReportDirPrefix, calReportSuffix)
+	}
+	return nil
 }

@@ -2,6 +2,7 @@ package embedding
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
@@ -375,5 +376,198 @@ func TestCalibrationLookupFor(t *testing.T) {
 				t.Errorf("reportPath = %q, want %q", gotReport, tc.wantReport)
 			}
 		})
+	}
+}
+
+// calTestRealEntry is a well-formed real production entry used only to prove the
+// guard and the lookup accept a correctly filled slot. It is a test value, never
+// registered in calEntries (the real one arrives in stage 24-2, TODO(T24-host)).
+func calTestRealEntry() CalibrationEntry {
+	return CalibrationEntry{
+		Provider:     ProviderOpenAICompat,
+		Model:        "openai_compat/openrouter/qwen/qwen3-embedding-8b",
+		ModelVersion: OpenAIModelVersion(1024, calTestInstruction),
+		MinCos:       0.55,
+		ReportPath:   "docs/benchmarks/semantic-eval/report-qwen3-embedding-8b-1024-20261110.json",
+	}
+}
+
+const calTestInstruction = "Given a short search query, retrieve matching item names or tags"
+
+func calTestRealIdentity(e CalibrationEntry) embedid.Identity {
+	return embedid.Identity{
+		Provider:      e.Provider,
+		Model:         e.Model,
+		ModelVersion:  e.ModelVersion,
+		Dims:          1024,
+		QueryPrefix:   OpenAIQueryPrefix(calTestInstruction),
+		DocPrefix:     "",
+		Preprocessing: "v1",
+	}
+}
+
+// TestCalibrationProductionPendingFailsClosed pins the fail-closed state of
+// stage 24-1: the production slot is unfilled, rejected by the guard, absent
+// from the served table, and the lookup serves no real identity in any env.
+func TestCalibrationProductionPendingFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	if err := calValidateProductionEntry(calProductionPending); err == nil {
+		t.Fatal("unfilled calProductionPending passed calValidateProductionEntry; it must fail closed")
+	}
+	for _, e := range CalibrationEntries() {
+		if e == calProductionPending {
+			t.Fatal("calProductionPending is registered in calEntries while still a placeholder")
+		}
+		if !calIsFakeEntry(e) {
+			t.Errorf("calEntries holds a non-fake entry %q before host calibration (TODO(T24-host))", e.Model)
+		}
+	}
+
+	// The identity the production worker will build from the documented defaults.
+	id := calTestRealIdentity(calTestRealEntry())
+	for _, env := range []string{"production", "staging", "development", "", "prod", "Production"} {
+		if gotMin, rp, ok := CalibrationLookupFor(env)(id); ok || gotMin != 0 || rp != "" {
+			t.Errorf("env %q: real openai_compat identity served (%v, %q, %v) before host calibration", env, gotMin, rp, ok)
+		}
+	}
+
+	// Even if the placeholder (or any malformed real entry) were put in the
+	// table, the lookup must still not serve it.
+	bad := calTestRealEntry()
+	bad.ReportPath = ""
+	for _, env := range []string{"production", "staging", "development", ""} {
+		lookup := calLookup([]CalibrationEntry{calProductionPending, bad}, env)
+		if _, _, ok := lookup(calTestRealIdentity(bad)); ok {
+			t.Errorf("env %q: lookup served an entry that fails the guard", env)
+		}
+		if _, _, ok := lookup(embedid.Identity{}); ok {
+			t.Errorf("env %q: lookup served the zero identity from a placeholder", env)
+		}
+	}
+}
+
+func TestCalibrationLookupServesFilledRealEntryInEveryEnv(t *testing.T) {
+	t.Parallel()
+
+	realEntry := calTestRealEntry()
+	if err := calValidateProductionEntry(realEntry); err != nil {
+		t.Fatalf("well-formed real entry rejected: %v", err)
+	}
+	table := append(CalibrationEntries(), realEntry)
+	for _, env := range []string{"production", "staging", "development", ""} {
+		gotMin, rp, ok := calLookup(table, env)(calTestRealIdentity(realEntry))
+		if !ok || gotMin != realEntry.MinCos || rp != realEntry.ReportPath {
+			t.Errorf("env %q: filled real entry = (%v, %q, %v), want (%v, %q, true)", env, gotMin, rp, ok, realEntry.MinCos, realEntry.ReportPath)
+		}
+	}
+
+	// The fake entry keeps its behaviour next to a real entry: dev/staging only.
+	fakeID := embedid.Identity{Provider: FakeEmbedProvider, Model: FakeEmbedModel, ModelVersion: FakeEmbedModelSHA + ";qp=e3b0c442;dp=e3b0c442"}
+	for env, want := range map[string]bool{"development": true, "staging": true, "production": false, "": false} {
+		if _, _, ok := calLookup(table, env)(fakeID); ok != want {
+			t.Errorf("env %q: fake identity ok=%v, want %v", env, ok, want)
+		}
+	}
+
+	// A different instruction hash is a different model_version: not served.
+	other := calTestRealIdentity(realEntry)
+	other.ModelVersion = OpenAIModelVersion(1024, "another instruction")
+	if _, _, ok := calLookup(table, "production")(other); ok {
+		t.Error("identity with a different instr hash was served")
+	}
+}
+
+func TestCalibrationValidateProductionEntryRejectsEachBadField(t *testing.T) {
+	t.Parallel()
+
+	mut := func(f func(e *CalibrationEntry)) CalibrationEntry {
+		e := calTestRealEntry()
+		f(&e)
+		return e
+	}
+	teiOK := CalibrationEntry{
+		Provider:     ProviderTEI,
+		Model:        "tei/BAAI/bge-m3",
+		ModelVersion: TEIModelVersion("a1b2c3d4e5f6", "query: ", "passage: "),
+		MinCos:       0.62,
+		ReportPath:   "docs/benchmarks/semantic-eval/report-bge-m3-1024-20261110.json",
+	}
+	if err := calValidateProductionEntry(teiOK); err != nil {
+		t.Fatalf("well-formed tei entry rejected: %v", err)
+	}
+	teiSlashAtPlus := teiOK
+	teiSlashAtPlus.ModelVersion = TEIModelVersion("org/rev@1.2+build:3_x", "query: ", "passage: ")
+	if err := calValidateProductionEntry(teiSlashAtPlus); err != nil {
+		t.Fatalf("tei entry with / @ + in model_sha rejected (isValidTEIInfoToken allows them): %v", err)
+	}
+	teiBadVersion := teiOK
+	teiBadVersion.ModelVersion = "dims=1024;instr=0123abcd"
+
+	tests := []struct {
+		name string
+		e    CalibrationEntry
+	}{
+		{"zero value (placeholder)", CalibrationEntry{}},
+		{"NonProductionOnly true", mut(func(e *CalibrationEntry) { e.NonProductionOnly = true })},
+		{"provider empty", mut(func(e *CalibrationEntry) { e.Provider = "" })},
+		{"provider noop", mut(func(e *CalibrationEntry) { e.Provider = ProviderNoop })},
+		{"model empty", mut(func(e *CalibrationEntry) { e.Model = "" })},
+		{"model without provider prefix", mut(func(e *CalibrationEntry) { e.Model = "openrouter/qwen/qwen3-embedding-8b" })},
+		{"model prefix only", mut(func(e *CalibrationEntry) { e.Model = "openai_compat/" })},
+		{"model of another provider", mut(func(e *CalibrationEntry) { e.Model = "tei/BAAI/bge-m3" })},
+		{"fake model", mut(func(e *CalibrationEntry) { e.Provider, e.Model = FakeEmbedProvider, FakeEmbedModel })},
+		{"version empty", mut(func(e *CalibrationEntry) { e.ModelVersion = "" })},
+		{"version without instr", mut(func(e *CalibrationEntry) { e.ModelVersion = "dims=1024" })},
+		{"version instr too short", mut(func(e *CalibrationEntry) { e.ModelVersion = "dims=1024;instr=0123abc" })},
+		{"version instr uppercase", mut(func(e *CalibrationEntry) { e.ModelVersion = "dims=1024;instr=0123ABCD" })},
+		{"version dims zero", mut(func(e *CalibrationEntry) { e.ModelVersion = "dims=0;instr=0123abcd" })},
+		{"version dims leading zero", mut(func(e *CalibrationEntry) { e.ModelVersion = "dims=01024;instr=0123abcd" })},
+		{"version tei format under openai_compat", mut(func(e *CalibrationEntry) { e.ModelVersion = teiOK.ModelVersion })},
+		{"version fake prefix", mut(func(e *CalibrationEntry) { e.ModelVersion = FakeEmbedModelVersionPrefix + "qp=e3b0c442;dp=e3b0c442" })},
+		{"tei with openai version format", teiBadVersion},
+		{"tei sha leading slash", func() CalibrationEntry {
+			e := teiOK
+			e.ModelVersion = TEIModelVersion("/abc", "query: ", "passage: ")
+			return e
+		}()},
+		{"tei sha over 128 chars", func() CalibrationEntry {
+			e := teiOK
+			e.ModelVersion = TEIModelVersion(strings.Repeat("a", 129), "query: ", "passage: ")
+			return e
+		}()},
+		{"MinCos zero", mut(func(e *CalibrationEntry) { e.MinCos = 0 })},
+		{"MinCos below grid", mut(func(e *CalibrationEntry) { e.MinCos = 0.29 })},
+		{"MinCos above grid", mut(func(e *CalibrationEntry) { e.MinCos = 0.91 })},
+		{"MinCos one", mut(func(e *CalibrationEntry) { e.MinCos = 1 })},
+		{"MinCos NaN", mut(func(e *CalibrationEntry) { e.MinCos = math.NaN() })},
+		{"MinCos +Inf", mut(func(e *CalibrationEntry) { e.MinCos = math.Inf(1) })},
+		{"MinCos off grid", mut(func(e *CalibrationEntry) { e.MinCos = 0.555 })},
+		{"report empty", mut(func(e *CalibrationEntry) { e.ReportPath = "" })},
+		{"report outside the report dir", mut(func(e *CalibrationEntry) { e.ReportPath = "docs/benchmarks/P05-search/report-x.json" })},
+		{"report in a subdirectory", mut(func(e *CalibrationEntry) { e.ReportPath = "docs/benchmarks/semantic-eval/sub/report-x.json" })},
+		{"report path traversal", mut(func(e *CalibrationEntry) { e.ReportPath = "docs/benchmarks/semantic-eval/report-../x.json" })},
+		{"report not json", mut(func(e *CalibrationEntry) { e.ReportPath = "docs/benchmarks/semantic-eval/report-x.txt" })},
+		{"report without slug", mut(func(e *CalibrationEntry) { e.ReportPath = "docs/benchmarks/semantic-eval/report-.json" })},
+		{"report absolute", mut(func(e *CalibrationEntry) { e.ReportPath = "/docs/benchmarks/semantic-eval/report-x.json" })},
+		{"report uppercase", mut(func(e *CalibrationEntry) { e.ReportPath = "docs/benchmarks/semantic-eval/report-X.json" })},
+		{"report is the pairs file", mut(func(e *CalibrationEntry) { e.ReportPath = "docs/benchmarks/semantic-eval/pairs.v1.jsonl" })},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := calValidateProductionEntry(tc.e); err == nil {
+				t.Fatalf("calValidateProductionEntry accepted %+v", tc.e)
+			}
+		})
+	}
+
+	// Both grid edges are accepted.
+	for _, c := range []float64{0.30, 0.90} {
+		e := calTestRealEntry()
+		e.MinCos = c
+		if err := calValidateProductionEntry(e); err != nil {
+			t.Errorf("grid edge MinCos %v rejected: %v", c, err)
+		}
 	}
 }

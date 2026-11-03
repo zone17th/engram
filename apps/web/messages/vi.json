@@ -37,7 +37,7 @@
     "jsonViewTable": "Bảng",
     "jsonViewRaw": "JSON thô",
     "privacyTitle": "Nói thẳng chỗ nào mã hoá, chỗ nào không",
-    "privacyBody1": "Nội dung entry sẽ được khoá ngay trên trình duyệt bằng khoá chỉ máy bạn giữ. Chúng tôi không có bản sao, và không có cách nào đọc.",
+    "privacyBody1": "Nội dung entry được khoá ngay trên trình duyệt bằng khoá chỉ thiết bị của bạn giữ. Máy chủ chỉ lưu nội dung entry ở dạng bản mã và không thể giải mã, miễn là mã ứng dụng chúng tôi gửi tới trình duyệt của bạn không bị can thiệp.",
     "privacyBody2": "Tên mục và tag thì không mã hoá — chính chúng làm cho việc tìm kiếm chạy được. Chữ bạn gõ để tìm cũng được gửi tới máy chủ của chúng tôi, không mã hoá. Khi bật tìm gần nghĩa (mặc định bật nếu máy chủ hỗ trợ, tắt được trong Cài đặt hoặc bằng nút ≈), tên mục, tag, gợi nhớ và chữ bạn gõ được gửi tiếp tới dịch vụ embedding của bên thứ ba để tính vector. Nội dung entry thì không bao giờ được gửi.",
     "encLabel": "Được mã hoá",
     "encBody": "Nội dung mọi entry text và json.",

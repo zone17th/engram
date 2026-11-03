@@ -301,6 +301,16 @@ func TestCalibrationEntriesHaveReports(t *testing.T) {
 				t.Fatalf("entry ReportPath = %q, want under %s*.json", entry.ReportPath, evalsetReportDirPref)
 			}
 
+			// Real (non-fake) entries must pass the production guard: not
+			// NonProductionOnly, MinCos on the 0.30..0.90 grid, canonical
+			// provider/model/model_version shape, flat report path. The report
+			// itself must be a real run (synthetic=false, decision=ok; below).
+			if !calIsFakeEntry(entry) {
+				if err := calValidateProductionEntry(entry); err != nil {
+					t.Fatalf("entry %q failed the production calibration guard: %v", entry.Model, err)
+				}
+			}
+
 			reportFullPath := filepath.Join(repoRoot, filepath.FromSlash(entry.ReportPath))
 			reportRaw, err := os.ReadFile(reportFullPath)
 			if err != nil {
@@ -337,6 +347,10 @@ func TestCalibrationEntriesHaveReports(t *testing.T) {
 			if doc.Dims == nil || *doc.Dims < 1 || *doc.Dims > 2000 {
 				t.Errorf("%s: dims = %v, want in 1..2000", entry.ReportPath, doc.Dims)
 			}
+			if entry.Provider == ProviderOpenAICompat && doc.Dims != nil &&
+				!strings.HasPrefix(entry.ModelVersion, fmt.Sprintf("dims=%d;", *doc.Dims)) {
+				t.Errorf("%s: dims = %d does not match entry model_version %q", entry.ReportPath, *doc.Dims, entry.ModelVersion)
+			}
 			if doc.PairsFile == nil || *doc.PairsFile != evalsetPairsRelPath {
 				t.Errorf("%s: pairs_file = %v, want %q", entry.ReportPath, doc.PairsFile, evalsetPairsRelPath)
 			}
@@ -369,6 +383,8 @@ func TestCalibrationEntriesHaveReports(t *testing.T) {
 				t.Errorf("%s: missing synthetic boolean", entry.ReportPath)
 			} else if calIsFakeEntry(entry) && !*doc.Synthetic {
 				t.Errorf("%s: fake model report must have synthetic=true", entry.ReportPath)
+			} else if !calIsFakeEntry(entry) && *doc.Synthetic {
+				t.Errorf("%s: report of a real model must have synthetic=false", entry.ReportPath)
 			}
 			if doc.Note == nil || strings.TrimSpace(*doc.Note) == "" {
 				t.Errorf("%s: note must be non-empty", entry.ReportPath)
