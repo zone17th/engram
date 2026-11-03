@@ -49,10 +49,46 @@ func renderLexicalPlan(w func(string, ...any), p *LexPlanReport) {
 	}
 	w("\n- Default planner: the global trigram index is used in **%d of %d** cases; a sequential scan of item/tag in %d. Sum of execution times %.1f ms (default) vs %.1f ms (after 0010, simulated; %d sequential scans).\n", defGlobal, len(p.Rows), defSeq, defMs, afterMs, afterSeq)
 	w("- Global trigram indexes restored after the rolled-back simulation: %v.\n", p.IndexesRestored)
+	renderGenericPlans(w, p)
 	for _, n := range p.Notes {
 		w("- %s\n", mdCell(n))
 	}
 	w("\n")
+}
+
+// optPlanCells is planCells of an optional plan; four dashes when it is missing.
+func optPlanCells(p *LexPlanInfo) string {
+	if p == nil {
+		return "- | - | - | -"
+	}
+	return planCells(*p)
+}
+
+// renderGenericPlans renders the generic-plan table (plan_cache_mode =
+// force_generic_plan: what a pgx-prepared server statement can run after 5
+// executions) and the 0010 eligibility line, which needs BOTH the custom and the
+// generic default plan to be free of the global trigram indexes.
+func renderGenericPlans(w func(string, ...any), p *LexPlanReport) {
+	w("\n**Generic plans** (`PREPARE` + `plan_cache_mode = force_generic_plan`, `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE`, warm run): the plan the server's prepared statement can switch to after 5 executions; the parameter values are not known at plan time.\n\n")
+	w("| Case | Default, generic: indexes | seq scan | ms | shared hit / read | After 0010 (simulated), generic: indexes | seq scan | ms | shared hit / read |\n|---|---|---|---|---|---|---|---|---|\n")
+	var defGlobal, defSeq int
+	for _, r := range p.Rows {
+		w("| %s | %s | %s |\n", mdCell(r.ID), optPlanCells(r.DefaultGeneric), optPlanCells(r.After0010Generic))
+		if g := r.DefaultGeneric; g != nil {
+			if g.UsesGlobal {
+				defGlobal++
+			}
+			if g.SeqScan {
+				defSeq++
+			}
+		}
+	}
+	e := EligibilityOf(p.Rows)
+	w("\n- Generic plans, default planner: the global trigram index is used in **%d of %d** cases; a sequential scan of item/tag in %d; no generic plan for %d.\n", defGlobal, len(p.Rows), defSeq, e.GenericMissing)
+	for _, ge := range p.GenericErrors {
+		w("- Generic-plan EXPLAIN failed (%s).\n", mdCell(ge))
+	}
+	w("- **0010 eligibility: %s.** Eligible only when neither the custom plan (used in %d of %d cases) nor the generic plan (used in %d of %d) uses `item_name_trgm` / `tag_norm_trgm`; \"not established\" means a generic plan is missing and nothing used the index.\n", e.Verdict, e.CustomGlobal, e.Cases, e.GenericGlobal, e.Cases)
 }
 
 // renderConnectProbe renders the connect-cost probe section.

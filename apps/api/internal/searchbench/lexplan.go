@@ -117,6 +117,52 @@ func ParseLexicalPlan(planJSON []byte) (LexPlanInfo, error) {
 	return info, nil
 }
 
+// Verdicts of the migration 0010 eligibility (dropping the global trigram indexes).
+const (
+	Eligible0010       = "eligible"
+	NotEligible0010    = "not eligible"
+	NotEstablished0010 = "not established"
+)
+
+// Eligibility0010 is the 0010 evidence of the FU-SL-1 rows.
+type Eligibility0010 struct {
+	Cases          int
+	CustomGlobal   int // cases whose default custom plan uses a global trigram index
+	GenericGlobal  int // cases whose default generic plan uses one
+	GenericMissing int // cases without a generic plan
+	Verdict        string
+}
+
+// EligibilityOf states the 0010 verdict: "eligible" only when NEITHER the custom
+// NOR the generic default plan of ANY case uses a global trigram index (the
+// plan's condition: the EXPLAIN does not use the index). Any use is "not eligible";
+// a missing generic plan without any use is "not established", never "eligible".
+func EligibilityOf(rows []LexPlanRow) Eligibility0010 {
+	e := Eligibility0010{Cases: len(rows)}
+	for _, r := range rows {
+		if r.Default.UsesGlobal {
+			e.CustomGlobal++
+		}
+		switch {
+		case r.DefaultGeneric == nil:
+			e.GenericMissing++
+		case r.DefaultGeneric.UsesGlobal:
+			e.GenericGlobal++
+		}
+	}
+	switch {
+	case e.Cases == 0:
+		e.Verdict = NotEstablished0010
+	case e.CustomGlobal > 0 || e.GenericGlobal > 0:
+		e.Verdict = NotEligible0010
+	case e.GenericMissing > 0:
+		e.Verdict = NotEstablished0010
+	default:
+		e.Verdict = Eligible0010
+	}
+	return e
+}
+
 // Label is the compact "indexes (classes)" text of the report table; "-" when the
 // plan used no index.
 func (p LexPlanInfo) Label() string {

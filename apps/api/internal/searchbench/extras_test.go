@@ -266,16 +266,101 @@ func TestErrTagHidesText(t *testing.T) {
 	}
 }
 
-func extrasFixture() *Report {
-	info := func(idx string, seq bool, ms float64) LexPlanInfo {
-		p := LexPlanInfo{ExecMs: ms, SharedHit: 90, SharedRead: 3, SeqScan: seq}
-		if idx != "" {
-			p.Indexes = []string{idx}
-			p.UsesGlobal = IndexClassOf(idx) == IndexGlobalTrgm
-			p.UsesUser = IndexClassOf(idx) == IndexPerUser
-		}
-		return p
+func planInfoOf(idx string, seq bool, ms float64) LexPlanInfo {
+	p := LexPlanInfo{ExecMs: ms, SharedHit: 90, SharedRead: 3, SeqScan: seq}
+	if idx != "" {
+		p.Indexes = []string{idx}
+		p.UsesGlobal = IndexClassOf(idx) == IndexGlobalTrgm
+		p.UsesUser = IndexClassOf(idx) == IndexPerUser
 	}
+	return p
+}
+
+func genericInfo(idx string, seq bool, ms float64) *LexPlanInfo {
+	p := planInfoOf(idx, seq, ms)
+	return &p
+}
+
+// TestGenericPlanSQLAndEligibility (RV-W4-1-1): the generic-plan EXPLAIN is a PREPARE of
+// the captured statement plus an EXPLAIN EXECUTE with one placeholder per argument; the
+// arguments are made simple-protocol safe; a generic plan parses like a custom one; and
+// the 0010 verdict is "eligible" only when neither plan of any case uses a global
+// trigram index.
+func TestGenericPlanSQLAndEligibility(t *testing.T) {
+	if got := prepareLexicalSQL(genericStmtName(3), "SELECT 1"); got != "PREPARE lexplan_3 AS SELECT 1" {
+		t.Errorf("prepare = %q", got)
+	}
+	if got := explainExecuteSQL(genericStmtName(2), 5); got != "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE lexplan_2($1, $2, $3, $4, $5)" {
+		t.Errorf("execute = %q", got)
+	}
+	if got := explainExecuteSQL("x", 0); got != "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE x()" {
+		t.Errorf("execute without args = %q", got)
+	}
+	u := uuid.New()
+	args := simpleProtocolArgs([]any{"q_%", u, true, int32(8)})
+	if args[0] != "q_%" || args[1] != u.String() || args[2] != true || args[3] != int32(8) {
+		t.Errorf("simple protocol args = %#v", args)
+	}
+	// The real captured statement is prepared with all its parameters.
+	sql, capArgs, err := captureLexicalSQL(context.Background(), LexPlanCase{Corpus: generation.CorpusItem, Fuzzy: true, QN: "wifi"}, u, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(prepareLexicalSQL("lexplan_1", sql), "PREPARE lexplan_1 AS ") || len(capArgs) != 5 {
+		t.Errorf("captured statement has %d args, want the 5 placeholders of the lexical query", len(capArgs))
+	}
+	for i := 1; i <= len(capArgs); i++ {
+		if !strings.Contains(sql, "$"+fmt.Sprint(i)) {
+			t.Errorf("captured SQL does not use $%d", i)
+		}
+	}
+
+	// A generic plan (parameters unknown at plan time) parses like a custom one.
+	genericJSON := `[{"Plan":{"Node Type":"Limit","Shared Hit Blocks":9,"Plans":[{"Node Type":"Bitmap Heap Scan","Relation Name":"item","Plans":[
+	  {"Node Type":"Bitmap Index Scan","Index Name":"item_name_trgm"}]}]},"Planning Time":0.02,"Execution Time":33.5}]`
+	gp, err := ParseLexicalPlan([]byte(genericJSON))
+	if err != nil || !gp.UsesGlobal || gp.UsesUser || gp.ExecMs != 33.5 {
+		t.Errorf("generic plan = %+v err=%v", gp, err)
+	}
+
+	clean := func() LexPlanRow {
+		return LexPlanRow{Default: planInfoOf("item_user_name_trgm", false, 1), DefaultGeneric: genericInfo("item_user_unaccent_prefix", false, 2)}
+	}
+	row := func(mod func(*LexPlanRow)) LexPlanRow { r := clean(); mod(&r); return r }
+	for name, tc := range map[string]struct {
+		rows []LexPlanRow
+		want string
+	}{
+		"no rows":             {nil, NotEstablished0010},
+		"all clean":           {[]LexPlanRow{clean(), clean()}, Eligible0010},
+		"custom uses global":  {[]LexPlanRow{clean(), row(func(r *LexPlanRow) { r.Default = planInfoOf("tag_norm_trgm", false, 1) })}, NotEligible0010},
+		"generic uses global": {[]LexPlanRow{clean(), row(func(r *LexPlanRow) { r.DefaultGeneric = genericInfo("item_name_trgm", false, 1) })}, NotEligible0010},
+		"generic missing":     {[]LexPlanRow{clean(), row(func(r *LexPlanRow) { r.DefaultGeneric = nil })}, NotEstablished0010},
+		"missing and used":    {[]LexPlanRow{row(func(r *LexPlanRow) { r.DefaultGeneric = nil }), row(func(r *LexPlanRow) { r.Default = planInfoOf("item_name_trgm", false, 1) })}, NotEligible0010},
+	} {
+		if got := EligibilityOf(tc.rows).Verdict; got != tc.want {
+			t.Errorf("%s: verdict = %q, want %q", name, got, tc.want)
+		}
+	}
+
+	var sb strings.Builder
+	w := func(f string, a ...any) { fmt.Fprintf(&sb, f, a...) }
+	renderLexicalPlan(w, &LexPlanReport{FetchLimit: 7, IndexesRestored: true, GenericErrors: []string{"after_0010_simulated: pgcode_42P05"},
+		Tenants: []LexPlanTenant{{Class: "whale", Items: 10, Tags: 2}},
+		Rows:    []LexPlanRow{{ID: "whale/item/prefix/q1", Default: planInfoOf("item_user_name_trgm", false, 1), DefaultGeneric: genericInfo("item_name_trgm", true, 9)}}})
+	md := sb.String()
+	for _, want := range []string{
+		"**Generic plans**", "| whale/item/prefix/q1 | item_name_trgm (global-trgm) | **yes** | 9.00 | 90 / 3 | - | - | - | - |",
+		"0010 eligibility: not eligible.", "Generic-plan EXPLAIN failed (after_0010_simulated: pgcode_42P05)",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("generic-plan Markdown must contain %q:\n%s", want, md)
+		}
+	}
+}
+
+func extrasFixture() *Report {
+	info := planInfoOf
 	after := info("item_user_name_trgm", false, 6.5)
 	return &Report{
 		Run:  RunInfo{Profile: string(ProfileFull)},
@@ -287,7 +372,8 @@ func extrasFixture() *Report {
 			LexicalPlan: &LexPlanReport{FetchLimit: 7, IndexesRestored: true, Notes: []string{"a | b note"},
 				Tenants: []LexPlanTenant{{Class: "whale", Items: 100000, Tags: 20000}},
 				Rows: []LexPlanRow{
-					{ID: "whale/item/fuzzy/q1", Class: "whale", Corpus: "item", Shape: "fuzzy", Default: info("item_name_trgm", false, 31.2), After0010: &after},
+					{ID: "whale/item/fuzzy/q1", Class: "whale", Corpus: "item", Shape: "fuzzy", Default: info("item_name_trgm", false, 31.2), After0010: &after,
+						DefaultGeneric: genericInfo("item_name_trgm", false, 44.5), After0010Generic: genericInfo("", true, 120)},
 					{ID: "whale/tag/prefix/q2", Class: "whale", Corpus: "tag", Shape: "prefix", Default: info("", true, 55), After0010: &after},
 				}},
 			ConnectProbe: &ConnectProbeReport{N: 20, Notes: []string{"probe note"}, Shapes: []ConnectProbeShape{{Shape: "whale_fuzzy", N: 20, Connect: MsStats{P50Ms: 4, P95Ms: 9, MaxMs: 12}, First: MsStats{P50Ms: 14, P95Ms: 48, MaxMs: 50}, Second: MsStats{P50Ms: 3, P95Ms: 5, MaxMs: 6}, FirstTimeouts: 1}}},
@@ -334,7 +420,7 @@ func TestTask23SummaryAndMarkdown(t *testing.T) {
 		"## Lexical plan (FU-SL-1)", "After 0010 (simulated)", "| whale/item/fuzzy/q1 | item_name_trgm (global-trgm) | no | 31.20 | 90 / 3 | item_user_name_trgm (per-user) | no | 6.50 | 90 / 3 |",
 		"| whale/tag/prefix/q2 | - | **yes** | 55.00 |", "global trigram index is used in **1 of 2** cases",
 		"## Connect-cost probe (FU-SB-2b)", "| whale_fuzzy | 20 | 4 / 9 / 12 | 0 / 0 / 0 | 14 / 48 / 50 | 3 / 5 / 6 | 1 | 0 |",
-		"## Task 23 summary - full-volume timings", "HNSW build per partition", "Reconcile full time", "flip note", "dry run note",
+		"**Generic plans**", "0010 eligibility: not eligible.", "## Task 23 summary - full-volume timings", "HNSW build per partition", "Reconcile full time", "flip note", "dry run note",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("Markdown must contain %q", want)
