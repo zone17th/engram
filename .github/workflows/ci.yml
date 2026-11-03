@@ -966,8 +966,8 @@ jobs:
       TEI_INPUT_PREFIX_DOCUMENT: 'passage: '
       # Test-only (rejected in production): g1 bootstrap flips to active within seconds on the empty database.
       EMBEDDING_BOOTSTRAP_FLIP_INTERVAL: 5s
-      # Test-only (advisor-dec-338, P05 Task 22-2): fakeembed slow mode holds near-pending ~2.5 s for capture + axe;
-      # the tei default (300 ms) would time out first and show degraded. No production or config.go default change.
+      # Test-only (advisor-dec-338, P05 Task 22-2): fakeembed slow mode holds near-pending for slow <= 3.5 s (capture + axe),
+      # below this 5 s timeout; the tei default (300 ms) would time out first and show degraded. No production or config.go default change.
       EMBEDDING_QUERY_TIMEOUT: 5s
       # fakeembed is published on 127.0.0.1 only; the Playwright container runs --network host and reaches it there.
       FAKEEMBED_PORT: '8090'
