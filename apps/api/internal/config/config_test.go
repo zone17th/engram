@@ -747,6 +747,9 @@ func TestP05EmbeddingAndSearchDefaults(t *testing.T) {
 	if cfg.SearchHNSWIterativeScan != "relaxed_order" {
 		t.Errorf("SearchHNSWIterativeScan = %q, muốn relaxed_order", cfg.SearchHNSWIterativeScan)
 	}
+	if cfg.SearchANNRandomPageCost != 1.1 {
+		t.Errorf("SearchANNRandomPageCost = %v, muốn 1.1", cfg.SearchANNRandomPageCost)
+	}
 	if cfg.SearchVectorBranchTimeout != 80*time.Millisecond {
 		t.Errorf("SearchVectorBranchTimeout = %v, muốn 80ms", cfg.SearchVectorBranchTimeout)
 	}
@@ -1047,6 +1050,39 @@ func TestP05SearchKnobsAndBootstrapFlipIntervalValidation(t *testing.T) {
 		setEnv(t, map[string]string{"SEARCH_HNSW_ITERATIVE_SCAN": "invalid_mode"})
 		if _, err := config.Load(); err == nil {
 			t.Fatal("SEARCH_HNSW_ITERATIVE_SCAN=invalid_mode phải bị từ chối")
+		}
+	})
+
+	t.Run("ann_random_page_cost_bounds_and_off_switch", func(t *testing.T) {
+		for _, tc := range []struct {
+			raw  string
+			want float64
+		}{
+			{"", 1.1},
+			{"1.1", 1.1},
+			{"0.5", 0.5},
+			{"4.0", 4.0},
+			{"2.25", 2.25},
+			{"off", -1.0},
+			{"OFF", -1.0},
+			{"0", -1.0},
+			{"0.0", -1.0},
+		} {
+			setEnv(t, map[string]string{"SEARCH_ANN_RANDOM_PAGE_COST": tc.raw})
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("SEARCH_ANN_RANDOM_PAGE_COST=%q bị từ chối: %v", tc.raw, err)
+			}
+			if cfg.SearchANNRandomPageCost != tc.want {
+				t.Fatalf("SEARCH_ANN_RANDOM_PAGE_COST=%q -> %v, muốn %v", tc.raw, cfg.SearchANNRandomPageCost, tc.want)
+			}
+		}
+
+		for _, bad := range []string{"0.49", "4.01", "-1", "-0.5", "NaN", "Inf", "invalid", "1.1; SET role postgres"} {
+			setEnv(t, map[string]string{"SEARCH_ANN_RANDOM_PAGE_COST": bad})
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("SEARCH_ANN_RANDOM_PAGE_COST=%q phải bị từ chối", bad)
+			}
 		}
 	})
 

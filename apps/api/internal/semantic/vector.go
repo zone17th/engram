@@ -46,6 +46,7 @@ type VectorSearchKnobs struct {
 	EfSearch           int
 	MaxScanTuples      int
 	IterativeScan      string
+	RandomPageCost     float64
 	BranchTimeout      time.Duration
 	FallbackMinBudget  time.Duration
 	Metrics            *obs.SearchMetrics
@@ -62,6 +63,7 @@ func DefaultVectorSearchKnobs() VectorSearchKnobs {
 		EfSearch:           d.EfSearch,
 		MaxScanTuples:      d.MaxScanTuples,
 		IterativeScan:      d.IterativeScan,
+		RandomPageCost:     d.RandomPageCost,
 		BranchTimeout:      d.BranchTimeout,
 		FallbackMinBudget:  d.FallbackMinBudget,
 	}
@@ -169,6 +171,9 @@ func (s *StoreVectorSearcher) VectorSearch(
 	}
 	if knobs.IterativeScan != "" {
 		storeKnobs.IterativeScan = knobs.IterativeScan
+	}
+	if knobs.RandomPageCost != 0 {
+		storeKnobs.RandomPageCost = knobs.RandomPageCost
 	}
 	if knobs.BranchTimeout > 0 {
 		storeKnobs.BranchTimeout = knobs.BranchTimeout

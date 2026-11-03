@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/google/uuid"
+	"github.com/pgvector/pgvector-go"
+	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
-	"github.com/pgvector/pgvector-go"
 
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
@@ -515,4 +516,88 @@ func TestANNSearchSQLRejectsInvalidCorpus(t *testing.T) {
 	if _, err := store.ANNSearchSQL(`"item_embedding_g1"`, generation.Corpus("invalid")); !errors.Is(err, generation.ErrInvalidCorpus) {
 		t.Fatalf("ANNSearchSQL invalid corpus = %v, want ErrInvalidCorpus", err)
 	}
+}
+
+func TestANNSetLocalStatementsRandomPageCost(t *testing.T) {
+	t.Run("default_includes_random_page_cost_1_1", func(t *testing.T) {
+		knobs := store.DefaultVectorSearchKnobs()
+		stmts, err := store.ANNSetLocalStatements(knobs, 80*time.Millisecond)
+		if err != nil {
+			t.Fatalf("ANNSetLocalStatements default: %v", err)
+		}
+		want := []string{
+			"SET LOCAL hnsw.iterative_scan = relaxed_order",
+			"SET LOCAL hnsw.ef_search = 64",
+			"SET LOCAL hnsw.max_scan_tuples = 20000",
+			"SET LOCAL random_page_cost = 1.1",
+			"SET LOCAL statement_timeout = '80ms'",
+		}
+		if !slices.Equal(stmts, want) {
+			t.Fatalf("ANNSetLocalStatements default = %#v, want %#v", stmts, want)
+		}
+	})
+
+	t.Run("zero_defaults_to_1_1_and_custom_in_range_included", func(t *testing.T) {
+		knobs := store.DefaultVectorSearchKnobs()
+		knobs.RandomPageCost = 0
+		stmtsZero, err := store.ANNSetLocalStatements(knobs, 80*time.Millisecond)
+		if err != nil {
+			t.Fatalf("ANNSetLocalStatements zero: %v", err)
+		}
+		if !slices.Contains(stmtsZero, "SET LOCAL random_page_cost = 1.1") {
+			t.Fatalf("expected SET LOCAL random_page_cost = 1.1 when RandomPageCost=0, got %#v", stmtsZero)
+		}
+
+		for _, tc := range []struct {
+			cost float64
+			want string
+		}{
+			{0.5, "SET LOCAL random_page_cost = 0.5"},
+			{1.1, "SET LOCAL random_page_cost = 1.1"},
+			{2.25, "SET LOCAL random_page_cost = 2.25"},
+			{4.0, "SET LOCAL random_page_cost = 4"},
+		} {
+			knobs.RandomPageCost = tc.cost
+			stmts, err := store.ANNSetLocalStatements(knobs, 50*time.Millisecond)
+			if err != nil {
+				t.Fatalf("ANNSetLocalStatements(%v): %v", tc.cost, err)
+			}
+			if !slices.Contains(stmts, tc.want) {
+				t.Fatalf("ANNSetLocalStatements(%v) = %#v, missing %q", tc.cost, stmts, tc.want)
+			}
+		}
+	})
+
+	t.Run("off_switch_omits_random_page_cost", func(t *testing.T) {
+		knobs := store.DefaultVectorSearchKnobs()
+		knobs.RandomPageCost = store.ANNRandomPageCostOff
+		stmts, err := store.ANNSetLocalStatements(knobs, 80*time.Millisecond)
+		if err != nil {
+			t.Fatalf("ANNSetLocalStatements off: %v", err)
+		}
+		for _, s := range stmts {
+			if strings.Contains(s, "random_page_cost") {
+				t.Fatalf("expected no random_page_cost statement when off, got %#v", stmts)
+			}
+		}
+		want := []string{
+			"SET LOCAL hnsw.iterative_scan = relaxed_order",
+			"SET LOCAL hnsw.ef_search = 64",
+			"SET LOCAL hnsw.max_scan_tuples = 20000",
+			"SET LOCAL statement_timeout = '80ms'",
+		}
+		if !slices.Equal(stmts, want) {
+			t.Fatalf("ANNSetLocalStatements off = %#v, want %#v", stmts, want)
+		}
+	})
+
+	t.Run("out_of_range_rejected", func(t *testing.T) {
+		for _, bad := range []float64{0.49, 4.01, -0.5, -2.0, math.NaN(), math.Inf(1), math.Inf(-1)} {
+			knobs := store.DefaultVectorSearchKnobs()
+			knobs.RandomPageCost = bad
+			if _, err := store.ANNSetLocalStatements(knobs, 80*time.Millisecond); !errors.Is(err, store.ErrInvalidKnobs) {
+				t.Fatalf("ANNSetLocalStatements(%v) err = %v, want ErrInvalidKnobs", bad, err)
+			}
+		}
+	})
 }

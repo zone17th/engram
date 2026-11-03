@@ -280,6 +280,7 @@ func NewRuntimeFromConfig(
 			EfSearch:           cfg.SearchHNSWEfSearch,
 			MaxScanTuples:      cfg.SearchHNSWMaxScanTuples,
 			IterativeScan:      cfg.SearchHNSWIterativeScan,
+			RandomPageCost:     cfg.SearchANNRandomPageCost,
 			BranchTimeout:      cfg.SearchVectorBranchTimeout,
 			FallbackMinBudget:  cfg.SearchVectorFallbackMinBudget,
 		}
