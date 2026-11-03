@@ -902,7 +902,8 @@ jobs:
             TestParseANNPlan TestBenchHarnessUsesDefaultPlanner \
             TestGaussianSampleMoments TestLexicalPartialAggregation TestServerLogsFileHasOnlyAllowlistedTokens \
             TestLexicalPlanParser TestLexicalPlanQueriesAreDeterministic TestLexicalSQLCapture \
-            TestCoverageGapClassification TestErrTagHidesText TestTask23SummaryAndMarkdown; do
+            TestCoverageGapClassification TestErrTagHidesText TestTask23SummaryAndMarkdown \
+            TestGenericPlanSQLAndEligibility TestExtrasBudgetAndTestDeadline TestExtrasLogCarriesTagsNotErrorText; do
             if ! grep -Eq "^[[:space:]]*--- PASS: ${name} \(" "$SEARCH_BENCH_OUT_DIR/self-checks.log"; then
               echo "::error::self-check ${name} has no '--- PASS:' line (skipped, filtered out or failed)"
               status=1
