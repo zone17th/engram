@@ -1459,11 +1459,16 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 		Classes: classes, CountSamples: 30, Explain: true,
 	})
 	rep.C2 = c2
-	if err != nil {
-		return err
+	if err == nil {
+		logf("C2 done")
 	}
-	logf("C2 done")
-	return nil
+	// Task 23 additions (advisor-dec-337): quiet phase after every measured cell, on
+	// their own connections. They run even when C2 failed, so the evidence is not
+	// lost, and a failed section is recorded without failing the benchmark.
+	if ctx.Err() == nil {
+		rep.Extras = RunExtras(ctx, dsn, sr, classes, ExtrasConfigFor(env.Profile), logf)
+	}
+	return err
 }
 
 // FinalizeReport fills verdicts, hard failures and derived sections.
@@ -1475,6 +1480,11 @@ func FinalizeReport(rep *Report, minMeasured int) {
 	rep.Warnings = DegradationWarnings(rep)
 	for _, s := range rep.C1 {
 		rep.Warnings = append(rep.Warnings, LevelWarnings(s)...)
+	}
+	if rep.Extras != nil {
+		for _, e := range rep.Extras.Errors {
+			rep.Warnings = append(rep.Warnings, "Task 23 extra failed (not part of any target): "+e)
+		}
 	}
 	if rep.C2 != nil {
 		if cells := NonHNSWANNCells(rep.C2.Cells); len(cells) > 0 {
