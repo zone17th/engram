@@ -14,7 +14,7 @@
 --     and inlines the `IMMUTABLE` expression with `LIKE ... ESCAPE '\'` on
 --     `name_unaccent` / `tag_unaccent` so the planner constant-folds it onto
 --     `item_user_unaccent_prefix` / `tag_user_unaccent_prefix` (`text_pattern_ops`).
---   - Tiered prefix-first short-circuit (L2-B + P1-exact, advisor-dec-353):
+--   - Tiered prefix-first short-circuit (L2-B, advisor-dec-353):
 --     `prefix_ranked` fetches up to `page_limit` Tier 3 + Tier 2 prefix matches first,
 --     and `fuzzy_ranked` runs with `LIMIT GREATEST(0, page_limit - count(prefix_ranked))`
 --     so PostgreSQL short-circuits the GIN trigram scan whenever prefix matches fill `page_limit`.
@@ -35,31 +35,13 @@ WITH prefix_ranked AS (
       WHEN i.name_normalized LIKE sqlc.arg('q_prefix')::text ESCAPE '\' THEN 3
       ELSE 2
     END)::int AS tier,
-    (CASE
-      WHEN NOT sqlc.arg('fuzzy')::bool THEN
-        (CASE
-          WHEN immutable_unaccent(sqlc.arg('qn')::text) ~ '^[[:alnum:]]+$' THEN
-            (CASE
-              WHEN i.name_unaccent ~ ('(^|[^[:alnum:]])' || immutable_unaccent(sqlc.arg('qn')::text) || '($|[^[:alnum:]])') THEN 1.0::float8
-              ELSE round(
-                (
-                  char_length(immutable_unaccent(sqlc.arg('qn')::text))::numeric
-                  / (char_length(immutable_unaccent(sqlc.arg('qn')::text)) + 1)::numeric
-                ),
-                2
-              )::float8
-            END)
-          ELSE 0.0::float8
-        END)
-      ELSE
-        round(
-          GREATEST(
-            similarity(i.name_unaccent, immutable_unaccent(sqlc.arg('qn')::text)),
-            word_similarity(immutable_unaccent(sqlc.arg('qn')::text), i.name_unaccent)
-          )::numeric,
-          2
-        )::float8
-    END) AS score
+    round(
+      GREATEST(
+        similarity(i.name_unaccent, immutable_unaccent(sqlc.arg('qn')::text)),
+        word_similarity(immutable_unaccent(sqlc.arg('qn')::text), i.name_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
   FROM item AS i
   WHERE i.user_id = sqlc.arg('user_id')
     AND i.deleted_at IS NULL
@@ -177,31 +159,13 @@ WITH prefix_ranked AS (
       WHEN t.normalized LIKE sqlc.arg('q_prefix')::text ESCAPE '\' THEN 3
       ELSE 2
     END)::int AS tier,
-    (CASE
-      WHEN NOT sqlc.arg('fuzzy')::bool THEN
-        (CASE
-          WHEN immutable_unaccent(sqlc.arg('qn')::text) ~ '^[[:alnum:]]+$' THEN
-            (CASE
-              WHEN t.tag_unaccent ~ ('(^|[^[:alnum:]])' || immutable_unaccent(sqlc.arg('qn')::text) || '($|[^[:alnum:]])') THEN 1.0::float8
-              ELSE round(
-                (
-                  char_length(immutable_unaccent(sqlc.arg('qn')::text))::numeric
-                  / (char_length(immutable_unaccent(sqlc.arg('qn')::text)) + 1)::numeric
-                ),
-                2
-              )::float8
-            END)
-          ELSE 0.0::float8
-        END)
-      ELSE
-        round(
-          GREATEST(
-            similarity(t.tag_unaccent, immutable_unaccent(sqlc.arg('qn')::text)),
-            word_similarity(immutable_unaccent(sqlc.arg('qn')::text), t.tag_unaccent)
-          )::numeric,
-          2
-        )::float8
-    END) AS score
+    round(
+      GREATEST(
+        similarity(t.tag_unaccent, immutable_unaccent(sqlc.arg('qn')::text)),
+        word_similarity(immutable_unaccent(sqlc.arg('qn')::text), t.tag_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
   FROM tag AS t
   WHERE t.user_id = sqlc.arg('user_id')
     AND t.deleted_at IS NULL
@@ -374,31 +338,13 @@ WITH prefix_all AS (
       WHEN i.name_normalized LIKE sqlc.arg('q_prefix')::text ESCAPE '\' THEN 3
       ELSE 2
     END)::int AS tier,
-    (CASE
-      WHEN NOT sqlc.arg('fuzzy')::bool THEN
-        (CASE
-          WHEN immutable_unaccent(sqlc.arg('qn')::text) ~ '^[[:alnum:]]+$' THEN
-            (CASE
-              WHEN i.name_unaccent ~ ('(^|[^[:alnum:]])' || immutable_unaccent(sqlc.arg('qn')::text) || '($|[^[:alnum:]])') THEN 1.0::float8
-              ELSE round(
-                (
-                  char_length(immutable_unaccent(sqlc.arg('qn')::text))::numeric
-                  / (char_length(immutable_unaccent(sqlc.arg('qn')::text)) + 1)::numeric
-                ),
-                2
-              )::float8
-            END)
-          ELSE 0.0::float8
-        END)
-      ELSE
-        round(
-          GREATEST(
-            similarity(i.name_unaccent, immutable_unaccent(sqlc.arg('qn')::text)),
-            word_similarity(immutable_unaccent(sqlc.arg('qn')::text), i.name_unaccent)
-          )::numeric,
-          2
-        )::float8
-    END) AS score
+    round(
+      GREATEST(
+        similarity(i.name_unaccent, immutable_unaccent(sqlc.arg('qn')::text)),
+        word_similarity(immutable_unaccent(sqlc.arg('qn')::text), i.name_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
   FROM item AS i
   WHERE i.user_id = sqlc.arg('user_id')
     AND i.deleted_at IS NULL
@@ -592,31 +538,13 @@ WITH prefix_all AS (
       WHEN t.normalized LIKE sqlc.arg('q_prefix')::text ESCAPE '\' THEN 3
       ELSE 2
     END)::int AS tier,
-    (CASE
-      WHEN NOT sqlc.arg('fuzzy')::bool THEN
-        (CASE
-          WHEN immutable_unaccent(sqlc.arg('qn')::text) ~ '^[[:alnum:]]+$' THEN
-            (CASE
-              WHEN t.tag_unaccent ~ ('(^|[^[:alnum:]])' || immutable_unaccent(sqlc.arg('qn')::text) || '($|[^[:alnum:]])') THEN 1.0::float8
-              ELSE round(
-                (
-                  char_length(immutable_unaccent(sqlc.arg('qn')::text))::numeric
-                  / (char_length(immutable_unaccent(sqlc.arg('qn')::text)) + 1)::numeric
-                ),
-                2
-              )::float8
-            END)
-          ELSE 0.0::float8
-        END)
-      ELSE
-        round(
-          GREATEST(
-            similarity(t.tag_unaccent, immutable_unaccent(sqlc.arg('qn')::text)),
-            word_similarity(immutable_unaccent(sqlc.arg('qn')::text), t.tag_unaccent)
-          )::numeric,
-          2
-        )::float8
-    END) AS score
+    round(
+      GREATEST(
+        similarity(t.tag_unaccent, immutable_unaccent(sqlc.arg('qn')::text)),
+        word_similarity(immutable_unaccent(sqlc.arg('qn')::text), t.tag_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
   FROM tag AS t
   WHERE t.user_id = sqlc.arg('user_id')
     AND t.deleted_at IS NULL
