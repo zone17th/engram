@@ -661,8 +661,14 @@ func (e *semEnv) createItemOnce(t *testing.T, arm *semItemArm, idx int) time.Dur
 	return dur
 }
 
+// runItemSequential issues n sequential POST /items. POST /items is limited by httpx.ScopeContentWrite (10 per
+// 1 s sliding window per user, counted in rate_event against the harness fake clock), so the window is advanced
+// before the first request (the previous arm's burst, or the previous population, may have used all 10 slots
+// and no real time passes on the fake clock) and again after every 9 requests. The rename load writes through
+// the pool directly, so no other HTTP write consumes content_write slots during the measurement.
 func (e *semEnv) runItemSequential(t *testing.T, arm *semItemArm, n int) {
 	t.Helper()
+	e.h.advanceRateLimitWindow()
 	pace := 0
 	for range n {
 		arm.seq = append(arm.seq, e.createItemOnce(t, arm, len(arm.ids)))
