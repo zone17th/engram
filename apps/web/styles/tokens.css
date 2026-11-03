@@ -976,9 +976,70 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
   }
   .tag-menu-trigger, .btn-icon { min-width: 44px; }
   .chip-x::after {
-    content: ''; position: absolute; left: 50%; top: 50%;
-    width: 44px; height: 44px; transform: translate(-50%, -50%);
+    content: none;
   }
+  .chip-x {
+    min-width: 44px; min-height: 44px;
+  }
+  .json-cell-input { min-height: 44px; }
+  .json-table .json-col-act {
+    width: 68px;
+    min-width: 68px;
+    position: static;
+    right: auto;
+    z-index: auto;
+    box-shadow: none;
+  }
+  /* FU11-COARSE-STICKY r2 (advisor-dec-254, RV-T26-FE1-1/3/5): CI 41391288078 proved dropping
+     sticky alone did not fix bottom-corner hit-testing on `json-remove-field-root-0` because in
+     taller rows (h=65 px when another row holds a nested table) or when the root table overflows
+     the host (366 > 348 px, scrollLeft=6), a 44 px top-aligned button with 6 px border-radius does
+     not own the full cell box. Keep non-action `.json-col-idx` at 44 px so the root table fits the
+     348 px host (scrollLeft=0), and stretch the action button to fill the full action cell. */
+  .json-table td.json-col-act {
+    height: 1px;
+    padding: 0;
+    vertical-align: middle;
+  }
+  .json-table td.json-col-act .btn-sm {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    border-radius: 0;
+  }
+  /* FU11-COARSE-STICKY r3 (advisor-dec-263, last round): CI 41395397310 showed the r2 full-cell
+     action buttons pass all 5 probes while the same bottom-right-band miss moved to the
+     inline-block value button `json-cell-btn-root.p1` (td padding 8/12, top-aligned, 44 px tall in
+     a 61 px row). Apply the same fill-the-cell pattern to every cell whose only element child is a
+     `.json-cell-btn` (key, value and missing cells; a key cell with a duplicate-occurrence badge or
+     a cell holding the editor keeps its padding): the cell drops its padding and the button
+     becomes a block that fills the cell box. The button padding (10/18 + 1 px border) equals the
+     old cell padding + button padding, so text keeps its inset and the column min/max-content
+     widths stay the same; `stretch` / `-webkit-fill-available` (not 100%) keeps the intrinsic
+     contribution content-based so the 390 root table still fits its 348 px host. */
+  .json-table td:has(> .json-cell-btn:only-child) {
+    height: 1px;
+    padding: 0;
+    vertical-align: middle;
+  }
+  .json-table td > .json-cell-btn:only-child {
+    display: block;
+    width: 100%;
+    width: -webkit-fill-available;
+    width: stretch;
+    height: 100%;
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    padding: 10px 18px;
+    border-radius: 0;
+  }
+  .json-table .json-nest .json-table thead ~ tbody > tr > td:not(.k):not(.json-col-act):not([colspan]) { min-width: 0; }
+  .json-cell-btn, .json-type-btn,
+  .json-cell-edit-wrap .btn-sm, .json-table-toolbar .btn-sm { min-width: 44px; }
 }
 
 :focus-visible {

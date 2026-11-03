@@ -2648,4 +2648,168 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     },
     30_000,
   );
+
+  it(
+    'FU11 (advisor-dec-216/217/221/223/224/228/254/263): applies 44x44 coarse-pointer classes, fine-pointer sticky action column with coarse static full-cell override, coarse full-cell single-button key/value cells, cell wrap, nested overflow-x-auto, and non-overlapping .chip-x rules',
+    async () => {
+      const longTag50 = `${'tag-chip-50-rune-'.repeat(2)}tail50`.padEnd(50, 'q').slice(0, 50);
+      expect(Array.from(longTag50).length).toBe(50);
+
+      await setupJsonCardHarness({
+        initialItem: makeItemSummary({
+          tags: [
+            { id: 'tag-1', display: 'db' },
+            { id: 'tag-50', display: longTag50 },
+          ],
+        }),
+        initialEntries: [
+          {
+            id: ENTRY_ID_1,
+            text: '{"service":"billing-worker","port":80,"nested":{"region":"ap-southeast-1"},"rows":[{"host":"api-1","w":1}]}',
+            type: 'json',
+            position: 0,
+            version: 1,
+          },
+        ],
+      });
+
+      const card = await screen.findByTestId(`entry-card-${ENTRY_ID_1}`);
+      await waitFor(() => {
+        expect(within(card).getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+      });
+
+      // 1. Breadcrumb All items link and hint input classes (dec-216, dec-217)
+      const breadcrumbNav = screen.getByRole('navigation');
+      const allItemsLink = within(breadcrumbNav).getByRole('link');
+      expect(allItemsLink.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+      expect(allItemsLink.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+
+      const hintInput = screen.getByTestId('item-hint-input');
+      expect(hintInput.className).toContain('max-[639px]:placeholder:text-[11.5px]');
+
+      // 2. Tag chips (short & 50-rune) and remove buttons (dec-217, dec-221)
+      for (const tagDisplay of ['db', longTag50]) {
+        const chip = screen.getByTestId(`item-tag-chip-${tagDisplay}`);
+        expect(chip.className).toContain('max-w-full');
+        expect(chip.className).toContain('[@media(pointer:coarse)]:gap-0');
+        const tagLink = within(chip).getByRole('link');
+        expect(tagLink.className).toContain('truncate');
+        expect(tagLink.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+        expect(tagLink.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+        const removeBtn = within(chip).getByTestId(`item-tag-remove-${tagDisplay}`);
+        expect(removeBtn.className).toContain('chip-x');
+        expect(removeBtn.className).toContain('shrink-0');
+      }
+
+      // 3. JSON cell buttons, wrapping, nested scroll, and action column (sticky only for fine pointer <=768 px; coarse overrides it in tokens.css) (dec-216, dec-217, dec-254)
+      const cellBtn = within(card).getByTestId('json-cell-btn-root.p1');
+      expect(cellBtn.className).toContain('max-w-full');
+      expect(cellBtn.className).toContain('[overflow-wrap:anywhere]');
+      expect(cellBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+      expect(cellBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+
+      const removeFieldBtn = within(card).getByTestId('json-remove-field-root-0');
+      expect(removeFieldBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+      expect(removeFieldBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+      const actionTd = removeFieldBtn.closest('td');
+      expect(actionTd?.className).toContain('json-col-act');
+      expect(actionTd?.className).toContain('max-[768px]:sticky');
+      expect(actionTd?.className).toContain('max-[768px]:right-0');
+      const actionTh = card.querySelector('th.json-col-act');
+      expect(actionTh).not.toBeNull();
+      expect(actionTh?.className).toContain('max-[768px]:sticky');
+
+      // Expand nested object and array-of-objects to verify .json-nest overflow-x-auto and row delete button
+      fireEvent.click(within(card).getByTestId('json-toggle-root.p2'));
+      const nestContainer = within(card).getByTestId('json-nest-root.p2');
+      expect(nestContainer.className).toContain('overflow-x-auto');
+
+      fireEvent.click(within(card).getByTestId('json-toggle-root.p3'));
+      const removeRowBtn = within(card).getByTestId('json-remove-row-root.p3-0');
+      expect(removeRowBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+      expect(removeRowBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+
+      // 4. Open inline JSON cell editor and verify dec-223 / dec-224 classes on input, type select, commit, cancel
+      fireEvent.click(within(card).getByTestId('json-cell-btn-root.p0'));
+      const cellInput = within(card).getByTestId('json-cell-input-root.p0');
+      const typeSelect = within(card).getByTestId('json-type-select-root.p0');
+      const commitBtn = within(card).getByTestId('json-commit-cell-root.p0');
+      const cancelBtn = within(card).getByTestId('json-cancel-cell-root.p0');
+      expect(cellInput.className).toContain('json-cell-input');
+      expect(typeSelect.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+      expect(typeSelect.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+      expect(commitBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+      expect(commitBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+      expect(cancelBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+      expect(cancelBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+
+      // 5. Verify tokens.css coarse rules and absence of overlapping .chip-x::after
+      const tokensCss = fs.readFileSync(
+        path.resolve(__dirname, '../../styles/tokens.css'),
+        'utf8',
+      );
+      expect(tokensCss).toMatch(/\.chip-x::after\s*\{\s*content:\s*none;\s*\}/);
+      expect(tokensCss).toMatch(/\.chip-x\s*\{\s*min-width:\s*44px;\s*min-height:\s*44px;\s*\}/);
+      expect(tokensCss).toMatch(/\.json-cell-input\s*\{\s*min-height:\s*44px;\s*\}/);
+      expect(tokensCss).not.toMatch(/\.json-col-idx\s*,\s*\.json-table\s+td\.json-col-act\s*\{\s*width:\s*68px/);
+      expect(tokensCss).toMatch(
+        /\.json-table\s+\.json-col-act\s*\{\s*width:\s*68px;\s*min-width:\s*68px;\s*position:\s*static;\s*right:\s*auto;\s*z-index:\s*auto;\s*box-shadow:\s*none;\s*\}/,
+      );
+      expect(tokensCss).toMatch(
+        /\.json-table\s+td\.json-col-act\s*\{\s*height:\s*1px;\s*padding:\s*0;\s*vertical-align:\s*middle;\s*\}/,
+      );
+      expect(tokensCss).toMatch(
+        /\.json-table\s+td\.json-col-act\s+\.btn-sm\s*\{\s*display:\s*flex;\s*width:\s*100%;\s*height:\s*100%;\s*min-width:\s*44px;\s*min-height:\s*44px;\s*margin:\s*0;\s*border-radius:\s*0;\s*\}/,
+      );
+      expect(tokensCss).not.toMatch(/json-col-act\s+\.btn-sm\s*\{[^}]*position:\s*relative/);
+      // FU11 r3 (advisor-dec-263): single-button key/value/missing cells use the same fill-the-cell
+      // pattern under coarse pointer; padding moves from the cell to the button (10/18 + 1 px border
+      // = old 8/12 cell + 2/6 button + 1 px border) and the width is `stretch`, not a percentage.
+      const coarseBlock = tokensCss.slice(tokensCss.indexOf('@media (pointer: coarse) {'));
+      expect(coarseBlock).toMatch(
+        /\.json-table\s+td:has\(>\s*\.json-cell-btn:only-child\)\s*\{\s*height:\s*1px;\s*padding:\s*0;\s*vertical-align:\s*middle;\s*\}/,
+      );
+      expect(coarseBlock).toMatch(
+        /\.json-table\s+td\s*>\s*\.json-cell-btn:only-child\s*\{\s*display:\s*block;\s*width:\s*100%;\s*width:\s*-webkit-fill-available;\s*width:\s*stretch;\s*height:\s*100%;\s*min-width:\s*44px;\s*min-height:\s*44px;\s*margin:\s*0;\s*padding:\s*10px 18px;\s*border-radius:\s*0;\s*\}/,
+      );
+      // Fine pointer must not change: the fill-the-cell selectors exist only inside the coarse block.
+      const fineCss = tokensCss.slice(0, tokensCss.indexOf('@media (pointer: coarse) {'));
+      expect(fineCss).not.toMatch(/td:has\(>\s*\.json-cell-btn/);
+      expect(fineCss).not.toMatch(/td\s*>\s*\.json-cell-btn:only-child/);
+      expect(tokensCss.match(/td:has\(>\s*\.json-cell-btn:only-child\)/g)).toHaveLength(1);
+      expect(tokensCss.match(/td\s*>\s*\.json-cell-btn:only-child\s*\{/g)).toHaveLength(1);
+      expect(coarseBlock).not.toMatch(/\.json-col-idx\s*\{[^}]*width:\s*68px/);
+      // The cell button stays the only element child of its key/value cell (what the :has() rule keys on).
+      const keyCellBtn = within(card).getByTestId('json-cell-btn-root.k1');
+      expect(keyCellBtn.parentElement?.tagName).toBe('TD');
+      expect(keyCellBtn.parentElement?.children).toHaveLength(1);
+      expect(within(card).getByTestId('json-cell-btn-root.p1').parentElement?.children).toHaveLength(1);
+      expect(tokensCss).toMatch(
+        /\.json-table\s+\.json-nest\s+\.json-table\s+thead\s*~\s*tbody\s*>\s*tr\s*>\s*td:not\(\.k\):not\(\.json-col-act\):not\(\[colspan\]\)\s*\{\s*min-width:\s*0;\s*\}/,
+      );
+      // 6. Open Import JSON dialog and verify dec-228 coarse-pointer classes on parse-error jump and format checkbox label
+      fireEvent.click(screen.getByTestId('btn-import-json'));
+      const importDialog = screen.getByTestId('import-json-dialog');
+      const importTextarea = within(importDialog).getByTestId('import-json-source-textarea');
+      fireEvent.change(importTextarea, { target: { value: '{\n  "bad": 1,\n}' } });
+
+      const parseErrorJumpBtn = within(importDialog).getByTestId('import-json-parse-error-jump');
+      expect(parseErrorJumpBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+
+      const formatCheckbox = within(importDialog).getByTestId(
+        'import-json-format-checkbox',
+      ) as HTMLInputElement;
+      const formatLabel = within(importDialog).getByTestId('import-json-format-label');
+      expect(formatCheckbox.closest('label')).toBe(formatLabel);
+      expect(formatLabel.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+      expect(formatLabel.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+
+      fireEvent.change(importTextarea, { target: { value: '{"ok":1}' } });
+      expect(formatCheckbox.disabled).toBe(false);
+      expect(formatCheckbox.checked).toBe(false);
+      fireEvent.click(formatLabel);
+      expect(formatCheckbox.checked).toBe(true);
+    },
+    30_000,
+  );
 });
