@@ -1180,3 +1180,10 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
     transform: translate(-50%, -50%);
   }
 }
+
+/* P05 T22 FU10 / omni-pop (advisor-dec-327): while the overflowing popover is a keyboard region (tabindex=0), keep its
+   own radius and draw the global accent focus ring inside the border so no ancestor can clip it. */
+.popover[data-pop]:focus-visible {
+  border-radius: var(--r-lg);
+  outline-offset: -3px;
+}

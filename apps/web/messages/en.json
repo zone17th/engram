@@ -38,7 +38,7 @@
     "jsonViewRaw": "Raw JSON",
     "privacyTitle": "Plainly: what is encrypted and what is not",
     "privacyBody1": "Entry content will be locked in your browser with a key only your machine holds. We keep no copy and have no way to read it.",
-    "privacyBody2": "Item names and tags are not encrypted — they are what makes search work. If you turn on similar-meaning search, those two are sent to an embedding server we run ourselves. Entry content never is, even then.",
+    "privacyBody2": "Item names and tags are not encrypted — they are what makes search work. The text you type to search also goes to our server, unencrypted. When similar-meaning search is on (it is on by default where the server supports it, and you can turn it off in Settings or with the ≈ button), item names, tags, hints and the text you type are sent on to a third-party embedding service to compute vectors. Entry content is never sent.",
     "encLabel": "Encrypted",
     "encBody": "The content of every text and json entry.",
     "plainLabel": "Not encrypted",
@@ -124,12 +124,12 @@
       "row2Purpose": "Keyword search, tag filtering, suggestions",
       "row3Data": "Search query text",
       "row3Server": "Plaintext",
-      "row3Purpose": "Seen by server for search; when semantic suggest (≈, arrives with the upcoming search release) is on, may be sent to an embedding provider, which can be a third-party service",
+      "row3Purpose": "Seen by server for search; when semantic suggest (≈) is on, the text is sent on to a third-party embedding service to compute vectors",
       "row4Data": "Email, settings, sessions, security audit log",
       "row4Server": "Plaintext / Hash",
       "row4Purpose": "Account authentication & security audit; login passwords hashed with Argon2id",
-      "s21Title": "2.1 · Semantic suggest (arrives with the upcoming search release) & access logs",
-      "s21Body": "When optional semantic suggest (≈, arrives with the upcoming search release) is enabled, item names, tags, hints, and the text you search may be sent to an embedding provider, which can be a third-party service, to compute similarity vectors; entry bodies are never sent. Turning semantic suggest off in Settings stops sending data and deletes stored vectors. Server access logs do not record search queries and never record entry bodies, passphrases, or recovery keys."
+      "s21Title": "2.1 · Semantic suggest & access logs",
+      "s21Body": "While semantic suggest (≈) is on (it is on by default where the server supports it; turn it off in Settings or with the ≈ button), item names, tags, hints, and the text you type to search are sent to a third-party embedding service (through our router to OpenRouter, then the model provider) to compute similarity vectors; entry bodies are never sent. Text after \"name:\" when saving content is never sent for search. If the server runs its own embedding (optional), that data does not leave our infrastructure, and turning it off only hides similar-meaning results. Turning semantic suggest off stops sending your data to the third party from that moment and deletes your vectors stored in engram's database; a request already sent before you turn it off cannot be recalled, and we do not promise deletion or a retention limit for that data at OpenRouter or the model provider (it follows their policies). Server access logs do not record search queries and never record entry bodies, passphrases, or recovery keys."
     },
     "deletion": {
       "sectionLabel": "Section 3",
@@ -1651,6 +1651,7 @@
       "semanticAriaLabel": "Meaning-based search"
     },
     "listbox": {
+      "regionAriaLabel": "Search dropdown, scrollable",
       "suggestAriaLabel": "Search suggestions",
       "searchAriaLabel": "Search results",
       "tagAriaLabel": "Tag filter results"

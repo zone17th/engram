@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Omnibox } from '@/components/app-shell/omnibox';
 import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { assertVaultSecretElementAttributes } from '@/features/entries/secret-input-props';
@@ -4713,5 +4713,273 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
     } finally {
       textarea.removeEventListener('input', stopRootListener);
     }
+  });
+
+  // ---- advisor-dec-327: `#omni-pop` scroll region (axe scrollable-region-focusable) and narrow bounding (FU10) ----
+  // jsdom has no layout and no ResizeObserver: stub the observer (captured so the test can fire it) and define the
+  // layout numbers per element.
+  describe('#omni-pop keyboard region and narrow-viewport bounding (advisor-dec-327)', () => {
+    const REGION_LABEL = viMessages.search.listbox.regionAriaLabel;
+    let observers: Array<() => void> = [];
+    // What each captured callback observes, so a test can fire ONLY the observer of one element.
+    let observedBy = new Map<() => void, Set<Element>>();
+
+    class FakeResizeObserver {
+      private readonly cb: () => void;
+      constructor(cb: () => void) {
+        this.cb = cb;
+        observers.push(cb);
+        observedBy.set(cb, new Set());
+      }
+      observe(target: Element) {
+        observedBy.get(this.cb)?.add(target);
+      }
+      unobserve(target: Element) {
+        observedBy.get(this.cb)?.delete(target);
+      }
+      disconnect() {
+        observers = observers.filter((o) => o !== this.cb);
+        observedBy.delete(this.cb);
+      }
+    }
+
+    function fireResize() {
+      act(() => {
+        for (const cb of [...observers]) cb();
+      });
+    }
+
+    /** Fire only the observer callbacks that currently observe `target` (a real RO would fire just for that element). */
+    function fireResizeOn(target: Element) {
+      act(() => {
+        for (const cb of [...observers]) {
+          if (observedBy.get(cb)?.has(target)) cb();
+        }
+      });
+    }
+
+    function setLayout(el: HTMLElement, layout: { scrollHeight: number; clientHeight: number; top?: number }) {
+      const top = layout.top ?? 0;
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => layout.scrollHeight });
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => layout.clientHeight });
+      Object.defineProperty(el, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          top,
+          bottom: top + layout.clientHeight,
+          left: 0,
+          right: 390,
+          width: 390,
+          height: layout.clientHeight,
+          x: 0,
+          y: top,
+          toJSON: () => ({}),
+        }),
+      });
+    }
+
+    function setViewport(width: number, height: number) {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: width });
+      Object.defineProperty(window, 'visualViewport', {
+        configurable: true,
+        writable: true,
+        value: { height, offsetTop: 0, addEventListener: () => undefined, removeEventListener: () => undefined },
+      });
+    }
+
+    const originalInnerWidth = window.innerWidth;
+    const originalVisualViewport = window.visualViewport;
+
+    beforeEach(() => {
+      observers = [];
+      observedBy = new Map();
+      vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+        configurable: true,
+        writable: true,
+        value: vi.fn(),
+      });
+      vi.spyOn(searchApi, 'search').mockResolvedValue(
+        makeSearchResponse({ items: [makeSuggestItemRow(ITEM_WIFI), makeSuggestItemRow(ITEM_WIFI_GUEST)] }),
+      );
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      document.documentElement.style.removeProperty('--undo-stack-h');
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'visualViewport', {
+        configurable: true,
+        writable: true,
+        value: originalVisualViewport,
+      });
+    });
+
+    async function openPopover(): Promise<{ textarea: HTMLTextAreaElement; pop: HTMLElement }> {
+      renderOmnibox();
+      const textarea = getTextbox();
+      fireEvent.change(textarea, { target: { value: 'wif' } });
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' });
+      const pop = document.getElementById('omni-pop');
+      expect(pop).not.toBeNull();
+      return { textarea, pop: pop as HTMLElement };
+    }
+
+    it('is a labelled tab-order region ONLY while it overflows, adds no tab stop inside, and leaves the textarea role and aria-activedescendant alone', async () => {
+      const { textarea, pop } = await openPopover();
+
+      // No overflow: a plain container, no extra tab stop.
+      expect(pop).not.toHaveAttribute('tabindex');
+      expect(pop).not.toHaveAttribute('role');
+      expect(pop).not.toHaveAttribute('aria-label');
+
+      setLayout(pop, { scrollHeight: 900, clientHeight: 440 });
+      fireResize();
+      await waitFor(() => expect(pop).toHaveAttribute('tabindex', '0'));
+      expect(pop).toHaveAttribute('role', 'region');
+      expect(pop).toHaveAttribute('aria-label', REGION_LABEL);
+      // Static copy only: the typed draft is never copied into an attribute.
+      expect(pop.getAttribute('aria-label')).not.toContain('wif');
+      // The only tab stop in the popover is the region itself; the rows stay reachable through aria-activedescendant.
+      expect(pop.querySelectorAll('[tabindex]')).toHaveLength(0);
+      expect(textarea).not.toHaveAttribute('role');
+      expect(textarea).not.toHaveAttribute('aria-expanded');
+
+      textarea.focus();
+      fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+      const firstOption = screen.getAllByRole('option')[0]!;
+      expect(textarea).toHaveAttribute('aria-activedescendant', firstOption.id);
+      expect(document.activeElement).toBe(textarea);
+
+      // Overflow gone: every region attribute is removed again.
+      setLayout(pop, { scrollHeight: 300, clientHeight: 300 });
+      fireResize();
+      await waitFor(() => expect(pop).not.toHaveAttribute('tabindex'));
+      expect(pop).not.toHaveAttribute('role');
+      expect(pop).not.toHaveAttribute('aria-label');
+    });
+
+    it('moves focus back to the textarea when the focused region stops overflowing', async () => {
+      const { textarea, pop } = await openPopover();
+      setLayout(pop, { scrollHeight: 900, clientHeight: 440 });
+      fireResize();
+      await waitFor(() => expect(pop).toHaveAttribute('tabindex', '0'));
+
+      act(() => {
+        pop.focus();
+      });
+      expect(document.activeElement).toBe(pop);
+
+      setLayout(pop, { scrollHeight: 300, clientHeight: 300 });
+      fireResize();
+      await waitFor(() => expect(pop).not.toHaveAttribute('tabindex'));
+      expect(document.activeElement).toBe(textarea);
+      expect(screen.getByRole('listbox')).toBeInTheDocument();
+    });
+
+    it('Escape on the focused region closes the list and returns focus to the textarea; focus moving inside the root keeps the list open', async () => {
+      const { textarea, pop } = await openPopover();
+      setLayout(pop, { scrollHeight: 900, clientHeight: 440 });
+      fireResize();
+      await waitFor(() => expect(pop).toHaveAttribute('tabindex', '0'));
+
+      // Shift+Tab from the region lands on the textarea (or an earlier control inside the root): `handleRootBlur`
+      // sees a relatedTarget inside the root and keeps the list open.
+      act(() => {
+        pop.focus();
+      });
+      fireEvent.focusOut(pop, { relatedTarget: textarea });
+      expect(screen.getByRole('listbox')).toBeInTheDocument();
+
+      act(() => {
+        pop.focus();
+      });
+      fireEvent.keyDown(pop, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+      expect(document.getElementById('omni-pop')).toBeNull();
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it('ArrowDown keeps the active option in view (scrollIntoView block nearest) while the region is scrollable', async () => {
+      const { textarea, pop } = await openPopover();
+      setLayout(pop, { scrollHeight: 900, clientHeight: 440 });
+      fireResize();
+      await waitFor(() => expect(pop).toHaveAttribute('tabindex', '0'));
+      const scrollIntoView = HTMLElement.prototype.scrollIntoView as unknown as ReturnType<typeof vi.fn>;
+      scrollIntoView.mockClear();
+
+      fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+      const firstOption = screen.getAllByRole('option')[0]!;
+      await waitFor(() => expect(textarea).toHaveAttribute('aria-activedescendant', firstOption.id));
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      expect(scrollIntoView.mock.instances.at(-1)).toBe(firstOption);
+    });
+
+    it('at <= 639px bounds the popover above the undo-toast stack (min(440, viewport - top - stack - 24), floor 160) and leaves wide viewports to the CSS class', async () => {
+      setViewport(390, 844);
+      const { pop } = await openPopover();
+
+      // `UndoToastProvider` clears `--undo-stack-h` on mount while no toast shows, so publish it AFTER the render.
+      setLayout(pop, { scrollHeight: 900, clientHeight: 440, top: 351 });
+      document.documentElement.style.setProperty('--undo-stack-h', '75px');
+      fireResize();
+      // 844 - 351 - 75 - 24 = 394 (< 440)
+      await waitFor(() => expect(pop.style.maxHeight).toBe('394px'));
+
+      // Toast stack grows (3 toasts + "+1"): html publishes a taller stack, the popover shrinks.
+      document.documentElement.style.setProperty('--undo-stack-h', '200px');
+      await waitFor(() => expect(pop.style.maxHeight).toBe('269px'));
+
+      // Floor: a popover that starts low in the viewport never collapses below 160px.
+      setLayout(pop, { scrollHeight: 900, clientHeight: 160, top: 780 });
+      fireResize();
+      await waitFor(() => expect(pop.style.maxHeight).toBe('160px'));
+
+      // Toast gone: the cap is the 440px design maximum.
+      document.documentElement.style.removeProperty('--undo-stack-h');
+      setLayout(pop, { scrollHeight: 900, clientHeight: 440, top: 100 });
+      fireResize();
+      await waitFor(() => expect(pop.style.maxHeight).toBe('440px'));
+
+      // Wide viewport: no inline max-height, the `max-h-[440px]` class governs.
+      setViewport(1440, 900);
+      fireResize();
+      await waitFor(() => expect(pop.style.maxHeight).toBe(''));
+      expect(pop.className).toContain('max-h-[440px]');
+    });
+
+    it('re-measures the max-height when only the root grows and the popover top moves (RV-T22-1-FE2-4)', async () => {
+      setViewport(390, 844);
+      const { pop } = await openPopover();
+      const root = pop.closest('[data-omnibox]') as HTMLElement;
+      expect(root).not.toBeNull();
+
+      setLayout(pop, { scrollHeight: 900, clientHeight: 440, top: 351 });
+      document.documentElement.style.setProperty('--undo-stack-h', '75px');
+      fireResize();
+      // 844 - 351 - 75 - 24 = 394
+      await waitFor(() => expect(pop.style.maxHeight).toBe('394px'));
+
+      // The textarea wraps to a second line: the root grows, the popover only moves down 40px (its own size is unchanged).
+      setLayout(pop, { scrollHeight: 900, clientHeight: 394, top: 391 });
+      expect(observedBy.size).toBeGreaterThan(0);
+      fireResizeOn(root);
+      // 844 - 391 - 75 - 24 = 354
+      await waitFor(() => expect(pop.style.maxHeight).toBe('354px'));
+    });
+
+    it('cleans up on close: the observers are disconnected and the popover (with its inline max-height) is gone', async () => {
+      setViewport(390, 844);
+      const { textarea, pop } = await openPopover();
+      setLayout(pop, { scrollHeight: 900, clientHeight: 440, top: 351 });
+      fireResize();
+      await waitFor(() => expect(pop.style.maxHeight).not.toBe(''));
+
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+      expect(document.getElementById('omni-pop')).toBeNull();
+      expect(observers).toHaveLength(0);
+    });
   });
 });

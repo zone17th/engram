@@ -38,7 +38,7 @@
     "jsonViewRaw": "JSON thô",
     "privacyTitle": "Nói thẳng chỗ nào mã hoá, chỗ nào không",
     "privacyBody1": "Nội dung entry sẽ được khoá ngay trên trình duyệt bằng khoá chỉ máy bạn giữ. Chúng tôi không có bản sao, và không có cách nào đọc.",
-    "privacyBody2": "Tên mục và tag thì không mã hoá — chính chúng làm cho việc tìm kiếm chạy được. Nếu bạn bật tìm gần nghĩa, hai thứ đó được gửi tới máy chủ nhúng do chúng tôi tự vận hành. Nội dung entry thì không, kể cả khi bật.",
+    "privacyBody2": "Tên mục và tag thì không mã hoá — chính chúng làm cho việc tìm kiếm chạy được. Chữ bạn gõ để tìm cũng được gửi tới máy chủ của chúng tôi, không mã hoá. Khi bật tìm gần nghĩa (mặc định bật nếu máy chủ hỗ trợ, tắt được trong Cài đặt hoặc bằng nút ≈), tên mục, tag, gợi nhớ và chữ bạn gõ được gửi tiếp tới dịch vụ embedding của bên thứ ba để tính vector. Nội dung entry thì không bao giờ được gửi.",
     "encLabel": "Được mã hoá",
     "encBody": "Nội dung mọi entry text và json.",
     "plainLabel": "Không mã hoá",
@@ -124,12 +124,12 @@
       "row2Purpose": "Tìm kiếm từ khoá, lọc tag, gợi ý",
       "row3Data": "Từ khoá / nội dung bạn gõ tìm kiếm",
       "row3Server": "Plaintext",
-      "row3Purpose": "Máy chủ xử lý tìm kiếm; khi bật gợi ý gần nghĩa (≈, sẽ có ở bản tìm kiếm sắp tới) có thể gửi tới nhà cung cấp embedding do hệ thống cấu hình (có thể là dịch vụ bên thứ ba)",
+      "row3Purpose": "Máy chủ xử lý tìm kiếm; khi bật gợi ý gần nghĩa (≈), chữ gõ tìm được gửi tiếp tới dịch vụ embedding của bên thứ ba để tính vector",
       "row4Data": "Email, cài đặt, phiên, nhật ký bảo mật",
       "row4Server": "Plaintext / Hash",
       "row4Purpose": "Xác thực tài khoản; mật khẩu đăng nhập băm Argon2id",
-      "s21Title": "2.1 · Gợi ý gần nghĩa (sẽ có ở bản tìm kiếm sắp tới) và nhật ký truy cập",
-      "s21Body": "Khi bạn bật tính năng gợi ý \"gần nghĩa\" (≈, tuỳ chọn, sẽ có ở bản tìm kiếm sắp tới), tên mục, tag, gợi nhớ và cả văn bản bạn gõ tìm kiếm có thể được gửi tới nhà cung cấp tạo vector (embedding) do hệ thống cấu hình, có thể là dịch vụ bên thứ ba, để đối chiếu ngữ nghĩa; nội dung entry không bao giờ được gửi. Tắt tính năng này trong Cài đặt sẽ dừng gửi và xoá các vector đã tạo. Nhật ký truy cập máy chủ không ghi từ khoá tìm kiếm và không bao giờ ghi nội dung entry, passphrase hay recovery key."
+      "s21Title": "2.1 · Gợi ý gần nghĩa và nhật ký truy cập",
+      "s21Body": "Khi gợi ý \"gần nghĩa\" (≈) đang bật (mặc định bật nếu máy chủ hỗ trợ; tắt trong Cài đặt hoặc bằng nút ≈), tên mục, tag, gợi nhớ và cả chữ bạn gõ khi tìm được gửi tới dịch vụ embedding của bên thứ ba (qua bộ định tuyến của chúng tôi, tới OpenRouter, rồi nhà cung cấp mô hình) để tạo vector đối chiếu ngữ nghĩa; nội dung entry không bao giờ được gửi. Chữ sau \"tên:\" khi lưu nội dung không bao giờ được gửi để tìm. Nếu máy chủ tự vận hành embedding (tuỳ chọn), các dữ liệu đó không rời hạ tầng của chúng tôi và tắt chỉ ẩn kết quả gần nghĩa. Tắt gợi ý \"gần nghĩa\" sẽ ngừng gửi dữ liệu của bạn tới bên thứ ba từ lúc đó và xoá các vector của bạn đang lưu trong cơ sở dữ liệu của engram; yêu cầu đã gửi trước lúc tắt không thu hồi được, và chúng tôi không cam kết xoá hay giới hạn thời gian lưu giữ dữ liệu đó ở OpenRouter hay nhà cung cấp mô hình (theo chính sách của họ). Nhật ký truy cập máy chủ không ghi từ khoá tìm kiếm và không bao giờ ghi nội dung entry, passphrase hay recovery key."
     },
     "deletion": {
       "sectionLabel": "Phần 3",
@@ -1651,6 +1651,7 @@
       "semanticAriaLabel": "Tìm gần nghĩa"
     },
     "listbox": {
+      "regionAriaLabel": "Danh sách tìm kiếm, có thể cuộn",
       "suggestAriaLabel": "Gợi ý tìm kiếm",
       "searchAriaLabel": "Kết quả tìm kiếm",
       "tagAriaLabel": "Kết quả lọc tag"

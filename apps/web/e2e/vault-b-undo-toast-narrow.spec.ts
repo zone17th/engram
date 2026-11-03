@@ -251,6 +251,13 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
         timeout: UI_WAIT_MS,
       });
 
+      // advisor-dec-330: settle two rendering frames first. The toast stack publishes `--undo-stack-h` from its
+      // ResizeObserver (next rendering step), and the P1 effect then re-measures `#omni-pop` via its MutationObserver on
+      // the <html> style. An evaluate right after the toast's DOM commit would see an unbounded, never-painted popover.
+      await page.evaluate(
+        () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
+      );
+
       const metrics = await page.evaluate(() => {
         const stack = document.querySelector<HTMLElement>('[data-testid="undo-toast-stack"]');
         const card = document.querySelector<HTMLElement>('[data-testid="undo-toast-item"]');
@@ -265,7 +272,35 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
         const cardRect = card.getBoundingClientRect();
         const msgRect = msg.getBoundingClientRect();
         const omniRect = omni.getBoundingClientRect();
-        const lbRect = lb.getBoundingClientRect();
+        const lbFullRect = lb.getBoundingClientRect();
+        // advisor-dec-330: #omni-pop (overflow:auto) clips the listbox at <= 639 px, and getBoundingClientRect() ignores
+        // ancestor overflow. The visible dropdown box is the listbox rect intersected with #omni-pop's rect (fallback:
+        // the listbox rect when #omni-pop is absent).
+        const popEl = document.querySelector<HTMLElement>('#omni-pop');
+        const popRect = popEl ? popEl.getBoundingClientRect() : null;
+        const lbRect = popRect
+          ? {
+              left: Math.max(lbFullRect.left, popRect.left),
+              top: Math.max(lbFullRect.top, popRect.top),
+              right: Math.min(lbFullRect.right, popRect.right),
+              bottom: Math.min(lbFullRect.bottom, popRect.bottom),
+            }
+          : {
+              left: lbFullRect.left,
+              top: lbFullRect.top,
+              right: lbFullRect.right,
+              bottom: lbFullRect.bottom,
+            };
+        // advisor-dec-330 r7: the P1 floor (160 px) bounds #omni-pop's border box, so the listbox clipped inside it is
+        // shorter by the pop's border + padding. Return the pop's border-box height, its content-box height, and its
+        // natural (unclipped) border-box height so the asserts below compare like with like.
+        const popStyle = popEl ? window.getComputedStyle(popEl) : null;
+        const popInnerHeight =
+          popEl && popStyle
+            ? popEl.clientHeight - parseFloat(popStyle.paddingTop) - parseFloat(popStyle.paddingBottom)
+            : null;
+        const popHeight = popRect ? popRect.height : null;
+        const popNaturalHeight = popEl ? popEl.scrollHeight + (popEl.offsetHeight - popEl.clientHeight) : null;
         const msgStyle = window.getComputedStyle(msg);
         return {
           viewportWidth: window.innerWidth,
@@ -306,6 +341,10 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
             right: lbRect.right,
             bottom: lbRect.bottom,
           },
+          lbFullHeight: lbFullRect.height,
+          popInnerHeight,
+          popHeight,
+          popNaturalHeight,
         };
       });
 
@@ -343,6 +382,21 @@ test.describe('FU10 UNDO-TOAST-390 compact bottom-anchored undo-toast stack and 
         metrics.stackRect.bottom > metrics.omniRect.top;
       expect(overlapsOmnibox).toBe(false);
       expect(metrics.stackRect.top).toBeGreaterThan(metrics.omniRect.bottom);
+
+      // advisor-dec-330: lbRect is the VISIBLE dropdown box (listbox ∩ #omni-pop). It must be non-empty with height
+      // >= the pop's inner box (or the whole listbox when shorter), and the pop itself must honour the P1 floor, so the
+      // overlap check below cannot pass vacuously.
+      const visibleLbHeight = metrics.lbRect.bottom - metrics.lbRect.top;
+      const visibleLbWidth = metrics.lbRect.right - metrics.lbRect.left;
+      expect(visibleLbWidth).toBeGreaterThan(0);
+      if (metrics.popHeight !== null && metrics.popNaturalHeight !== null && metrics.popInnerHeight !== null) {
+        // The P1 floor (160 px) applies to #omni-pop's border box; 0.5 px = sub-pixel rounding slack
+        expect(metrics.popHeight).toBeGreaterThanOrEqual(Math.min(160, metrics.popNaturalHeight) - 0.5);
+        // The clipped listbox fills the pop's content box (bounded by the whole list); 1 px = sub-pixel rounding slack
+        expect(visibleLbHeight).toBeGreaterThanOrEqual(Math.min(metrics.popInnerHeight, metrics.lbFullHeight) - 1);
+      } else {
+        expect(visibleLbHeight).toBeGreaterThanOrEqual(Math.min(160, metrics.lbFullHeight) - 0.5);
+      }
 
       const overlapsListbox =
         metrics.stackRect.left < metrics.lbRect.right &&
