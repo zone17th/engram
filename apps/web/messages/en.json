@@ -37,7 +37,7 @@
     "jsonViewTable": "Table",
     "jsonViewRaw": "Raw JSON",
     "privacyTitle": "Plainly: what is encrypted and what is not",
-    "privacyBody1": "Entry content will be locked in your browser with a key only your machine holds. We keep no copy and have no way to read it.",
+    "privacyBody1": "Entry content is locked in your browser with a key only your device holds. Our server stores only ciphertext and cannot decrypt it, as long as the app code we send to your browser has not been tampered with.",
     "privacyBody2": "Item names and tags are not encrypted — they are what makes search work. The text you type to search also goes to our server, unencrypted. When similar-meaning search is on (it is on by default where the server supports it, and you can turn it off in Settings or with the ≈ button), item names, tags, hints and the text you type are sent on to a third-party embedding service to compute vectors. Entry content is never sent.",
     "encLabel": "Encrypted",
     "encBody": "The content of every text and json entry.",
