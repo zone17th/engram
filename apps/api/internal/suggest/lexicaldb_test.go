@@ -9,10 +9,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -24,11 +27,16 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/zone17th/engram/apps/api/internal/db"
 	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/item"
+	"github.com/zone17th/engram/apps/api/internal/searchbench"
+	"github.com/zone17th/engram/apps/api/internal/suggest"
 	"github.com/zone17th/engram/apps/api/internal/textnorm"
 	"github.com/zone17th/engram/apps/api/migrations"
 )
@@ -1671,5 +1679,1253 @@ func migrateToTargetVersion(t *testing.T, dsn string, target uint) {
 	}()
 	if err := m.Migrate(target); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		t.Fatalf("Migrate(%d): %v", target, err)
+	}
+}
+
+// =============================================================================
+// P05-T23 L2-B + P1-exact Old-vs-New Lexical SQL Equality Verification
+// (advisor-dec-353)
+// =============================================================================
+
+const oldSearchItemsLexicalSQL = `
+WITH q AS (
+  SELECT
+    $5::text AS qn,
+    immutable_unaccent($5::text) AS qa,
+    replace(
+      replace(
+        replace(immutable_unaccent($5::text), '\', '\\'),
+        '%',
+        '\%'
+      ),
+      '_',
+      '\_'
+    ) || '%' AS qa_prefix
+)
+SELECT
+  i.id,
+  i.name,
+  i.entry_count,
+  i.last_used_at,
+  i.created_at,
+  (CASE
+    WHEN i.name_normalized LIKE $1::text ESCAPE '\' THEN 3
+    WHEN i.name_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
+    ELSE 1
+  END)::int AS tier,
+  round(
+    GREATEST(
+      similarity(i.name_unaccent, q.qa),
+      word_similarity(q.qa, i.name_unaccent)
+    )::numeric,
+    2
+  )::float8 AS score
+FROM item AS i, q
+WHERE i.user_id = $2
+  AND i.deleted_at IS NULL
+  AND (
+    i.name_normalized LIKE $1::text ESCAPE '\'
+    OR i.name_unaccent LIKE q.qa_prefix ESCAPE '\'
+    OR (
+      $3::bool
+      AND (
+        i.name_unaccent % q.qa
+        OR q.qa <% i.name_unaccent
+      )
+    )
+  )
+ORDER BY
+  tier DESC,
+  score DESC,
+  i.last_used_at DESC,
+  i.entry_count DESC,
+  i.id ASC
+LIMIT $4
+`
+
+const oldSearchTagsLexicalSQL = `
+WITH q AS (
+  SELECT
+    $5::text AS qn,
+    immutable_unaccent($5::text) AS qa,
+    replace(
+      replace(
+        replace(immutable_unaccent($5::text), '\', '\\'),
+        '%',
+        '\%'
+      ),
+      '_',
+      '\_'
+    ) || '%' AS qa_prefix
+)
+SELECT
+  t.id,
+  t.display,
+  t.item_count,
+  t.last_used_at,
+  (CASE
+    WHEN t.normalized LIKE $1::text ESCAPE '\' THEN 3
+    WHEN t.tag_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
+    ELSE 1
+  END)::int AS tier,
+  round(
+    GREATEST(
+      similarity(t.tag_unaccent, q.qa),
+      word_similarity(q.qa, t.tag_unaccent)
+    )::numeric,
+    2
+  )::float8 AS score
+FROM tag AS t, q
+WHERE t.user_id = $2
+  AND t.deleted_at IS NULL
+  AND (
+    t.normalized LIKE $1::text ESCAPE '\'
+    OR t.tag_unaccent LIKE q.qa_prefix ESCAPE '\'
+    OR (
+      $3::bool
+      AND (
+        t.tag_unaccent % q.qa
+        OR q.qa <% t.tag_unaccent
+      )
+    )
+  )
+ORDER BY
+  tier DESC,
+  score DESC,
+  t.last_used_at DESC,
+  t.item_count DESC,
+  t.id ASC
+LIMIT $4
+`
+
+const oldSearchItemsLexicalPageSQL = `
+WITH q AS (
+  SELECT
+    $7::text AS qn,
+    immutable_unaccent($7::text) AS qa,
+    replace(
+      replace(
+        replace(immutable_unaccent($7::text), '\', '\\'),
+        '%',
+        '\%'
+      ),
+      '_',
+      '\_'
+    ) || '%' AS qa_prefix
+),
+ranked AS (
+  SELECT
+    i.id,
+    i.name,
+    i.entry_count,
+    i.last_used_at,
+    i.created_at,
+    (CASE
+      WHEN i.name_normalized LIKE $8::text ESCAPE '\' THEN 3
+      WHEN i.name_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
+      ELSE 1
+    END)::int AS tier,
+    round(
+      GREATEST(
+        similarity(i.name_unaccent, q.qa),
+        word_similarity(q.qa, i.name_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
+  FROM item AS i, q
+  WHERE i.user_id = $9
+    AND i.deleted_at IS NULL
+    AND (
+      i.name_normalized LIKE $8::text ESCAPE '\'
+      OR i.name_unaccent LIKE q.qa_prefix ESCAPE '\'
+      OR (
+        $10::bool
+        AND (
+          i.name_unaccent % q.qa
+          OR q.qa <% i.name_unaccent
+        )
+      )
+    )
+)
+SELECT
+  ranked.id,
+  ranked.name,
+  ranked.entry_count,
+  ranked.last_used_at,
+  ranked.created_at,
+  ranked.tier,
+  ranked.score
+FROM ranked
+WHERE
+  $1::uuid IS NULL
+  OR ranked.tier < $2::int
+  OR (
+    ranked.tier = $2::int
+    AND ranked.score < $3::float8
+  )
+  OR (
+    ranked.tier = $2::int
+    AND ranked.score = $3::float8
+    AND ranked.last_used_at < $4::timestamptz
+  )
+  OR (
+    ranked.tier = $2::int
+    AND ranked.score = $3::float8
+    AND ranked.last_used_at = $4::timestamptz
+    AND ranked.entry_count < $5::int
+  )
+  OR (
+    ranked.tier = $2::int
+    AND ranked.score = $3::float8
+    AND ranked.last_used_at = $4::timestamptz
+    AND ranked.entry_count = $5::int
+    AND ranked.id > $1::uuid
+  )
+ORDER BY
+  ranked.tier DESC,
+  ranked.score DESC,
+  ranked.last_used_at DESC,
+  ranked.entry_count DESC,
+  ranked.id ASC
+LIMIT $6
+`
+
+const oldSearchTagsLexicalPageSQL = `
+WITH q AS (
+  SELECT
+    $7::text AS qn,
+    immutable_unaccent($7::text) AS qa,
+    replace(
+      replace(
+        replace(immutable_unaccent($7::text), '\', '\\'),
+        '%',
+        '\%'
+      ),
+      '_',
+      '\_'
+    ) || '%' AS qa_prefix
+),
+ranked AS (
+  SELECT
+    t.id,
+    t.display,
+    t.item_count,
+    t.last_used_at,
+    (CASE
+      WHEN t.normalized LIKE $8::text ESCAPE '\' THEN 3
+      WHEN t.tag_unaccent LIKE q.qa_prefix ESCAPE '\' THEN 2
+      ELSE 1
+    END)::int AS tier,
+    round(
+      GREATEST(
+        similarity(t.tag_unaccent, q.qa),
+        word_similarity(q.qa, t.tag_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
+  FROM tag AS t, q
+  WHERE t.user_id = $9
+    AND t.deleted_at IS NULL
+    AND (
+      t.normalized LIKE $8::text ESCAPE '\'
+      OR t.tag_unaccent LIKE q.qa_prefix ESCAPE '\'
+      OR (
+        $10::bool
+        AND (
+          t.tag_unaccent % q.qa
+          OR q.qa <% t.tag_unaccent
+        )
+      )
+    )
+)
+SELECT
+  ranked.id,
+  ranked.display,
+  ranked.item_count,
+  ranked.last_used_at,
+  ranked.tier,
+  ranked.score
+FROM ranked
+WHERE
+  $1::uuid IS NULL
+  OR ranked.tier < $2::int
+  OR (
+    ranked.tier = $2::int
+    AND ranked.score < $3::float8
+  )
+  OR (
+    ranked.tier = $2::int
+    AND ranked.score = $3::float8
+    AND ranked.last_used_at < $4::timestamptz
+  )
+  OR (
+    ranked.tier = $2::int
+    AND ranked.score = $3::float8
+    AND ranked.last_used_at = $4::timestamptz
+    AND ranked.item_count < $5::int
+  )
+  OR (
+    ranked.tier = $2::int
+    AND ranked.score = $3::float8
+    AND ranked.last_used_at = $4::timestamptz
+    AND ranked.item_count = $5::int
+    AND ranked.id > $1::uuid
+  )
+ORDER BY
+  ranked.tier DESC,
+  ranked.score DESC,
+  ranked.last_used_at DESC,
+  ranked.item_count DESC,
+  ranked.id ASC
+LIMIT $6
+`
+
+func queryOldItemsLexical(ctx context.Context, dbtx gen.DBTX, arg gen.SearchItemsLexicalParams) ([]gen.SearchItemsLexicalRow, error) {
+	rows, err := dbtx.Query(ctx, oldSearchItemsLexicalSQL,
+		arg.QPrefix,
+		arg.UserID,
+		arg.Fuzzy,
+		arg.PageLimit,
+		arg.Qn,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []gen.SearchItemsLexicalRow
+	for rows.Next() {
+		var r gen.SearchItemsLexicalRow
+		if err := rows.Scan(
+			&r.ID,
+			&r.Name,
+			&r.EntryCount,
+			&r.LastUsedAt,
+			&r.CreatedAt,
+			&r.Tier,
+			&r.Score,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func queryOldTagsLexical(ctx context.Context, dbtx gen.DBTX, arg gen.SearchTagsLexicalParams) ([]gen.SearchTagsLexicalRow, error) {
+	rows, err := dbtx.Query(ctx, oldSearchTagsLexicalSQL,
+		arg.QPrefix,
+		arg.UserID,
+		arg.Fuzzy,
+		arg.PageLimit,
+		arg.Qn,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []gen.SearchTagsLexicalRow
+	for rows.Next() {
+		var r gen.SearchTagsLexicalRow
+		if err := rows.Scan(
+			&r.ID,
+			&r.Display,
+			&r.ItemCount,
+			&r.LastUsedAt,
+			&r.Tier,
+			&r.Score,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func queryOldItemsLexicalPage(ctx context.Context, dbtx gen.DBTX, arg gen.SearchItemsLexicalPageParams) ([]gen.SearchItemsLexicalPageRow, error) {
+	rows, err := dbtx.Query(ctx, oldSearchItemsLexicalPageSQL,
+		arg.CursorID,
+		arg.CursorTier,
+		arg.CursorScore,
+		arg.CursorLastUsedAt,
+		arg.CursorCount,
+		arg.PageLimit,
+		arg.Qn,
+		arg.QPrefix,
+		arg.UserID,
+		arg.Fuzzy,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []gen.SearchItemsLexicalPageRow
+	for rows.Next() {
+		var r gen.SearchItemsLexicalPageRow
+		if err := rows.Scan(
+			&r.ID,
+			&r.Name,
+			&r.EntryCount,
+			&r.LastUsedAt,
+			&r.CreatedAt,
+			&r.Tier,
+			&r.Score,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func queryOldTagsLexicalPage(ctx context.Context, dbtx gen.DBTX, arg gen.SearchTagsLexicalPageParams) ([]gen.SearchTagsLexicalPageRow, error) {
+	rows, err := dbtx.Query(ctx, oldSearchTagsLexicalPageSQL,
+		arg.CursorID,
+		arg.CursorTier,
+		arg.CursorScore,
+		arg.CursorLastUsedAt,
+		arg.CursorCount,
+		arg.PageLimit,
+		arg.Qn,
+		arg.QPrefix,
+		arg.UserID,
+		arg.Fuzzy,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []gen.SearchTagsLexicalPageRow
+	for rows.Next() {
+		var r gen.SearchTagsLexicalPageRow
+		if err := rows.Scan(
+			&r.ID,
+			&r.Display,
+			&r.ItemCount,
+			&r.LastUsedAt,
+			&r.Tier,
+			&r.Score,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func assertItemsEqual(t *testing.T, label string, arg gen.SearchItemsLexicalParams, oldRows, newRows []gen.SearchItemsLexicalRow) {
+	t.Helper()
+	oldHasMore := int32(len(oldRows)) >= arg.PageLimit
+	newHasMore := int32(len(newRows)) >= arg.PageLimit
+	if oldHasMore != newHasMore {
+		t.Fatalf("%s (qn=%q fuzzy=%v limit=%d): has_more mismatch: old=%v (len=%d) new=%v (len=%d)",
+			label, arg.Qn, arg.Fuzzy, arg.PageLimit, oldHasMore, len(oldRows), newHasMore, len(newRows))
+	}
+	if len(oldRows) != len(newRows) {
+		t.Fatalf("%s (qn=%q fuzzy=%v limit=%d): row count mismatch: old=%d new=%d\nold=%+v\nnew=%+v",
+			label, arg.Qn, arg.Fuzzy, arg.PageLimit, len(oldRows), len(newRows), oldRows, newRows)
+	}
+	for i := range oldRows {
+		o, n := oldRows[i], newRows[i]
+		if o.ID != n.ID ||
+			o.Name != n.Name ||
+			o.EntryCount != n.EntryCount ||
+			o.Tier != n.Tier ||
+			o.Score != n.Score ||
+			o.LastUsedAt.Valid != n.LastUsedAt.Valid ||
+			!o.LastUsedAt.Time.Equal(n.LastUsedAt.Time) ||
+			o.CreatedAt.Valid != n.CreatedAt.Valid ||
+			!o.CreatedAt.Time.Equal(n.CreatedAt.Time) {
+			t.Fatalf("%s (qn=%q fuzzy=%v limit=%d) row[%d] mismatch:\n  old: %+v\n  new: %+v",
+				label, arg.Qn, arg.Fuzzy, arg.PageLimit, i, o, n)
+		}
+	}
+}
+
+func assertTagsEqual(t *testing.T, label string, arg gen.SearchTagsLexicalParams, oldRows, newRows []gen.SearchTagsLexicalRow) {
+	t.Helper()
+	oldHasMore := int32(len(oldRows)) >= arg.PageLimit
+	newHasMore := int32(len(newRows)) >= arg.PageLimit
+	if oldHasMore != newHasMore {
+		t.Fatalf("%s (qn=%q fuzzy=%v limit=%d): tag has_more mismatch: old=%v (len=%d) new=%v (len=%d)",
+			label, arg.Qn, arg.Fuzzy, arg.PageLimit, oldHasMore, len(oldRows), newHasMore, len(newRows))
+	}
+	if len(oldRows) != len(newRows) {
+		t.Fatalf("%s (qn=%q fuzzy=%v limit=%d): tag row count mismatch: old=%d new=%d\nold=%+v\nnew=%+v",
+			label, arg.Qn, arg.Fuzzy, arg.PageLimit, len(oldRows), len(newRows), oldRows, newRows)
+	}
+	for i := range oldRows {
+		o, n := oldRows[i], newRows[i]
+		if o.ID != n.ID ||
+			o.Display != n.Display ||
+			o.ItemCount != n.ItemCount ||
+			o.Tier != n.Tier ||
+			o.Score != n.Score ||
+			o.LastUsedAt.Valid != n.LastUsedAt.Valid ||
+			!o.LastUsedAt.Time.Equal(n.LastUsedAt.Time) {
+			t.Fatalf("%s (qn=%q fuzzy=%v limit=%d) tag row[%d] mismatch:\n  old: %+v\n  new: %+v",
+				label, arg.Qn, arg.Fuzzy, arg.PageLimit, i, o, n)
+		}
+	}
+}
+
+func compareItemQuery(t *testing.T, ctx context.Context, tx pgx.Tx, q *gen.Queries, label string, arg gen.SearchItemsLexicalParams) {
+	t.Helper()
+	oldRows, err := queryOldItemsLexical(ctx, tx, arg)
+	if err != nil {
+		t.Fatalf("%s oldSearchItemsLexical(%q): %v", label, arg.Qn, err)
+	}
+	newRows, err := q.SearchItemsLexical(ctx, arg)
+	if err != nil {
+		t.Fatalf("%s newSearchItemsLexical(%q): %v", label, arg.Qn, err)
+	}
+	assertItemsEqual(t, label, arg, oldRows, newRows)
+}
+
+func compareTagQuery(t *testing.T, ctx context.Context, tx pgx.Tx, q *gen.Queries, label string, arg gen.SearchTagsLexicalParams) {
+	t.Helper()
+	oldRows, err := queryOldTagsLexical(ctx, tx, arg)
+	if err != nil {
+		t.Fatalf("%s oldSearchTagsLexical(%q): %v", label, arg.Qn, err)
+	}
+	newRows, err := q.SearchTagsLexical(ctx, arg)
+	if err != nil {
+		t.Fatalf("%s newSearchTagsLexical(%q): %v", label, arg.Qn, err)
+	}
+	assertTagsEqual(t, label, arg, oldRows, newRows)
+}
+
+func compareItemKeysetWalk(t *testing.T, ctx context.Context, tx pgx.Tx, q *gen.Queries, label string, uid uuid.UUID, qn string, fuzzy bool, pageLimit int32, maxPages int) int {
+	t.Helper()
+	qPrefix := item.EscapeLikePrefix(qn)
+	var curID *uuid.UUID
+	var curTier *int32
+	var curScore *float64
+	var curLastUsed pgtype.Timestamptz
+	var curCount *int32
+	pagesCompared := 0
+
+	for pageNum := range maxPages {
+		arg := gen.SearchItemsLexicalPageParams{
+			CursorID:         curID,
+			CursorTier:       curTier,
+			CursorScore:      curScore,
+			CursorLastUsedAt: curLastUsed,
+			CursorCount:      curCount,
+			PageLimit:        pageLimit,
+			Qn:               qn,
+			QPrefix:          qPrefix,
+			UserID:           uid,
+			Fuzzy:            fuzzy,
+		}
+		oldPage, err := queryOldItemsLexicalPage(ctx, tx, arg)
+		if err != nil {
+			t.Fatalf("%s page %d oldSearchItemsLexicalPage(%q): %v", label, pageNum, qn, err)
+		}
+		newPage, err := q.SearchItemsLexicalPage(ctx, arg)
+		if err != nil {
+			t.Fatalf("%s page %d newSearchItemsLexicalPage(%q): %v", label, pageNum, qn, err)
+		}
+		pagesCompared++
+		if len(oldPage) != len(newPage) {
+			t.Fatalf("%s page %d (qn=%q fuzzy=%v limit=%d): len old=%d new=%d",
+				label, pageNum, qn, fuzzy, pageLimit, len(oldPage), len(newPage))
+		}
+		for i := range oldPage {
+			o, n := oldPage[i], newPage[i]
+			if o.ID != n.ID ||
+				o.Name != n.Name ||
+				o.EntryCount != n.EntryCount ||
+				o.Tier != n.Tier ||
+				o.Score != n.Score ||
+				!o.LastUsedAt.Time.Equal(n.LastUsedAt.Time) ||
+				!o.CreatedAt.Time.Equal(n.CreatedAt.Time) {
+				t.Fatalf("%s page %d row[%d] mismatch:\n  old: %+v\n  new: %+v", label, pageNum, i, o, n)
+			}
+		}
+		if len(newPage) == 0 {
+			break
+		}
+		last := newPage[len(newPage)-1]
+		idCopy := last.ID
+		tierCopy := last.Tier
+		scoreCopy := last.Score
+		countCopy := last.EntryCount
+		curID = &idCopy
+		curTier = &tierCopy
+		curScore = &scoreCopy
+		curLastUsed = last.LastUsedAt
+		curCount = &countCopy
+	}
+	return pagesCompared
+}
+
+func compareTagKeysetWalk(t *testing.T, ctx context.Context, tx pgx.Tx, q *gen.Queries, label string, uid uuid.UUID, qn string, fuzzy bool, pageLimit int32, maxPages int) int {
+	t.Helper()
+	qPrefix := item.EscapeLikePrefix(qn)
+	var curID *uuid.UUID
+	var curTier *int32
+	var curScore *float64
+	var curLastUsed pgtype.Timestamptz
+	var curCount *int32
+	pagesCompared := 0
+
+	for pageNum := range maxPages {
+		arg := gen.SearchTagsLexicalPageParams{
+			CursorID:         curID,
+			CursorTier:       curTier,
+			CursorScore:      curScore,
+			CursorLastUsedAt: curLastUsed,
+			CursorCount:      curCount,
+			PageLimit:        pageLimit,
+			Qn:               qn,
+			QPrefix:          qPrefix,
+			UserID:           uid,
+			Fuzzy:            fuzzy,
+		}
+		oldPage, err := queryOldTagsLexicalPage(ctx, tx, arg)
+		if err != nil {
+			t.Fatalf("%s page %d oldSearchTagsLexicalPage(%q): %v", label, pageNum, qn, err)
+		}
+		newPage, err := q.SearchTagsLexicalPage(ctx, arg)
+		if err != nil {
+			t.Fatalf("%s page %d newSearchTagsLexicalPage(%q): %v", label, pageNum, qn, err)
+		}
+		pagesCompared++
+		if len(oldPage) != len(newPage) {
+			t.Fatalf("%s page %d (qn=%q fuzzy=%v limit=%d): tag len old=%d new=%d",
+				label, pageNum, qn, fuzzy, pageLimit, len(oldPage), len(newPage))
+		}
+		for i := range oldPage {
+			o, n := oldPage[i], newPage[i]
+			if o.ID != n.ID ||
+				o.Display != n.Display ||
+				o.ItemCount != n.ItemCount ||
+				o.Tier != n.Tier ||
+				o.Score != n.Score ||
+				!o.LastUsedAt.Time.Equal(n.LastUsedAt.Time) {
+				t.Fatalf("%s page %d tag row[%d] mismatch:\n  old: %+v\n  new: %+v", label, pageNum, i, o, n)
+			}
+		}
+		if len(newPage) == 0 {
+			break
+		}
+		last := newPage[len(newPage)-1]
+		idCopy := last.ID
+		tierCopy := last.Tier
+		scoreCopy := last.Score
+		countCopy := last.ItemCount
+		curID = &idCopy
+		curTier = &tierCopy
+		curScore = &scoreCopy
+		curLastUsed = last.LastUsedAt
+		curCount = &countCopy
+	}
+	return pagesCompared
+}
+
+// Deterministic C1-L query generator matching internal/searchbench/queries.go
+// (BuildLexicalQueries with seed = 20261102, ProfileFull whales [0, 1], n = 1000).
+var (
+	c1lFoldTransformer = transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+	c1lTextVariants    = []string{"prefix", "prefix", "folded", "typo", "prefix", "folded"}
+)
+
+type c1lBenchQuery struct {
+	Index     int
+	TenantIdx int
+	ItemIdx   int
+	Variant   string
+	Text      string
+	QN        string
+	Mode      string
+	Fuzzy     bool
+}
+
+func c1lSplitMix64(z uint64) uint64 {
+	z += 0x9E3779B97F4A7C15
+	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
+	z = (z ^ (z >> 27)) * 0x94D049BB133111EB
+	return z ^ (z >> 31)
+}
+
+func c1lPickIdx(seed, salt uint64, tenant, i, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	z := c1lSplitMix64(seed ^ (salt * 0x9E3779B97F4A7C15) ^ (uint64(uint32(tenant)+1) << 32) ^ uint64(uint32(i)+1))
+	return int(z % uint64(n))
+}
+
+func c1lFoldDiacritics(s string) string {
+	out, _, err := transform.String(c1lFoldTransformer, s)
+	if err != nil {
+		out = s
+	}
+	return strings.NewReplacer("đ", "d", "Đ", "D").Replace(out)
+}
+
+func c1lRunePrefix(s string, k int) string {
+	if utf8.RuneCountInString(s) <= k {
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == k {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
+
+func c1lTypoOf(w string) string {
+	r := []rune(w)
+	if len(r) >= 5 {
+		r[1], r[2] = r[2], r[1]
+		return string(r)
+	}
+	if len(r) >= 3 {
+		return string(append([]rune{r[0]}, r[2:]...))
+	}
+	return w
+}
+
+func c1lLexicalText(variant, name string, i int, seed uint64, tenant int) string {
+	words := strings.Fields(name)
+	if len(words) == 0 {
+		return name
+	}
+	w := words[c1lPickIdx(seed, 5, tenant, i, len(words))]
+	switch variant {
+	case "folded":
+		f := c1lFoldDiacritics(w)
+		if utf8.RuneCountInString(f) < 3 {
+			f = c1lFoldDiacritics(name)
+		}
+		return c1lRunePrefix(f, 6+c1lPickIdx(seed, 6, tenant, i, 4))
+	case "typo":
+		if utf8.RuneCountInString(w) < 4 {
+			w = name
+		}
+		return c1lTypoOf(c1lRunePrefix(w, 8))
+	default:
+		k := 3 + c1lPickIdx(seed, 7, tenant, i, 4)
+		return c1lRunePrefix(name, k)
+	}
+}
+
+func buildC1LBenchQueries(t *testing.T, g *searchbench.Generator, whales []int, n int) []c1lBenchQuery {
+	t.Helper()
+	spec := g.Profile()
+	out := make([]c1lBenchQuery, 0, n)
+	for i := range n {
+		tenant := whales[i%len(whales)]
+		count := spec.Tenants[tenant].ItemCount
+		itemIdx := c1lPickIdx(g.Seed(), 3, tenant, i, count)
+		it := g.ItemAt(tenant, itemIdx)
+		variant := c1lTextVariants[i%len(c1lTextVariants)]
+		text := c1lLexicalText(variant, it.NameNormalized, i, g.Seed(), tenant)
+		if utf8.RuneCountInString(text) < 3 {
+			text = it.NameNormalized
+		}
+		parsed, err := suggest.ParseSuggestQuery(text, suggest.ScopeAll)
+		if err != nil || parsed.QN == "" {
+			t.Fatalf("ParseSuggestQuery(i=%d, text=%q): %v", i, text, err)
+		}
+		out = append(out, c1lBenchQuery{
+			Index:     i,
+			TenantIdx: tenant,
+			ItemIdx:   itemIdx,
+			Variant:   variant,
+			Text:      text,
+			QN:        parsed.QN,
+			Mode:      parsed.Mode,
+			Fuzzy:     parsed.Mode == suggest.ModeFull,
+		})
+	}
+	return out
+}
+
+// TestLexicalOldVsNewEquality proves that the L2-B tiered prefix-first short-circuit
+// + P1-exact lexical SQL produces results 100% identical to the pre-L2-B SQL (ids,
+// names/displays, tiers, scores, timestamps, counts, order, keyset pages, and
+// has_more/limits) across:
+//  1. corpus-lexical.json (all fixture queries across multiple page_limits, both corpora,
+//     prefix and full modes, and keyset pagination),
+//  2. the 1,000 C1-L benchmark queries (seed 20261102, ProfileFull whales [0, 1],
+//     same generator as internal/searchbench, run over both item and tag corpora), and
+//  3. dedicated edge cases: 1-rune (standalone 1-char word score 1.0 vs multi-char word
+//     prefix score 0.5, 2-char ligature unaccent score 0.67/1.0, symbol score 0.0, both
+//     item and tag corpora with hyphen/space separators), ties (score rounding ties,
+//     microsecond timestamp ties, count ties, UUID ties), exact page_limit prefix hits
+//     and page_limit +- 1 boundary transitions, diacritics/unaccent, empty fuzzy tier,
+//     and EXPLAIN ANALYZE verification that fuzzy_ranked is never executed when
+//     prefix_ranked fills page_limit.
+func TestLexicalOldVsNewEquality(t *testing.T) {
+	dsn := startTestDB(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	fx, users := loadAndSeedCorpus(t, ctx, pool)
+
+	totalCompared := 0
+	withCustomPlanTx := func(fn func(tx pgx.Tx, q *gen.Queries)) {
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatalf("BeginTx: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		for _, stmt := range suggest.LexicalTxStatements(true, true) {
+			if _, err := tx.Exec(ctx, stmt); err != nil {
+				t.Fatalf("exec %q: %v", stmt, err)
+			}
+		}
+		// Raise statement_timeout inside the equality test transaction so the OLD
+		// unoptimized SQL never times out while being compared against the new SQL.
+		if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = '30s'`); err != nil {
+			t.Fatalf("SET LOCAL statement_timeout: %v", err)
+		}
+		fn(tx, gen.New(tx))
+	}
+
+	// -------------------------------------------------------------------------
+	// 1. corpus-lexical.json across limits, modes (prefix & full), both corpora,
+	//    and keyset pagination.
+	// -------------------------------------------------------------------------
+	t.Run("corpus_lexical_fixture", func(t *testing.T) {
+		limits := []int32{1, 2, 3, 5, 6, 7, 8, 20}
+		withCustomPlanTx(func(tx pgx.Tx, q *gen.Queries) {
+			for _, qc := range fx.Queries {
+				uid, ok := users[qc.User]
+				if !ok {
+					t.Fatalf("unknown user alias %q", qc.User)
+				}
+				qnItem, err := textnorm.NormalizeQuery(qc.Q)
+				if err != nil {
+					t.Fatalf("NormalizeQuery(%q): %v", qc.Q, err)
+				}
+				qnTag, err := textnorm.NormalizeTagQuery(qc.Q)
+				if err != nil {
+					t.Fatalf("NormalizeTagQuery(%q): %v", qc.Q, err)
+				}
+				naturalFuzzyItem := utf8.RuneCountInString(qnItem) >= 2
+				naturalFuzzyTag := utf8.RuneCountInString(qnTag) >= 2
+
+				// Compare across all page_limits in natural mode, plus forced fuzzy=true
+				// and forced fuzzy=false when qn is 1 rune.
+				fuzzyModesItem := []bool{naturalFuzzyItem}
+				if !naturalFuzzyItem {
+					fuzzyModesItem = append(fuzzyModesItem, true)
+				}
+				fuzzyModesTag := []bool{naturalFuzzyTag}
+				if !naturalFuzzyTag {
+					fuzzyModesTag = append(fuzzyModesTag, true)
+				}
+
+				for _, lim := range limits {
+					for _, fz := range fuzzyModesItem {
+						compareItemQuery(t, ctx, tx, q, "corpus/item/"+qc.Name, gen.SearchItemsLexicalParams{
+							UserID:    uid,
+							Qn:        qnItem,
+							QPrefix:   item.EscapeLikePrefix(qnItem),
+							Fuzzy:     fz,
+							PageLimit: lim,
+						})
+						totalCompared++
+					}
+					for _, fz := range fuzzyModesTag {
+						compareTagQuery(t, ctx, tx, q, "corpus/tag/"+qc.Name, gen.SearchTagsLexicalParams{
+							UserID:    uid,
+							Qn:        qnTag,
+							QPrefix:   item.EscapeLikePrefix(qnTag),
+							Fuzzy:     fz,
+							PageLimit: lim,
+						})
+						totalCompared++
+					}
+				}
+
+				totalCompared += compareItemKeysetWalk(t, ctx, tx, q, "corpus/item_page/"+qc.Name, uid, qnItem, naturalFuzzyItem, 2, 25)
+				totalCompared += compareTagKeysetWalk(t, ctx, tx, q, "corpus/tag_page/"+qc.Name, uid, qnTag, naturalFuzzyTag, 2, 25)
+			}
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	// 2. 1,000 C1-L benchmark queries (seed 20261102, ProfileFull whales [0, 1]).
+	// -------------------------------------------------------------------------
+	t.Run("c1l_1000_bench_queries_seed_20261102", func(t *testing.T) {
+		lex, err := searchbench.LoadDefaultLexicon()
+		if err != nil {
+			t.Fatalf("LoadDefaultLexicon: %v", err)
+		}
+		genFull, err := searchbench.NewGenerator(
+			searchbench.ProfileFull,
+			searchbench.DefaultSeed,
+			searchbench.DefaultPartitions,
+			lex,
+		)
+		if err != nil {
+			t.Fatalf("NewGenerator(ProfileFull): %v", err)
+		}
+		whales := []int{0, 1}
+		c1lQueries := buildC1LBenchQueries(t, genFull, whales, 1000)
+		if len(c1lQueries) != 1000 {
+			t.Fatalf("c1lQueries len = %d, want 1000", len(c1lQueries))
+		}
+
+		// Verify the exact C1-L query distribution for seed = 20261102:
+		// 999 full-mode queries and 1 prefix-mode 1-rune query (i = 889, qn = "ổ").
+		var fullCount, prefixCount int
+		for _, bq := range c1lQueries {
+			if bq.Fuzzy {
+				fullCount++
+			} else {
+				prefixCount++
+			}
+		}
+		if fullCount != 999 || prefixCount != 1 || c1lQueries[889].QN != "ổ" || c1lQueries[889].Fuzzy {
+			t.Fatalf("unexpected C1-L seed=20261102 distribution: full=%d prefix=%d q[889]=%+v",
+				fullCount, prefixCount, c1lQueries[889])
+		}
+
+		// Seed whale tenants 0 and 1 with all drawn C1-L target items plus a dense
+		// contiguous slice of items (0..1499) and tags (0..499) per whale tenant using
+		// the exact searchbench/seed.go timestamp and count formulas.
+		spec := genFull.Profile()
+		benchBaseTime := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+
+		for _, tIdx := range whales {
+			uID := spec.Tenants[tIdx].UserID
+			if _, err := pool.Exec(ctx,
+				`INSERT INTO app_user (id, email, locale) VALUES ($1, $2, 'vi')`,
+				uID, "whale-"+hex.EncodeToString(uID[:4])+"@example.com",
+			); err != nil {
+				t.Fatalf("insert whale user %d: %v", tIdx, err)
+			}
+
+			wantItemIdxs := make(map[int]struct{}, 2000)
+			for idx := range 1500 {
+				wantItemIdxs[idx] = struct{}{}
+			}
+			for _, bq := range c1lQueries {
+				if bq.TenantIdx == tIdx {
+					wantItemIdxs[bq.ItemIdx] = struct{}{}
+				}
+			}
+
+			sortedItemIdxs := make([]int, 0, len(wantItemIdxs))
+			for idx := range wantItemIdxs {
+				sortedItemIdxs = append(sortedItemIdxs, idx)
+			}
+			slices.Sort(sortedItemIdxs)
+			itemRows := make([][]any, 0, len(sortedItemIdxs))
+			for _, idx := range sortedItemIdxs {
+				it := genFull.ItemAt(tIdx, idx)
+				ts := benchBaseTime.Add(-time.Duration(idx) * time.Minute)
+				itemRows = append(itemRows, []any{
+					it.ID, it.UserID, it.Name, it.NameNormalized, int32(idx % 7), ts, ts, ts,
+				})
+			}
+			if _, err := pool.CopyFrom(
+				ctx,
+				pgx.Identifier{"item"},
+				[]string{"id", "user_id", "name", "name_normalized", "entry_count", "last_used_at", "created_at", "updated_at"},
+				pgx.CopyFromRows(itemRows),
+			); err != nil {
+				t.Fatalf("CopyFrom whale %d items: %v", tIdx, err)
+			}
+
+			const tagSlice = 500
+			tagRows := make([][]any, 0, tagSlice)
+			for idx := range tagSlice {
+				tg := genFull.TagAt(tIdx, idx)
+				ts := benchBaseTime.Add(-time.Duration(idx) * time.Minute)
+				tagRows = append(tagRows, []any{
+					tg.ID, tg.UserID, tg.Display, tg.Normalized, int32(idx % 11), ts, ts, ts,
+				})
+			}
+			if _, err := pool.CopyFrom(
+				ctx,
+				pgx.Identifier{"tag"},
+				[]string{"id", "user_id", "display", "normalized", "item_count", "last_used_at", "created_at", "updated_at"},
+				pgx.CopyFromRows(tagRows),
+			); err != nil {
+				t.Fatalf("CopyFrom whale %d tags: %v", tIdx, err)
+			}
+		}
+
+		// Default /suggest fetchLimit = 7 (scope=all, limit=8 -> tagCap=6, itemCap=6, fetchLimit=7).
+		const c1lFetchLimit int32 = 7
+		withCustomPlanTx(func(tx pgx.Tx, q *gen.Queries) {
+			for _, bq := range c1lQueries {
+				uID := spec.Tenants[bq.TenantIdx].UserID
+				qPrefix := item.EscapeLikePrefix(bq.QN)
+
+				compareItemQuery(t, ctx, tx, q, "c1l/item", gen.SearchItemsLexicalParams{
+					UserID:    uID,
+					Qn:        bq.QN,
+					QPrefix:   qPrefix,
+					Fuzzy:     bq.Fuzzy,
+					PageLimit: c1lFetchLimit,
+				})
+				totalCompared++
+
+				compareTagQuery(t, ctx, tx, q, "c1l/tag", gen.SearchTagsLexicalParams{
+					UserID:    uID,
+					Qn:        bq.QN,
+					QPrefix:   qPrefix,
+					Fuzzy:     bq.Fuzzy,
+					PageLimit: c1lFetchLimit,
+				})
+				totalCompared++
+			}
+
+			// Also run keyset pagination comparisons on the first 30 C1-L queries
+			// plus query #889 (the 1-rune query "ổ").
+			pageIndices := make([]int, 0, 31)
+			for i := range 30 {
+				pageIndices = append(pageIndices, i)
+			}
+			pageIndices = append(pageIndices, 889)
+			for _, idx := range pageIndices {
+				bq := c1lQueries[idx]
+				uID := spec.Tenants[bq.TenantIdx].UserID
+				totalCompared += compareItemKeysetWalk(t, ctx, tx, q, "c1l/item_page", uID, bq.QN, bq.Fuzzy, 5, 5)
+				totalCompared += compareTagKeysetWalk(t, ctx, tx, q, "c1l/tag_page", uID, bq.QN, bq.Fuzzy, 5, 5)
+			}
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	// 3. Edge cases: 1-rune (standalone 1-char word score 1.0 vs multi-char 0.5,
+	//    2-char ligature unaccent 0.67/1.0, symbol 0.0), ties, exact page_limit
+	//    prefix hits, page_limit +- 1, diacritics/unaccent, empty fuzzy tier,
+	//    both corpora (item, tag), prefix and full modes.
+	// -------------------------------------------------------------------------
+	t.Run("edge_cases_1rune_ties_limits_diacritics_empty_fuzzy", func(t *testing.T) {
+		edgeUID := uuid.MustParse("55555555-5555-4000-8000-000000000005")
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO app_user (id, email, locale) VALUES ($1, 'edge-l2b@example.com', 'vi')`,
+			edgeUID,
+		); err != nil {
+			t.Fatalf("insert edge user: %v", err)
+		}
+
+		baseTS := time.Date(2026, 10, 25, 15, 0, 0, 0, time.UTC)
+		tsPlus200us := baseTS.Add(200 * time.Microsecond)
+		tsPlus100us := baseTS.Add(100 * time.Microsecond)
+		tsMinus1h := baseTS.Add(-1 * time.Hour)
+
+		type edgeSeed struct {
+			itemID string
+			tagID  string
+			text   string
+			count  int32
+			usedAt time.Time
+		}
+
+		edgeSeeds := []edgeSeed{
+			// --- 1-rune 'c' / 'd' / 'đ' / 'o' / 'ổ' / 'ß' / '$' edge cases ---
+			// Standalone 1-char word 'c' at start, middle, end, or whole string (score = 1.00):
+			{"00000000-0077-4000-8000-000000000001", "00000000-0088-4000-8000-000000000001", "c", 5, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000002", "00000000-0088-4000-8000-000000000002", "c adapter", 4, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000003", "00000000-0088-4000-8000-000000000003", "c-cable", 3, baseTS},
+			{"00000000-0077-4000-8000-000000000004", "00000000-0088-4000-8000-000000000004", "cap usb c", 6, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000005", "00000000-0088-4000-8000-000000000005", "cap-usb-c", 2, baseTS},
+			{"00000000-0077-4000-8000-000000000006", "00000000-0088-4000-8000-000000000006", "ca Phe c ngon", 1, baseTS},
+			// Multi-char words starting with 'c' (score = 0.50 on q="c"):
+			{"00000000-0077-4000-8000-000000000007", "00000000-0088-4000-8000-000000000007", "ca phe sua", 9, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000008", "00000000-0088-4000-8000-000000000008", "cháy resolve", 8, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000009", "00000000-0088-4000-8000-000000000009", "công việc chung", 7, baseTS},
+			// 1-rune 'd' vs 'đ' (Tier 3 vs Tier 2 + standalone 'd'/'đ' word score 1.0 vs 0.5):
+			{"00000000-0077-4000-8000-000000000010", "00000000-0088-4000-8000-000000000010", "d", 5, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000011", "00000000-0088-4000-8000-000000000011", "d-drive", 4, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000012", "00000000-0088-4000-8000-000000000012", "du lich da nang", 8, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000013", "00000000-0088-4000-8000-000000000013", "đ", 6, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000014", "00000000-0088-4000-8000-000000000014", "đ-1", 5, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000015", "00000000-0088-4000-8000-000000000015", "đường sắt bắc nam", 9, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000016", "00000000-0088-4000-8000-000000000016", "đà nẵng đ", 3, baseTS},
+			// 1-rune ligature 'ß' (unaccent -> "ss", 2 chars: standalone "ss" -> 1.0, "ssh" -> 0.67):
+			{"00000000-0077-4000-8000-000000000017", "00000000-0088-4000-8000-000000000017", "ß", 4, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000018", "00000000-0088-4000-8000-000000000018", "ß key", 3, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000019", "00000000-0088-4000-8000-000000000019", "ssh server", 7, tsPlus200us},
+			// 1-rune symbol '$' (0 alphanumeric trigrams -> score 0.0):
+			{"00000000-0077-4000-8000-000000000020", "00000000-0088-4000-8000-000000000020", "$", 2, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000021", "00000000-0088-4000-8000-000000000021", "$budget", 5, tsPlus200us},
+
+			// --- Exact page_limit prefix hits (7 prefix = 4 Tier 3 + 3 Tier 2) + 5 Tier 1 fuzzy hits ---
+			// Query `qn = "ketnoi"`:
+			// Tier 3 (4 rows):
+			{"00000000-0077-4000-8000-000000000031", "00000000-0088-4000-8000-000000000031", "ketnoi-1", 9, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000032", "00000000-0088-4000-8000-000000000032", "ketnoi-2", 8, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000033", "00000000-0088-4000-8000-000000000033", "ketnoi", 7, baseTS},
+			{"00000000-0077-4000-8000-000000000034", "00000000-0088-4000-8000-000000000034", "ketnoix", 6, baseTS},
+			// Tier 2 (3 rows, folded prefix `kếtnối...`):
+			{"00000000-0077-4000-8000-000000000035", "00000000-0088-4000-8000-000000000035", "kếtnối-a", 8, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000036", "00000000-0088-4000-8000-000000000036", "kếtnối-b", 5, baseTS},
+			{"00000000-0077-4000-8000-000000000037", "00000000-0088-4000-8000-000000000037", "kếtnốix", 4, tsMinus1h},
+			// Tier 1 fuzzy (5 rows, non-prefix matching `ketnoi` via % or <%):
+			{"00000000-0077-4000-8000-000000000038", "00000000-0088-4000-8000-000000000038", "mang ketnoi", 10, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000039", "00000000-0088-4000-8000-000000000039", "ketno", 6, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000040", "00000000-0088-4000-8000-000000000040", "keetnoi", 5, baseTS},
+			{"00000000-0077-4000-8000-000000000041", "00000000-0088-4000-8000-000000000041", "ketxnoi", 4, baseTS},
+			{"00000000-0077-4000-8000-000000000042", "00000000-0088-4000-8000-000000000042", "ketn", 3, tsMinus1h},
+
+			// --- Ties across all tie-break levels (score rounding, timestamp, count, id ASC) ---
+			// Query `qn = "duongsat"`:
+			{"00000000-0077-4000-8000-000000000051", "00000000-0088-4000-8000-000000000051", "duongsat-alpha", 8, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000052", "00000000-0088-4000-8000-000000000052", "duongsat-beta", 8, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000053", "00000000-0088-4000-8000-000000000053", "duongsat", 10, baseTS},
+			{"00000000-0077-4000-8000-000000000054", "00000000-0088-4000-8000-000000000054", "duongsatx", 9, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000055", "00000000-0088-4000-8000-000000000055", "đườngsắt", 7, baseTS},
+			{"00000000-0077-4000-8000-000000000056", "00000000-0088-4000-8000-000000000056", "đườngsắtx", 6, baseTS},
+			{"00000000-0077-4000-8000-000000000057", "00000000-0088-4000-8000-000000000057", "duongsa", 5, tsMinus1h},
+			{"00000000-0077-4000-8000-000000000058", "00000000-0088-4000-8000-000000000058", "duongs", 5, tsMinus1h},
+			{"00000000-0077-4000-8000-000000000059", "00000000-0088-4000-8000-000000000059", "duoxngsat", 5, tsMinus1h},
+			{"00000000-0077-4000-8000-000000000060", "00000000-0088-4000-8000-000000000060", "duong", 3, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000061", "00000000-0088-4000-8000-000000000061", "duongxyzw-ngsat", 9, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000062", "00000000-0088-4000-8000-000000000062", "duongxyzv-ngsat", 4, tsPlus100us},
+			{"00000000-0077-4000-8000-000000000063", "00000000-0088-4000-8000-000000000063", "duongxyzu-ngsat", 4, tsPlus100us},
+
+			// --- Empty fuzzy tier (prefix matches only, 0 fuzzy Tier 1 matches) ---
+			{"00000000-0077-4000-8000-000000000071", "00000000-0088-4000-8000-000000000071", "qxjvprefix1", 5, tsPlus200us},
+			{"00000000-0077-4000-8000-000000000072", "00000000-0088-4000-8000-000000000072", "qxjvprefix2", 4, baseTS},
+		}
+
+		for _, s := range edgeSeeds {
+			_, normItem, err := textnorm.NormalizeName(s.text)
+			if err != nil {
+				t.Fatalf("NormalizeName(%q): %v", s.text, err)
+			}
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO item (id, user_id, name, name_normalized, entry_count, last_used_at, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $6, $6)
+			`, uuid.MustParse(s.itemID), edgeUID, s.text, normItem, s.count, s.usedAt); err != nil {
+				t.Fatalf("insert edge item %q: %v", s.text, err)
+			}
+
+			_, normTag, err := textnorm.NormalizeTag(s.text)
+			if err != nil {
+				t.Fatalf("NormalizeTag(%q): %v", s.text, err)
+			}
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO tag (id, user_id, display, normalized, item_count, last_used_at, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $6, $6)
+			`, uuid.MustParse(s.tagID), edgeUID, s.text, normTag, s.count, s.usedAt); err != nil {
+				t.Fatalf("insert edge tag %q: %v", s.text, err)
+			}
+		}
+
+		edgeQueries := []struct {
+			name  string
+			qn    string
+			fuzzy []bool
+		}{
+			{"1rune-c", "c", []bool{false, true}},
+			{"1rune-d", "d", []bool{false, true}},
+			{"1rune-d-stroke", "đ", []bool{false, true}},
+			{"1rune-ligature-eszett", "ß", []bool{false, true}},
+			{"1rune-symbol-dollar", "$", []bool{false, true}},
+			{"1rune-nonexistent", "z", []bool{false, true}},
+			{"prefix-limit-boundary-ketnoi", "ketnoi", []bool{true, false}},
+			{"prefix-limit-boundary-diacritic-ketnoi", "kếtnối", []bool{true, false}},
+			{"fuzzy-only-typo-keetnoi", "keetnoi", []bool{true}},
+			{"ties-duongsat", "duongsat", []bool{true, false}},
+			{"ties-diacritic-duongsat", "đườngsắt", []bool{true, false}},
+			{"empty-fuzzy-tier-qxjvprefix", "qxjvprefix", []bool{true, false}},
+			{"empty-both-tiers-zzzznotfound", "zzzznotfound", []bool{true, false}},
+		}
+
+		withCustomPlanTx(func(tx pgx.Tx, q *gen.Queries) {
+			// Sweep page_limit from 1 through 15 to hit < prefix_hits, == prefix_hits - 1,
+			// == prefix_hits (7 for ketnoi), == prefix_hits + 1 (8 for ketnoi), and > total_hits.
+			for _, eq := range edgeQueries {
+				qPrefix := item.EscapeLikePrefix(eq.qn)
+				for _, fz := range eq.fuzzy {
+					for lim := int32(1); lim <= 15; lim++ {
+						compareItemQuery(t, ctx, tx, q, "edge/item/"+eq.name, gen.SearchItemsLexicalParams{
+							UserID:    edgeUID,
+							Qn:        eq.qn,
+							QPrefix:   qPrefix,
+							Fuzzy:     fz,
+							PageLimit: lim,
+						})
+						totalCompared++
+
+						compareTagQuery(t, ctx, tx, q, "edge/tag/"+eq.name, gen.SearchTagsLexicalParams{
+							UserID:    edgeUID,
+							Qn:        eq.qn,
+							QPrefix:   qPrefix,
+							Fuzzy:     fz,
+							PageLimit: lim,
+						})
+						totalCompared++
+					}
+
+					for _, pageLim := range []int32{1, 2, 3, 7} {
+						totalCompared += compareItemKeysetWalk(t, ctx, tx, q, "edge/item_page/"+eq.name, edgeUID, eq.qn, fz, pageLim, 20)
+						totalCompared += compareTagKeysetWalk(t, ctx, tx, q, "edge/tag_page/"+eq.name, edgeUID, eq.qn, fz, pageLim, 20)
+					}
+				}
+			}
+
+			// Prove via EXPLAIN (ANALYZE, FORMAT JSON) that when prefix_ranked fills
+			// page_limit (e.g. ketnoi with 7 prefix hits and page_limit = 7), the
+			// fuzzy_ranked Sort / scan has Actual Loops == 0 (short-circuited!).
+			capDB := &capturingDBTX{inner: tx}
+			capQ := gen.New(capDB)
+			rows7, err := capQ.SearchItemsLexical(ctx, gen.SearchItemsLexicalParams{
+				UserID:    edgeUID,
+				Qn:        "ketnoi",
+				QPrefix:   item.EscapeLikePrefix("ketnoi"),
+				Fuzzy:     true,
+				PageLimit: 7,
+			})
+			if err != nil || len(rows7) != 7 {
+				t.Fatalf("SearchItemsLexical(ketnoi, limit=7): len=%d err=%v", len(rows7), err)
+			}
+			var analyzeJSON string
+			if err := tx.QueryRow(ctx, "EXPLAIN (ANALYZE, FORMAT JSON) "+capDB.lastSQL, capDB.lastArgs...).Scan(&analyzeJSON); err != nil {
+				t.Fatalf("EXPLAIN ANALYZE ketnoi limit=7: %v", err)
+			}
+			if !strings.Contains(analyzeJSON, `"Actual Loops": 0`) {
+				t.Fatalf("expected fuzzy_ranked branch to short-circuit with Actual Loops == 0 when prefix hits == page_limit (7):\n%s", analyzeJSON)
+			}
+
+			// Prove via EXPLAIN (FORMAT JSON) that when fuzzy = false (1-rune P1-exact),
+			// neither similarity nor word_similarity appears in the plan.
+			if _, err := capQ.SearchItemsLexical(ctx, gen.SearchItemsLexicalParams{
+				UserID:    edgeUID,
+				Qn:        "c",
+				QPrefix:   item.EscapeLikePrefix("c"),
+				Fuzzy:     false,
+				PageLimit: 7,
+			}); err != nil {
+				t.Fatalf("SearchItemsLexical(c, fuzzy=false): %v", err)
+			}
+			plan1Rune := explainCapturedQuery(t, ctx, tx, capDB)
+			if strings.Contains(plan1Rune, "similarity") {
+				t.Fatalf("expected P1-exact (fuzzy=false) plan to omit trigram similarity functions:\n%s", plan1Rune)
+			}
+		})
+	})
+
+	t.Logf("TestLexicalOldVsNewEquality: verified %d old-vs-new query comparisons with 0 mismatches", totalCompared)
+	if totalCompared < 3000 {
+		t.Fatalf("expected at least 3000 old-vs-new comparisons, got %d", totalCompared)
 	}
 }
