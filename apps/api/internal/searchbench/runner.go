@@ -966,15 +966,20 @@ func NewKnob(ef, scan, exactMax int) KnobSet {
 	}
 }
 
-// DefaultKnob is the production default (SPEC §6.4: ef 64, scan 20000, exact 5000).
+// DefaultKnob is the production default (O1b: ef 64, scan 250, exact 3000, fallback 3000).
 func DefaultKnob() KnobSet {
 	return NewKnob(store.DefaultHNSWEfSearch, store.DefaultHNSWMaxScanTuples, store.DefaultExactMaxVectors)
 }
 
-// FullKnobMatrix is the whole plan 2.23 matrix: ef_search {40,64,100} x
-// max_scan_tuples {20000, 50000, unlimited} x SEARCH_EXACT_MAX_VECTORS {5000,10000,20000}.
+// FullKnobMatrix is the plan 2.23 3x3x3 matrix (ef_search {40,64,100} x
+// max_scan_tuples {20000, 50000, unlimited} x SEARCH_EXACT_MAX_VECTORS {5000,10000,20000})
+// plus the O1b default knob set (ef64/scan250/exact3000) and bracket set
+// (ef64/scan400/exact3000).
 func FullKnobMatrix() []KnobSet {
-	var out []KnobSet
+	out := []KnobSet{
+		DefaultKnob(),
+		NewKnob(64, 400, 3000),
+	}
 	for _, ex := range []int{5000, 10000, 20000} {
 		for _, scan := range []int{20000, 50000, unlimitedScan} {
 			for _, ef := range []int{40, 64, 100} {
@@ -988,7 +993,7 @@ func FullKnobMatrix() []KnobSet {
 // SmokeKnobMatrix is the documented smoke subset: the production default plus
 // ef_search {40,64,100} x max_scan_tuples {20000, unlimited} at
 // SEARCH_EXACT_MAX_VECTORS=1000, which forces the 10k item and 2k tag corpora of
-// the smoke tenant onto ANN (the default 5000 keeps the 2k tag corpus exact).
+// the smoke tenant onto ANN (the default 3000 keeps the 2k tag corpus exact).
 func SmokeKnobMatrix() []KnobSet {
 	out := []KnobSet{DefaultKnob()}
 	for _, scan := range []int{20000, unlimitedScan} {
@@ -1459,7 +1464,7 @@ func ConfigFor(p ProfileName) BenchConfig {
 		return BenchConfig{
 			Plan:       ScenarioPlan{Levels: []LoadLevel{{1, 200, 2000}, {8, 300, 4000}, {32, 300, 4000}}},
 			LexQueries: 1000, HitQueries: 400, C2Queries: 500,
-			C2Matrix: FullKnobMatrix(), MatrixNote: "Full matrix: ef_search {40,64,100} x max_scan_tuples {20000,50000,unlimited(1e6)} x SEARCH_EXACT_MAX_VECTORS {5000,10000,20000}; verdicts for the production default knob set.",
+			C2Matrix: FullKnobMatrix(), MatrixNote: "Full matrix: O1b default (ef64_scan250_exact3000) + bracket (ef64_scan400_exact3000) + ef_search {40,64,100} x max_scan_tuples {20000,50000,unlimited(1e6)} x SEARCH_EXACT_MAX_VECTORS {5000,10000,20000}; verdicts for the production default knob set.",
 			RequestsNote: "c=1: 2000, c=8: 4000, c=32: 4000 measured (+ warm-up discarded)", MinMeasured: MinMeasuredPerScenario,
 		}
 	}
@@ -1490,7 +1495,7 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 		HnswM: generation.DefaultHnswM, HnswEfConstr: generation.DefaultHnswEfConstruction,
 		StubDelayMs: ms(StubEmbedDelay), RateLimitCapacity: BenchBucketCapacity, RateLimitRefill: BenchBucketRefill,
 		PoolMaxConns: h.PoolMax, Concurrency: []int{1, 8, 32}, Requests: cfg.RequestsNote,
-		ProductionKnobs: "ef_search 64, max_scan_tuples 20000, iterative_scan relaxed_order, exact max 5000, fallback max 20000, branch timeout 80 ms, fallback min budget 30 ms, lexical branch timeout 50 ms, lexical plan_cache_mode " + lexPlanCacheMode,
+		ProductionKnobs: "ef_search 64, max_scan_tuples 250, iterative_scan relaxed_order, exact max 3000, fallback max 3000, branch timeout 80 ms, fallback min budget 30 ms, lexical branch timeout 50 ms, lexical plan_cache_mode " + lexPlanCacheMode,
 		SearchEndpoint:  "GET /api/v1/suggest (limit default, scope all)",
 		Notes: []string{
 			"Requests go through httpx.NewRouter + semantic.RequestScopeMiddleware + suggest.Mount with the production auth.SessionStore (real JWT parse and session/user DB lookups; validator clock frozen at start so the 10-minute access token never expires mid-run). No network listener.",

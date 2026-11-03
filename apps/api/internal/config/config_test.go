@@ -732,17 +732,17 @@ func TestP05EmbeddingAndSearchDefaults(t *testing.T) {
 	if cfg.EmbeddingDocumentTimeout != 30*time.Second {
 		t.Errorf("EmbeddingDocumentTimeout = %v, muốn 30s", cfg.EmbeddingDocumentTimeout)
 	}
-	if cfg.SearchExactMaxVectors != 5000 {
-		t.Errorf("SearchExactMaxVectors = %d, muốn 5000", cfg.SearchExactMaxVectors)
+	if cfg.SearchExactMaxVectors != 3000 {
+		t.Errorf("SearchExactMaxVectors = %d, muốn 3000", cfg.SearchExactMaxVectors)
 	}
-	if cfg.SearchExactFallbackMaxVectors != 20000 {
-		t.Errorf("SearchExactFallbackMaxVectors = %d, muốn 20000", cfg.SearchExactFallbackMaxVectors)
+	if cfg.SearchExactFallbackMaxVectors != 3000 {
+		t.Errorf("SearchExactFallbackMaxVectors = %d, muốn 3000", cfg.SearchExactFallbackMaxVectors)
 	}
 	if cfg.SearchHNSWEfSearch != 64 {
 		t.Errorf("SearchHNSWEfSearch = %d, muốn 64", cfg.SearchHNSWEfSearch)
 	}
-	if cfg.SearchHNSWMaxScanTuples != 20000 {
-		t.Errorf("SearchHNSWMaxScanTuples = %d, muốn 20000", cfg.SearchHNSWMaxScanTuples)
+	if cfg.SearchHNSWMaxScanTuples != 250 {
+		t.Errorf("SearchHNSWMaxScanTuples = %d, muốn 250", cfg.SearchHNSWMaxScanTuples)
 	}
 	if cfg.SearchHNSWIterativeScan != "relaxed_order" {
 		t.Errorf("SearchHNSWIterativeScan = %q, muốn relaxed_order", cfg.SearchHNSWIterativeScan)
