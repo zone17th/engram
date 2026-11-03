@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -60,6 +61,11 @@ func TestLexicalPlanParser(t *testing.T) {
 	if p, err := ParseLexicalPlan([]byte(seq)); err != nil || !p.SeqScan || len(p.Indexes) != 0 || p.Label() != "-" {
 		t.Errorf("parallel seq scan on item must be flagged: %+v err=%v", p, err)
 	}
+	// RV-W4-1-4: a plan that uses only the 0006 per-user prefix index is per-user, not "other".
+	prefixOnly := `[{"Plan":{"Node Type":"Index Scan","Relation Name":"item","Index Name":"item_user_name_prefix"},"Execution Time":0.3}]`
+	if p, err := ParseLexicalPlan([]byte(prefixOnly)); err != nil || !p.UsesUser || p.UsesGlobal || p.Label() != "item_user_name_prefix (per-user)" {
+		t.Errorf("a plan on item_user_name_prefix must be per-user: %+v err=%v", p, err)
+	}
 	notTable := `[{"Plan":{"Node Type":"Seq Scan","Relation Name":"some_function_or_cte"},"Execution Time":1}]`
 	if p, _ := ParseLexicalPlan([]byte(notTable)); p.SeqScan {
 		t.Errorf("a seq scan of a non item/tag relation is not a table seq scan")
@@ -71,6 +77,7 @@ func TestLexicalPlanParser(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"item_user_unaccent_prefix": IndexPerUser, "item_user_name_trgm": IndexPerUser, "tag_user_unaccent_prefix": IndexPerUser, "tag_user_tag_trgm": IndexPerUser,
+		"item_user_name_prefix": IndexPerUser, "tag_user_norm_prefix": IndexPerUser,
 		"item_name_trgm": IndexGlobalTrgm, "tag_norm_trgm": IndexGlobalTrgm, "item_pkey": IndexOther, "item_user_recent": IndexOther,
 	} {
 		if got := IndexClassOf(name); got != want {
@@ -266,16 +273,101 @@ func TestErrTagHidesText(t *testing.T) {
 	}
 }
 
-func extrasFixture() *Report {
-	info := func(idx string, seq bool, ms float64) LexPlanInfo {
-		p := LexPlanInfo{ExecMs: ms, SharedHit: 90, SharedRead: 3, SeqScan: seq}
-		if idx != "" {
-			p.Indexes = []string{idx}
-			p.UsesGlobal = IndexClassOf(idx) == IndexGlobalTrgm
-			p.UsesUser = IndexClassOf(idx) == IndexPerUser
-		}
-		return p
+func planInfoOf(idx string, seq bool, ms float64) LexPlanInfo {
+	p := LexPlanInfo{ExecMs: ms, SharedHit: 90, SharedRead: 3, SeqScan: seq}
+	if idx != "" {
+		p.Indexes = []string{idx}
+		p.UsesGlobal = IndexClassOf(idx) == IndexGlobalTrgm
+		p.UsesUser = IndexClassOf(idx) == IndexPerUser
 	}
+	return p
+}
+
+func genericInfo(idx string, seq bool, ms float64) *LexPlanInfo {
+	p := planInfoOf(idx, seq, ms)
+	return &p
+}
+
+// TestGenericPlanSQLAndEligibility (RV-W4-1-1): the generic-plan EXPLAIN is a PREPARE of
+// the captured statement plus an EXPLAIN EXECUTE with one placeholder per argument; the
+// arguments are made simple-protocol safe; a generic plan parses like a custom one; and
+// the 0010 verdict is "eligible" only when neither plan of any case uses a global
+// trigram index.
+func TestGenericPlanSQLAndEligibility(t *testing.T) {
+	if got := prepareLexicalSQL(genericStmtName(3), "SELECT 1"); got != "PREPARE lexplan_3 AS SELECT 1" {
+		t.Errorf("prepare = %q", got)
+	}
+	if got := explainExecuteSQL(genericStmtName(2), 5); got != "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE lexplan_2($1, $2, $3, $4, $5)" {
+		t.Errorf("execute = %q", got)
+	}
+	if got := explainExecuteSQL("x", 0); got != "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE x()" {
+		t.Errorf("execute without args = %q", got)
+	}
+	u := uuid.New()
+	args := simpleProtocolArgs([]any{"q_%", u, true, int32(8)})
+	if args[0] != "q_%" || args[1] != u.String() || args[2] != true || args[3] != int32(8) {
+		t.Errorf("simple protocol args = %#v", args)
+	}
+	// The real captured statement is prepared with all its parameters.
+	sql, capArgs, err := captureLexicalSQL(context.Background(), LexPlanCase{Corpus: generation.CorpusItem, Fuzzy: true, QN: "wifi"}, u, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(prepareLexicalSQL("lexplan_1", sql), "PREPARE lexplan_1 AS ") || len(capArgs) != 5 {
+		t.Errorf("captured statement has %d args, want the 5 placeholders of the lexical query", len(capArgs))
+	}
+	for i := 1; i <= len(capArgs); i++ {
+		if !strings.Contains(sql, "$"+fmt.Sprint(i)) {
+			t.Errorf("captured SQL does not use $%d", i)
+		}
+	}
+
+	// A generic plan (parameters unknown at plan time) parses like a custom one.
+	genericJSON := `[{"Plan":{"Node Type":"Limit","Shared Hit Blocks":9,"Plans":[{"Node Type":"Bitmap Heap Scan","Relation Name":"item","Plans":[
+	  {"Node Type":"Bitmap Index Scan","Index Name":"item_name_trgm"}]}]},"Planning Time":0.02,"Execution Time":33.5}]`
+	gp, err := ParseLexicalPlan([]byte(genericJSON))
+	if err != nil || !gp.UsesGlobal || gp.UsesUser || gp.ExecMs != 33.5 {
+		t.Errorf("generic plan = %+v err=%v", gp, err)
+	}
+
+	clean := func() LexPlanRow {
+		return LexPlanRow{Default: planInfoOf("item_user_name_trgm", false, 1), DefaultGeneric: genericInfo("item_user_unaccent_prefix", false, 2)}
+	}
+	row := func(mod func(*LexPlanRow)) LexPlanRow { r := clean(); mod(&r); return r }
+	for name, tc := range map[string]struct {
+		rows []LexPlanRow
+		want string
+	}{
+		"no rows":             {nil, NotEstablished0010},
+		"all clean":           {[]LexPlanRow{clean(), clean()}, Eligible0010},
+		"custom uses global":  {[]LexPlanRow{clean(), row(func(r *LexPlanRow) { r.Default = planInfoOf("tag_norm_trgm", false, 1) })}, NotEligible0010},
+		"generic uses global": {[]LexPlanRow{clean(), row(func(r *LexPlanRow) { r.DefaultGeneric = genericInfo("item_name_trgm", false, 1) })}, NotEligible0010},
+		"generic missing":     {[]LexPlanRow{clean(), row(func(r *LexPlanRow) { r.DefaultGeneric = nil })}, NotEstablished0010},
+		"missing and used":    {[]LexPlanRow{row(func(r *LexPlanRow) { r.DefaultGeneric = nil }), row(func(r *LexPlanRow) { r.Default = planInfoOf("item_name_trgm", false, 1) })}, NotEligible0010},
+	} {
+		if got := EligibilityOf(tc.rows).Verdict; got != tc.want {
+			t.Errorf("%s: verdict = %q, want %q", name, got, tc.want)
+		}
+	}
+
+	var sb strings.Builder
+	w := func(f string, a ...any) { fmt.Fprintf(&sb, f, a...) }
+	renderLexicalPlan(w, &LexPlanReport{FetchLimit: 7, IndexesRestored: true, GenericErrors: []string{"after_0010_simulated: pgcode_42P05"},
+		Tenants: []LexPlanTenant{{Class: "whale", Items: 10, Tags: 2}},
+		Rows:    []LexPlanRow{{ID: "whale/item/prefix/q1", Default: planInfoOf("item_user_name_trgm", false, 1), DefaultGeneric: genericInfo("item_name_trgm", true, 9)}}})
+	md := sb.String()
+	for _, want := range []string{
+		"**Generic plans**", "| whale/item/prefix/q1 | item_name_trgm (global-trgm) | **yes** | 9.00 | 90 / 3 | - | - | - | - |",
+		"0010 eligibility: not eligible.", "Generic-plan EXPLAIN failed (after_0010_simulated: pgcode_42P05)",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("generic-plan Markdown must contain %q:\n%s", want, md)
+		}
+	}
+}
+
+func extrasFixture() *Report {
+	info := planInfoOf
 	after := info("item_user_name_trgm", false, 6.5)
 	return &Report{
 		Run:  RunInfo{Profile: string(ProfileFull)},
@@ -287,7 +379,8 @@ func extrasFixture() *Report {
 			LexicalPlan: &LexPlanReport{FetchLimit: 7, IndexesRestored: true, Notes: []string{"a | b note"},
 				Tenants: []LexPlanTenant{{Class: "whale", Items: 100000, Tags: 20000}},
 				Rows: []LexPlanRow{
-					{ID: "whale/item/fuzzy/q1", Class: "whale", Corpus: "item", Shape: "fuzzy", Default: info("item_name_trgm", false, 31.2), After0010: &after},
+					{ID: "whale/item/fuzzy/q1", Class: "whale", Corpus: "item", Shape: "fuzzy", Default: info("item_name_trgm", false, 31.2), After0010: &after,
+						DefaultGeneric: genericInfo("item_name_trgm", false, 44.5), After0010Generic: genericInfo("", true, 120)},
 					{ID: "whale/tag/prefix/q2", Class: "whale", Corpus: "tag", Shape: "prefix", Default: info("", true, 55), After0010: &after},
 				}},
 			ConnectProbe: &ConnectProbeReport{N: 20, Notes: []string{"probe note"}, Shapes: []ConnectProbeShape{{Shape: "whale_fuzzy", N: 20, Connect: MsStats{P50Ms: 4, P95Ms: 9, MaxMs: 12}, First: MsStats{P50Ms: 14, P95Ms: 48, MaxMs: 50}, Second: MsStats{P50Ms: 3, P95Ms: 5, MaxMs: 6}, FirstTimeouts: 1}}},
@@ -334,7 +427,7 @@ func TestTask23SummaryAndMarkdown(t *testing.T) {
 		"## Lexical plan (FU-SL-1)", "After 0010 (simulated)", "| whale/item/fuzzy/q1 | item_name_trgm (global-trgm) | no | 31.20 | 90 / 3 | item_user_name_trgm (per-user) | no | 6.50 | 90 / 3 |",
 		"| whale/tag/prefix/q2 | - | **yes** | 55.00 |", "global trigram index is used in **1 of 2** cases",
 		"## Connect-cost probe (FU-SB-2b)", "| whale_fuzzy | 20 | 4 / 9 / 12 | 0 / 0 / 0 | 14 / 48 / 50 | 3 / 5 / 6 | 1 | 0 |",
-		"## Task 23 summary - full-volume timings", "HNSW build per partition", "Reconcile full time", "flip note", "dry run note",
+		"**Generic plans**", "0010 eligibility: not eligible.", "## Task 23 summary - full-volume timings", "HNSW build per partition", "Reconcile full time", "flip note", "dry run note",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("Markdown must contain %q", want)
@@ -361,5 +454,97 @@ func TestTask23SummaryAndMarkdown(t *testing.T) {
 	}
 	if cfg := ExtrasConfigFor(ProfileFull); cfg.ProbeN != 20 || !cfg.PlanMedium || !cfg.ProbeMedium || cfg.PlanQueries != 3 {
 		t.Errorf("full extras = %+v, want N=20, whale + medium, 3 queries", cfg)
+	}
+}
+
+// TestExtrasBudgetAndTestDeadline (RV-W4-1-2): the benchmark context ends before the
+// `go test -timeout` (so t.Cleanup can still write the report), the extras carry a
+// per-profile total budget, a section that never started is recorded as
+// "<section>: skipped_budget", and a failing section does not stop the next one.
+func TestExtrasBudgetAndTestDeadline(t *testing.T) {
+	now := time.Now()
+	ctx, cancel := BenchContext(context.Background(), 5*time.Hour, now.Add(140*time.Minute), true, testDeadlineReserve)
+	dl, _ := ctx.Deadline()
+	cancel()
+	if want := now.Add(135 * time.Minute); dl.Before(want.Add(-time.Second)) || dl.After(want.Add(time.Second)) {
+		t.Errorf("deadline = %v, want test deadline - 5m (%v)", dl, want)
+	}
+	ctx, cancel = BenchContext(context.Background(), time.Minute, now.Add(140*time.Minute), true, testDeadlineReserve)
+	dl, _ = ctx.Deadline()
+	cancel()
+	if dl.After(now.Add(time.Minute + time.Second)) {
+		t.Errorf("the own limit must win when it is earlier: %v", dl)
+	}
+	ctx, cancel = BenchContext(context.Background(), time.Hour, time.Time{}, false, testDeadlineReserve)
+	dl, _ = ctx.Deadline()
+	cancel()
+	if dl.After(now.Add(time.Hour + time.Second)) {
+		t.Errorf("without a test deadline the own limit applies: %v", dl)
+	}
+
+	if full, smoke := ExtrasConfigFor(ProfileFull).TotalBudget, ExtrasConfigFor(ProfileSmoke).TotalBudget; full != 25*time.Minute || smoke != 4*time.Minute {
+		t.Errorf("extras budgets = full %v smoke %v, want 25m and 4m", full, smoke)
+	}
+
+	var ran []string
+	logf := func(string, ...any) {}
+	section := func(name string, fn func(context.Context) error) extraSection {
+		return extraSection{name, time.Hour, func(ctx context.Context) error {
+			ran = append(ran, name)
+			return fn(ctx)
+		}}
+	}
+	// Budget of 50 ms: the first section waits for it, the next two never start.
+	bctx, bcancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer bcancel()
+	errs := runExtraSections(bctx, []extraSection{
+		section("reconcile_full", func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }),
+		section("flip_cost_scan", func(context.Context) error { return nil }),
+		section("lexical_plan", func(context.Context) error { return nil }),
+	}, logf)
+	want := []string{"reconcile_full: deadline_exceeded", "flip_cost_scan: skipped_budget", "lexical_plan: skipped_budget"}
+	if strings.Join(errs, "|") != strings.Join(want, "|") || len(ran) != 1 {
+		t.Errorf("errors = %v (ran %v), want %v and only the first section started", errs, ran, want)
+	}
+
+	// A failing section does not stop the next one; a clean run records nothing.
+	ran = nil
+	errs = runExtraSections(context.Background(), []extraSection{
+		section("a", func(context.Context) error { return errors.New("boom") }),
+		section("b", func(context.Context) error { return nil }),
+	}, logf)
+	if len(errs) != 1 || errs[0] != "a: error" || len(ran) != 2 {
+		t.Errorf("errors = %v ran = %v, want a: error and both sections run", errs, ran)
+	}
+	if got := skippedBudget("connect_probe"); got != "connect_probe: skipped_budget" {
+		t.Errorf("tag = %q", got)
+	}
+}
+
+// TestExtrasLogCarriesTagsNotErrorText (RV-W4-1-6): a failed extra goes to the job log as
+// its class tag (with the SQLSTATE of a PgError), never as the raw error text.
+func TestExtrasLogCarriesTagsNotErrorText(t *testing.T) {
+	const secret = "dial postgres://engram:" + "fake@10.1.2.3:5432/engram_bench"
+	var logged []string
+	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	errs := runExtraSections(context.Background(), []extraSection{
+		{"connect_probe", time.Minute, func(context.Context) error { return errors.New(secret) }},
+		{"lexical_plan", time.Minute, func(context.Context) error {
+			return fmt.Errorf("explain: %w", &pgconn.PgError{Code: "57014", Message: `canceling statement for q "private words"`})
+		}},
+	}, logf)
+	if strings.Join(errs, "|") != "connect_probe: error|lexical_plan: pgcode_57014" {
+		t.Errorf("tags = %v", errs)
+	}
+	text := strings.Join(logged, "\n")
+	for _, bad := range []string{"postgres://", "fake", "10.1.2.3", "engram_bench", "private words", "canceling"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("job log leaks %q: %s", bad, text)
+		}
+	}
+	for _, want := range []string{"connect_probe failed: error", "lexical_plan failed: pgcode_57014"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("job log must contain %q: %s", want, text)
+		}
 	}
 }

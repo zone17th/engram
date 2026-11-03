@@ -17,7 +17,9 @@
 //   - a concurrent short rename/upsert load on the very items the creates target,
 //     same user, same locks as PATCH /items/{id} (LockUserContent, item FOR UPDATE,
 //     UPDATE, Enqueuer.OnUpsert, COMMIT), so worker FOR SHARE contends with the
-//     entry-create item FOR UPDATE (entryhttp/mount.go, lock step 3).
+//     entry-create item FOR UPDATE (entryhttp/mount.go, lock step 3). Whether a create
+//     really queued behind a worker is logged per population as "item-row lock waits"
+//     (pg_stat_activity sampling from the observation pool; evidence only, no ceiling).
 //
 // The rename load calls the same sequence as the PATCH handler directly against the
 // pool instead of going through HTTP: the per-user content-write limiter (10 req/s)
@@ -99,6 +101,11 @@ const (
 	semRenameInterval = 25 * time.Millisecond
 	// semDrainTimeout bounds the wait for the embedding queue to go idle between measurements.
 	semDrainTimeout = 30 * time.Second
+	// semRenameApp is the application_name of the rename load connections, so the lock sampler can tell a
+	// create waiting on the item row from a rename waiting on it.
+	semRenameApp = "semperf_rename"
+	// semLockPollInterval paces the pg_stat_activity sampling of item-row lock waiters.
+	semLockPollInterval = 2 * time.Millisecond
 
 	// POST /items cost measurement: rounds x (sequential + bursts) per arm, arms interleaved per round so
 	// slow drift of the shared database hits both arms equally.
@@ -246,6 +253,8 @@ type semEnv struct {
 	enqOff   *jobs.Enqueuer // semantic OFF: the production Enqueuer with Enabled=false (returns before the lock)
 	provider *semFakeProvider
 	tap      *semLatencyTap
+	// renamePool carries the rename load on connections named semRenameApp (same settings as the app pool).
+	renamePool *pgxpool.Pool
 
 	renameSeq atomic.Int64
 }
@@ -261,6 +270,7 @@ func newSemanticEnv(t *testing.T) *semEnv {
 	tracer := &perfQueryTracer{}
 	pool := newTracedPool(t, dsn, 32, tracer)
 	obsPool := newTracedPool(t, dsn, 8, nil)
+	renamePool := newNamedPool(t, dsn, 4, semRenameApp)
 
 	clk := clock.NewFixed(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC))
 	origin := "http://127.0.0.1:18080"
@@ -383,13 +393,37 @@ func newSemanticEnv(t *testing.T) *semEnv {
 			Router:  tap,
 			Logs:    logBuf,
 		},
-		content:  contentComp,
-		rc:       rc,
-		enqOn:    enqOn,
-		enqOff:   enqOff,
-		provider: provider,
-		tap:      tap,
+		content:    contentComp,
+		rc:         rc,
+		enqOn:      enqOn,
+		enqOff:     enqOff,
+		provider:   provider,
+		tap:        tap,
+		renamePool: renamePool,
 	}
+}
+
+// newNamedPool is a small pool with the app pool's statement timeout and a fixed application_name.
+func newNamedPool(t *testing.T, dsn string, maxConns int32, appName string) *pgxpool.Pool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	cfg.MaxConns, cfg.MinConns = maxConns, 0
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "30000"
+	cfg.ConnConfig.RuntimeParams["application_name"] = appName
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("pgxpool.NewWithConfig (%s): %v", appName, err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
 // seedSemGeneration creates and activates generation g1 (provider "tei") with its vector tables, the same
@@ -506,7 +540,7 @@ type semRenameLoad struct {
 // renameOnce is the PATCH /items/{id} write sequence minus HTTP: mutation tx (30 s lock/statement
 // timeouts), LockUserContent then item FOR UPDATE, UPDATE name+hint, Enqueuer.OnUpsert in the same tx, COMMIT.
 func (e *semEnv) renameOnce(ctx context.Context, userID, itemID uuid.UUID, seq int64) error {
-	tx, err := httpx.BeginMutationTx(ctx, e.h.Pool)
+	tx, err := httpx.BeginMutationTx(ctx, e.renamePool)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
@@ -579,6 +613,83 @@ func (l *semRenameLoad) stop() (ops, failures int64) {
 // One measured population under load.
 // ---------------------------------------------------------------------------------------------
 
+// semLockSampler polls pg_stat_activity from the observation pool for backends waiting on an item ROW lock
+// in LockItemForUpdate (wait_event_type Lock, wait_event tuple or transactionid). Both the entry-create and
+// the PATCH-style rename take the per-user content lock BEFORE the item row lock, so neither can hold the
+// item row while the other waits for it: a row-lock waiter here is blocked by a transaction that does not
+// hold the user lock, which is the embed worker's FOR SHARE. Waiters are split by application_name: the
+// rename load (semRenameApp) versus everything else (the HTTP creates). Evidence only, no ceiling.
+type semLockSampler struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	once   sync.Once
+
+	polls, pollErrs                    atomic.Int64
+	pollsWithCreateWait                atomic.Int64
+	pollsWithRenameWait                atomic.Int64
+	maxCreateWaiters, maxRenameWaiters atomic.Int64
+}
+
+const semLockWaiterSQL = `SELECT
+  count(*) FILTER (WHERE application_name <> $1),
+  count(*) FILTER (WHERE application_name = $1)
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND pid <> pg_backend_pid()
+  AND wait_event_type = 'Lock'
+  AND wait_event IN ('tuple', 'transactionid')
+  AND query LIKE '%name: LockItemForUpdate%'`
+
+func (e *semEnv) startLockSampler() *semLockSampler {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &semLockSampler{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(s.done)
+		tick := time.NewTicker(semLockPollInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+			var create, rename int64
+			if err := e.h.ObsPool.QueryRow(ctx, semLockWaiterSQL, semRenameApp).Scan(&create, &rename); err != nil {
+				if ctx.Err() == nil {
+					s.pollErrs.Add(1)
+				}
+				continue
+			}
+			s.polls.Add(1)
+			if create > 0 {
+				s.pollsWithCreateWait.Add(1)
+				storeMax(&s.maxCreateWaiters, create)
+			}
+			if rename > 0 {
+				s.pollsWithRenameWait.Add(1)
+				storeMax(&s.maxRenameWaiters, rename)
+			}
+		}
+	}()
+	return s
+}
+
+func storeMax(a *atomic.Int64, v int64) {
+	for {
+		cur := a.Load()
+		if v <= cur || a.CompareAndSwap(cur, v) {
+			return
+		}
+	}
+}
+
+func (s *semLockSampler) stop() {
+	s.once.Do(func() {
+		s.cancel()
+		<-s.done
+	})
+}
+
 // semPopReport carries the per-population numbers beyond what populationStats holds.
 type semPopReport struct {
 	stats          populationStats
@@ -588,6 +699,11 @@ type semPopReport struct {
 	providerCalls  int64
 	renameOps      int64
 	renameFailures int64
+	// lock sampler (RV-W4-1-7): polls, polls that saw a create / a rename waiting on an item row lock, and
+	// the largest number of simultaneous waiters seen.
+	lockPolls, lockPollErrs            int64
+	createWaitPolls, renameWaitPolls   int64
+	maxCreateWaiters, maxRenameWaiters int64
 }
 
 // measurePopulation runs one A10 population runner while the rename load hits renameItems and the embed
@@ -600,6 +716,8 @@ func (e *semEnv) measurePopulation(t *testing.T, label string, renameItems []uui
 	callsBefore := e.provider.calls.Load()
 
 	e.tap.arm()
+	sampler := e.startLockSampler()
+	defer sampler.stop()
 	load := e.startRenameLoad(renameItems)
 	defer load.stop()
 	defer e.tap.disarm()
@@ -607,6 +725,7 @@ func (e *semEnv) measurePopulation(t *testing.T, label string, renameItems []uui
 	stats := run()
 
 	ops, failures := load.stop()
+	sampler.stop()
 	maxCreate, tapN := e.tap.disarm()
 	jobsAfter := e.jobCounts(t)
 	rep := semPopReport{
@@ -617,10 +736,18 @@ func (e *semEnv) measurePopulation(t *testing.T, label string, renameItems []uui
 		providerCalls:  e.provider.calls.Load() - callsBefore,
 		renameOps:      ops,
 		renameFailures: failures,
+
+		lockPolls: sampler.polls.Load(), lockPollErrs: sampler.pollErrs.Load(),
+		createWaitPolls: sampler.pollsWithCreateWait.Load(), renameWaitPolls: sampler.pollsWithRenameWait.Load(),
+		maxCreateWaiters: sampler.maxCreateWaiters.Load(), maxRenameWaiters: sampler.maxRenameWaiters.Load(),
 	}
 	t.Logf("SEMANTIC-ON POPULATION %s: n=%d p50=%s p95=%s p99=%s max=%s (max over %d tapped 201 creates; for pop3 this includes discarded rounds) ceiling=%s embed_jobs_completed=%d provider_calls=%d rename_ops=%d rename_failures=%d",
 		label, stats.Samples, stats.P50, stats.P95, stats.P99, maxCreate, tapN, p95Ceiling,
 		rep.embedJobsDone, rep.providerCalls, ops, failures)
+	// RV-W4-1-7: one contention number per population, no ceiling. A poll that sees a create waiting on an
+	// item row lock shows a create queued behind a worker FOR SHARE (see semLockSampler).
+	t.Logf("SEMANTIC-ON POPULATION %s: item-row lock waits (pg_stat_activity every %s, no ceiling): creates waited in %d of %d polls (max %d at once), renames waited in %d polls (max %d at once), poll errors %d",
+		label, semLockPollInterval, rep.createWaitPolls, rep.lockPolls, rep.maxCreateWaiters, rep.renameWaitPolls, rep.maxRenameWaiters, rep.lockPollErrs)
 
 	if ops == 0 {
 		t.Fatalf("%s: rename load performed 0 operations; the contention load was not applied", label)

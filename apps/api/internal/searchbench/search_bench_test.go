@@ -1306,7 +1306,11 @@ func TestSearchBench(t *testing.T) {
 		t.Logf("report: %s/%s.{md,json}", env.OutDir, base)
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Hour)
+	// The benchmark context ends testDeadlineReserve before `go test -timeout`: a test
+	// timeout panics and t.Cleanup (report, server logs) would never run, losing every
+	// measured number (RV-W4-1-2).
+	dl, hasDL := t.Deadline()
+	ctx, cancel := BenchContext(context.Background(), 5*time.Hour, dl, hasDL, testDeadlineReserve)
 	defer cancel()
 	dsn, drop, err := CreateFreshDatabase(ctx, env.DatabaseURL)
 	if err != nil {

@@ -370,7 +370,9 @@ func (h *Harness) token(t int) string {
 // undiagnosable. LogSink is an in-memory slog.Handler that keeps ONLY an
 // allowlist of attributes (see allowedLogKey) and drops everything else, so no
 // q text, names, ids, SQL or error strings can reach the report (privacy lens).
-// Log messages are fixed constants by project convention and are kept (capped).
+// Log messages are fixed lower-case constants by project convention and are kept
+// (capped) when they fit the message vocabulary (safeLogMessage); any other message is
+// counted under "other" and its text is dropped.
 
 const (
 	maxLogSamples    = 5   // sanitized sample lines kept per drained run
@@ -475,6 +477,7 @@ type LogSink struct {
 	seen     map[string]bool
 	partials []PartialRecord // FU-SB-2b: parsed "suggest lexical branch partial" lines
 	overflow int             // partial lines beyond maxPartialRecords
+	rejected int             // partial lines the parser refused (field or enum drift)
 }
 
 // NewLogSink returns an empty sink.
@@ -512,6 +515,8 @@ func (s *LogSink) Drain() ServerLogSummary {
 	out.Samples = append(out.Samples, s.samples...)
 	out.Partials = AggregatePartials(s.partials)
 	out.PartialsOverflow = s.overflow
+	out.PartialsRejected = s.rejected
+	s.rejected = 0
 	s.counts = map[logClassKey]int{}
 	s.samples = nil
 	s.seen = map[string]bool{}
@@ -524,6 +529,8 @@ func (s *LogSink) record(level slog.Level, msg string, kv []string) {
 	if len(msg) > maxLogMessageLen {
 		msg = msg[:maxLogMessageLen]
 	}
+	// Outside the message vocabulary the text is not kept, only the count (RV-W4-1-5).
+	msg = safeLogMessage(msg)
 	class := ""
 	for _, p := range kv {
 		if v, ok := strings.CutPrefix(p, "error_class="); ok {
@@ -538,12 +545,14 @@ func (s *LogSink) record(level slog.Level, msg string, kv []string) {
 	defer s.mu.Unlock()
 	s.counts[logClassKey{level.String(), msg, class}]++
 	if msg == PartialLogMessage {
-		if rec, ok := parsePartialRecord(kv); ok {
-			if len(s.partials) < maxPartialRecords {
-				s.partials = append(s.partials, rec)
-			} else {
-				s.overflow++
-			}
+		if rec, ok := parsePartialRecord(kv); !ok {
+			// Counted, never dropped silently: a changed partial line shape must not
+			// read as "0 partial branches" (RV-W4-1-3).
+			s.rejected++
+		} else if len(s.partials) < maxPartialRecords {
+			s.partials = append(s.partials, rec)
+		} else {
+			s.overflow++
 		}
 	}
 	// Samples: first distinct WARN+ lines only (the INFO access log is counted, not sampled).
@@ -1464,10 +1473,9 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 	}
 	// Task 23 additions (advisor-dec-337): quiet phase after every measured cell, on
 	// their own connections. They run even when C2 failed, so the evidence is not
-	// lost, and a failed section is recorded without failing the benchmark.
-	if ctx.Err() == nil {
-		rep.Extras = RunExtras(ctx, dsn, sr, classes, ExtrasConfigFor(env.Profile), logf)
-	}
+	// lost, and a failed section is recorded without failing the benchmark. With no
+	// time left every section is recorded as skipped_budget (RV-W4-1-2).
+	rep.Extras = RunExtras(ctx, dsn, sr, classes, ExtrasConfigFor(env.Profile), logf)
 	return err
 }
 

@@ -755,6 +755,9 @@ type ServerLogSummary struct {
 	// count by (corpus, mode, phase) and p50/p95/max of setup/set_local/query ms.
 	Partials         []PartialAgg `json:"lexical_partials,omitempty"`
 	PartialsOverflow int          `json:"lexical_partial_overflow,omitempty"`
+	// PartialsRejected counts partial lines the parser refused (missing field, value
+	// out of enum or range): they are in the class count but not in Partials.
+	PartialsRejected int `json:"lexical_partial_rejected,omitempty"`
 }
 
 // errorCodeCounts renders (status, problem code) counts deterministically

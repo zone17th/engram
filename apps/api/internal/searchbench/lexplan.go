@@ -14,7 +14,9 @@ import (
 
 // Index classes of the lexical plan evidence.
 const (
-	// IndexPerUser: the migration 0008 per-user lexical indexes.
+	// IndexPerUser: the per-user lexical indexes: the migration 0006 text_pattern_ops
+	// prefix indexes (exact-accent prefix arm) and the migration 0008 unaccent prefix and
+	// trigram indexes.
 	IndexPerUser = "per-user"
 	// IndexGlobalTrgm: the global trigram indexes item_name_trgm / tag_norm_trgm
 	// that migration 0010 would drop.
@@ -25,7 +27,8 @@ const (
 
 var (
 	perUserLexicalIndexes = map[string]bool{
-		"item_user_unaccent_prefix": true, "item_user_name_trgm": true,
+		"item_user_name_prefix": true, "tag_user_norm_prefix": true, // 0006, text_pattern_ops
+		"item_user_unaccent_prefix": true, "item_user_name_trgm": true, // 0008
 		"tag_user_unaccent_prefix": true, "tag_user_tag_trgm": true,
 	}
 	globalTrgmIndexes = map[string]bool{"item_name_trgm": true, "tag_norm_trgm": true}
@@ -115,6 +118,52 @@ func ParseLexicalPlan(planJSON []byte) (LexPlanInfo, error) {
 		}
 	}
 	return info, nil
+}
+
+// Verdicts of the migration 0010 eligibility (dropping the global trigram indexes).
+const (
+	Eligible0010       = "eligible"
+	NotEligible0010    = "not eligible"
+	NotEstablished0010 = "not established"
+)
+
+// Eligibility0010 is the 0010 evidence of the FU-SL-1 rows.
+type Eligibility0010 struct {
+	Cases          int
+	CustomGlobal   int // cases whose default custom plan uses a global trigram index
+	GenericGlobal  int // cases whose default generic plan uses one
+	GenericMissing int // cases without a generic plan
+	Verdict        string
+}
+
+// EligibilityOf states the 0010 verdict: "eligible" only when NEITHER the custom
+// NOR the generic default plan of ANY case uses a global trigram index (the
+// plan's condition: the EXPLAIN does not use the index). Any use is "not eligible";
+// a missing generic plan without any use is "not established", never "eligible".
+func EligibilityOf(rows []LexPlanRow) Eligibility0010 {
+	e := Eligibility0010{Cases: len(rows)}
+	for _, r := range rows {
+		if r.Default.UsesGlobal {
+			e.CustomGlobal++
+		}
+		switch {
+		case r.DefaultGeneric == nil:
+			e.GenericMissing++
+		case r.DefaultGeneric.UsesGlobal:
+			e.GenericGlobal++
+		}
+	}
+	switch {
+	case e.Cases == 0:
+		e.Verdict = NotEstablished0010
+	case e.CustomGlobal > 0 || e.GenericGlobal > 0:
+		e.Verdict = NotEligible0010
+	case e.GenericMissing > 0:
+		e.Verdict = NotEstablished0010
+	default:
+		e.Verdict = Eligible0010
+	}
+	return e
 }
 
 // Label is the compact "indexes (classes)" text of the report table; "-" when the

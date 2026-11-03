@@ -49,6 +49,9 @@ func TestLexicalPartialAggregation(t *testing.T) {
 	sink.Logger().Info(PartialLogMessage, slog.String("corpus", "item"), slog.String("mode", "full"), slog.String("phase", "query"), slog.Int64("setup_ms", 1))
 
 	got := sink.Drain()
+	if got.PartialsRejected != 4 {
+		t.Errorf("rejected partial lines = %d, want 4 (bad corpus, bad phase, negative timing, missing field)", got.PartialsRejected)
+	}
 	if len(got.Partials) != 2 {
 		t.Fatalf("aggregate rows = %d, want 2 (item/full/query, tag/prefix/setup): %+v", len(got.Partials), got.Partials)
 	}
@@ -68,7 +71,7 @@ func TestLexicalPartialAggregation(t *testing.T) {
 	if tg.Corpus != "tag" || tg.Count != 2 || tg.Setup.MaxMs != 2400 || tg.Setup.P50Ms != 2100 {
 		t.Errorf("tag row = %+v, want count 2, setup p50 2100 max 2400", tg)
 	}
-	if again := sink.Drain(); len(again.Partials) != 0 || again.PartialsOverflow != 0 {
+	if again := sink.Drain(); len(again.Partials) != 0 || again.PartialsOverflow != 0 || again.PartialsRejected != 0 {
 		t.Errorf("Drain must reset the partial records: %+v", again)
 	}
 
@@ -92,6 +95,25 @@ func TestLexicalPartialAggregation(t *testing.T) {
 	}
 	if none := RenderMarkdown(&Report{Run: RunInfo{Profile: string(ProfileSmoke)}}); !strings.Contains(none, "0 partial branches") {
 		t.Errorf("a run without partial lines must say so")
+	}
+
+	// RV-W4-1-3: a level whose partial lines were ALL rejected by the parser (the line
+	// shape drifted) has the message in its class count but no aggregate. It must not
+	// read "0 partial branches"; the rejected count is printed.
+	drift := NewLogSink()
+	drift.Logger().Info(PartialLogMessage, slog.String("corpus", "item"), slog.String("mode", "full"), slog.String("phase", "query"),
+		slog.String("setup_ms", "1.5ms"), slog.String("set_local_ms", "0ms"), slog.String("query_ms", "61ms"))
+	drift.Logger().Info(PartialLogMessage, slog.String("corpus", "item"), slog.String("mode", "full"), slog.String("phase", "connect"))
+	dg := drift.Drain()
+	if dg.PartialsRejected != 2 || len(dg.Partials) != 0 || partialClassCount(dg.Classes) != 2 {
+		t.Fatalf("drifted partial lines: rejected %d, aggregates %d, class count %d, want 2, 0, 2", dg.PartialsRejected, len(dg.Partials), partialClassCount(dg.Classes))
+	}
+	dmd := RenderMarkdown(&Report{Run: RunInfo{Profile: string(ProfileSmoke)}, C1: []ScenarioReport{{ID: "C1-L", Valid: true, Levels: []LevelReport{{Concurrency: 8, ServerLogs: dg}}}}})
+	if strings.Contains(dmd, "0 partial branches") || !strings.Contains(dmd, "2 rejected by the parser") || !strings.Contains(dmd, "**2 partial line(s) rejected by the parser**") {
+		t.Errorf("a drifted partial line must be reported as rejected, not as zero:\n%s", dmd)
+	}
+	if db, err := json.Marshal(dg); err != nil || !strings.Contains(string(db), `"lexical_partial_rejected":2`) {
+		t.Errorf("the rejected count must reach the JSON: %s err=%v", db, err)
 	}
 }
 
@@ -122,10 +144,13 @@ func TestServerLogsFileHasOnlyAllowlistedTokens(t *testing.T) {
 		slog.String("status", "500; DROP TABLE item"),
 	}
 	lg.LogAttrs(context.Background(), slog.LevelWarn, "hostile warn line", hostile...)
-	// A message that carries a DSN and one that carries q text: the sink keeps messages
-	// (constants by convention), the scrub must still refuse them.
+	// Messages outside the vocabulary (RV-W4-1-5): one that carries a DSN, one with q
+	// text, a password-less URL DSN (no "@", no "="), and a letters-only message that
+	// carries a name (capitalised). The sink counts them under "other" and keeps no text.
 	lg.Warn("connect failed " + dsn)
 	lg.Error("lexical failed for q=my-secret-query")
+	lg.Warn("dial postgres://127.0.0.1:55432/engram")
+	lg.Warn("Alice private item")
 	// Hostile enum values on the partial line: dropped by the sink, never aggregated.
 	lg.LogAttrs(context.Background(), slog.LevelInfo, PartialLogMessage,
 		slog.String("corpus", "alice-private-notes"), slog.String("mode", "hello world secret"), slog.String("phase", dsn),
@@ -171,6 +196,9 @@ func TestServerLogsFileHasOnlyAllowlistedTokens(t *testing.T) {
 	if lv.PartialLines != 1 || len(lv.Partials) != 1 || lv.Partials[0].Corpus != "item" || lv.Partials[0].QueryPhase.MaxMs != 61 {
 		t.Errorf("the valid partial aggregate must reach the file: %+v", lv)
 	}
+	if lv.PartialsRejected != 1 {
+		t.Errorf("the hostile partial line must be counted as rejected in the file: %+v", lv)
+	}
 	classes := map[string]int{}
 	for _, c := range lv.Classes {
 		classes[c.Level+"|"+c.Message] = c.Count
@@ -178,25 +206,36 @@ func TestServerLogsFileHasOnlyAllowlistedTokens(t *testing.T) {
 	if classes["INFO|http_request"] != 1 || classes["WARN|hostile warn line"] != 1 {
 		t.Errorf("allowlisted class counts must reach the file: %v", classes)
 	}
-	if doc.Dropped < 2 {
-		t.Errorf("scrub_dropped_entries = %d, want >= 2 (the DSN and q= messages)", doc.Dropped)
+	if classes["WARN|other"] != 3 || classes["ERROR|other"] != 1 {
+		t.Errorf("out-of-vocabulary messages must be counted under \"other\" (3 WARN, 1 ERROR): %v", classes)
+	}
+	for _, kept := range []string{"other", "hostile warn line", "http_request"} {
+		if !strings.Contains(text, kept) {
+			t.Errorf("server-logs.json must keep the allowed message %q", kept)
+		}
+	}
+	if doc.Dropped != 0 {
+		t.Errorf("scrub_dropped_entries = %d, want 0 (the sink already mapped the messages to other)", doc.Dropped)
 	}
 
 	// The scrub on its own: a document built by hand with a bad class message, a bad
 	// sample, an out-of-enum partial and a bad SHA loses exactly those entries.
 	d := ServerLogsDoc{Profile: "smoke", Arch: "amd64", HeadSHA: "not hex; secret", Scenarios: []ServerLogsScenario{{ID: "C1-L", Levels: []ServerLogsLevel{{
-		Classes: []LogClassCount{{Level: "WARN", Message: "ok message", Count: 1}, {Level: "WARN", Message: "has q=secret", Count: 1}, {Level: "ERROR", Message: "fine", ErrorClass: "has spaces", Count: 1}},
+		Classes: []LogClassCount{{Level: "WARN", Message: "ok message", Count: 1}, {Level: "WARN", Message: "has q=secret", Count: 1}, {Level: "ERROR", Message: "fine", ErrorClass: "has spaces", Count: 1},
+			{Level: "WARN", Message: "postgres://127.0.0.1:5432/engram", Count: 1}, {Level: "WARN", Message: "Alice private item", Count: 1}, {Level: "WARN", Message: "lower case words only", Count: 1}},
 		Samples: []string{`level=WARN msg="ok" status=500`, `level=WARN msg="ok" q=secret text`},
 		Partials: []PartialAgg{
 			{Corpus: "item", Mode: "full", Phase: "query", Count: 1},
 			{Corpus: "alice", Mode: "full", Phase: "query", Count: 1},
 		},
 	}}}}}
-	if n := ScrubServerLogsDoc(&d); n != 5 {
-		t.Errorf("scrub dropped %d entries, want 5 (SHA, class message, class error_class, sample, partial)", n)
+	// Dropped: SHA, q= message, error_class, URL message, capitalised name message, sample, partial.
+	// A lower-case words-only message stays: it cannot be told from a constant (safeLogMessage).
+	if n := ScrubServerLogsDoc(&d); n != 7 {
+		t.Errorf("scrub dropped %d entries, want 7 (SHA, class messages x3, class error_class, sample, partial)", n)
 	}
 	l := d.Scenarios[0].Levels[0]
-	if d.HeadSHA != "" || len(l.Classes) != 1 || len(l.Samples) != 1 || len(l.Partials) != 1 {
+	if d.HeadSHA != "" || len(l.Classes) != 2 || len(l.Samples) != 1 || len(l.Partials) != 1 {
 		t.Errorf("scrub result = %+v / %+v", d, l)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,35 @@ type ExtrasConfig struct {
 	ScanTimeout   time.Duration
 	ShortTimeout  time.Duration
 	PlanStatement string // statement_timeout of the EXPLAIN tx (harness bound, not production's 50 ms)
+	// TotalBudget caps ALL extras together; a section that has not started when it
+	// is spent is recorded as "<section>: skipped_budget". 0 = no extra cap.
+	TotalBudget time.Duration
+}
+
+// Budgets of the extras per profile (RV-W4-1-2): the extras run after the measured
+// cells, so they must never eat the time the report needs.
+const (
+	extrasBudgetFull  = 25 * time.Minute
+	extrasBudgetSmoke = 4 * time.Minute
+	// testDeadlineReserve is left between the benchmark context and the `go test
+	// -timeout` for the t.Cleanup writes (report, server logs, database drop): on a
+	// test timeout go test panics and cleanups do not run.
+	testDeadlineReserve = 5 * time.Minute
+	// skippedBudgetTag is the report tag of a section that never started.
+	skippedBudgetTag = "skipped_budget"
+)
+
+// BenchContext bounds the benchmark: limit, and, when the test has a deadline,
+// deadline - reserve, whichever is earlier, so the measured results are written
+// by t.Cleanup before `go test -timeout` kills the process.
+func BenchContext(parent context.Context, limit time.Duration, testDeadline time.Time, hasDeadline bool, reserve time.Duration) (context.Context, context.CancelFunc) {
+	end := time.Now().Add(limit)
+	if hasDeadline {
+		if d := testDeadline.Add(-reserve); d.Before(end) {
+			end = d
+		}
+	}
+	return context.WithDeadline(parent, end)
 }
 
 // ExtrasConfigFor returns the extras of a profile: smoke (< 20 min job) probes
@@ -52,7 +82,9 @@ type ExtrasConfig struct {
 // and a medium tenant.
 func ExtrasConfigFor(p ProfileName) ExtrasConfig {
 	c := ExtrasConfig{ProbeN: 5, PlanQueries: 3, ScanTimeout: 30 * time.Minute, ShortTimeout: 10 * time.Minute, PlanStatement: "10s"}
+	c.TotalBudget = extrasBudgetSmoke
 	if p == ProfileFull {
+		c.TotalBudget = extrasBudgetFull
 		c.ProbeN = 20
 		c.PlanMedium = true
 		c.ProbeMedium = true
@@ -71,8 +103,10 @@ type Task23Extras struct {
 	Errors []string `json:"errors,omitempty"`
 }
 
-// errTag reduces an error to a fixed class tag so the report never carries
-// driver or SQL text.
+// errTag reduces an error to a fixed class tag so neither the report nor the job
+// log carries driver or SQL text (a pgx connect error names user, database and host,
+// a PgError message can quote a parameter value). A PgError keeps its SQLSTATE
+// ("pgcode_57014"), which is what the diagnosis needs.
 func errTag(err error) string {
 	var pe *pgconn.PgError
 	switch {
@@ -95,8 +129,22 @@ func errTag(err error) string {
 func RunExtras(ctx context.Context, dsn string, sr *SeedResult, classes map[TenantClass][]int, cfg ExtrasConfig, logf func(string, ...any)) *Task23Extras {
 	ex := &Task23Extras{}
 	fail := func(section string, err error) {
-		logf("task23 extra %s failed: %v", section, err)
+		logf("task23 extra %s failed: %s", section, errTag(err))
 		ex.Errors = append(ex.Errors, section+": "+errTag(err))
+	}
+	if cfg.TotalBudget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.TotalBudget)
+		defer cancel()
+	}
+	if ctx.Err() != nil {
+		// No time left at all (the benchmark used its whole context): record every
+		// section as skipped so the report says so.
+		for _, name := range extraSectionNames {
+			ex.Errors = append(ex.Errors, skippedBudget(name))
+		}
+		logf("task23 extras skipped: no budget left")
+		return ex
 	}
 	pool, err := db.NewPool(ctx, dsn)
 	if err != nil {
@@ -110,38 +158,63 @@ func RunExtras(ctx context.Context, dsn string, sr *SeedResult, classes map[Tena
 		return ex
 	}
 
-	run := func(section string, timeout time.Duration, fn func(ctx context.Context) error) {
-		if ctx.Err() != nil {
-			fail(section, ctx.Err())
-			return
-		}
-		sctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		t0 := time.Now()
-		if err := fn(sctx); err != nil {
-			fail(section, err)
-			return
-		}
-		logf("task23 extra %s done in %.1fs", section, time.Since(t0).Seconds())
-	}
-
-	run("reconcile_full", cfg.ScanTimeout, func(ctx context.Context) (err error) {
-		ex.Reconcile, err = RunReconcileFull(ctx, pool, g)
-		return err
-	})
-	run("flip_cost_scan", cfg.ScanTimeout, func(ctx context.Context) (err error) {
-		ex.FlipCost, err = RunFlipCostScan(ctx, pool, g)
-		return err
-	})
-	run("lexical_plan", cfg.ShortTimeout, func(ctx context.Context) (err error) {
-		ex.LexicalPlan, err = RunLexicalPlan(ctx, dsn, sr, classes, cfg)
-		return err
-	})
-	run("connect_probe", cfg.ShortTimeout, func(ctx context.Context) (err error) {
-		ex.ConnectProbe, err = RunConnectProbe(ctx, dsn, sr, classes, cfg)
-		return err
-	})
+	ex.Errors = append(ex.Errors, runExtraSections(ctx, []extraSection{
+		{"reconcile_full", cfg.ScanTimeout, func(ctx context.Context) (err error) {
+			ex.Reconcile, err = RunReconcileFull(ctx, pool, g)
+			return err
+		}},
+		{"flip_cost_scan", cfg.ScanTimeout, func(ctx context.Context) (err error) {
+			ex.FlipCost, err = RunFlipCostScan(ctx, pool, g)
+			return err
+		}},
+		{"lexical_plan", cfg.ShortTimeout, func(ctx context.Context) (err error) {
+			ex.LexicalPlan, err = RunLexicalPlan(ctx, dsn, sr, classes, cfg)
+			return err
+		}},
+		{"connect_probe", cfg.ShortTimeout, func(ctx context.Context) (err error) {
+			ex.ConnectProbe, err = RunConnectProbe(ctx, dsn, sr, classes, cfg)
+			return err
+		}},
+	}, logf)...)
 	return ex
+}
+
+// extraSectionNames are the sections of RunExtras, in run order.
+var extraSectionNames = []string{"reconcile_full", "flip_cost_scan", "lexical_plan", "connect_probe"}
+
+func skippedBudget(section string) string { return section + ": " + skippedBudgetTag }
+
+// extraSection is one timed extra.
+type extraSection struct {
+	name    string
+	timeout time.Duration
+	fn      func(ctx context.Context) error
+}
+
+// runExtraSections runs the sections in order, each under its own timeout and the
+// shared ctx (which carries the total budget). A section that fails is recorded by
+// class tag and the rest still run; a section that has not started when ctx is done
+// is recorded as "<section>: skipped_budget" and not run. It returns the tags.
+func runExtraSections(ctx context.Context, secs []extraSection, logf func(string, ...any)) []string {
+	var errs []string
+	for _, s := range secs {
+		if ctx.Err() != nil {
+			logf("task23 extra %s skipped: no budget left", s.name)
+			errs = append(errs, skippedBudget(s.name))
+			continue
+		}
+		sctx, cancel := context.WithTimeout(ctx, s.timeout)
+		t0 := time.Now()
+		err := s.fn(sctx)
+		cancel()
+		if err != nil {
+			logf("task23 extra %s failed: %s", s.name, errTag(err))
+			errs = append(errs, s.name+": "+errTag(err))
+			continue
+		}
+		logf("task23 extra %s done in %.1fs", s.name, time.Since(t0).Seconds())
+	}
+	return errs
 }
 
 // ---- 4. Reconcile full time --------------------------------------------------
@@ -510,6 +583,12 @@ type LexPlanRow struct {
 	Shape     string       `json:"shape"`
 	Default   LexPlanInfo  `json:"default_planner"`
 	After0010 *LexPlanInfo `json:"after_0010_simulated,omitempty"`
+	// DefaultGeneric / After0010Generic are the same statement planned as a GENERIC
+	// plan (PREPARE + plan_cache_mode=force_generic_plan, EXPLAIN EXECUTE): the plan a
+	// pgx-prepared server statement can switch to after 5 executions. Nil when that
+	// EXPLAIN failed (see LexPlanReport.GenericErrors).
+	DefaultGeneric   *LexPlanInfo `json:"default_generic_plan,omitempty"`
+	After0010Generic *LexPlanInfo `json:"after_0010_generic_plan,omitempty"`
 }
 
 // LexPlanTenant describes a tenant the plan evidence ran on.
@@ -525,14 +604,19 @@ type LexPlanReport struct {
 	FetchLimit      int32           `json:"fetch_limit"`
 	Rows            []LexPlanRow    `json:"rows"`
 	IndexesRestored bool            `json:"global_trgm_indexes_restored_after_rollback"`
-	Notes           []string        `json:"notes"`
+	// GenericErrors lists the generic-plan EXPLAINs that failed, as class tags only.
+	GenericErrors []string `json:"generic_plan_errors,omitempty"`
+	Notes         []string `json:"notes"`
 }
+
+const explainPrefix = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
 
 // explainLexical runs EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) of sql twice inside
 // tx: a discarded warm-up and the measured run, so the figures are warm like the
-// load cells.
+// load cells. The parameter values are bound, so the planner sees them as
+// constants (a custom plan).
 func explainLexical(ctx context.Context, tx pgx.Tx, sql string, args []any) (LexPlanInfo, error) {
-	stmt := "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql
+	stmt := explainPrefix + sql
 	var raw string
 	for range 2 {
 		raw = ""
@@ -543,20 +627,115 @@ func explainLexical(ctx context.Context, tx pgx.Tx, sql string, args []any) (Lex
 	return ParseLexicalPlan([]byte(raw))
 }
 
-func explainAllCases(ctx context.Context, tx pgx.Tx, cases []LexPlanCase, userOf func(int) uuid.UUID, limit int32) ([]LexPlanInfo, error) {
-	out := make([]LexPlanInfo, 0, len(cases))
-	for _, c := range cases {
+// genericStmtName is the name of the i-th prepared statement of the generic-plan
+// EXPLAINs (a fixed pattern, never derived from data).
+func genericStmtName(i int) string { return "lexplan_" + strconv.Itoa(i) }
+
+// prepareLexicalSQL is the PREPARE of a captured sqlc statement under name.
+func prepareLexicalSQL(name, sql string) string { return "PREPARE " + name + " AS " + sql }
+
+// explainExecuteSQL is the EXPLAIN of EXECUTE name with nargs placeholders ($1..$n).
+func explainExecuteSQL(name string, nargs int) string {
+	ph := make([]string, nargs)
+	for i := range ph {
+		ph[i] = "$" + strconv.Itoa(i+1)
+	}
+	return explainPrefix + "EXECUTE " + name + "(" + strings.Join(ph, ", ") + ")"
+}
+
+// simpleProtocolArgs makes the captured arguments safe for pgx's client-side
+// (simple protocol) interpolation: a uuid becomes its text form; the string, bool
+// and int32 arguments of the lexical statements are interpolated as they are.
+func simpleProtocolArgs(args []any) []any {
+	out := make([]any, len(args))
+	for i, a := range args {
+		if u, ok := a.(uuid.UUID); ok {
+			out[i] = u.String()
+			continue
+		}
+		out[i] = a
+	}
+	return out
+}
+
+// explainLexicalGeneric plans sql as a GENERIC plan: PREPARE, then EXPLAIN (ANALYZE,
+// BUFFERS, FORMAT JSON) EXECUTE under plan_cache_mode=force_generic_plan (set by the
+// caller with SET LOCAL), twice (warm-up + measured). The statement is deallocated
+// before returning. The EXECUTE arguments go through the simple protocol so the
+// EXPLAIN is an ordinary text statement; the values are the synthetic ones of the case.
+func explainLexicalGeneric(ctx context.Context, tx pgx.Tx, name, sql string, args []any) (LexPlanInfo, error) {
+	if _, err := tx.Exec(ctx, prepareLexicalSQL(name, sql)); err != nil {
+		return LexPlanInfo{}, err
+	}
+	stmt := explainExecuteSQL(name, len(args))
+	qargs := append([]any{pgx.QueryExecModeSimpleProtocol}, simpleProtocolArgs(args)...)
+	var raw string
+	for range 2 {
+		raw = ""
+		if err := tx.QueryRow(ctx, stmt, qargs...).Scan(&raw); err != nil {
+			return LexPlanInfo{}, err
+		}
+	}
+	if _, err := tx.Exec(ctx, "DEALLOCATE "+name); err != nil {
+		return LexPlanInfo{}, err
+	}
+	return ParseLexicalPlan([]byte(raw))
+}
+
+// lexExplained is the plan evidence of all cases inside one transaction.
+type lexExplained struct {
+	custom  []LexPlanInfo
+	generic []LexPlanInfo // nil when the generic EXPLAIN failed
+	// genericErr is why generic is nil; it never discards the custom evidence.
+	genericErr error
+}
+
+// explainAllCases runs the custom-plan EXPLAIN of every case, then (in the same
+// EXPLAIN-only transaction, after SET LOCAL plan_cache_mode = force_generic_plan,
+// which never touches a measured pool) the generic-plan EXPLAIN of every case. A
+// failure of the custom part is an error; a failure of the generic part is kept in
+// genericErr (the transaction may be aborted by then, so nothing else runs in it).
+func explainAllCases(ctx context.Context, tx pgx.Tx, cases []LexPlanCase, userOf func(int) uuid.UUID, limit int32) (lexExplained, error) {
+	res := lexExplained{custom: make([]LexPlanInfo, 0, len(cases))}
+	sqls := make([]string, len(cases))
+	argv := make([][]any, len(cases))
+	for i, c := range cases {
 		sql, args, err := captureLexicalSQL(ctx, c, userOf(c.Tenant), limit)
 		if err != nil {
-			return nil, err
+			return lexExplained{}, err
 		}
+		sqls[i], argv[i] = sql, args
 		info, err := explainLexical(ctx, tx, sql, args)
 		if err != nil {
-			return nil, err
+			return lexExplained{}, err
 		}
-		out = append(out, info)
+		res.custom = append(res.custom, info)
 	}
-	return out, nil
+	if _, err := tx.Exec(ctx, `SET LOCAL plan_cache_mode = force_generic_plan`); err != nil {
+		res.genericErr = err
+		return res, nil
+	}
+	generic := make([]LexPlanInfo, 0, len(cases))
+	for i := range cases {
+		info, err := explainLexicalGeneric(ctx, tx, genericStmtName(i+1), sqls[i], argv[i])
+		if err != nil {
+			res.genericErr = err
+			return res, nil
+		}
+		generic = append(generic, info)
+	}
+	res.generic = generic
+	return res, nil
+}
+
+// dropGenericStatements deallocates the generic-plan statements after a failed
+// transaction (PREPARE is not rolled back with it). Best effort: a statement that
+// does not exist is ignored. Only the fixed lexplan_<i> names are touched, never
+// pgx's own statement cache.
+func dropGenericStatements(conn *pgx.Conn, n int) {
+	for i := 1; i <= n; i++ {
+		_, _ = conn.Exec(context.Background(), "DEALLOCATE "+genericStmtName(i))
+	}
 }
 
 // RunLexicalPlan records, per case, the plan of the exact lexical SQL on the
@@ -602,12 +781,15 @@ func RunLexicalPlan(ctx context.Context, dsn string, sr *SeedResult, classes map
 	if err != nil {
 		return nil, err
 	}
-	var def []LexPlanInfo
+	var def lexExplained
 	err = setup(ctx, tx)
 	if err == nil {
 		def, err = explainAllCases(ctx, tx, cases, userOf, limit)
 	}
 	_ = tx.Rollback(context.Background())
+	if err != nil || def.genericErr != nil {
+		dropGenericStatements(conn, len(cases))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -617,7 +799,7 @@ func RunLexicalPlan(ctx context.Context, dsn string, sr *SeedResult, classes map
 	if err != nil {
 		return nil, err
 	}
-	var after []LexPlanInfo
+	var after lexExplained
 	err = func() error {
 		if _, err := sim.Exec(ctx, `SET LOCAL lock_timeout = '30s'`); err != nil {
 			return err
@@ -633,6 +815,9 @@ func RunLexicalPlan(ctx context.Context, dsn string, sr *SeedResult, classes map
 		return err
 	}()
 	rbErr := sim.Rollback(context.Background())
+	if err != nil || after.genericErr != nil {
+		dropGenericStatements(conn, len(cases))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -648,13 +833,28 @@ func RunLexicalPlan(ctx context.Context, dsn string, sr *SeedResult, classes map
 		return nil, errors.New("searchbench: the global trigram indexes are missing after the simulation rollback")
 	}
 
+	if def.genericErr != nil {
+		rep.GenericErrors = append(rep.GenericErrors, "default: "+errTag(def.genericErr))
+	}
+	if after.genericErr != nil {
+		rep.GenericErrors = append(rep.GenericErrors, "after_0010_simulated: "+errTag(after.genericErr))
+	}
 	for i, c := range cases {
-		a := after[i]
-		rep.Rows = append(rep.Rows, LexPlanRow{ID: c.ID, Class: c.Class, Corpus: string(c.Corpus), Shape: c.Shape, Default: def[i], After0010: &a})
+		a := after.custom[i]
+		row := LexPlanRow{ID: c.ID, Class: c.Class, Corpus: string(c.Corpus), Shape: c.Shape, Default: def.custom[i], After0010: &a}
+		if def.generic != nil {
+			g := def.generic[i]
+			row.DefaultGeneric = &g
+		}
+		if after.generic != nil {
+			g := after.generic[i]
+			row.After0010Generic = &g
+		}
+		rep.Rows = append(rep.Rows, row)
 	}
 	rep.Notes = []string{
 		"The SQL is the exact statement of gen.Queries.SearchItemsLexical / SearchTagsLexical captured from sqlc, with the server's parameter shapes (qn, escaped prefix, fuzzy flag, LIMIT = corpus cap + 1 of /suggest scope=all limit=8) and the server's pg_trgm thresholds.",
-		"Planner: Postgres defaults, no enable_* setting. EXPLAIN binds the parameter values (a custom plan); a pgx-prepared server statement can switch to a generic plan after 5 executions (plan_cache_mode=auto), which is not shown here.",
+		"Planner: Postgres defaults, no enable_* setting. The first table is a custom plan (EXPLAIN binds the parameter values). A pgx-prepared server statement can switch to a generic plan after 5 executions (plan_cache_mode=auto), so each case is also planned as a generic plan (second table): PREPARE, SET LOCAL plan_cache_mode = force_generic_plan inside the EXPLAIN-only transaction, EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE, DEALLOCATE. The setting is never applied to a measured pool.",
 		"Each case runs EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) twice and keeps the second (warm) run; statement_timeout is " + cfg.PlanStatement + " (harness bound), not the server's 50 ms, so a slow plan still completes.",
 		"prefix = suggest mode prefix (1-rune query, fuzzy=false). fuzzy = mode full (>= 3-rune synthetic query: name prefix, folded word, typo; fuzzy=true), the shape of nearly every production query.",
 		"after 0010 (simulated): item_name_trgm and tag_norm_trgm dropped inside a transaction that was rolled back (verified restored); nothing persisted.",
