@@ -25,7 +25,7 @@ func renderLexicalPlan(w func(string, ...any), p *LexPlanReport) {
 		}
 		w("%s (%d items, %d tags)", t.Class, t.Items, t.Tags)
 	}
-	w(". Fetch limit %d. Index classes: `per-user` = migration 0008 per-user lexical indexes, `global-trgm` = `item_name_trgm` / `tag_norm_trgm` (the 0010 candidates).\n\n", p.FetchLimit)
+	w(". Fetch limit %d. Index classes: `per-user` = the per-user lexical indexes (0006 `item_user_name_prefix` / `tag_user_norm_prefix`, 0008 `*_unaccent_prefix` and per-user trigram), `global-trgm` = `item_name_trgm` / `tag_norm_trgm` (the 0010 candidates).\n\n", p.FetchLimit)
 	w("| Case | Default: indexes | seq scan | ms | shared hit / read | After 0010 (simulated): indexes | seq scan | ms | shared hit / read |\n|---|---|---|---|---|---|---|---|---|\n")
 	var defGlobal, defSeq, afterSeq int
 	var defMs, afterMs float64

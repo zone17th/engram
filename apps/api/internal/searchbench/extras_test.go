@@ -61,6 +61,11 @@ func TestLexicalPlanParser(t *testing.T) {
 	if p, err := ParseLexicalPlan([]byte(seq)); err != nil || !p.SeqScan || len(p.Indexes) != 0 || p.Label() != "-" {
 		t.Errorf("parallel seq scan on item must be flagged: %+v err=%v", p, err)
 	}
+	// RV-W4-1-4: a plan that uses only the 0006 per-user prefix index is per-user, not "other".
+	prefixOnly := `[{"Plan":{"Node Type":"Index Scan","Relation Name":"item","Index Name":"item_user_name_prefix"},"Execution Time":0.3}]`
+	if p, err := ParseLexicalPlan([]byte(prefixOnly)); err != nil || !p.UsesUser || p.UsesGlobal || p.Label() != "item_user_name_prefix (per-user)" {
+		t.Errorf("a plan on item_user_name_prefix must be per-user: %+v err=%v", p, err)
+	}
 	notTable := `[{"Plan":{"Node Type":"Seq Scan","Relation Name":"some_function_or_cte"},"Execution Time":1}]`
 	if p, _ := ParseLexicalPlan([]byte(notTable)); p.SeqScan {
 		t.Errorf("a seq scan of a non item/tag relation is not a table seq scan")
@@ -72,6 +77,7 @@ func TestLexicalPlanParser(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"item_user_unaccent_prefix": IndexPerUser, "item_user_name_trgm": IndexPerUser, "tag_user_unaccent_prefix": IndexPerUser, "tag_user_tag_trgm": IndexPerUser,
+		"item_user_name_prefix": IndexPerUser, "tag_user_norm_prefix": IndexPerUser,
 		"item_name_trgm": IndexGlobalTrgm, "tag_norm_trgm": IndexGlobalTrgm, "item_pkey": IndexOther, "item_user_recent": IndexOther,
 	} {
 		if got := IndexClassOf(name); got != want {

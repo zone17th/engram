@@ -14,7 +14,9 @@ import (
 
 // Index classes of the lexical plan evidence.
 const (
-	// IndexPerUser: the migration 0008 per-user lexical indexes.
+	// IndexPerUser: the per-user lexical indexes: the migration 0006 text_pattern_ops
+	// prefix indexes (exact-accent prefix arm) and the migration 0008 unaccent prefix and
+	// trigram indexes.
 	IndexPerUser = "per-user"
 	// IndexGlobalTrgm: the global trigram indexes item_name_trgm / tag_norm_trgm
 	// that migration 0010 would drop.
@@ -25,7 +27,8 @@ const (
 
 var (
 	perUserLexicalIndexes = map[string]bool{
-		"item_user_unaccent_prefix": true, "item_user_name_trgm": true,
+		"item_user_name_prefix": true, "tag_user_norm_prefix": true, // 0006, text_pattern_ops
+		"item_user_unaccent_prefix": true, "item_user_name_trgm": true, // 0008
 		"tag_user_unaccent_prefix": true, "tag_user_tag_trgm": true,
 	}
 	globalTrgmIndexes = map[string]bool{"item_name_trgm": true, "tag_norm_trgm": true}
