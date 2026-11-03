@@ -18,7 +18,13 @@ import (
 // profile dataset with DefaultSeed (20261102) and DefaultPartitions (16).
 // If the generator or bench-lexicon.json changes, TestDatasetDeterministic
 // fails and prints the newly computed hash so it can be pinned from CI.
-const PinnedSmokeDatasetHash = "dbd476280948338ac693ad5d1001ece7dfdad08e86bab42a2dcc908fb6c2d31f"
+//
+// Superseded dbd476280948338ac693ad5d1001ece7dfdad08e86bab42a2dcc908fb6c2d31f:
+// the dataset before 3adf508 (rand.Rand.NormFloat64), which differed between
+// amd64 and arm64 (arm64 computed 5cdcf316...). The value below comes from the
+// arch-independent gaussianSample dataset; amd64 smoke run 41562620203 (job
+// 125676517329) and arm64 full run 41562619063 (job 125676940872) both printed it.
+const PinnedSmokeDatasetHash = "2359ed243afb49f4f7ae77a98c01f83f5b145513a7f58a7da77d26867311e748"
 
 func TestDatasetDeterministic(t *testing.T) {
 	lex, err := LoadDefaultLexicon()
