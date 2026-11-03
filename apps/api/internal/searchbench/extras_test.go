@@ -357,7 +357,7 @@ func TestGenericPlanSQLAndEligibility(t *testing.T) {
 		Rows:    []LexPlanRow{{ID: "whale/item/prefix/q1", Default: planInfoOf("item_user_name_trgm", false, 1), DefaultGeneric: genericInfo("item_name_trgm", true, 9)}}})
 	md := sb.String()
 	for _, want := range []string{
-		"**Generic plans**", "| whale/item/prefix/q1 | item_name_trgm (global-trgm) | **yes** | 9.00 | 90 / 3 | - | - | - | - |",
+		"**Generic plans**", "server setting: force_custom_plan", "| whale/item/prefix/q1 | item_name_trgm (global-trgm) | **yes** | 9.00 | 90 / 3 | - | - | - | - |",
 		"0010 eligibility: not eligible.", "Generic-plan EXPLAIN failed (after_0010_simulated: pgcode_42P05)",
 	} {
 		if !strings.Contains(md, want) {
@@ -424,7 +424,7 @@ func TestTask23SummaryAndMarkdown(t *testing.T) {
 
 	md := RenderMarkdown(rep)
 	for _, want := range []string{
-		"## Lexical plan (FU-SL-1)", "After 0010 (simulated)", "| whale/item/fuzzy/q1 | item_name_trgm (global-trgm) | no | 31.20 | 90 / 3 | item_user_name_trgm (per-user) | no | 6.50 | 90 / 3 |",
+		"## Lexical plan (FU-SL-1)", "server setting: force_custom_plan", "After 0010 (simulated)", "| whale/item/fuzzy/q1 | item_name_trgm (global-trgm) | no | 31.20 | 90 / 3 | item_user_name_trgm (per-user) | no | 6.50 | 90 / 3 |",
 		"| whale/tag/prefix/q2 | - | **yes** | 55.00 |", "global trigram index is used in **1 of 2** cases",
 		"## Connect-cost probe (FU-SB-2b)", "| whale_fuzzy | 20 | 4 / 9 / 12 | 0 / 0 / 0 | 14 / 48 / 50 | 3 / 5 / 6 | 1 | 0 |",
 		"**Generic plans**", "0010 eligibility: not eligible.", "## Task 23 summary - full-volume timings", "HNSW build per partition", "Reconcile full time", "flip note", "dry run note",
