@@ -48,7 +48,7 @@ Quy trình:
 4. Chạy kịch bản qua `router.ServeHTTP`; rate limit nới (ghi giá trị đã dùng vào report).
 5. Closed-loop **1/8/32 client**, target áp ở **8**; warm-up bỏ; **≥ 2000 request mỗi kịch bản**.
 6. Cache mode: lexical; hybrid cache hit; hybrid cache miss với stub **90 ms** (OQ-21); thông tin `openai_compat` ~2,3 s (số vận hành, không phải target).
-7. C2: chạy **exact** (oracle chuẩn) và ANN theo corpus × lớp tenant. Ma trận knob: `ef_search ∈ {40,64,100}`, `max_scan_tuples ∈ {20000,50000}` + không giới hạn, `SEARCH_EXACT_MAX_VECTORS ∈ {5000,10000,20000}`.
+7. C2: chạy **exact** (oracle chuẩn) và ANN theo corpus × lớp tenant. Mặc định production sau Task 23 (O1b, advisor-dec-352, R5 `41591601264` / R6 `41598130936`): `ef_search = 64`, `max_scan_tuples = 250`, `SEARCH_EXACT_MAX_VECTORS = 3000`, `SEARCH_EXACT_FALLBACK_MAX_VECTORS = 3000` (kèm bracket `max_scan_tuples = 400`); ma trận 3×3×3: `ef_search ∈ {40,64,100}`, `max_scan_tuples ∈ {20000,50000}` + không giới hạn, `SEARCH_EXACT_MAX_VECTORS ∈ {5000,10000,20000}`.
 8. Tính recall/underfill đúng **định nghĩa đóng băng** ở [targets.md](targets.md) mục 2 (không định nghĩa lại trong runner hay report).
 9. Tự kiểm phép đo (BE-7, W3): chèn trễ 50 ms test-only vào nhánh lexical → C1-L **phải** fail; ép ANN trên whale (`SEARCH_EXACT_MAX_VECTORS=0`, fallback exact tắt, `hnsw.iterative_scan=off`, `ef_search=1`) → assert path thực tế là `ann` và C2-R **phải** fail. Target không đổi.
 10. Task 23: chạy `full` trên draft PR `phase05/search-bench*`; tune trong ma trận knob (mỗi đổi ghi số đo dẫn tới; đổi partitions → generation mới, không `ALTER`); hồi quy P04 A10 với semantic bật (`entry_create_semantic_perf_test.go`, job `Content perf`).
