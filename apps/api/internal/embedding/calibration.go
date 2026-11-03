@@ -267,8 +267,10 @@ const (
 var (
 	// "dims=<d>;instr=<sha8>" exactly as OpenAIModelVersion formats it.
 	calOpenAIModelVersionRE = regexp.MustCompile(`^dims=[1-9][0-9]{0,3};instr=[0-9a-f]{8}$`)
-	// "<model_sha>;qp=<sha8>;dp=<sha8>" exactly as TEIModelVersion formats it.
-	calTEIModelVersionRE = regexp.MustCompile(`^[A-Za-z0-9._:-]+;qp=[0-9a-f]{8};dp=[0-9a-f]{8}$`)
+	// "<model_sha>;qp=<sha8>;dp=<sha8>" exactly as TEIModelVersion formats it. The
+	// model_sha part follows isValidTEIInfoToken (tei.go): first char alnum, then
+	// [A-Za-z0-9._/:@+-], at most 128 chars in all.
+	calTEIModelVersionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,127};qp=[0-9a-f]{8};dp=[0-9a-f]{8}$`)
 	// report-<slug>-<dims>-<yyyymmdd>.json, flat in the report directory.
 	calReportPathRE = regexp.MustCompile(`^docs/benchmarks/semantic-eval/report-[a-z0-9][a-z0-9._-]*\.json$`)
 )
@@ -290,6 +292,15 @@ var (
 // in calEntries: moving it there unfilled makes TestCalibrationEntriesHaveReports
 // and the lookup reject it, and TestCalibrationProductionPendingFailsClosed pins
 // that.
+//
+// TODO(T24-host) test delta for the stage 24-2 PR: TestCalibrationProductionPendingFailsClosed
+// WILL go red once the real entry is registered, by design (it is the guard
+// test, not a guard rejection; do not weaken the guard to make it pass). In
+// that same PR replace its two "nothing real is served" assertions (the
+// "calEntries holds only fake entries" loop and the "real openai_compat identity
+// is not served in any env" loop) with "the registered real entry is served in
+// production and passes calValidateProductionEntry", and keep the placeholder
+// and malformed-entry sub-cases unchanged.
 var calProductionPending = CalibrationEntry{}
 
 // calValidateProductionEntry reports why e is not an acceptable real

@@ -2,6 +2,7 @@ package embedding
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/zone17th/engram/apps/api/internal/embedding/embedid"
@@ -495,6 +496,11 @@ func TestCalibrationValidateProductionEntryRejectsEachBadField(t *testing.T) {
 	if err := calValidateProductionEntry(teiOK); err != nil {
 		t.Fatalf("well-formed tei entry rejected: %v", err)
 	}
+	teiSlashAtPlus := teiOK
+	teiSlashAtPlus.ModelVersion = TEIModelVersion("org/rev@1.2+build:3_x", "query: ", "passage: ")
+	if err := calValidateProductionEntry(teiSlashAtPlus); err != nil {
+		t.Fatalf("tei entry with / @ + in model_sha rejected (isValidTEIInfoToken allows them): %v", err)
+	}
 	teiBadVersion := teiOK
 	teiBadVersion.ModelVersion = "dims=1024;instr=0123abcd"
 
@@ -520,6 +526,16 @@ func TestCalibrationValidateProductionEntryRejectsEachBadField(t *testing.T) {
 		{"version tei format under openai_compat", mut(func(e *CalibrationEntry) { e.ModelVersion = teiOK.ModelVersion })},
 		{"version fake prefix", mut(func(e *CalibrationEntry) { e.ModelVersion = FakeEmbedModelVersionPrefix + "qp=e3b0c442;dp=e3b0c442" })},
 		{"tei with openai version format", teiBadVersion},
+		{"tei sha leading slash", func() CalibrationEntry {
+			e := teiOK
+			e.ModelVersion = TEIModelVersion("/abc", "query: ", "passage: ")
+			return e
+		}()},
+		{"tei sha over 128 chars", func() CalibrationEntry {
+			e := teiOK
+			e.ModelVersion = TEIModelVersion(strings.Repeat("a", 129), "query: ", "passage: ")
+			return e
+		}()},
 		{"MinCos zero", mut(func(e *CalibrationEntry) { e.MinCos = 0 })},
 		{"MinCos below grid", mut(func(e *CalibrationEntry) { e.MinCos = 0.29 })},
 		{"MinCos above grid", mut(func(e *CalibrationEntry) { e.MinCos = 0.91 })},
