@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
 import { triggerFocusWake } from './content-acceptance-support';
 import {
   A11Y_LANGS,
@@ -572,6 +572,48 @@ async function recoverSemantic(page: Page): Promise<void> {
   throw new Error('semantic did not return after the breaker window');
 }
 
+/** Set by the test body; read by the describe `afterEach` when the body's own `finally` did not get to run (e.g. a timeout). */
+const semanticCleanup: { page: Page | null; cookies: Awaited<ReturnType<BrowserContext['cookies']>> } = {
+  page: null,
+  cookies: [],
+};
+
+/**
+ * RV-T22-2-FE1-2: the describe-level safety net (same contract as the stable/degrade specs). Always puts the shared fake back to
+ * `ok`; after a failed run it also waits out the API breaker (`recoverSemantic`, bounded by BREAKER_RECOVERY_MAX_MS) with the
+ * test user's session: on the test's own page if the body was abandoned before closing it, else on a short-lived context that
+ * carries that user's cookies.
+ */
+async function semanticAfterEach(browser: Browser, testInfo: TestInfo): Promise<void> {
+  const { page: tracked, cookies } = semanticCleanup;
+  semanticCleanup.page = null;
+  semanticCleanup.cookies = [];
+  await fakeembedReset();
+  const leftOpen = tracked !== null && !tracked.isClosed() ? tracked : null;
+  if (testInfo.status === testInfo.expectedStatus) {
+    await leftOpen?.context().close().catch(() => undefined);
+    return;
+  }
+  let context: BrowserContext | null = leftOpen?.context() ?? null;
+  try {
+    let page: Page;
+    if (leftOpen !== null) {
+      page = leftOpen;
+    } else {
+      if (cookies.length === 0) return;
+      context = await newContext(browser);
+      await context.addCookies(cookies);
+      page = await context.newPage();
+      await page.goto('/api/v1/healthz', { waitUntil: 'domcontentloaded', timeout: CONTENT_A11Y_UI_WAIT_MS });
+    }
+    await recoverSemantic(page);
+  } catch {
+    // no session to recover with, or the breaker outlived the bound: the next spec's own setup reports it
+  } finally {
+    await context?.close().catch(() => undefined);
+  }
+}
+
 async function runSemanticA11yGroup(browser: Browser, lang: A11yLang, theme: A11yTheme): Promise<void> {
   const label = `${lang}-${theme}`;
   const messages = lang === 'vi' ? viMessages : enMessages;
@@ -588,7 +630,9 @@ async function runSemanticA11yGroup(browser: Browser, lang: A11yLang, theme: A11
     const widthIdx = (width: number): number => AXE_WIDTHS.findIndex((w) => w.width === width);
 
     await a11yStep(`[search-a11y-sem ${label}] signup, locale/theme, seed, waitForEmbedded, aliases`, async () => {
+      semanticCleanup.page = live;
       await bootstrapUnlockedUser(live, uniqueEmail(`content-search-a11y-sem-${label}`), lang, theme);
+      semanticCleanup.cookies = await context.cookies();
       await expect(live.getByTestId('home-empty-state')).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
       fixtures = await seedSemanticCorpus(live);
       // seed -> waitForEmbedded -> (slow | down) -> type (plan Task 22, N1); probe queries are never typed below.
@@ -753,6 +797,12 @@ async function runSemanticA11yGroup(browser: Browser, lang: A11yLang, theme: A11
 test.describe('P05-T22 @semantic search a11y (near, near-pending, degraded, enable-409, #timkiem)', () => {
   // Local runs without the stack skip. In CI this never skips (a misconfigured semantic job must go red, not green-by-skip).
   test.skip(!process.env.E2E_STACK && !process.env.CI, 'needs the semantic-fake compose stack (E2E_STACK=1)');
+
+  // The fake is shared by every @semantic spec of the job: never leave it `slow`/`down`, and after a FAILED run wait out the API
+  // breaker even when a timeout abandoned the body's `finally` (RV-T22-2-FE1-2, same contract as the stable/degrade specs).
+  test.afterEach(async ({ browser }, testInfo) => {
+    await semanticAfterEach(browser, testInfo);
+  });
 
   for (const lang of A11Y_LANGS) {
     for (const theme of A11Y_THEMES) {
