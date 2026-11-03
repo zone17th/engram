@@ -21,10 +21,11 @@ import (
 //     (user_id, target_id) — the composite primary key on each partition —
 //     which blocks the Postgres planner from choosing the per-partition HNSW
 //     index (`ORDER BY embedding <=> $2`) when count <= ExactMaxVectors.
-//   - Computes `(embedding <=> $2) AS dist` once and filters
+//   - Projects `(embedding <=> $2) AS dist` and filters
 //     `1 - (embedding <=> $2) >= $3` (`semantic_min_cos`) inside the
-//     MATERIALIZED CTE before joining the live target table, avoiding
-//     redundant detoasting and live-table index probes for rows below threshold.
+//     MATERIALIZED CTE before joining the live target table, so the outer
+//     query reuses `e.dist` without re-reading `embedding` and skips
+//     live-table index probes for rows below threshold.
 //   - Joins the live target table (`item` or `tag`) on `id = target_id AND
 //     user_id = user_id` with `deleted_at IS NULL`, so soft-deleted rows and
 //     other tenants' rows are never returned.

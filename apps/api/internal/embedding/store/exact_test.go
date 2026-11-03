@@ -531,7 +531,7 @@ func TestExactSearchPushdownPreservesIDsAndOrder(t *testing.T) {
 	pool := newTestPool(t)
 	q := gen.New(pool)
 
-	g1, pin := seedGenerationForVectorSearch(t, ctx, pool, 1, 3, 4, 0.50, true)
+	g1, pin := seedGenerationForVectorSearch(t, ctx, pool, 1, 4, 4, 0.50, true)
 	u, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "exact-pushdown-order@example.com", Locale: "en"})
 	if err != nil {
 		t.Fatal(err)
@@ -541,20 +541,22 @@ func TestExactSearchPushdownPreservesIDsAndOrder(t *testing.T) {
 	idTieA := uuid.MustParse("00000000-0000-0000-0000-000000000012")
 	idTieB := uuid.MustParse("00000000-0000-0000-0000-000000000013")
 	idNearMin := uuid.MustParse("00000000-0000-0000-0000-000000000014")
-	idBelowMin := uuid.MustParse("00000000-0000-0000-0000-000000000015")
+	idExactMin := uuid.MustParse("00000000-0000-0000-0000-000000000015")
+	idBelowMin := uuid.MustParse("00000000-0000-0000-0000-000000000016")
 
 	hash := makeHash(0x69)
-	// Insert in reverse/mixed order to verify deterministic (dist ASC, id ASC)
-	// and identical threshold boundary behavior after pushdown.
+	// Insert in reverse/mixed order to verify deterministic (dist ASC, id ASC),
+	// exact equality at semantic_min_cos (0.50), and truncation across a tie.
 	fixture := []struct {
 		id  uuid.UUID
 		vec []float32
 	}{
-		{id: idBelowMin, vec: []float32{0.40, 0.916515, 0}}, // cos = 0.40 < 0.50 (filtered out inside CTE)
-		{id: idNearMin, vec: []float32{0.60, 0.80, 0}},      // cos = 0.60 >= 0.50
-		{id: idTieB, vec: []float32{0.80, 0.60, 0}},         // cos = 0.80 (tie, higher UUID)
-		{id: idBest, vec: []float32{1.0, 0.0, 0}},           // cos = 1.00
-		{id: idTieA, vec: []float32{0.80, 0.60, 0}},         // cos = 0.80 (tie, lower UUID)
+		{id: idBelowMin, vec: []float32{0.40, 0.916515, 0, 0}},   // cos = 0.40 < 0.50 (filtered out inside CTE)
+		{id: idExactMin, vec: []float32{0.50, 0.50, 0.50, 0.50}}, // cos = 0.50 == 0.50 (exact threshold boundary, included)
+		{id: idNearMin, vec: []float32{0.60, 0.80, 0, 0}},        // cos = 0.60 >= 0.50
+		{id: idTieB, vec: []float32{0.80, 0.60, 0, 0}},           // cos = 0.80 (tie, higher UUID)
+		{id: idBest, vec: []float32{1.0, 0.0, 0, 0}},             // cos = 1.00
+		{id: idTieA, vec: []float32{0.80, 0.60, 0, 0}},           // cos = 0.80 (tie, lower UUID)
 	}
 	for idx, f := range fixture {
 		_, err := q.InsertItem(ctx, gen.InsertItemParams{
@@ -584,24 +586,43 @@ func TestExactSearchPushdownPreservesIDsAndOrder(t *testing.T) {
 	knobs := store.DefaultVectorSearchKnobs()
 	knobs.ExactMaxVectors = 10
 	knobs.FallbackMaxVectors = 20
-	wantIDs := []uuid.UUID{idBest, idTieA, idTieB, idNearMin}
+	qvec := []float32{1, 0, 0, 0}
+
+	cases := []struct {
+		name    string
+		k       int
+		wantIDs []uuid.UUID
+	}{
+		{
+			name:    "full_eligible_includes_exact_threshold_boundary",
+			k:       10,
+			wantIDs: []uuid.UUID{idBest, idTieA, idTieB, idNearMin, idExactMin},
+		},
+		{
+			name:    "limit_cuts_through_distance_tie_by_id_asc",
+			k:       2,
+			wantIDs: []uuid.UUID{idBest, idTieA},
+		},
+	}
 
 	for _, corpus := range []generation.Corpus{generation.CorpusItem, generation.CorpusTag} {
-		hits, stats, err := store.VectorSearch(
-			ctx, pool, pin, u.ID, corpus, []float32{1, 0, 0}, 10, time.Now().Add(2*time.Second), knobs,
-		)
-		if err != nil {
-			t.Fatalf("VectorSearch (%s): %v", corpus, err)
-		}
-		if stats.Path != store.VectorPathExact {
-			t.Fatalf("stats.Path (%s) = %q, want exact", corpus, stats.Path)
-		}
-		if len(hits) != len(wantIDs) {
-			t.Fatalf("len(hits) (%s) = %d, want %d (hits=%+v)", corpus, len(hits), len(wantIDs), hits)
-		}
-		for i, wantID := range wantIDs {
-			if hits[i].ID != wantID {
-				t.Fatalf("hits[%d].ID (%s) = %s, want %s (hits=%+v)", i, corpus, hits[i].ID, wantID, hits)
+		for _, tc := range cases {
+			hits, stats, err := store.VectorSearch(
+				ctx, pool, pin, u.ID, corpus, qvec, tc.k, time.Now().Add(2*time.Second), knobs,
+			)
+			if err != nil {
+				t.Fatalf("VectorSearch (%s/%s): %v", corpus, tc.name, err)
+			}
+			if stats.Path != store.VectorPathExact {
+				t.Fatalf("stats.Path (%s/%s) = %q, want exact", corpus, tc.name, stats.Path)
+			}
+			if len(hits) != len(tc.wantIDs) {
+				t.Fatalf("len(hits) (%s/%s) = %d, want %d (hits=%+v)", corpus, tc.name, len(hits), len(tc.wantIDs), hits)
+			}
+			for i, wantID := range tc.wantIDs {
+				if hits[i].ID != wantID {
+					t.Fatalf("hits[%d].ID (%s/%s) = %s, want %s (hits=%+v)", i, corpus, tc.name, hits[i].ID, wantID, hits)
+				}
 			}
 		}
 	}
