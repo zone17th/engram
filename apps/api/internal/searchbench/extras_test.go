@@ -520,3 +520,31 @@ func TestExtrasBudgetAndTestDeadline(t *testing.T) {
 		t.Errorf("tag = %q", got)
 	}
 }
+
+// TestExtrasLogCarriesTagsNotErrorText (RV-W4-1-6): a failed extra goes to the job log as
+// its class tag (with the SQLSTATE of a PgError), never as the raw error text.
+func TestExtrasLogCarriesTagsNotErrorText(t *testing.T) {
+	const secret = "dial postgres://engram:" + "fake@10.1.2.3:5432/engram_bench"
+	var logged []string
+	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	errs := runExtraSections(context.Background(), []extraSection{
+		{"connect_probe", time.Minute, func(context.Context) error { return errors.New(secret) }},
+		{"lexical_plan", time.Minute, func(context.Context) error {
+			return fmt.Errorf("explain: %w", &pgconn.PgError{Code: "57014", Message: `canceling statement for q "private words"`})
+		}},
+	}, logf)
+	if strings.Join(errs, "|") != "connect_probe: error|lexical_plan: pgcode_57014" {
+		t.Errorf("tags = %v", errs)
+	}
+	text := strings.Join(logged, "\n")
+	for _, bad := range []string{"postgres://", "fake", "10.1.2.3", "engram_bench", "private words", "canceling"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("job log leaks %q: %s", bad, text)
+		}
+	}
+	for _, want := range []string{"connect_probe failed: error", "lexical_plan failed: pgcode_57014"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("job log must contain %q: %s", want, text)
+		}
+	}
+}

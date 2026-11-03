@@ -103,8 +103,10 @@ type Task23Extras struct {
 	Errors []string `json:"errors,omitempty"`
 }
 
-// errTag reduces an error to a fixed class tag so the report never carries
-// driver or SQL text.
+// errTag reduces an error to a fixed class tag so neither the report nor the job
+// log carries driver or SQL text (a pgx connect error names user, database and host,
+// a PgError message can quote a parameter value). A PgError keeps its SQLSTATE
+// ("pgcode_57014"), which is what the diagnosis needs.
 func errTag(err error) string {
 	var pe *pgconn.PgError
 	switch {
@@ -127,7 +129,7 @@ func errTag(err error) string {
 func RunExtras(ctx context.Context, dsn string, sr *SeedResult, classes map[TenantClass][]int, cfg ExtrasConfig, logf func(string, ...any)) *Task23Extras {
 	ex := &Task23Extras{}
 	fail := func(section string, err error) {
-		logf("task23 extra %s failed: %v", section, err)
+		logf("task23 extra %s failed: %s", section, errTag(err))
 		ex.Errors = append(ex.Errors, section+": "+errTag(err))
 	}
 	if cfg.TotalBudget > 0 {
@@ -206,7 +208,7 @@ func runExtraSections(ctx context.Context, secs []extraSection, logf func(string
 		err := s.fn(sctx)
 		cancel()
 		if err != nil {
-			logf("task23 extra %s failed: %v", s.name, err)
+			logf("task23 extra %s failed: %s", s.name, errTag(err))
 			errs = append(errs, s.name+": "+errTag(err))
 			continue
 		}
