@@ -144,10 +144,13 @@ func TestServerLogsFileHasOnlyAllowlistedTokens(t *testing.T) {
 		slog.String("status", "500; DROP TABLE item"),
 	}
 	lg.LogAttrs(context.Background(), slog.LevelWarn, "hostile warn line", hostile...)
-	// A message that carries a DSN and one that carries q text: the sink keeps messages
-	// (constants by convention), the scrub must still refuse them.
+	// Messages outside the vocabulary (RV-W4-1-5): one that carries a DSN, one with q
+	// text, a password-less URL DSN (no "@", no "="), and a letters-only message that
+	// carries a name (capitalised). The sink counts them under "other" and keeps no text.
 	lg.Warn("connect failed " + dsn)
 	lg.Error("lexical failed for q=my-secret-query")
+	lg.Warn("dial postgres://127.0.0.1:55432/engram")
+	lg.Warn("Alice private item")
 	// Hostile enum values on the partial line: dropped by the sink, never aggregated.
 	lg.LogAttrs(context.Background(), slog.LevelInfo, PartialLogMessage,
 		slog.String("corpus", "alice-private-notes"), slog.String("mode", "hello world secret"), slog.String("phase", dsn),
@@ -203,25 +206,36 @@ func TestServerLogsFileHasOnlyAllowlistedTokens(t *testing.T) {
 	if classes["INFO|http_request"] != 1 || classes["WARN|hostile warn line"] != 1 {
 		t.Errorf("allowlisted class counts must reach the file: %v", classes)
 	}
-	if doc.Dropped < 2 {
-		t.Errorf("scrub_dropped_entries = %d, want >= 2 (the DSN and q= messages)", doc.Dropped)
+	if classes["WARN|other"] != 3 || classes["ERROR|other"] != 1 {
+		t.Errorf("out-of-vocabulary messages must be counted under \"other\" (3 WARN, 1 ERROR): %v", classes)
+	}
+	for _, kept := range []string{"other", "hostile warn line", "http_request"} {
+		if !strings.Contains(text, kept) {
+			t.Errorf("server-logs.json must keep the allowed message %q", kept)
+		}
+	}
+	if doc.Dropped != 0 {
+		t.Errorf("scrub_dropped_entries = %d, want 0 (the sink already mapped the messages to other)", doc.Dropped)
 	}
 
 	// The scrub on its own: a document built by hand with a bad class message, a bad
 	// sample, an out-of-enum partial and a bad SHA loses exactly those entries.
 	d := ServerLogsDoc{Profile: "smoke", Arch: "amd64", HeadSHA: "not hex; secret", Scenarios: []ServerLogsScenario{{ID: "C1-L", Levels: []ServerLogsLevel{{
-		Classes: []LogClassCount{{Level: "WARN", Message: "ok message", Count: 1}, {Level: "WARN", Message: "has q=secret", Count: 1}, {Level: "ERROR", Message: "fine", ErrorClass: "has spaces", Count: 1}},
+		Classes: []LogClassCount{{Level: "WARN", Message: "ok message", Count: 1}, {Level: "WARN", Message: "has q=secret", Count: 1}, {Level: "ERROR", Message: "fine", ErrorClass: "has spaces", Count: 1},
+			{Level: "WARN", Message: "postgres://127.0.0.1:5432/engram", Count: 1}, {Level: "WARN", Message: "Alice private item", Count: 1}, {Level: "WARN", Message: "lower case words only", Count: 1}},
 		Samples: []string{`level=WARN msg="ok" status=500`, `level=WARN msg="ok" q=secret text`},
 		Partials: []PartialAgg{
 			{Corpus: "item", Mode: "full", Phase: "query", Count: 1},
 			{Corpus: "alice", Mode: "full", Phase: "query", Count: 1},
 		},
 	}}}}}
-	if n := ScrubServerLogsDoc(&d); n != 5 {
-		t.Errorf("scrub dropped %d entries, want 5 (SHA, class message, class error_class, sample, partial)", n)
+	// Dropped: SHA, q= message, error_class, URL message, capitalised name message, sample, partial.
+	// A lower-case words-only message stays: it cannot be told from a constant (safeLogMessage).
+	if n := ScrubServerLogsDoc(&d); n != 7 {
+		t.Errorf("scrub dropped %d entries, want 7 (SHA, class messages x3, class error_class, sample, partial)", n)
 	}
 	l := d.Scenarios[0].Levels[0]
-	if d.HeadSHA != "" || len(l.Classes) != 1 || len(l.Samples) != 1 || len(l.Partials) != 1 {
+	if d.HeadSHA != "" || len(l.Classes) != 2 || len(l.Samples) != 1 || len(l.Partials) != 1 {
 		t.Errorf("scrub result = %+v / %+v", d, l)
 	}
 }

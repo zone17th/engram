@@ -243,10 +243,31 @@ func BuildServerLogsDoc(r *Report) ServerLogsDoc {
 }
 
 var (
-	sampleLineRE  = regexp.MustCompile(`^level=(?:INFO|WARN|ERROR) msg="[A-Za-z0-9 _.:,/-]{1,120}"(?: [a-z_]+=[A-Za-z0-9_./{}:*-]{1,80})*$`)
-	logMessageRE  = regexp.MustCompile(`^[A-Za-z0-9 _.:,/-]{1,120}$`)
+	sampleLineRE  = regexp.MustCompile(`^level=(?:INFO|WARN|ERROR) msg="[a-z][a-z0-9 _.:,/-]{0,119}"(?: [a-z_]+=[A-Za-z0-9_./{}:*-]{1,80})*$`)
+	logMessageRE  = regexp.MustCompile(`^[a-z][a-z0-9 _.:,/-]{0,119}$`)
 	hexSHAPattern = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 )
+
+// OtherLogMessage is the class message under which a log message outside the
+// vocabulary is counted (the count is kept, the text is not).
+const OtherLogMessage = "other"
+
+// safeLogMessage returns msg when it fits the message vocabulary and OtherLogMessage
+// otherwise. The vocabulary is what the server code logs: constants in lower case
+// (words, digits, space and _ . : , / -) without "://", "=" or "@" (no URL or DSN,
+// no key=value text, no address), at most 120 characters. A message is NOT proven
+// constant by this check: a lower-case words-only message cannot be told from a
+// constant, so the guarantee for those is the convention that request-path
+// messages are constants (reviewed: branch.go, semantic/runtime.go, httpx
+// middleware) plus the fact that user text only ever reaches attributes, which the
+// sink drops. Capitalised text (names, titles), URLs, DSNs, key=value pairs and
+// addresses are refused here.
+func safeLogMessage(msg string) string {
+	if logMessageRE.MatchString(msg) && !strings.Contains(msg, "://") {
+		return msg
+	}
+	return OtherLogMessage
+}
 
 func okLogLevel(l string) bool { return l == "INFO" || l == "WARN" || l == "ERROR" || l == "DEBUG" }
 
@@ -256,8 +277,11 @@ func okMsStats(s MsStats) bool {
 }
 
 // ScrubServerLogsDoc is the last line of defence before the file is written. It
-// re-checks every string and number of the document against the same closed
-// vocabularies as the sink and DROPS (never rewrites) what does not fit. It
+// re-checks every string and number of the document against the same vocabularies
+// as the sink (tokens, enums, and for log messages safeLogMessage: lower-case
+// constants without "://", "=" or "@", which is narrower than the sink for
+// attributes but not a proof that a message is constant, see safeLogMessage) and
+// DROPS (never rewrites) what does not fit. It
 // returns the number of dropped entries. The sink already guarantees this for
 // real log records; the scrub exists so a future change of the sink, the record
 // parser or the builder cannot leak by accident (privacy lens).
@@ -285,7 +309,7 @@ func ScrubServerLogsDoc(doc *ServerLogsDoc) int {
 			}
 			classes := l.Classes[:0:0]
 			for _, c := range l.Classes {
-				if okLogLevel(c.Level) && logMessageRE.MatchString(c.Message) && (c.ErrorClass == "" || safeLogToken(c.ErrorClass)) && c.Count >= 0 {
+				if okLogLevel(c.Level) && safeLogMessage(c.Message) == c.Message && (c.ErrorClass == "" || safeLogToken(c.ErrorClass)) && c.Count >= 0 {
 					classes = append(classes, c)
 				} else {
 					dropped++

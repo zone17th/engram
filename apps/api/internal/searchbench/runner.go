@@ -370,7 +370,9 @@ func (h *Harness) token(t int) string {
 // undiagnosable. LogSink is an in-memory slog.Handler that keeps ONLY an
 // allowlist of attributes (see allowedLogKey) and drops everything else, so no
 // q text, names, ids, SQL or error strings can reach the report (privacy lens).
-// Log messages are fixed constants by project convention and are kept (capped).
+// Log messages are fixed lower-case constants by project convention and are kept
+// (capped) when they fit the message vocabulary (safeLogMessage); any other message is
+// counted under "other" and its text is dropped.
 
 const (
 	maxLogSamples    = 5   // sanitized sample lines kept per drained run
@@ -527,6 +529,8 @@ func (s *LogSink) record(level slog.Level, msg string, kv []string) {
 	if len(msg) > maxLogMessageLen {
 		msg = msg[:maxLogMessageLen]
 	}
+	// Outside the message vocabulary the text is not kept, only the count (RV-W4-1-5).
+	msg = safeLogMessage(msg)
 	class := ""
 	for _, p := range kv {
 		if v, ok := strings.CutPrefix(p, "error_class="); ok {
