@@ -1235,6 +1235,88 @@ func (h *Harness) ANNPlanEvidence(ctx context.Context, corpus generation.Corpus,
 	return &ev
 }
 
+// MaxANNPlanTenants caps the number of distinct ANN-entering tenants explained
+// per C2 cell.
+const MaxANNPlanTenants = 3
+
+// tenantVectorCount returns the seeded vector count for tenant tIdx in corpus,
+// honoring the optional truncation map `limits`.
+func tenantVectorCount(spec ProfileSpec, corpus generation.Corpus, tIdx int, limits map[int]int) int {
+	if tIdx < 0 || tIdx >= len(spec.Tenants) {
+		return 0
+	}
+	c := spec.Tenants[tIdx].ItemCount
+	if corpus == generation.CorpusTag {
+		c = spec.Tenants[tIdx].TagCount
+	}
+	if l := limits[tIdx]; l > 0 && l < c {
+		c = l
+	}
+	return c
+}
+
+// tenantEntersANN reports whether a tenant with `count` vectors enters the ANN
+// branch under `knob` (matching store.VectorSearch: ExactMax == 0 forces ANN,
+// otherwise count > ExactMax).
+func tenantEntersANN(count int, knob KnobSet) bool {
+	if knob.ExactMax <= 0 {
+		return count > 0
+	}
+	return count > knob.ExactMax
+}
+
+// SelectANNPlanJobs returns the first job for each distinct tenant in `jobs`
+// whose seeded vector count enters the ANN branch under `knob` (count >
+// knob.ExactMax, or count > 0 when knob.ExactMax == 0), capped at
+// MaxANNPlanTenants (3).
+func SelectANNPlanJobs(spec ProfileSpec, corpus generation.Corpus, jobs []vqJob, knob KnobSet, limits map[int]int) []vqJob {
+	seen := map[int]struct{}{}
+	var out []vqJob
+	for _, j := range jobs {
+		tIdx := j.q.TenantIdx
+		if _, ok := seen[tIdx]; ok {
+			continue
+		}
+		seen[tIdx] = struct{}{}
+		if !tenantEntersANN(tenantVectorCount(spec, corpus, tIdx, limits), knob) {
+			continue
+		}
+		out = append(out, j)
+		if len(out) >= MaxANNPlanTenants {
+			break
+		}
+	}
+	return out
+}
+
+// CellANNPlanEvidence runs ANNPlanEvidence on up to 3 distinct ANN-entering
+// tenants in `jobs` and combines the per-tenant (tenant index, partition,
+// verdict) results. If no tenant in `jobs` enters ANN, it returns a
+// PlanEvidence with Problem "no ANN tenant in this cell".
+func (h *Harness) CellANNPlanEvidence(ctx context.Context, corpus generation.Corpus, jobs []vqJob, knob KnobSet, limits map[int]int) *PlanEvidence {
+	selected := SelectANNPlanJobs(h.Seed.Spec, corpus, jobs, knob, limits)
+	if len(selected) == 0 {
+		return CombineTenantPlanEvidence(nil)
+	}
+	tbl, _ := h.tableOf(corpus)
+	tenants := make([]TenantPlanEvidence, 0, len(selected))
+	for _, j := range selected {
+		tSpec := h.Seed.Spec.Tenants[j.q.TenantIdx]
+		ev := h.ANNPlanEvidence(ctx, corpus, tSpec.UserID, j.q.Vec, knob)
+		part := ev.Relation
+		if part == "" {
+			part = fmt.Sprintf("%s_p%d", tbl, tSpec.PartitionRemainder)
+		}
+		tenants = append(tenants, TenantPlanEvidence{
+			TenantIdx: j.q.TenantIdx,
+			Partition: part,
+			Verdict:   ev.Verdict(),
+			Plan:      *ev,
+		})
+	}
+	return CombineTenantPlanEvidence(tenants)
+}
+
 // explainANN is the representative EXPLAIN (ANALYZE, BUFFERS) of the ANN SQL under
 // the production default knobs. Vector literals (planner constants) are scrubbed.
 func (h *Harness) explainANN(ctx context.Context, corpus generation.Corpus, user uuid.UUID, vec []float32) ([]string, error) {
@@ -1301,8 +1383,7 @@ func (h *Harness) RunC2(ctx context.Context, cfg C2Config) (*C2Report, error) {
 				// the planner's plan for the ANN SQL is an HNSW scan of the pruned
 				// partition, so a sequential scan can never be reported as "ANN".
 				if cell.ANNQueries > 0 && len(jobs) > 0 {
-					user := h.Seed.Spec.Tenants[jobs[0].q.TenantIdx].UserID
-					cell.Plan = h.ANNPlanEvidence(ctx, corpus, user, jobs[0].q.Vec, knob)
+					cell.Plan = h.CellANNPlanEvidence(ctx, corpus, jobs, knob, limits)
 				}
 				rep.Cells = append(rep.Cells, cell)
 			}

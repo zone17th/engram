@@ -283,19 +283,29 @@ type CellAgg struct {
 	Plan *PlanEvidence `json:"ann_plan,omitempty"`
 }
 
+// TenantPlanEvidence records the ANN SQL plan verdict for one ANN-entering
+// tenant in a C2 cell.
+type TenantPlanEvidence struct {
+	TenantIdx int          `json:"tenant_index"`
+	Partition string       `json:"partition"`
+	Verdict   string       `json:"verdict"`
+	Plan      PlanEvidence `json:"plan"`
+}
+
 // PlanEvidence records whether the plan of the actual ANN SQL
 // (store.ANNSearchSQL) scans the pruned partition through its HNSW index. It
 // keeps a benchmark from silently measuring a sequential scan + exact sort as
 // "ANN" (SBW3-1-1).
 type PlanEvidence struct {
-	UsesHNSW       bool     `json:"uses_hnsw"`
-	Index          string   `json:"index,omitempty"`
-	IndexAM        string   `json:"index_am,omitempty"`
-	Relation       string   `json:"relation,omitempty"`
-	EmbeddingScans int      `json:"embedding_scans"` // scans of embedding relations in the plan (1 = pruned to one partition)
-	SeqScans       int      `json:"embedding_seq_scans"`
-	Problem        string   `json:"problem,omitempty"` // why the plan is not an HNSW scan of one partition
-	Plan           []string `json:"plan,omitempty"`    // plan text, only when UsesHNSW is false (vector literals scrubbed)
+	UsesHNSW       bool                 `json:"uses_hnsw"`
+	Index          string               `json:"index,omitempty"`
+	IndexAM        string               `json:"index_am,omitempty"`
+	Relation       string               `json:"relation,omitempty"`
+	EmbeddingScans int                  `json:"embedding_scans"` // scans of embedding relations in the plan (1 = pruned to one partition)
+	SeqScans       int                  `json:"embedding_seq_scans"`
+	Problem        string               `json:"problem,omitempty"` // why the plan is not an HNSW scan of one partition
+	Plan           []string             `json:"plan,omitempty"`    // plan text, only when UsesHNSW is false (vector literals scrubbed)
+	Tenants        []TenantPlanEvidence `json:"tenants,omitempty"` // per-tenant plan evidence when multiple ANN tenants exist (cap 3)
 }
 
 var (
@@ -308,6 +318,8 @@ var (
 // name to its access method ("hnsw"). The plan "uses HNSW" iff exactly one
 // embedding relation is scanned (the hash partition of the tenant, so partition
 // pruning applied), by a plain Index Scan whose index is an hnsw index.
+// A `Bitmap Index Scan on <index>` is the child of a `Bitmap Heap Scan` on the
+// same partition and is not counted as a second embedding relation scan.
 func ParseANNPlan(lines []string, parent string, indexAM func(string) string) PlanEvidence {
 	ev := PlanEvidence{}
 	type scan struct{ node, index, rel string }
@@ -316,6 +328,9 @@ func ParseANNPlan(lines []string, parent string, indexAM func(string) string) Pl
 		m := planScanRe.FindStringSubmatch(l)
 		if m == nil || !strings.Contains(m[4], "_embedding_g") {
 			continue // scans of item/tag (the live join) are not the vector scan
+		}
+		if m[1] == "Bitmap Index Scan" {
+			continue // child of a Bitmap Heap Scan on the same partition
 		}
 		rel := m[4]
 		if i := strings.LastIndex(rel, "."); i >= 0 {
@@ -357,15 +372,85 @@ func ParseANNPlan(lines []string, parent string, indexAM func(string) string) Pl
 	return ev
 }
 
+// Verdict returns the short single-plan verdict string.
+func (ev PlanEvidence) Verdict() string {
+	if ev.UsesHNSW {
+		return "HNSW (" + ev.Relation + ")"
+	}
+	if ev.Problem == "no ANN tenant in this cell" {
+		return ev.Problem
+	}
+	return "NOT HNSW: " + ev.Problem
+}
+
+// CombineTenantPlanEvidence summarizes up to 3 per-tenant ANN plan evaluations
+// for a cell. When len(tenants) == 0, it reports "no ANN tenant in this cell".
+// When len(tenants) == 1, it preserves the single-plan fields while attaching
+// the tenant record. When len(tenants) > 1, it aggregates UsesHNSW (true iff
+// all explained tenants use HNSW), sums EmbeddingScans and SeqScans, and
+// formats per-tenant (tenant index, partition, verdict) summaries.
+func CombineTenantPlanEvidence(tenants []TenantPlanEvidence) *PlanEvidence {
+	if len(tenants) == 0 {
+		return &PlanEvidence{Problem: "no ANN tenant in this cell"}
+	}
+	for i := range tenants {
+		if tenants[i].Verdict == "" {
+			tenants[i].Verdict = tenants[i].Plan.Verdict()
+		}
+	}
+	if len(tenants) == 1 {
+		ev := tenants[0].Plan
+		ev.Tenants = tenants
+		return &ev
+	}
+	allHNSW := true
+	var parts, nonHNSW, rels, plans []string
+	var embScans, seqScans int
+	for _, t := range tenants {
+		parts = append(parts, fmt.Sprintf("t%d (%s): %s", t.TenantIdx, t.Partition, t.Verdict))
+		rels = append(rels, fmt.Sprintf("t%d:%s", t.TenantIdx, t.Partition))
+		embScans += t.Plan.EmbeddingScans
+		seqScans += t.Plan.SeqScans
+		if !t.Plan.UsesHNSW {
+			allHNSW = false
+			nonHNSW = append(nonHNSW, fmt.Sprintf("t%d (%s): %s", t.TenantIdx, t.Partition, t.Plan.Problem))
+			plans = append(plans, fmt.Sprintf("--- t%d (%s) ---", t.TenantIdx, t.Partition))
+			plans = append(plans, t.Plan.Plan...)
+		}
+	}
+	ev := &PlanEvidence{
+		UsesHNSW:       allHNSW,
+		Relation:       strings.Join(rels, ", "),
+		EmbeddingScans: embScans,
+		SeqScans:       seqScans,
+		Tenants:        tenants,
+	}
+	if allHNSW {
+		ev.IndexAM = "hnsw"
+	} else {
+		ev.Problem = strings.Join(nonHNSW, "; ")
+		ev.Plan = plans
+	}
+	return ev
+}
+
 // PlanLabel is the short plan cell of the C2 table.
 func (c CellAgg) PlanLabel() string {
 	switch {
 	case c.Plan == nil:
 		return "-"
-	case c.Plan.UsesHNSW:
-		return "HNSW (" + c.Plan.Relation + ")"
+	case len(c.Plan.Tenants) > 1:
+		parts := make([]string, len(c.Plan.Tenants))
+		for i, t := range c.Plan.Tenants {
+			v := t.Verdict
+			if v == "" {
+				v = t.Plan.Verdict()
+			}
+			parts[i] = fmt.Sprintf("t%d (%s): %s", t.TenantIdx, t.Partition, v)
+		}
+		return strings.Join(parts, "; ")
 	default:
-		return "NOT HNSW: " + c.Plan.Problem
+		return c.Plan.Verdict()
 	}
 }
 

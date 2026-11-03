@@ -1216,6 +1216,24 @@ func TestParseANNPlan(t *testing.T) {
 	if strings.Contains(strings.Join(ev.Plan, "\n"), "0.1,0.2") || !strings.Contains(strings.Join(ev.Plan, "\n"), "'[vector]'") {
 		t.Fatalf("plan text must have its vector literal scrubbed: %v", ev.Plan)
 	}
+	bitmap := []string{
+		"Sort",
+		"  Sort Key: a.dist, i.id",
+		"  CTE ann",
+		"    ->  Limit",
+		"          ->  Sort",
+		"                Sort Key: ((e.embedding <=> '[0.1,0.2,0.3]'::vector))",
+		"                ->  Bitmap Heap Scan on item_embedding_g1_p6 e",
+		"                      Recheck Cond: (user_id = '3105896d-6d7b-4537-ac13-7e75285f4a21'::uuid)",
+		"                      ->  Bitmap Index Scan on item_embedding_g1_p6_pkey",
+		"                            Index Cond: (user_id = '3105896d-6d7b-4537-ac13-7e75285f4a21'::uuid)",
+		tail,
+	}
+	bmEv := ParseANNPlan(bitmap, "item_embedding_g1", am)
+	if bmEv.UsesHNSW || bmEv.EmbeddingScans != 1 || bmEv.Relation != "item_embedding_g1_p6" ||
+		bmEv.Problem != "Bitmap Heap Scan on item_embedding_g1_p6, not an index scan" {
+		t.Fatalf("bitmap heap+index scan on one partition must be 1 scan with bitmap verdict: %+v", bmEv)
+	}
 	pk := []string{"CTE ann", "  ->  Sort", "        ->  Index Scan using item_embedding_g1_p2_pkey on item_embedding_g1_p2 e", tail}
 	if ev := ParseANNPlan(pk, "item_embedding_g1", am); ev.UsesHNSW || !strings.Contains(ev.Problem, "not an HNSW index") {
 		t.Fatalf("btree index scan must not count as HNSW: %+v", ev)
@@ -1226,7 +1244,8 @@ func TestParseANNPlan(t *testing.T) {
 		"        ->  Index Scan using item_embedding_g1_p1_hnsw on item_embedding_g1_p1 e_2",
 		tail,
 	}
-	if ev := ParseANNPlan(unpruned, "item_embedding_g1", func(string) string { return "hnsw" }); ev.UsesHNSW || ev.EmbeddingScans != 2 {
+	if ev := ParseANNPlan(unpruned, "item_embedding_g1", func(string) string { return "hnsw" }); ev.UsesHNSW ||
+		ev.EmbeddingScans != 2 || ev.Problem != "2 embedding scans: the tenant partition was not pruned to a single scan" {
 		t.Fatalf("an unpruned Append must not count as one HNSW partition scan: %+v", ev)
 	}
 	onParent := []string{"CTE ann", "  ->  Index Scan using item_embedding_g1_hnsw on item_embedding_g1 e", tail}
@@ -1245,6 +1264,74 @@ func TestParseANNPlan(t *testing.T) {
 	}
 	if !strings.HasPrefix(cell.PlanLabel(), "NOT HNSW") {
 		t.Fatalf("plan label = %q", cell.PlanLabel())
+	}
+
+	// Selection of ANN-entering tenants in a cell (e.g. medium class where
+	// tenant 2 has 4,000 items / 800 tags <= ExactMax=5000 and must be skipped).
+	fullSpec, err := BuildProfileSpec(ProfileFull, DefaultSeed, DefaultPartitions)
+	if err != nil {
+		t.Fatalf("BuildProfileSpec(full): %v", err)
+	}
+	medTenants := ClassifyTenants(fullSpec)[ClassMedium] // [2, 5, 6, 7]
+	var medJobs []vqJob
+	for i := range 8 {
+		medJobs = append(medJobs, vqJob{q: VectorQuery{Corpus: generation.CorpusItem, Class: ClassMedium, TenantIdx: medTenants[i%len(medTenants)], Index: i}})
+	}
+	sel := SelectANNPlanJobs(fullSpec, generation.CorpusItem, medJobs, NewKnob(64, 20000, 5000), nil)
+	if len(sel) != 3 || sel[0].q.TenantIdx != 5 || sel[1].q.TenantIdx != 6 || sel[2].q.TenantIdx != 7 {
+		t.Fatalf("SelectANNPlanJobs(item/medium, exact5000) = %+v, want tenants [5, 6, 7] (skipping t2=4000)", sel)
+	}
+	// With ExactMax=0 (forced ANN), even t2 is included, and the result is capped at 3 distinct tenants.
+	selForced := SelectANNPlanJobs(fullSpec, generation.CorpusItem, medJobs, NewKnob(64, 20000, 0), nil)
+	if len(selForced) != 3 || selForced[0].q.TenantIdx != 2 || selForced[1].q.TenantIdx != 5 || selForced[2].q.TenantIdx != 6 {
+		t.Fatalf("SelectANNPlanJobs(item/medium, exact0) = %+v, want capped [2, 5, 6]", selForced)
+	}
+	// With ExactMax=10000 on tag/medium (counts 800, 6000, 10000, 15000), only t7 (15000 > 10000) enters ANN.
+	selTag10k := SelectANNPlanJobs(fullSpec, generation.CorpusTag, medJobs, NewKnob(64, 20000, 10000), nil)
+	if len(selTag10k) != 1 || selTag10k[0].q.TenantIdx != 7 {
+		t.Fatalf("SelectANNPlanJobs(tag/medium, exact10000) = %+v, want [7]", selTag10k)
+	}
+	// With ExactMax=20000 on tag/medium, no tenant enters ANN.
+	if selNone := SelectANNPlanJobs(fullSpec, generation.CorpusTag, medJobs, NewKnob(64, 20000, 20000), nil); len(selNone) != 0 {
+		t.Fatalf("SelectANNPlanJobs(tag/medium, exact20000) = %+v, want empty", selNone)
+	}
+	// Truncation limits are respected.
+	if selLim := SelectANNPlanJobs(fullSpec, generation.CorpusItem, medJobs, NewKnob(64, 20000, 5000), map[int]int{5: 3000, 6: 5000}); len(selLim) != 1 || selLim[0].q.TenantIdx != 7 {
+		t.Fatalf("SelectANNPlanJobs with limits = %+v, want [7]", selLim)
+	}
+
+	// CombineTenantPlanEvidence: 0, 1, and multiple ANN tenants.
+	noneEv := CombineTenantPlanEvidence(nil)
+	cell.Plan = noneEv
+	if noneEv.UsesHNSW || noneEv.Problem != "no ANN tenant in this cell" || cell.PlanLabel() != "no ANN tenant in this cell" {
+		t.Fatalf("no ANN tenant evidence = %+v, label = %q", noneEv, cell.PlanLabel())
+	}
+	hnswEv := ParseANNPlan(hnsw, "item_embedding_g1", am)
+	oneEv := CombineTenantPlanEvidence([]TenantPlanEvidence{{
+		TenantIdx: 0, Partition: "item_embedding_g1_p2", Verdict: hnswEv.Verdict(), Plan: hnswEv,
+	}})
+	cell.Plan = oneEv
+	if !oneEv.UsesHNSW || cell.PlanLabel() != "HNSW (item_embedding_g1_p2)" {
+		t.Fatalf("single HNSW tenant = %+v, label = %q", oneEv, cell.PlanLabel())
+	}
+	multiAllHNSW := CombineTenantPlanEvidence([]TenantPlanEvidence{
+		{TenantIdx: 5, Partition: "tag_embedding_g1_p8", Plan: PlanEvidence{UsesHNSW: true, Relation: "tag_embedding_g1_p8", EmbeddingScans: 1}},
+		{TenantIdx: 6, Partition: "tag_embedding_g1_p10", Plan: PlanEvidence{UsesHNSW: true, Relation: "tag_embedding_g1_p10", EmbeddingScans: 1}},
+		{TenantIdx: 7, Partition: "tag_embedding_g1_p12", Plan: PlanEvidence{UsesHNSW: true, Relation: "tag_embedding_g1_p12", EmbeddingScans: 1}},
+	})
+	cell.Plan = multiAllHNSW
+	wantAllLabel := "t5 (tag_embedding_g1_p8): HNSW (tag_embedding_g1_p8); t6 (tag_embedding_g1_p10): HNSW (tag_embedding_g1_p10); t7 (tag_embedding_g1_p12): HNSW (tag_embedding_g1_p12)"
+	if !multiAllHNSW.UsesHNSW || multiAllHNSW.EmbeddingScans != 3 || cell.PlanLabel() != wantAllLabel {
+		t.Fatalf("multi all-HNSW = %+v, label = %q, want %q", multiAllHNSW, cell.PlanLabel(), wantAllLabel)
+	}
+	multiMixed := CombineTenantPlanEvidence([]TenantPlanEvidence{
+		{TenantIdx: 3, Partition: "item_embedding_g1_p6", Plan: bmEv},
+		{TenantIdx: 4, Partition: "item_embedding_g1_p6", Plan: PlanEvidence{UsesHNSW: true, Relation: "item_embedding_g1_p6", EmbeddingScans: 1}},
+	})
+	cell.Plan = multiMixed
+	wantMixedLabel := "t3 (item_embedding_g1_p6): NOT HNSW: Bitmap Heap Scan on item_embedding_g1_p6, not an index scan; t4 (item_embedding_g1_p6): HNSW (item_embedding_g1_p6)"
+	if multiMixed.UsesHNSW || cell.PlanLabel() != wantMixedLabel || !strings.Contains(multiMixed.Problem, "t3 (item_embedding_g1_p6): Bitmap Heap Scan on item_embedding_g1_p6, not an index scan") {
+		t.Fatalf("multi mixed = %+v, label = %q, want %q", multiMixed, cell.PlanLabel(), wantMixedLabel)
 	}
 }
 
