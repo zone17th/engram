@@ -3,6 +3,7 @@ package searchbench
 import (
 	"context"
 	"math"
+	"math/rand/v2"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -463,4 +464,39 @@ func mustJSON(t *testing.T, words []string) string {
 	}
 	sb.WriteByte(']')
 	return sb.String()
+}
+
+// TestGaussianSampleMoments: the arch-independent Gaussian sampler that feeds the
+// dataset hash (gaussianSample, R0 41561911393) is unit-variance, zero-mean,
+// bounded at 6 sigma and deterministic for a fixed PCG stream.
+func TestGaussianSampleMoments(t *testing.T) {
+	const n = 200_000
+	draw := func() []float64 {
+		rng := rand.New(rand.NewPCG(20261102, 42))
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = gaussianSample(rng)
+		}
+		return out
+	}
+	a, b := draw(), draw()
+	var sum, sumSq float64
+	for i, x := range a {
+		if x != b[i] {
+			t.Fatalf("sample %d differs between identical streams: %v != %v", i, x, b[i])
+		}
+		if x < -6 || x >= 6 {
+			t.Fatalf("sample %d = %v outside [-6, 6)", i, x)
+		}
+		sum += x
+		sumSq += x * x
+	}
+	mean := sum / n
+	variance := sumSq/n - mean*mean
+	if math.Abs(mean) > 0.02 {
+		t.Errorf("mean = %.4f, want |mean| <= 0.02", mean)
+	}
+	if variance < 0.97 || variance > 1.03 {
+		t.Errorf("variance = %.4f, want within [0.97, 1.03]", variance)
+	}
 }

@@ -796,10 +796,55 @@ func mulRound64(a, b float64) float64 {
 	return float64(a * b)
 }
 
+// gaussianUniforms is the number of uniform draws summed by gaussianSample.
+const gaussianUniforms = 12
+
+// twoPowMinus53 is 2^-53, exactly representable: scaling by it never rounds.
+const twoPowMinus53 = 0x1p-53
+
+// gaussianSample returns one deterministic approximately-standard-normal draw
+// (Irwin-Hall: the sum of 12 independent U[0,1) draws minus 6, mean 0, variance
+// exactly 1, support [-6, 6)). It replaces rand.Rand.NormFloat64 because the
+// dataset hash must be identical on amd64 and arm64 and NormFloat64 cannot give
+// that: its ziggurat slow path (about 1% of draws) calls math.Exp and math.Log,
+// which have separate exp_amd64.s / exp_arm64.s implementations, and it
+// evaluates `fn[i]+float32(r.Float64())*(fn[i-1]-fn[i])` inside the standard
+// library where arm64 may fuse a multiply-add. Neither can be guarded from here
+// (R0 full run 41561911393: the arm64 smoke hash differed from the amd64
+// golden). This sampler uses only
+//
+//   - rng.Uint64, an integer-only PCG step;
+//   - integer shifts and one integer sum (12 values below 2^53, so below 2^57);
+//   - one int64 -> float64 conversion (IEEE-754 round-to-nearest-even on both
+//     architectures; exact below 2^53, correctly rounded above);
+//   - a multiplication by the power of two 2^-53 (exact), and
+//   - one subtraction of 6,
+//
+// with the product wrapped in mulRound64 so the compiler cannot fuse it with the
+// subtraction. No math.Exp, math.Log, math.Sin or math.Cos is involved.
+//
+// Statistics: variance 1 holds exactly, so the isotropic-vector expectations
+// (cos of two independent vectors has standard deviation 1/32; the entity
+// vector is topic + scale*noise, so its expected cosine to the topic is
+// 1/sqrt(1 + 1024*scale^2)) are unchanged. The tails are bounded at 6 sigma and
+// the excess kurtosis is -0.1, which only makes the cosine bounds of
+// TestLexiconAndVectorCosineRanges easier to meet. Cost: 12 PCG steps per
+// coordinate instead of about one, i.e. roughly 25 microseconds per 1024-d
+// vector (about 13 s of CPU for the ~0.5 M vectors of the full profile, which
+// seeding spreads over its COPY streams).
+func gaussianSample(rng *rand.Rand) float64 {
+	var sum int64
+	for range gaussianUniforms {
+		sum += int64(rng.Uint64() >> 11)
+	}
+	x := mulRound64(float64(sum), twoPowMinus53)
+	return float64(x - 6)
+}
+
 func fillGaussianUnit(rng *rand.Rand, dst []float32) {
 	var sumSq float64
 	for i := range VectorDims {
-		v := float32(rng.NormFloat64())
+		v := float32(gaussianSample(rng))
 		dst[i] = v
 		fv := float64(v)
 		sumSq = float64(sumSq + mulRound64(fv, fv))
@@ -810,7 +855,7 @@ func fillGaussianUnit(rng *rand.Rand, dst []float32) {
 func perturbAndNormalize(rng *rand.Rand, base []float32, noiseScale float32, dst []float32) {
 	var sumSq float64
 	for i := range VectorDims {
-		noise := mulRound32(noiseScale, float32(rng.NormFloat64()))
+		noise := mulRound32(noiseScale, float32(gaussianSample(rng)))
 		v := float32(base[i] + noise)
 		dst[i] = v
 		fv := float64(v)
