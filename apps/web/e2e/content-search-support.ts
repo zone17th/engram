@@ -513,6 +513,23 @@ export function waitForSuggestLegResponse(
     }));
 }
 
+/**
+ * Clicks the omnibox `≈` button once and waits for the real `PATCH /me/settings` (200), then for `aria-pressed` to equal
+ * `nextPressed`. `nextPressed` is the state the click is expected to produce; the click never moves the textarea focus
+ * (the button prevents default on mousedown), so the listbox and the draft stay as they were.
+ */
+export async function toggleSemanticSetting(page: Page, nextPressed: boolean): Promise<void> {
+  const toggle = page.getByTestId('omnibox-semantic-toggle');
+  await expect(toggle).toHaveAttribute('aria-pressed', String(!nextPressed), { timeout: SEARCH_UI_WAIT_MS });
+  const patched = page.waitForResponse(
+    (res) => res.request().method() === 'PATCH' && pathnameOf(res.url()) === `${API_PREFIX}/me/settings`,
+    { timeout: SEARCH_UI_WAIT_MS },
+  );
+  await toggle.click();
+  expect((await patched).status(), 'PATCH /me/settings status').toBe(200);
+  await expect(toggle).toHaveAttribute('aria-pressed', String(nextPressed), { timeout: SEARCH_UI_WAIT_MS });
+}
+
 /** `GET /api/v1/search` response (Enter search) matching an optional exact `q` / `scope`. */
 export function waitForSearchResponse(
   page: Page,

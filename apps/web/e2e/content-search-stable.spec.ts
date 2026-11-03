@@ -14,10 +14,26 @@ import {
   rowKeys,
   searchOmnibox,
   seedSearchCorpus,
+  toggleSemanticSetting,
   typeKeys,
+  waitForSuggestLegResponse,
   waitForSuggestResponse,
+  type ListboxInfo,
+  type SearchCorpus,
   type SuggestCapture,
 } from './content-search-support';
+import {
+  documentInput,
+  fakeembedReset,
+  fakeembedSetAliases,
+  fakeembedSetMode,
+  fakeembedStats,
+  itemDocumentText,
+  nextProbeQuery,
+  suggestSemanticViaPage,
+  uniqueSemanticQuery,
+  waitForEmbedded,
+} from './content-search-semantic-support';
 
 // Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs.
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
@@ -29,16 +45,12 @@ process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
  * keeps `activeKey` when its `(kind, id)` is still in the new snapshot and otherwise clears it without auto-activating the
  * first row, and that React keys are `kind:id`, so a surviving row is the same DOM node.
  *
- * // 22-2: the `@semantic` half is NOT here. It belongs to PR 22-2 (job `e2e-search-semantic`, real `fakeembed`):
- * //   - `fakeembed` `slow` + a brand-new unique query (alias to a target so a near row exists, `/__control/stats` query
- * //     counter must rise >= 1, N1) makes the near zone arrive late; the `elementHandle` of every lexical row must be
- * //     unchanged and `activeKey` kept (plan Task 22 `content-search-stable`, `@semantic`);
- * //   - toggling the ≈ button on/off must not reorder the lexical rows.
- * //   Import `waitForEmbedded` from `content-search-semantic-support.ts` (PR 20b-1) and follow seed -> waitForEmbedded ->
- * //   slow -> type. Tag those tests `@semantic`.
+ * The `@semantic` half (PR 22-2a) is the second `describe` at the bottom of this file. It runs only in job
+ * `Search semantic e2e (fake provider)` against the real `fakeembed` (`Content e2e` skips it through
+ * `--grep-invert @semantic`).
  *
- * Every query below is typed once per user: responses are cached client-side for 30 s (plan 2.7), a second typing would not
- * hit the network and the response wait would time out.
+ * Every lexical query below is typed once per user: responses are cached client-side for 30 s (plan 2.7), a second typing
+ * would not hit the network and the response wait would time out.
  */
 
 interface RowHandles {
@@ -183,5 +195,236 @@ test.describe('P05-T22 search stable merge (lexical, real stack)', () => {
     const sent = recorder.suggestSince(0, { withQuery: true });
     expect(sent.length).toBeGreaterThanOrEqual(5);
     expect(sent.every((r) => queryParamOf(r, 'semantic') === '0')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// @semantic half (P05 Task 22, PR 22-2a). Real semantic server + CI-only `fakeembed`; no `page.route` anywhere.
+// Order (plan Task 22 / 20b, N1): seed -> waitForEmbedded -> `slow` -> type a NEW never-sent query -> stats grew -> late near.
+// ---------------------------------------------------------------------------------------------------------------------------
+
+const SEMANTIC_TEST_TIMEOUT_MS = 300_000;
+/**
+ * Provider delay of the `slow` scenario, the ONE place to change it (advisor-dec-338: job `Search semantic e2e (fake
+ * provider)` sets `EMBEDDING_QUERY_TIMEOUT: 5s`, commit 02b0bd2). It must stay well under that 5 s query timeout: a slower
+ * provider times out, opens the API breaker for 60 s and turns the near leg into `degraded` instead of late. 2.5 s is long
+ * enough that the lexical leg, the pending line and the ↓ keystrokes all provably happen before the near zone arrives.
+ */
+const SLOW_DELAY_MS = 2_500;
+/**
+ * `afterEach` recovery bound after a FAILED run, derived from the breaker window of `content-search-degrade.spec.ts`
+ * (`BreakerOpenWindow` 60 s + one poll + request slack + report margin): 60_000 + 500 + 2_000 + 10_000.
+ */
+const CLEANUP_RECOVERY_MS = 72_500;
+const CLEANUP_POLL_MS = 500;
+const NEAR_ZONE = '#omni-listbox [data-zone="near"]';
+const TARGET_NAME = 'lantern keeper';
+
+/** Row keys outside the near zone (tags, then items): what the lexical leg decides. */
+function lexicalKeys(info: ListboxInfo): string[] {
+  return info.options.filter((o) => (o.kind === 'item' || o.kind === 'tag') && o.zone !== 'near').map((o) => o.key);
+}
+
+function nearKeys(info: ListboxInfo): string[] {
+  return info.options.filter((o) => (o.kind === 'item' || o.kind === 'tag') && o.zone === 'near').map((o) => o.key);
+}
+
+/** Keys the lexical leg alone puts on screen (`near` stripped), in on-screen order. */
+function lexicalKeysFromBody(body: SuggestCapture['body']): string[] {
+  return expectedKeysFromSuggest({ ...body, near: [] });
+}
+
+/** `true` when `old` and the node currently rendered for `key` are the very same DOM node (never re-mounted). */
+async function isSameNode(page: Page, old: ElementHandle<HTMLElement>, key: string): Promise<boolean> {
+  const current = await page.locator(`#omni-listbox [data-opt-key="${key}"]`).elementHandle();
+  if (!current) return false;
+  return old.evaluate((el, other) => el === other, current);
+}
+
+test.describe('P05-T22 search stable merge (@semantic, real fakeembed)', () => {
+  // Locally without the stack: skip. In CI never skip: a misconfigured semantic job must go red, not green-by-skipping.
+  test.skip(
+    !process.env.E2E_STACK && !process.env.CI,
+    'needs the compose stack (E2E_STACK=1) with profile semantic-fake: real API, real fakeembed provider',
+  );
+
+  // The fake is shared by every @semantic spec of the job: never leave it `slow`. After a FAILED run the API breaker can
+  // still be open although the fake is `ok` again, so wait it out with fresh queries (same recovery as the degrade spec).
+  test.afterEach(async ({ page }, testInfo) => {
+    await fakeembedReset();
+    if (testInfo.status === testInfo.expectedStatus) {
+      return;
+    }
+    const deadline = Date.now() + CLEANUP_RECOVERY_MS;
+    try {
+      while (Date.now() < deadline) {
+        const response = await suggestSemanticViaPage(page, uniqueSemanticQuery('reset'));
+        if (response.status === 200 && (response.body as { semantic?: boolean } | null)?.semantic === true) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, CLEANUP_POLL_MS));
+      }
+    } catch {
+      // page gone or not on the app origin: nothing to recover
+    }
+  });
+
+  test('@semantic slow provider: the late near zone leaves every lexical row on the same DOM node and keeps activeKey; ≈ off/on never reorders the lexical rows', async ({
+    page,
+  }) => {
+    test.setTimeout(SEMANTIC_TEST_TIMEOUT_MS);
+    const recorder = attachSearchRequestRecorder(page.context());
+    await bootstrapUnlockedUser(page, uniqueEmail('content-search-stable-sem'), 'en', 'light');
+
+    // The scenario query is `token`: it prefix-matches the three `token ...` items and is aliased to the target
+    // (`lantern keeper`, no lexical relation), so the near leg returns exactly that one row. `prefixQuery` (token minus its
+    // last character) is typed first so ↓↓ happens BEFORE the scenario query exists: the near arrival is then provably late.
+    const token = uniqueSemanticQuery('stab');
+    const prefixQuery = token.slice(0, -1);
+    const lastChar = token.slice(-1);
+    const corpus: SearchCorpus = {
+      tags: [],
+      items: [
+        { ref: 'target', name: TARGET_NAME },
+        { ref: 'alpha', name: `${token} alpha` },
+        { ref: 'beta', name: `${token} beta` },
+        { ref: 'gamma', name: `${token} gamma` },
+      ],
+    };
+    const seeded = await seedSearchCorpus(page, corpus);
+    const targetId = seeded.itemId('target');
+    const targetKey = seeded.itemKey('target');
+    const omnibox: Locator = searchOmnibox(page);
+    await expect(omnibox).toBeVisible({ timeout: SEARCH_UI_WAIT_MS });
+
+    await test.step('waitForEmbedded: the target has a vector; then alias the scenario query to it and switch to slow', async () => {
+      await waitForEmbedded(page, [{ id: targetId, probeQuery: nextProbeQuery() }]);
+      await fakeembedSetAliases({ [token]: documentInput(itemDocumentText(TARGET_NAME, null)) });
+      await fakeembedSetMode('slow', { delayMs: SLOW_DELAY_MS });
+    });
+
+    let before: RowHandles = { keys: [], handles: new Map() };
+    let activeKey = '';
+    let activeDescendantId: string | null = null;
+
+    await test.step('prefix query: lexical rows, ↓↓ activates the second row (before the scenario query exists)', async () => {
+      await omnibox.focus();
+      const lexLeg = waitForSuggestLegResponse(page, { q: prefixQuery, semantic: 0 });
+      const nearLeg = waitForSuggestLegResponse(page, { q: prefixQuery, semantic: 1 });
+      await typeKeys(page, prefixQuery);
+      const [lexical, near] = await Promise.all([lexLeg, nearLeg]);
+      expect(lexical.status).toBe(200);
+      expect(near.status).toBe(200);
+      expect(near.body.semantic, 'prefix near leg is served by the real provider').toBe(true);
+
+      const keys = lexicalKeysFromBody(lexical.body);
+      expect(keys, 'the three token items match the prefix query').toHaveLength(3);
+      await expect.poll(async () => lexicalKeys(await readListbox(page)), { timeout: SEARCH_UI_WAIT_MS }).toEqual(keys);
+      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('ArrowDown');
+      activeKey = keys[1] ?? '';
+      expect(activeKey).not.toBe('');
+      await expectActiveKey(page, activeKey);
+      activeDescendantId = (await readListbox(page)).activeDescendantId;
+      expect(activeDescendantId).not.toBeNull();
+      before = await captureRowHandles(page);
+      expect(before.keys.filter((k) => keys.includes(k))).toEqual(keys);
+    });
+
+    let lexicalOrder: string[] = [];
+    await test.step('scenario query (new, never sent): lexical first, near arrives late, nothing re-mounts', async () => {
+      const statsBefore = await fakeembedStats();
+      const lexLeg = waitForSuggestLegResponse(page, { q: token, semantic: 0 });
+      const nearLeg = waitForSuggestLegResponse(page, { q: token, semantic: 1 });
+      await typeKeys(page, lastChar);
+      const lexical = await lexLeg;
+      expect(lexical.status).toBe(200);
+      expect(lexical.body.near).toEqual([]);
+
+      // Lexical leg landed, near leg still in flight (provider delay): rows are on screen, the pending line is up, there is
+      // no near zone yet, and the rows of the previous generation are already the same nodes and still active.
+      await expect(page.getByTestId('omnibox-status-near-pending')).toBeVisible({ timeout: SEARCH_UI_WAIT_MS });
+      await expect(page.locator(NEAR_ZONE)).toHaveCount(0);
+      await expect
+        .poll(async () => lexicalKeys(await readListbox(page)), { timeout: SEARCH_UI_WAIT_MS })
+        .toEqual(lexicalKeysFromBody(lexical.body));
+      for (const key of before.keys) {
+        const old = before.handles.get(key);
+        if (!old) continue;
+        expect(await isSameNode(page, old, key), 'a lexical row was re-mounted by the new generation').toBe(true);
+      }
+      await expectActiveKey(page, activeKey);
+
+      const near = await nearLeg;
+      expect(near.status).toBe(200);
+      expect(near.body.semantic, 'near leg of the scenario query is served (slow, not degraded)').toBe(true);
+      expect(near.body.near.map((n) => `${n.kind}:${n.id}`), 'the aliased target is the only near row').toEqual([targetKey]);
+      // The provider path was really called for this brand-new query (N1/BE-15), before any late-near assert.
+      await expect
+        .poll(async () => (await fakeembedStats()).query_requests, {
+          timeout: SEARCH_UI_WAIT_MS,
+          message: 'fakeembed query_requests must grow: the scenario query was a cache miss that reached the provider',
+        })
+        .toBeGreaterThan(statsBefore.query_requests);
+
+      // >= 1 near row first, then the stability assertions (never an empty green).
+      await expect(page.locator(`${NEAR_ZONE} [data-opt-key="${targetKey}"]`)).toBeVisible({ timeout: SEARCH_UI_WAIT_MS });
+      const info = await readListbox(page);
+      expect(nearKeys(info)).toEqual([targetKey]);
+      const zoneIds = info.zones.map((z) => z.id);
+      expect(zoneIds.indexOf('near'), 'near zone sits right after the items zone').toBe(zoneIds.indexOf('items') + 1);
+
+      lexicalOrder = lexicalKeys(info);
+      expect(lexicalOrder).toEqual(lexicalKeysFromBody(lexical.body));
+      expect(survivorsKeepOrder(before.keys, lexicalOrder), 'lexical order unchanged by the new query').toBe(true);
+      expect(lexicalOrder).toHaveLength(before.keys.length);
+      for (const key of lexicalOrder) {
+        const old = before.handles.get(key);
+        expect(old, 'every lexical row of the new query existed before it').toBeDefined();
+        if (!old) continue;
+        expect(await isSameNode(page, old, key), 'a lexical row was re-mounted by the late near zone').toBe(true);
+      }
+      await expectActiveKey(page, activeKey);
+      expect((await readListbox(page)).activeDescendantId).toBe(activeDescendantId);
+      await expect(page.locator(`#omni-listbox [data-opt-key="${activeKey}"]`)).toHaveAttribute('aria-selected', 'true');
+    });
+
+    await test.step('≈ off: near zone gone, lexical order and nodes unchanged, no near request', async () => {
+      await recorder.flush();
+      const mark = recorder.mark();
+      await toggleSemanticSetting(page, false);
+      await expect(page.locator(NEAR_ZONE)).toHaveCount(0, { timeout: SEARCH_UI_WAIT_MS });
+      const info = await readListbox(page);
+      expect(lexicalKeys(info)).toEqual(lexicalOrder);
+      expect(nearKeys(info)).toEqual([]);
+      for (const key of lexicalOrder) {
+        const old = before.handles.get(key);
+        if (!old) continue;
+        expect(await isSameNode(page, old, key), 'turning ≈ off re-mounted a lexical row').toBe(true);
+      }
+      await recorder.flush();
+      expect(
+        recorder.suggestSince(mark, { withQuery: true }).filter((r) => queryParamOf(r, 'semantic') === '1'),
+        'turning ≈ off must not send a near request',
+      ).toHaveLength(0);
+    });
+
+    await test.step('≈ on again: near comes back (>= 1 row), lexical order and nodes still unchanged', async () => {
+      const nearAgain = waitForSuggestLegResponse(page, { q: token, semantic: 1 });
+      await toggleSemanticSetting(page, true);
+      const near = await nearAgain;
+      expect(near.status).toBe(200);
+      expect(near.body.semantic).toBe(true);
+      await expect(page.locator(`${NEAR_ZONE} [data-opt-key="${targetKey}"]`)).toBeVisible({ timeout: SEARCH_UI_WAIT_MS });
+      const info = await readListbox(page);
+      expect(nearKeys(info)).toEqual([targetKey]);
+      expect(lexicalKeys(info)).toEqual(lexicalOrder);
+      for (const key of lexicalOrder) {
+        const old = before.handles.get(key);
+        if (!old) continue;
+        expect(await isSameNode(page, old, key), 'turning ≈ on re-mounted a lexical row').toBe(true);
+      }
+      await expectActiveKey(page, activeKey);
+    });
   });
 });
