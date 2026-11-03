@@ -12,7 +12,13 @@ import {
   type A11yLang,
   type A11yTheme,
 } from './content-a11y-support';
-import { SEARCH_LISTBOX_ID, SEARCH_OMNIBOX_SELECTOR, searchApiCreate, toggleSemanticSetting } from './content-search-support';
+import {
+  SEARCH_LISTBOX_ID,
+  SEARCH_OMNIBOX_SELECTOR,
+  searchApiCreate,
+  toggleSemanticSetting,
+  waitForSuggestLegResponse,
+} from './content-search-support';
 import {
   documentInput,
   fakeembedReset,
@@ -572,6 +578,42 @@ async function recoverSemantic(page: Page): Promise<void> {
   throw new Error('semantic did not return after the breaker window');
 }
 
+/**
+ * RV-T22-2-FE1-1: types `query` so that the provider-stats baseline belongs to `query` itself. The prefix (`query` minus its last
+ * character) is typed while the fake is still `ok` and its `semantic=1` leg is awaited, so no earlier keystroke leg can still
+ * reach the fake later. Only then is the scenario mode set and the baseline read; the last character sends the scenario query,
+ * its `semantic=1` request is awaited, and `query_requests` must grow. `down` is switched on here too: with the API breaker
+ * threshold 1, a `down` prefix leg would open the breaker and the scenario query would never reach the fake.
+ */
+async function typeScenarioQueryPinned(page: Page, query: string, setScenarioMode: () => Promise<void>): Promise<void> {
+  const omnibox = omniboxOf(page);
+  const prefix = query.slice(0, -1);
+  const prefixNear = waitForSuggestLegResponse(page, { q: prefix, semantic: 1 }, CONTENT_A11Y_UI_WAIT_MS);
+  await omnibox.focus();
+  await page.keyboard.type(prefix);
+  expect((await prefixNear).status, 'prefix near leg (fake still ok)').toBe(200);
+  await setScenarioMode();
+  const before = await fakeembedStats();
+  const scenarioNear = page.waitForRequest(
+    (req) => {
+      const url = new URL(req.url());
+      return (
+        req.method() === 'GET' &&
+        url.pathname === '/api/v1/suggest' &&
+        url.searchParams.get('q') === query &&
+        url.searchParams.get('semantic') === '1'
+      );
+    },
+    { timeout: CONTENT_A11Y_UI_WAIT_MS },
+  );
+  await page.keyboard.type(query.slice(-1));
+  await scenarioNear;
+  // The provider path was really called for the scenario query (cache miss) before anything is asserted about near/degraded.
+  await expect
+    .poll(async () => (await fakeembedStats()).query_requests, { timeout: CONTENT_A11Y_UI_WAIT_MS })
+    .toBeGreaterThan(before.query_requests);
+}
+
 /** Set by the test body; read by the describe `afterEach` when the body's own `finally` did not get to run (e.g. a timeout). */
 const semanticCleanup: { page: Page | null; cookies: Awaited<ReturnType<BrowserContext['cookies']>> } = {
   page: null,
@@ -665,20 +707,17 @@ async function runSemanticA11yGroup(browser: Browser, lang: A11yLang, theme: A11
 
     await a11yStep(`[search-a11y-sem ${label}] axe + markup: near-pending line (slow ${PENDING_SLOW_DELAY_MS} ms)`, async () => {
       const pending = live.getByTestId('omnibox-status-near-pending');
-      await fakeembedSetMode('slow', { delayMs: PENDING_SLOW_DELAY_MS });
       try {
         await sweepAxe(
           ctx,
           'near-pending',
           async (width) => {
-            const before = await fakeembedStats();
-            await omnibox.focus();
-            await live.keyboard.type(fixtures.pendingQueries[widthIdx(width)]!);
+            // Prefix with the fake `ok`, then `slow`, baseline, last char: stats pinned to the scenario query (RV-T22-2-FE1-1).
+            await fakeembedSetMode('ok');
+            await typeScenarioQueryPinned(live, fixtures.pendingQueries[widthIdx(width)]!, () =>
+              fakeembedSetMode('slow', { delayMs: PENDING_SLOW_DELAY_MS }),
+            );
             await expect(pending).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
-            // Provider path really called (cache miss) before anything is asserted about the late near zone.
-            await expect
-              .poll(async () => (await fakeembedStats()).query_requests, { timeout: CONTENT_A11Y_UI_WAIT_MS })
-              .toBeGreaterThan(before.query_requests);
             await expect(listbox.locator(LEXICAL_ITEM_ROWS)).toHaveCount(1);
             await expect(live.locator('[data-zone="near"]')).toHaveCount(0);
           },
@@ -702,23 +741,21 @@ async function runSemanticA11yGroup(browser: Browser, lang: A11yLang, theme: A11
     // locks the in-memory vault key), then recovery and settings ON. ----
     const breaker = { openedAt: 0 };
     await a11yStep(`[search-a11y-sem ${label}] axe + markup: degraded line (down)`, async () => {
-      await fakeembedSetMode('down');
       breakerMayBeOpen = true;
-      const before = await fakeembedStats();
       const degraded = live.getByTestId('omnibox-status-degraded');
       await sweepAxe(
         ctx,
         'degraded',
         async (width) => {
           const idx = widthIdx(width);
-          await omnibox.focus();
-          await live.keyboard.type(fixtures.downQueries[idx]!);
           if (idx === 0) {
-            // First down query is a cache miss that reaches the fake (and opens the breaker); later widths hit the open breaker.
-            await expect
-              .poll(async () => (await fakeembedStats()).query_requests, { timeout: CONTENT_A11Y_UI_WAIT_MS })
-              .toBeGreaterThan(before.query_requests);
+            // First down query: prefix with the fake `ok`, then `down`, baseline, last char, so the scenario query itself is the
+            // cache miss that reaches the fake and opens the breaker (RV-T22-2-FE1-1). Later widths hit the open breaker.
+            await typeScenarioQueryPinned(live, fixtures.downQueries[idx]!, () => fakeembedSetMode('down'));
             breaker.openedAt = Date.now();
+          } else {
+            await omnibox.focus();
+            await live.keyboard.type(fixtures.downQueries[idx]!);
           }
           await expect(degraded).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
           await expect(listbox.locator(LEXICAL_ITEM_ROWS)).toHaveCount(1);
