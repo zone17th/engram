@@ -67,10 +67,10 @@ type Config struct {
 
 	// Các knob tìm kiếm P05 (SPEC §4.4, §6.3, §6.4, §6.6, plan P05 mục 2.13).
 	SearchSemanticEnabled         bool          `envconfig:"SEARCH_SEMANTIC_ENABLED" default:"true"`
-	SearchExactMaxVectors         int           `envconfig:"SEARCH_EXACT_MAX_VECTORS" default:"5000" validate:"min=0,max=1000000"`
-	SearchExactFallbackMaxVectors int           `envconfig:"SEARCH_EXACT_FALLBACK_MAX_VECTORS" default:"20000" validate:"min=0,max=1000000"`
+	SearchExactMaxVectors         int           `envconfig:"SEARCH_EXACT_MAX_VECTORS" default:"3000" validate:"min=0,max=1000000"`
+	SearchExactFallbackMaxVectors int           `envconfig:"SEARCH_EXACT_FALLBACK_MAX_VECTORS" default:"3000" validate:"min=0,max=1000000"`
 	SearchHNSWEfSearch            int           `envconfig:"SEARCH_HNSW_EF_SEARCH" default:"64" validate:"min=1,max=2000"`
-	SearchHNSWMaxScanTuples       int           `envconfig:"SEARCH_HNSW_MAX_SCAN_TUPLES" default:"20000" validate:"min=1,max=1000000"`
+	SearchHNSWMaxScanTuples       int           `envconfig:"SEARCH_HNSW_MAX_SCAN_TUPLES" default:"250" validate:"min=1,max=1000000"`
 	SearchHNSWIterativeScan       string        `envconfig:"SEARCH_HNSW_ITERATIVE_SCAN" default:"relaxed_order" validate:"oneof=off relaxed_order strict_order"`
 	SearchANNRandomPageCost       float64       `ignored:"true"`
 	SearchLexicalForceCustomPlan  bool          `ignored:"true"`
@@ -379,7 +379,7 @@ func (c *Config) validateWebAuthnPolicy() error {
 //
 // Các biên dương cho knob P05:
 //   - SEARCH_HNSW_EF_SEARCH: 1..2000 (mặc định 64)
-//   - SEARCH_HNSW_MAX_SCAN_TUPLES: 1..1000000 (mặc định 20000)
+//   - SEARCH_HNSW_MAX_SCAN_TUPLES: 1..1000000 (mặc định 250)
 //   - SEARCH_ANN_RANDOM_PAGE_COST: 0.5..4.0 (mặc định 1.1; "off" hoặc 0 tắt SET LOCAL random_page_cost)
 //   - SEARCH_LEXICAL_FORCE_CUSTOM_PLAN: true/on/1 hoặc false/off/0 (mặc định true khi rỗng; tắt sẽ bỏ qua SET LOCAL plan_cache_mode = force_custom_plan)
 //   - EMBEDDING_QUERY_TIMEOUT / SHADOW: 1ms..5m (mặc định 300ms cho tei, 4s cho openai_compat)

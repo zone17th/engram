@@ -55,14 +55,14 @@ const (
 // Default and boundary values for VectorSearchKnobs (plan P05 mục 2.13, 2.16;
 // SPEC §4.4, §6.3, §6.4).
 const (
-	DefaultExactMaxVectors         = 5000
-	DefaultExactFallbackMaxVectors = 20000
+	DefaultExactMaxVectors         = 3000
+	DefaultExactFallbackMaxVectors = 3000
 	MaxExactCapVectors             = 1000000
 
 	DefaultHNSWEfSearch      = 64
 	MinHNSWEfSearch          = 1
 	MaxHNSWEfSearch          = 2000
-	DefaultHNSWMaxScanTuples = 20000
+	DefaultHNSWMaxScanTuples = 250
 	MinHNSWMaxScanTuples     = 1
 	MaxHNSWMaxScanTuples     = 1000000
 
@@ -110,7 +110,7 @@ type VectorSearchKnobs struct {
 	// EfSearch is SEARCH_HNSW_EF_SEARCH (1..2000, default 64).
 	EfSearch int
 
-	// MaxScanTuples is SEARCH_HNSW_MAX_SCAN_TUPLES (1..1000000, default 20000).
+	// MaxScanTuples is SEARCH_HNSW_MAX_SCAN_TUPLES (1..1000000, default 250).
 	MaxScanTuples int
 
 	// IterativeScan is SEARCH_HNSW_ITERATIVE_SCAN ("off", "relaxed_order", or

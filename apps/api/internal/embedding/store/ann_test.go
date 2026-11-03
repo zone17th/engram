@@ -529,7 +529,7 @@ func TestANNSetLocalStatementsRandomPageCost(t *testing.T) {
 		want := []string{
 			"SET LOCAL hnsw.iterative_scan = relaxed_order",
 			"SET LOCAL hnsw.ef_search = 64",
-			"SET LOCAL hnsw.max_scan_tuples = 20000",
+			"SET LOCAL hnsw.max_scan_tuples = 250",
 			"SET LOCAL random_page_cost = 1.1",
 			"SET LOCAL statement_timeout = '80ms'",
 		}
@@ -584,7 +584,7 @@ func TestANNSetLocalStatementsRandomPageCost(t *testing.T) {
 		want := []string{
 			"SET LOCAL hnsw.iterative_scan = relaxed_order",
 			"SET LOCAL hnsw.ef_search = 64",
-			"SET LOCAL hnsw.max_scan_tuples = 20000",
+			"SET LOCAL hnsw.max_scan_tuples = 250",
 			"SET LOCAL statement_timeout = '80ms'",
 		}
 		if !slices.Equal(stmts, want) {

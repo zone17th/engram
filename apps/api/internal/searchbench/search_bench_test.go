@@ -971,7 +971,7 @@ func TestHarnessCatchesSlowLexical(t *testing.T) {
 }
 
 // lowRecallPlannerOverrides are applied ONLY to the connection pool of the
-// low-recall self-check (HarnessConfig.SessionSQL). The 4,000-row single-tenant
+// low-recall self-check (HarnessConfig.SessionSQL). The 3,000-row single-tenant
 // fixture is too small for the planner to choose the HNSW index by itself (a
 // sequential scan + top-N sort is cheaper), which made the first version of this
 // control "force ANN" on a plan that never touched HNSW (recall 1.0). Disabling
@@ -1042,8 +1042,8 @@ func cellEvidence(c CellAgg) string {
 // hold is "no exact path, no fallback", a physical HNSW plan, and the recall collapse.
 func TestHarnessCatchesLowRecall(t *testing.T) {
 	env := dbEnvT(t)
-	limits := map[int]int{0: 4000}
-	tagLimits := map[int]int{0: 800}
+	limits := map[int]int{0: 3000}
+	tagLimits := map[int]int{0: 600}
 	dsn, sr := freshSeed(t, env, SeedOptions{Tenants: []int{0}, ItemLimit: limits, TagLimit: tagLimits})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -1151,7 +1151,7 @@ func TestHarnessCatchesLowRecall(t *testing.T) {
 		t.Fatalf("control run did not complete cleanly: %s", cellEvidence(ctl))
 	}
 	if ctl.PathCounts["exact"] != ctl.Queries || ctl.ExactQueries == 0 {
-		t.Fatalf("control (default knobs, 4000 items <= 5000) must take the exact path: %v", ctl.PathCounts)
+		t.Fatalf("control (default knobs, 3000 items <= 3000) must take the exact path: %v", ctl.PathCounts)
 	}
 	if ctl.ExactRecallMean < 1-1e-9 {
 		t.Fatalf("control exact-path recall = %v, want 1.0", ctl.ExactRecallMean)

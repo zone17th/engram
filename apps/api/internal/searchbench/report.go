@@ -1136,7 +1136,7 @@ type KnobSet struct {
 	EfSearch      int    `json:"ef_search"`
 	MaxScanTuples int    `json:"max_scan_tuples"`
 	ExactMax      int    `json:"search_exact_max_vectors"`
-	FallbackMax   int    `json:"search_exact_fallback_max_vectors"` // 0 = max(20000, ExactMax) except in forced-ANN self-checks
+	FallbackMax   int    `json:"search_exact_fallback_max_vectors"` // 0 = max(store.DefaultExactFallbackMaxVectors, ExactMax) except in forced-ANN self-checks
 	Iterative     string `json:"hnsw_iterative_scan"`
 	ForceNoFallbk bool   `json:"fallback_exact_disabled"`
 }
