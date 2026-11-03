@@ -491,13 +491,13 @@ func TestExactSearchSQLDistanceFilterPushdownShape(t *testing.T) {
 				t.Fatalf("ExactSearchSQL(%s): %v", tc.corpus, err)
 			}
 			cteStart := strings.Index(sqlStr, "WITH tenant_vecs AS MATERIALIZED (")
+			outerStart := strings.Index(sqlStr, "\n)\nSELECT")
 			joinIdx := strings.Index(sqlStr, tc.liveJoin)
-			if cteStart < 0 || joinIdx <= cteStart {
+			if cteStart < 0 || outerStart <= cteStart || joinIdx <= outerStart {
 				t.Fatalf("unexpected SQL structure:\n%s", sqlStr)
 			}
-			cteBody := sqlStr[cteStart:joinIdx]
-			outerBody := sqlStr[joinIdx:]
-
+			cteBody := sqlStr[cteStart : outerStart+2]
+			outerBody := sqlStr[outerStart+3:]
 			// 1. Distance and threshold filter must be inside the MATERIALIZED CTE before the join.
 			if !strings.Contains(cteBody, "(embedding <=> $2) AS dist") {
 				t.Fatalf("expected MATERIALIZED CTE to project (embedding <=> $2) AS dist:\n%s", cteBody)
