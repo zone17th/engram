@@ -1090,7 +1090,7 @@ func TestP05SearchKnobsAndBootstrapFlipIntervalValidation(t *testing.T) {
 	})
 
 	t.Run("lexical_force_custom_plan_parse_and_off_switch", func(t *testing.T) {
-		if !(new(config.Config)).LexicalForceCustomPlanEnabled() {
+		if !new(config.Config).LexicalForceCustomPlanEnabled() {
 			t.Fatal("zero-value Config.LexicalForceCustomPlanEnabled() phải mặc định true")
 		}
 		for _, tc := range []struct {

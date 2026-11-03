@@ -4,13 +4,14 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/pgvector/pgvector-go"
 	"math"
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/pgvector/pgvector-go"
 
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 )
