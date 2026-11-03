@@ -751,6 +751,10 @@ type LogClassCount struct {
 type ServerLogSummary struct {
 	Classes []LogClassCount `json:"classes,omitempty"`
 	Samples []string        `json:"sample_lines,omitempty"`
+	// Partials aggregates the "suggest lexical branch partial" lines (FU-SB-2b):
+	// count by (corpus, mode, phase) and p50/p95/max of setup/set_local/query ms.
+	Partials         []PartialAgg `json:"lexical_partials,omitempty"`
+	PartialsOverflow int          `json:"lexical_partial_overflow,omitempty"`
 }
 
 // errorCodeCounts renders (status, problem code) counts deterministically
@@ -1479,6 +1483,7 @@ func RenderMarkdown(r *Report) string {
 		w("### openai_compat cache miss (~2.3 s) - %s\n\n", r.C1Info.Label)
 		w("Estimated p50 %.0f ms, p95 %.0f ms. Basis: %s\n\n", r.C1Info.EstimatedP50Ms, r.C1Info.EstimatedP95Ms, r.C1Info.Basis)
 	}
+	renderPartialTables(w, r)
 
 	if r.C2 != nil {
 		c := r.C2
