@@ -27,7 +27,20 @@ import {
   grantClipboard,
   pasteIntoOmnibox,
   searchApiCreate,
+  toggleSemanticSetting,
 } from './content-search-support';
+import {
+  documentInput,
+  fakeembedReset,
+  fakeembedSetAliases,
+  fakeembedSetMode,
+  fakeembedStats,
+  itemDocumentText,
+  nextProbeQuery,
+  suggestSemanticViaPage,
+  uniqueSemanticQuery,
+  waitForEmbedded,
+} from './content-search-semantic-support';
 import { fetchMeViaPage, newContext, patchSettingsViaPage, uniqueEmail } from './helpers';
 
 // Disable Playwright's automatic error-context DOM snapshot in this worker before any test runs
@@ -48,10 +61,12 @@ process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
  * Core states run in every lang x theme combination; the edge states (`skeleton`, `more`, `more-page2`, `rate-limited`,
  * `undo-toast`) run in `EDGE_COMBOS` only, to keep `Content e2e` (30 min ceiling, gate 10) small.
  *
- * 22-2 (`@semantic`, job `e2e-search-semantic`, real `fakeembed`): near zone "Gần nghĩa" + the ≈ / fuzzy badges, a late near
- * arrival, the ≈ toggle on/off, `omnibox-status-near-pending`, `omnibox-status-degraded`, and the omnibox/settings enable-409 line.
- * The enable-409 UI is NOT reachable on the noop stack: `semantic_available=false` hides the ≈ button and disables the settings
- * switch, and the hook short-circuits before any PATCH, so only the real `PATCH true -> 409` API contract is asserted here.
+ * 22-2b (`@semantic`, job `Search semantic e2e (fake provider)`, real `fakeembed`, no `page.route`): the second describe at the end
+ * of this file captures the near zone with the ≈ badge and a fuzzy marker, ≈ off, near-pending (`slow`), degraded (`down`), the
+ * omnibox enable-409 line and settings `#timkiem` (semantic available, and its 409 status). The enable-409 UI IS reachable on that
+ * stack without a stub: provider `down` + one semantic query opens the API breaker for 60 s, and `PATCH semantic_suggest=true`
+ * is then refused with 409 (`Runtime.IsBreakerOpen`, auth/service.go). Those tests run for EDGE_COMBOS only (en-light, vi-dark).
+ * On the noop stack (the first describe) only the real `PATCH true -> 409` API contract is asserted.
  */
 
 const WIDTHS = [
@@ -178,6 +193,21 @@ async function expectRowsSettled(page: Page, kind: 'item' | 'tag'): Promise<void
     timeout: CONTENT_A11Y_UI_WAIT_MS,
   });
   await expect(listbox).not.toHaveAttribute('aria-busy', 'true', { timeout: CONTENT_A11Y_UI_WAIT_MS });
+}
+
+/**
+ * VIS-T22-2-1 (visual-T22-1-r2): a non-empty draft must show suggest rows, never the empty-draft recents. The create CTA exists
+ * only for suggest/search snapshots (`showCreate = !isRecent && ...`), and the first group heading must not be a recents heading.
+ */
+async function expectSuggestRowsNotRecent(page: Page, lang: A11yLang): Promise<void> {
+  const group = (lang === 'vi' ? viMessages : enMessages).search.group;
+  const listbox = listboxOf(page);
+  await expect(listbox.locator('[role="option"][data-opt-kind="create"]')).toHaveCount(1, {
+    timeout: CONTENT_A11Y_UI_WAIT_MS,
+  });
+  const firstHeading = listbox.locator('[role="group"] .sugg-group').first();
+  await expect(firstHeading).not.toHaveText(group.recentItems);
+  await expect(firstHeading).not.toHaveText(group.recentTags);
 }
 
 async function expectServerOffStack(page: Page): Promise<void> {
@@ -631,6 +661,9 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
         async () => {
           await typeQuery(page, 'nim');
           await expectRowsSettled(page, 'item');
+          // VIS-T22-2-1: the focus-time recents also satisfy `expectRowsSettled`; the `nim` suggest rows are the snapshot that
+          // carries the create CTA (never present in `recent`). Not a response wait: `nim` is client-cached after the first width.
+          await expectSuggestRowsNotRecent(page, ctx.lang);
           await page.keyboard.press('Enter');
           const line = page.getByTestId('omnibox-status-rate-limited');
           await expect(line).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
@@ -644,6 +677,8 @@ async function captureEdgeStates(ctx: CaptureContext): Promise<void> {
           requireRows: true,
           // VIS-T22-1-2: the muted line is the last child of a scrolling list; frame it before the capture.
           after: async () => {
+            // VIS-T22-2-1: a resize after Enter / 429 must not turn the list back into the recents (product bug if it does).
+            await expectSuggestRowsNotRecent(page, ctx.lang);
             await scrollIntoPopoverAndAssertFramed(
               page,
               page.getByTestId('omnibox-status-rate-limited'),
@@ -737,8 +772,8 @@ async function assertEnable409Contract(page: Page): Promise<void> {
   expect(on.status).toBe(409);
   expect((on.body as { code?: string } | null)?.code).toBe('semantic_unavailable');
   expect(await readStored(), 'a refused enable must leave the stored value false').toBe(false);
-  // 22-2: the omnibox `omnibox-status-enable409` line and the settings `semanticEnable409` status need a server where
-  // `semantic_available=true` but the breaker/provider is down (`fakeembed /__control {"mode":"down"}`); capture them there.
+  // The omnibox `omnibox-status-enable409` line and the settings `semanticEnable409` status need `semantic_available=true`
+  // with the API breaker open: they are captured by the `@semantic` describe at the end of this file (22-2b).
 }
 
 async function captureSettings(ctx: CaptureContext): Promise<void> {
@@ -859,6 +894,428 @@ test.describe('P05-T22 search visual captures (dropdown, U18 states, #timkiem)',
       }, testInfo) => {
         test.setTimeout(isEdge(lang, theme) ? 480_000 : 300_000);
         await runVisualGroup(browser, testInfo, lang, theme);
+      });
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// @semantic (22-2b): real fakeembed, job `Search semantic e2e (fake provider)`; `Content e2e` skips it (--grep-invert @semantic)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * How long the `slow` fake holds the provider answer, i.e. how long `omnibox-status-near-pending` stays on screen. The API's query
+ * embedding budget is `EMBEDDING_QUERY_TIMEOUT` (tei default 300 ms): a longer delay would end `degraded` and open the breaker, so
+ * the semantic job raises it to 5 s (ci.yml job `e2e-search-semantic`, advisor-dec-338). Keep this well under that 5 s. Fallback B
+ * (no env change) would be ~200 ms, which is neither capturable nor axe-able.
+ */
+const PENDING_SLOW_DELAY_MS = 3_500;
+/** The near target (never typed): reached only through an alias. */
+const NEAR_TARGET_NAME = 'router closet shelf';
+/** Lexical fuzzy fixture: `tomorow` -> `tomorrow checklist` is a word-similarity ~.70 typo hit (same shape as `pasword`/`password`). */
+const FUZZY_ITEM_NAME = 'tomorrow checklist';
+const FUZZY_QUERY = 'tomorow';
+/** Prefix of the fuzzy item (a lexical row for the 409 captures). */
+const PREFIX_QUERY = 'tomorrow';
+const NEAR_ZONE_OPTIONS = '[data-zone="near"] [role="option"]';
+const LEXICAL_ITEM_ROWS = '[data-zone="items"] [data-opt-kind="item"]';
+/** The API breaker stays open 60 s (SPEC 6.6); polling for PATCH true waits it out. */
+const BREAKER_RECOVERY_MAX_MS = 80_000;
+/** Warm-up targets per `waitForEmbedded` call (plan: at most 5). */
+const EMBEDDED_CHUNK = 5;
+
+const widthIndex = (width: Width): number => WIDTHS.findIndex((w) => w.width === width);
+
+interface SemanticFixtures {
+  readonly targetId: string;
+  readonly allIds: readonly string[];
+  readonly pendingQueries: readonly string[];
+  readonly downQueries: readonly string[];
+}
+
+/**
+ * Real-API fixtures. Every `slow`/`down` scenario needs a NEVER-SENT query, so each width gets its own unique token, and an item
+ * whose name starts with that token so a lexical row accompanies the status line. Nothing here is a secret.
+ */
+async function seedSemanticCorpus(page: Page): Promise<SemanticFixtures> {
+  const ids: string[] = [];
+  const create = async (name: string): Promise<string> => {
+    const id = (await searchApiCreate<{ id: string }>(page, '/items', { name })).id;
+    ids.push(id);
+    return id;
+  };
+  const targetId = await create(NEAR_TARGET_NAME);
+  await create(FUZZY_ITEM_NAME);
+  const pendingQueries = WIDTHS.map(() => uniqueSemanticQuery('pend'));
+  const downQueries = WIDTHS.map(() => uniqueSemanticQuery('down'));
+  for (const query of [...pendingQueries, ...downQueries]) {
+    await create(`${query} wallet`);
+  }
+  return { targetId, allIds: ids, pendingQueries, downQueries };
+}
+
+/** Every seeded item must have a vector before `slow`/`down` (otherwise the worker retries into a failing provider). */
+async function waitForAllEmbedded(page: Page, ids: readonly string[]): Promise<void> {
+  for (let i = 0; i < ids.length; i += EMBEDDED_CHUNK) {
+    await waitForEmbedded(
+      page,
+      ids.slice(i, i + EMBEDDED_CHUNK).map((id) => ({ id, probeQuery: nextProbeQuery() })),
+    );
+  }
+}
+
+function nearOptionsOf(page: Page): Locator {
+  return listboxOf(page).locator(NEAR_ZONE_OPTIONS);
+}
+
+/** >= 1 near row with the `≈` badge, and neither the pending nor the degraded line (never an empty green). */
+async function expectNearShown(page: Page): Promise<void> {
+  const near = nearOptionsOf(page);
+  await expect(near.first()).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+  expect(await near.count(), 'at least one near row').toBeGreaterThan(0);
+  await expect(near.first().locator('.sugg-near-badge')).toBeVisible();
+  await expect(page.getByTestId('omnibox-status-near-pending')).toHaveCount(0);
+  await expect(page.getByTestId('omnibox-status-degraded')).toHaveCount(0);
+}
+
+/** The lexical `fuzzy` marker (`.sugg-match-badge`) on the typo hit. */
+async function expectFuzzyMarker(page: Page): Promise<void> {
+  const row = listboxOf(page).locator(LEXICAL_ITEM_ROWS).filter({ hasText: FUZZY_ITEM_NAME });
+  await expect(row).toHaveCount(1, { timeout: CONTENT_A11Y_UI_WAIT_MS });
+  await expect(row.locator('.sugg-match-badge')).toBeVisible();
+}
+
+/** Keyboard ArrowDown until the active option is inside the near zone (also draws the active-row token for the theme check). */
+async function activateNearRow(page: Page): Promise<void> {
+  const active = listboxOf(page).locator('[data-zone="near"] [role="option"][aria-selected="true"]');
+  for (let i = 0; i < 12; i += 1) {
+    await page.keyboard.press('ArrowDown');
+    if ((await active.count()) === 1) break;
+  }
+  await expect(active, 'ArrowDown must reach a near row').toHaveCount(1);
+}
+
+/** Plain muted line outside the listbox, no live-region role (plan 2.8 rule 5, FE-23). */
+async function expectStatusLineMarkup(line: Locator, label: string): Promise<void> {
+  const structure = await line.evaluate((el) => ({
+    outsideListbox: el.closest('[role="listbox"]') === null,
+    noLiveRole: el.closest('[role="status"], [role="alert"], [aria-live]') === null && !el.hasAttribute('role'),
+  }));
+  expect.soft(structure, `${label}: status line markup`).toEqual({ outsideListbox: true, noLiveRole: true });
+}
+
+/** Clicks `≈` (setting currently OFF) and expects the real `PATCH true` to be refused with 409 and the muted line to show. */
+async function clickEnableAndExpect409(page: Page): Promise<void> {
+  const toggle = page.getByTestId('omnibox-semantic-toggle');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false', { timeout: CONTENT_A11Y_UI_WAIT_MS });
+  const patched = page.waitForResponse(
+    (res) => res.request().method() === 'PATCH' && new URL(res.url()).pathname === '/api/v1/me/settings',
+    { timeout: CONTENT_A11Y_UI_WAIT_MS },
+  );
+  await toggle.click();
+  const res = await patched;
+  expect(res.status(), 'PATCH semantic_suggest=true while the breaker is open').toBe(409);
+  await expect(page.getByTestId('omnibox-status-enable409')).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+}
+
+/**
+ * Back to a healthy stack: fake `ok`, wait out the 60 s API breaker by polling the real `PATCH semantic_suggest=true` (409 while
+ * it is open), then close the breaker with one real semantic query so the next `@semantic` spec starts clean.
+ */
+async function recoverSemantic(page: Page): Promise<void> {
+  await fakeembedSetMode('ok');
+  const deadline = Date.now() + BREAKER_RECOVERY_MAX_MS;
+  for (;;) {
+    const res = await patchSettingsViaPage(page, { semantic_suggest: true });
+    if (res.status === 200) break;
+    if (Date.now() >= deadline) {
+      throw new Error(`semantic did not recover: PATCH semantic_suggest=true still ${res.status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const probe = await suggestSemanticViaPage(page, uniqueSemanticQuery('rec'));
+    if (probe.status === 200 && (probe.body as { semantic?: boolean } | null)?.semantic === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error('semantic did not return after the breaker window');
+}
+
+/** Real `pointer: coarse` context: every dropdown row (near rows included) is >= 44 px. */
+async function assertCoarseNearRows(browser: Browser, sourcePage: Page): Promise<void> {
+  const coarseContext = await newCoarseTouchContext(browser, sourcePage.context());
+  try {
+    const coarsePage = await coarseContext.newPage();
+    await coarsePage.goto('/app', { waitUntil: 'domcontentloaded', timeout: CONTENT_A11Y_UI_WAIT_MS });
+    await unlockLockedAppPage(coarsePage);
+    const omnibox = omniboxOf(coarsePage);
+    await expect(omnibox).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+    await omnibox.focus();
+    await omnibox.pressSequentially(FUZZY_QUERY);
+    await expectNearShown(coarsePage);
+    await expectFuzzyMarker(coarsePage);
+    const [rows] = await measureCoarseTouchTargets(coarsePage, ['#omni-listbox .sugg-row']);
+    expect(rows!.count).toBeGreaterThanOrEqual(3);
+    expect(
+      rows!.effectiveHeight,
+      `coarse pointer rows incl. near: min effective height ${rows!.effectiveHeight}px (${rows!.below44.length} below 44)`,
+    ).toBeGreaterThanOrEqual(43.5);
+    const overflow = await coarsePage.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
+  } finally {
+    await coarseContext.close();
+  }
+}
+
+async function captureSettingsWidths(ctx: CaptureContext, state: string): Promise<void> {
+  const section = ctx.page.locator('#timkiem');
+  for (const { width } of WIDTHS) {
+    await setWidth(ctx.page, width);
+    await section.scrollIntoViewIfNeeded();
+    await expectNoHorizontalScroll(ctx, state, width);
+    await saveCapture(ctx, state, width, section);
+  }
+}
+
+async function runSemanticVisualGroup(
+  browser: Browser,
+  testInfo: TestInfo,
+  lang: A11yLang,
+  theme: A11yTheme,
+): Promise<void> {
+  const label = `${lang}-${theme}`;
+  const messages = lang === 'vi' ? viMessages : enMessages;
+  const context = await newContext(browser);
+  let breakerMayBeOpen = false;
+  let page: Page | null = null;
+  try {
+    page = await context.newPage();
+    const live = page;
+    const ctx: CaptureContext = { page: live, testInfo, lang, theme };
+    const listbox = listboxOf(live);
+    let fixtures!: SemanticFixtures;
+    const targetDocument = documentInput(itemDocumentText(NEAR_TARGET_NAME, null));
+
+    await a11yStep(`[search-visual-sem ${label}] signup, locale/theme, seed, waitForEmbedded, aliases`, async () => {
+      await bootstrapUnlockedUser(live, uniqueEmail(`content-search-visual-sem-${label}`), lang, theme);
+      await expect(live.getByTestId('home-empty-state')).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+      fixtures = await seedSemanticCorpus(live);
+      // seed -> waitForEmbedded -> (slow | down) -> type (plan Task 22, N1); probe queries are never typed below.
+      await waitForAllEmbedded(live, fixtures.allIds);
+      const aliases: Record<string, string> = { [FUZZY_QUERY]: targetDocument };
+      for (const q of fixtures.pendingQueries) aliases[q] = targetDocument;
+      await fakeembedSetAliases(aliases);
+      await expect(live.getByTestId('omnibox-semantic-toggle')).toHaveAttribute('aria-pressed', 'true', {
+        timeout: CONTENT_A11Y_UI_WAIT_MS,
+      });
+    });
+
+    await a11yStep(`[search-visual-sem ${label}] near zone + ≈ badge + fuzzy marker, active near row, theme token`, async () => {
+      await sweepWidths(
+        ctx,
+        'near',
+        async () => {
+          await typeQuery(live, FUZZY_QUERY);
+          await expectFuzzyMarker(live);
+          await expectNearShown(live);
+          await activateNearRow(live);
+        },
+        { requireRows: true, after: async () => expectThemeTokens(live, theme) },
+      );
+    });
+
+    await a11yStep(`[search-visual-sem ${label}] ≈ off removes the near zone, lexical rows stay (then ≈ on again)`, async () => {
+      await sweepWidths(
+        ctx,
+        'near-off',
+        async () => {
+          await typeQuery(live, FUZZY_QUERY);
+          await expectFuzzyMarker(live);
+          await expectNearShown(live);
+          await toggleSemanticSetting(live, false);
+          await expect(live.locator('[data-zone="near"]')).toHaveCount(0);
+          await expect(nearOptionsOf(live)).toHaveCount(0);
+          await expectFuzzyMarker(live);
+        },
+        {
+          requireRows: true,
+          cleanup: async () => {
+            await toggleSemanticSetting(live, true);
+            await expectNearShown(live);
+          },
+        },
+      );
+    });
+
+    await a11yStep(`[search-visual-sem ${label}] real coarse pointer: rows incl. near >= 44 px`, async () => {
+      await assertCoarseNearRows(browser, live);
+    });
+
+    await a11yStep(`[search-visual-sem ${label}] near-pending (fakeembed slow ${PENDING_SLOW_DELAY_MS} ms, new query per width)`, async () => {
+      const pending = live.getByTestId('omnibox-status-near-pending');
+      await fakeembedSetMode('slow', { delayMs: PENDING_SLOW_DELAY_MS });
+      try {
+        await sweepWidths(
+          ctx,
+          'near-pending',
+          async (width) => {
+            const query = fixtures.pendingQueries[widthIndex(width)]!;
+            const before = await fakeembedStats();
+            await typeQuery(live, query);
+            await expect(pending).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+            // The provider path was really called (cache miss) before anything is asserted about the late near zone.
+            await expect
+              .poll(async () => (await fakeembedStats()).query_requests, { timeout: CONTENT_A11Y_UI_WAIT_MS })
+              .toBeGreaterThan(before.query_requests);
+            await expect(listbox.locator(LEXICAL_ITEM_ROWS)).toHaveCount(1);
+            await expect(live.locator('[data-zone="near"]')).toHaveCount(0);
+          },
+          {
+            requireRows: true,
+            after: async () => {
+              await expect(pending).toBeVisible();
+              await expectStatusLineMarkup(pending, `near-pending ${label}`);
+              await scrollIntoPopoverAndAssertFramed(live, pending, 'the near-pending line');
+            },
+            cleanup: async () => {
+              // The capture above was taken inside the pending window (the line is still there afterwards)...
+              await expect(pending, 'near-pending must still be shown right after the capture').toBeVisible();
+              // ...and the late near zone does arrive with >= 1 near row.
+              await expectNearShown(live);
+            },
+          },
+        );
+      } finally {
+        await fakeembedSetMode('ok');
+      }
+    });
+
+    // ---- one 60 s API breaker window: degraded -> omnibox enable-409 -> settings enable-409 (settings last: a full
+    // navigation locks the in-memory vault key). Elapsed time is reported in the 409 failure messages. ----
+    const breaker = { openedAt: 0 };
+    await a11yStep(`[search-visual-sem ${label}] degraded (fakeembed down, new query per width, muted line, no toast)`, async () => {
+      await fakeembedSetMode('down');
+      breakerMayBeOpen = true;
+      const before = await fakeembedStats();
+      const degraded = live.getByTestId('omnibox-status-degraded');
+      await sweepWidths(
+        ctx,
+        'degraded',
+        async (width) => {
+          const idx = widthIndex(width);
+          await typeQuery(live, fixtures.downQueries[idx]!);
+          if (idx === 0) {
+            // First down query: a cache miss that reaches the fake (and opens the breaker). Later widths hit the open breaker.
+            await expect
+              .poll(async () => (await fakeembedStats()).query_requests, { timeout: CONTENT_A11Y_UI_WAIT_MS })
+              .toBeGreaterThan(before.query_requests);
+            breaker.openedAt = Date.now();
+          }
+          await expect(degraded).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+          await expect(listbox.locator(LEXICAL_ITEM_ROWS)).toHaveCount(1);
+          await expect(live.locator('[data-zone="near"]')).toHaveCount(0);
+          await expect(live.locator('.sugg-near-badge')).toHaveCount(0);
+          await expect(live.getByTestId('undo-toast-item')).toHaveCount(0);
+        },
+        {
+          requireRows: true,
+          after: async () => {
+            await expectStatusLineMarkup(degraded, `degraded ${label}`);
+            await scrollIntoPopoverAndAssertFramed(live, degraded, 'the degraded line');
+          },
+        },
+      );
+    });
+
+    await a11yStep(`[search-visual-sem ${label}] omnibox enable-409 (real PATCH true refused while the breaker is open)`, async () => {
+      const line = live.getByTestId('omnibox-status-enable409');
+      await sweepWidths(
+        ctx,
+        'enable409',
+        async () => {
+          await typeQuery(live, PREFIX_QUERY);
+          await expect(listbox.locator('[role="option"][data-opt-kind="create"]')).toHaveCount(1, {
+            timeout: CONTENT_A11Y_UI_WAIT_MS,
+          });
+          const toggle = live.getByTestId('omnibox-semantic-toggle');
+          if ((await toggle.getAttribute('aria-pressed')) === 'true') {
+            // PATCH false always succeeds; from here the stored setting stays false (a refused enable never flips it).
+            await toggleSemanticSetting(live, false);
+          }
+          await clickEnableAndExpect409(live);
+        },
+        {
+          requireRows: true,
+          after: async () => {
+            await expectStatusLineMarkup(line, `enable409 ${label}`);
+            await scrollIntoPopoverAndAssertFramed(live, line, 'the enable-409 line');
+          },
+        },
+      );
+    });
+
+    await a11yStep(`[search-visual-sem ${label}] settings #timkiem enable-409 status (semantic available, breaker open)`, async () => {
+      await live.goto('/app/settings#timkiem', { waitUntil: 'domcontentloaded', timeout: CONTENT_A11Y_UI_WAIT_MS });
+      const card = live.getByTestId('settings-semantic-card');
+      await expect(card).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+      await expect(live.getByTestId('settings-semantic-server-off')).toHaveCount(0);
+      const toggle = live.getByTestId('settings-semantic-switch');
+      await expect(toggle).toBeEnabled();
+      await expect(toggle).toHaveAttribute('aria-checked', 'false');
+      const patched = live.waitForResponse(
+        (res) => res.request().method() === 'PATCH' && new URL(res.url()).pathname === '/api/v1/me/settings',
+        { timeout: CONTENT_A11Y_UI_WAIT_MS },
+      );
+      await toggle.click();
+      const res = await patched;
+      expect(
+        res.status(),
+        `PATCH semantic_suggest=true while the breaker is open (${Date.now() - breaker.openedAt} ms after it opened; window 60000)`,
+      ).toBe(409);
+      await expect(live.getByTestId('settings-semantic-status')).toHaveText(messages.settings.search.semanticEnable409);
+      await expect(toggle).toHaveAttribute('aria-checked', 'false');
+      await captureSettingsWidths(ctx, 'settings-semantic-409');
+    });
+
+    await a11yStep(`[search-visual-sem ${label}] settings #timkiem with semantic available and ON (after the breaker recovers)`, async () => {
+      await recoverSemantic(live);
+      breakerMayBeOpen = false;
+      await live.reload({ waitUntil: 'domcontentloaded', timeout: CONTENT_A11Y_UI_WAIT_MS });
+      const card = live.getByTestId('settings-semantic-card');
+      await expect(card).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+      await expect(live.getByTestId('settings-semantic-server-off')).toHaveCount(0);
+      const toggle = live.getByTestId('settings-semantic-switch');
+      await expect(toggle).toBeEnabled();
+      await expect(toggle).toHaveAttribute('aria-checked', 'true');
+      await expect(live.locator('[data-testid^="settings-semantic-copy-"]')).toBeVisible();
+      await expect(live.getByTestId('settings-semantic-status')).toHaveText('');
+      await captureSettingsWidths(ctx, 'settings-semantic');
+    });
+  } finally {
+    await fakeembedReset().catch(() => undefined);
+    if (breakerMayBeOpen && page !== null) {
+      await recoverSemantic(page).catch(() => undefined);
+    }
+    await context.close();
+  }
+}
+
+test.describe('P05-T22 @semantic search visual captures (near, pending, degraded, enable-409, #timkiem)', () => {
+  // Local runs without the stack skip. In CI this never skips (a misconfigured semantic job must go red, not green-by-skip).
+  test.skip(!process.env.E2E_STACK && !process.env.CI, 'needs the semantic-fake compose stack (E2E_STACK=1)');
+
+  for (const lang of A11Y_LANGS) {
+    for (const theme of A11Y_THEMES) {
+      if (!isEdge(lang, theme)) continue;
+      test(`@semantic search visual: ${lang} ${theme} (near, ≈ off, near-pending, degraded, enable-409, settings)`, async ({
+        browser,
+      }, testInfo) => {
+        test.setTimeout(480_000);
+        await runSemanticVisualGroup(browser, testInfo, lang, theme);
       });
     }
   }
