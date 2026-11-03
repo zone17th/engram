@@ -380,18 +380,44 @@ const (
 )
 
 // allowedLogKey is the attribute allowlist: error_class, problem code, status,
-// route pattern, corpus/branch and counts. Level and message are record fields,
-// always kept. Every other key (q, name, sql, request_id, err, ...) is dropped.
+// route pattern, corpus/branch, counts and (FU-SB-2b, advisor-dec-337) the fields
+// of the "suggest lexical branch partial" line: the enum tokens mode and phase
+// and the integer millisecond timings setup_ms, set_local_ms and query_ms. Level
+// and message are record fields, always kept. Every other key (q, name, sql,
+// request_id, err, user id, ...) is dropped.
 func allowedLogKey(k string) bool {
 	switch k {
-	case "error_class", "code", "problem_code", "status", "route", "corpus", "branch", "count":
+	case "error_class", "code", "problem_code", "status", "route", "corpus", "branch", "count",
+		"mode", "phase", "setup_ms", "set_local_ms", "query_ms":
 		return true
 	}
 	return strings.HasSuffix(k, "_count")
 }
 
 func numericLogKey(k string) bool {
-	return k == "status" || k == "count" || strings.HasSuffix(k, "_count")
+	switch k {
+	case "status", "count", "setup_ms", "set_local_ms", "query_ms":
+		return true
+	}
+	return strings.HasSuffix(k, "_count")
+}
+
+// enumLogValues pins the keys whose value is a closed enum in production code
+// (suggest.CorpusItem/CorpusTag, suggest.ModePrefix/ModeFull/ModeRecent, the
+// phases of runBranch). A value outside the enum is dropped even though it would
+// pass safeLogToken, so a hostile or mistaken value (a corpus or mode that is
+// really a user-chosen name) can never reach the report or the artifact.
+var enumLogValues = map[string]map[string]bool{
+	"corpus": {"item": true, "tag": true},
+	"mode":   {"prefix": true, "full": true, "recent": true},
+	"phase":  {"setup": true, "set_local": true, "query": true},
+}
+
+// enumLogValueOK reports whether v is allowed for key k (always true for keys
+// that are not pinned to an enum).
+func enumLogValueOK(k, v string) bool {
+	allowed, pinned := enumLogValues[k]
+	return !pinned || allowed[v]
 }
 
 // safeLogToken accepts only short fixed-vocabulary tokens (codes, route
@@ -433,7 +459,7 @@ func appendSanitized(out []string, a slog.Attr) []string {
 		}
 		return out
 	}
-	if v.Kind() == slog.KindString && safeLogToken(v.String()) {
+	if v.Kind() == slog.KindString && safeLogToken(v.String()) && enumLogValueOK(a.Key, v.String()) {
 		return append(out, a.Key+"="+v.String())
 	}
 	return out
@@ -443,10 +469,12 @@ type logClassKey struct{ level, message, errorClass string }
 
 // LogSink collects sanitized server log records; safe for concurrent use.
 type LogSink struct {
-	mu      sync.Mutex
-	counts  map[logClassKey]int
-	samples []string
-	seen    map[string]bool
+	mu       sync.Mutex
+	counts   map[logClassKey]int
+	samples  []string
+	seen     map[string]bool
+	partials []PartialRecord // FU-SB-2b: parsed "suggest lexical branch partial" lines
+	overflow int             // partial lines beyond maxPartialRecords
 }
 
 // NewLogSink returns an empty sink.
@@ -482,9 +510,13 @@ func (s *LogSink) Drain() ServerLogSummary {
 		out.Classes = out.Classes[:maxLogClasses]
 	}
 	out.Samples = append(out.Samples, s.samples...)
+	out.Partials = AggregatePartials(s.partials)
+	out.PartialsOverflow = s.overflow
 	s.counts = map[logClassKey]int{}
 	s.samples = nil
 	s.seen = map[string]bool{}
+	s.partials = nil
+	s.overflow = 0
 	return out
 }
 
@@ -505,6 +537,15 @@ func (s *LogSink) record(level slog.Level, msg string, kv []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counts[logClassKey{level.String(), msg, class}]++
+	if msg == PartialLogMessage {
+		if rec, ok := parsePartialRecord(kv); ok {
+			if len(s.partials) < maxPartialRecords {
+				s.partials = append(s.partials, rec)
+			} else {
+				s.overflow++
+			}
+		}
+	}
 	// Samples: first distinct WARN+ lines only (the INFO access log is counted, not sampled).
 	if level >= slog.LevelWarn && len(s.samples) < maxLogSamples && !s.seen[line] {
 		s.seen[line] = true
@@ -1418,11 +1459,16 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 		Classes: classes, CountSamples: 30, Explain: true,
 	})
 	rep.C2 = c2
-	if err != nil {
-		return err
+	if err == nil {
+		logf("C2 done")
 	}
-	logf("C2 done")
-	return nil
+	// Task 23 additions (advisor-dec-337): quiet phase after every measured cell, on
+	// their own connections. They run even when C2 failed, so the evidence is not
+	// lost, and a failed section is recorded without failing the benchmark.
+	if ctx.Err() == nil {
+		rep.Extras = RunExtras(ctx, dsn, sr, classes, ExtrasConfigFor(env.Profile), logf)
+	}
+	return err
 }
 
 // FinalizeReport fills verdicts, hard failures and derived sections.
@@ -1434,6 +1480,11 @@ func FinalizeReport(rep *Report, minMeasured int) {
 	rep.Warnings = DegradationWarnings(rep)
 	for _, s := range rep.C1 {
 		rep.Warnings = append(rep.Warnings, LevelWarnings(s)...)
+	}
+	if rep.Extras != nil {
+		for _, e := range rep.Extras.Errors {
+			rep.Warnings = append(rep.Warnings, "Task 23 extra failed (not part of any target): "+e)
+		}
 	}
 	if rep.C2 != nil {
 		if cells := NonHNSWANNCells(rep.C2.Cells); len(cells) > 0 {

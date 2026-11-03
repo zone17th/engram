@@ -1295,6 +1295,14 @@ func TestSearchBench(t *testing.T) {
 		if err := AppendStepSummary(env.StepSummary, md); err != nil {
 			t.Errorf("append step summary: %v", err)
 		}
+		// FU-SB-2b (advisor-dec-337): the sanitized API-log artifact. The scrub inside
+		// WriteServerLogs drops anything outside the allowlisted vocabulary; raw logs
+		// are never written.
+		if p, err := WriteServerLogs(env.OutDir, base, rep); err != nil {
+			t.Errorf("write server logs: %v", err)
+		} else {
+			t.Logf("server logs: %s", p)
+		}
 		t.Logf("report: %s/%s.{md,json}", env.OutDir, base)
 	})
 

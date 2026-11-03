@@ -751,6 +751,10 @@ type LogClassCount struct {
 type ServerLogSummary struct {
 	Classes []LogClassCount `json:"classes,omitempty"`
 	Samples []string        `json:"sample_lines,omitempty"`
+	// Partials aggregates the "suggest lexical branch partial" lines (FU-SB-2b):
+	// count by (corpus, mode, phase) and p50/p95/max of setup/set_local/query ms.
+	Partials         []PartialAgg `json:"lexical_partials,omitempty"`
+	PartialsOverflow int          `json:"lexical_partial_overflow,omitempty"`
 }
 
 // errorCodeCounts renders (status, problem code) counts deterministically
@@ -1142,7 +1146,10 @@ type Report struct {
 	C1Info   *OpenAICompatInfo `json:"c1_openai_compat_informational,omitempty"`
 	C2       *C2Report         `json:"c2,omitempty"`
 	Verdicts []Verdict         `json:"verdicts_concurrency_8"`
-	Hard     []string          `json:"hard_failures"`
+	// Extras are the Task 23 full-volume additions (connect probe, lexical plan,
+	// flip/rollback scan cost, Reconcile time); none is part of a target.
+	Extras *Task23Extras `json:"task23_extras,omitempty"`
+	Hard   []string      `json:"hard_failures"`
 	// Warnings are informational per-level problems outside the target
 	// concurrency (degraded hybrid level, request errors at c=1/32).
 	Warnings []string `json:"warnings,omitempty"`
@@ -1479,6 +1486,7 @@ func RenderMarkdown(r *Report) string {
 		w("### openai_compat cache miss (~2.3 s) - %s\n\n", r.C1Info.Label)
 		w("Estimated p50 %.0f ms, p95 %.0f ms. Basis: %s\n\n", r.C1Info.EstimatedP50Ms, r.C1Info.EstimatedP95Ms, r.C1Info.Basis)
 	}
+	renderPartialTables(w, r)
 
 	if r.C2 != nil {
 		c := r.C2
@@ -1543,6 +1551,15 @@ func RenderMarkdown(r *Report) string {
 		}
 	}
 
+	if r.Extras != nil {
+		if r.Extras.LexicalPlan != nil {
+			renderLexicalPlan(w, r.Extras.LexicalPlan)
+		}
+		if r.Extras.ConnectProbe != nil {
+			renderConnectProbe(w, r.Extras.ConnectProbe)
+		}
+	}
+
 	if r.Seed != nil {
 		s := r.Seed
 		w("## Dataset, sizes and build times\n\n| Item | Value |\n|---|---|\n")
@@ -1563,6 +1580,8 @@ func RenderMarkdown(r *Report) string {
 			w("\n</details>\n\n")
 		}
 	}
+
+	renderTask23Summary(w, r)
 
 	if z := r.Sizing; z != nil {
 		w("## Sizing table (FS-15, L17) - measured on `%s`, extrapolated to `full`\n\n", z.MeasuredProfile)
