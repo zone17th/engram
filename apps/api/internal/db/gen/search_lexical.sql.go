@@ -199,40 +199,22 @@ WITH prefix_ranked AS (
       WHEN i.name_normalized LIKE $2::text ESCAPE '\' THEN 3
       ELSE 2
     END)::int AS tier,
-    (CASE
-      WHEN NOT $3::bool THEN
-        (CASE
-          WHEN immutable_unaccent($4::text) ~ '^[[:alnum:]]+$' THEN
-            (CASE
-              WHEN i.name_unaccent ~ ('(^|[^[:alnum:]])' || immutable_unaccent($4::text) || '($|[^[:alnum:]])') THEN 1.0::float8
-              ELSE round(
-                (
-                  char_length(immutable_unaccent($4::text))::numeric
-                  / (char_length(immutable_unaccent($4::text)) + 1)::numeric
-                ),
-                2
-              )::float8
-            END)
-          ELSE 0.0::float8
-        END)
-      ELSE
-        round(
-          GREATEST(
-            similarity(i.name_unaccent, immutable_unaccent($4::text)),
-            word_similarity(immutable_unaccent($4::text), i.name_unaccent)
-          )::numeric,
-          2
-        )::float8
-    END) AS score
+    round(
+      GREATEST(
+        similarity(i.name_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), i.name_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
   FROM item AS i
-  WHERE i.user_id = $5
+  WHERE i.user_id = $4
     AND i.deleted_at IS NULL
     AND (
       i.name_normalized LIKE $2::text ESCAPE '\'
       OR i.name_unaccent LIKE (
         replace(
           replace(
-            replace(immutable_unaccent($4::text), '\', '\\'),
+            replace(immutable_unaccent($3::text), '\', '\\'),
             '%',
             '\%'
           ),
@@ -259,25 +241,25 @@ fuzzy_ranked AS (
     1::int AS tier,
     round(
       GREATEST(
-        similarity(i.name_unaccent, immutable_unaccent($4::text)),
-        word_similarity(immutable_unaccent($4::text), i.name_unaccent)
+        similarity(i.name_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), i.name_unaccent)
       )::numeric,
       2
     )::float8 AS score
   FROM item AS i
-  WHERE $3::bool
-    AND i.user_id = $5
+  WHERE $5::bool
+    AND i.user_id = $4
     AND i.deleted_at IS NULL
     AND (
-      i.name_unaccent % immutable_unaccent($4::text)
-      OR immutable_unaccent($4::text) <% i.name_unaccent
+      i.name_unaccent % immutable_unaccent($3::text)
+      OR immutable_unaccent($3::text) <% i.name_unaccent
     )
     AND NOT (
       i.name_normalized LIKE $2::text ESCAPE '\'
       OR i.name_unaccent LIKE (
         replace(
           replace(
-            replace(immutable_unaccent($4::text), '\', '\\'),
+            replace(immutable_unaccent($3::text), '\', '\\'),
             '%',
             '\%'
           ),
@@ -334,9 +316,9 @@ LIMIT $1
 type SearchItemsLexicalParams struct {
 	PageLimit int32
 	QPrefix   string
-	Fuzzy     bool
 	Qn        string
 	UserID    uuid.UUID
+	Fuzzy     bool
 }
 
 type SearchItemsLexicalRow struct {
@@ -365,7 +347,7 @@ type SearchItemsLexicalRow struct {
 //     and inlines the `IMMUTABLE` expression with `LIKE ... ESCAPE '\'` on
 //     `name_unaccent` / `tag_unaccent` so the planner constant-folds it onto
 //     `item_user_unaccent_prefix` / `tag_user_unaccent_prefix` (`text_pattern_ops`).
-//   - Tiered prefix-first short-circuit (L2-B + P1-exact, advisor-dec-353):
+//   - Tiered prefix-first short-circuit (L2-B, advisor-dec-353):
 //     `prefix_ranked` fetches up to `page_limit` Tier 3 + Tier 2 prefix matches first,
 //     and `fuzzy_ranked` runs with `LIMIT GREATEST(0, page_limit - count(prefix_ranked))`
 //     so PostgreSQL short-circuits the GIN trigram scan whenever prefix matches fill `page_limit`.
@@ -378,9 +360,9 @@ func (q *Queries) SearchItemsLexical(ctx context.Context, arg SearchItemsLexical
 	rows, err := q.db.Query(ctx, searchItemsLexical,
 		arg.PageLimit,
 		arg.QPrefix,
-		arg.Fuzzy,
 		arg.Qn,
 		arg.UserID,
+		arg.Fuzzy,
 	)
 	if err != nil {
 		return nil, err
@@ -420,44 +402,26 @@ WITH prefix_all AS (
       WHEN i.name_normalized LIKE $2::text ESCAPE '\' THEN 3
       ELSE 2
     END)::int AS tier,
-    (CASE
-      WHEN NOT $3::bool THEN
-        (CASE
-          WHEN immutable_unaccent($4::text) ~ '^[[:alnum:]]+$' THEN
-            (CASE
-              WHEN i.name_unaccent ~ ('(^|[^[:alnum:]])' || immutable_unaccent($4::text) || '($|[^[:alnum:]])') THEN 1.0::float8
-              ELSE round(
-                (
-                  char_length(immutable_unaccent($4::text))::numeric
-                  / (char_length(immutable_unaccent($4::text)) + 1)::numeric
-                ),
-                2
-              )::float8
-            END)
-          ELSE 0.0::float8
-        END)
-      ELSE
-        round(
-          GREATEST(
-            similarity(i.name_unaccent, immutable_unaccent($4::text)),
-            word_similarity(immutable_unaccent($4::text), i.name_unaccent)
-          )::numeric,
-          2
-        )::float8
-    END) AS score
+    round(
+      GREATEST(
+        similarity(i.name_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), i.name_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
   FROM item AS i
-  WHERE i.user_id = $5
+  WHERE i.user_id = $4
     AND i.deleted_at IS NULL
     AND (
-      $6::uuid IS NULL
-      OR $7::int >= 2
+      $5::uuid IS NULL
+      OR $6::int >= 2
     )
     AND (
       i.name_normalized LIKE $2::text ESCAPE '\'
       OR i.name_unaccent LIKE (
         replace(
           replace(
-            replace(immutable_unaccent($4::text), '\', '\\'),
+            replace(immutable_unaccent($3::text), '\', '\\'),
             '%',
             '\%'
           ),
@@ -478,29 +442,29 @@ prefix_ranked AS (
     p.score
   FROM prefix_all AS p
   WHERE
-    $6::uuid IS NULL
-    OR p.tier < $7::int
+    $5::uuid IS NULL
+    OR p.tier < $6::int
     OR (
-      p.tier = $7::int
-      AND p.score < $8::float8
+      p.tier = $6::int
+      AND p.score < $7::float8
     )
     OR (
-      p.tier = $7::int
-      AND p.score = $8::float8
-      AND p.last_used_at < $9::timestamptz
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at < $8::timestamptz
     )
     OR (
-      p.tier = $7::int
-      AND p.score = $8::float8
-      AND p.last_used_at = $9::timestamptz
-      AND p.entry_count < $10::int
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at = $8::timestamptz
+      AND p.entry_count < $9::int
     )
     OR (
-      p.tier = $7::int
-      AND p.score = $8::float8
-      AND p.last_used_at = $9::timestamptz
-      AND p.entry_count = $10::int
-      AND p.id > $6::uuid
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at = $8::timestamptz
+      AND p.entry_count = $9::int
+      AND p.id > $5::uuid
     )
   ORDER BY
     p.tier DESC,
@@ -520,25 +484,25 @@ fuzzy_all AS (
     1::int AS tier,
     round(
       GREATEST(
-        similarity(i.name_unaccent, immutable_unaccent($4::text)),
-        word_similarity(immutable_unaccent($4::text), i.name_unaccent)
+        similarity(i.name_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), i.name_unaccent)
       )::numeric,
       2
     )::float8 AS score
   FROM item AS i
-  WHERE $3::bool
-    AND i.user_id = $5
+  WHERE $10::bool
+    AND i.user_id = $4
     AND i.deleted_at IS NULL
     AND (
-      i.name_unaccent % immutable_unaccent($4::text)
-      OR immutable_unaccent($4::text) <% i.name_unaccent
+      i.name_unaccent % immutable_unaccent($3::text)
+      OR immutable_unaccent($3::text) <% i.name_unaccent
     )
     AND NOT (
       i.name_normalized LIKE $2::text ESCAPE '\'
       OR i.name_unaccent LIKE (
         replace(
           replace(
-            replace(immutable_unaccent($4::text), '\', '\\'),
+            replace(immutable_unaccent($3::text), '\', '\\'),
             '%',
             '\%'
           ),
@@ -559,29 +523,29 @@ fuzzy_ranked AS (
     f.score
   FROM fuzzy_all AS f
   WHERE
-    $6::uuid IS NULL
-    OR f.tier < $7::int
+    $5::uuid IS NULL
+    OR f.tier < $6::int
     OR (
-      f.tier = $7::int
-      AND f.score < $8::float8
+      f.tier = $6::int
+      AND f.score < $7::float8
     )
     OR (
-      f.tier = $7::int
-      AND f.score = $8::float8
-      AND f.last_used_at < $9::timestamptz
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at < $8::timestamptz
     )
     OR (
-      f.tier = $7::int
-      AND f.score = $8::float8
-      AND f.last_used_at = $9::timestamptz
-      AND f.entry_count < $10::int
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at = $8::timestamptz
+      AND f.entry_count < $9::int
     )
     OR (
-      f.tier = $7::int
-      AND f.score = $8::float8
-      AND f.last_used_at = $9::timestamptz
-      AND f.entry_count = $10::int
-      AND f.id > $6::uuid
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at = $8::timestamptz
+      AND f.entry_count = $9::int
+      AND f.id > $5::uuid
     )
   ORDER BY
     f.score DESC,
@@ -631,7 +595,6 @@ LIMIT $1
 type SearchItemsLexicalPageParams struct {
 	PageLimit        int32
 	QPrefix          string
-	Fuzzy            bool
 	Qn               string
 	UserID           uuid.UUID
 	CursorID         *uuid.UUID
@@ -639,6 +602,7 @@ type SearchItemsLexicalPageParams struct {
 	CursorScore      *float64
 	CursorLastUsedAt pgtype.Timestamptz
 	CursorCount      *int32
+	Fuzzy            bool
 }
 
 type SearchItemsLexicalPageRow struct {
@@ -655,7 +619,6 @@ func (q *Queries) SearchItemsLexicalPage(ctx context.Context, arg SearchItemsLex
 	rows, err := q.db.Query(ctx, searchItemsLexicalPage,
 		arg.PageLimit,
 		arg.QPrefix,
-		arg.Fuzzy,
 		arg.Qn,
 		arg.UserID,
 		arg.CursorID,
@@ -663,6 +626,7 @@ func (q *Queries) SearchItemsLexicalPage(ctx context.Context, arg SearchItemsLex
 		arg.CursorScore,
 		arg.CursorLastUsedAt,
 		arg.CursorCount,
+		arg.Fuzzy,
 	)
 	if err != nil {
 		return nil, err
@@ -701,40 +665,22 @@ WITH prefix_ranked AS (
       WHEN t.normalized LIKE $2::text ESCAPE '\' THEN 3
       ELSE 2
     END)::int AS tier,
-    (CASE
-      WHEN NOT $3::bool THEN
-        (CASE
-          WHEN immutable_unaccent($4::text) ~ '^[[:alnum:]]+$' THEN
-            (CASE
-              WHEN t.tag_unaccent ~ ('(^|[^[:alnum:]])' || immutable_unaccent($4::text) || '($|[^[:alnum:]])') THEN 1.0::float8
-              ELSE round(
-                (
-                  char_length(immutable_unaccent($4::text))::numeric
-                  / (char_length(immutable_unaccent($4::text)) + 1)::numeric
-                ),
-                2
-              )::float8
-            END)
-          ELSE 0.0::float8
-        END)
-      ELSE
-        round(
-          GREATEST(
-            similarity(t.tag_unaccent, immutable_unaccent($4::text)),
-            word_similarity(immutable_unaccent($4::text), t.tag_unaccent)
-          )::numeric,
-          2
-        )::float8
-    END) AS score
+    round(
+      GREATEST(
+        similarity(t.tag_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), t.tag_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
   FROM tag AS t
-  WHERE t.user_id = $5
+  WHERE t.user_id = $4
     AND t.deleted_at IS NULL
     AND (
       t.normalized LIKE $2::text ESCAPE '\'
       OR t.tag_unaccent LIKE (
         replace(
           replace(
-            replace(immutable_unaccent($4::text), '\', '\\'),
+            replace(immutable_unaccent($3::text), '\', '\\'),
             '%',
             '\%'
           ),
@@ -760,25 +706,25 @@ fuzzy_ranked AS (
     1::int AS tier,
     round(
       GREATEST(
-        similarity(t.tag_unaccent, immutable_unaccent($4::text)),
-        word_similarity(immutable_unaccent($4::text), t.tag_unaccent)
+        similarity(t.tag_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), t.tag_unaccent)
       )::numeric,
       2
     )::float8 AS score
   FROM tag AS t
-  WHERE $3::bool
-    AND t.user_id = $5
+  WHERE $5::bool
+    AND t.user_id = $4
     AND t.deleted_at IS NULL
     AND (
-      t.tag_unaccent % immutable_unaccent($4::text)
-      OR immutable_unaccent($4::text) <% t.tag_unaccent
+      t.tag_unaccent % immutable_unaccent($3::text)
+      OR immutable_unaccent($3::text) <% t.tag_unaccent
     )
     AND NOT (
       t.normalized LIKE $2::text ESCAPE '\'
       OR t.tag_unaccent LIKE (
         replace(
           replace(
-            replace(immutable_unaccent($4::text), '\', '\\'),
+            replace(immutable_unaccent($3::text), '\', '\\'),
             '%',
             '\%'
           ),
@@ -832,9 +778,9 @@ LIMIT $1
 type SearchTagsLexicalParams struct {
 	PageLimit int32
 	QPrefix   string
-	Fuzzy     bool
 	Qn        string
 	UserID    uuid.UUID
+	Fuzzy     bool
 }
 
 type SearchTagsLexicalRow struct {
@@ -850,9 +796,9 @@ func (q *Queries) SearchTagsLexical(ctx context.Context, arg SearchTagsLexicalPa
 	rows, err := q.db.Query(ctx, searchTagsLexical,
 		arg.PageLimit,
 		arg.QPrefix,
-		arg.Fuzzy,
 		arg.Qn,
 		arg.UserID,
+		arg.Fuzzy,
 	)
 	if err != nil {
 		return nil, err
@@ -890,44 +836,26 @@ WITH prefix_all AS (
       WHEN t.normalized LIKE $2::text ESCAPE '\' THEN 3
       ELSE 2
     END)::int AS tier,
-    (CASE
-      WHEN NOT $3::bool THEN
-        (CASE
-          WHEN immutable_unaccent($4::text) ~ '^[[:alnum:]]+$' THEN
-            (CASE
-              WHEN t.tag_unaccent ~ ('(^|[^[:alnum:]])' || immutable_unaccent($4::text) || '($|[^[:alnum:]])') THEN 1.0::float8
-              ELSE round(
-                (
-                  char_length(immutable_unaccent($4::text))::numeric
-                  / (char_length(immutable_unaccent($4::text)) + 1)::numeric
-                ),
-                2
-              )::float8
-            END)
-          ELSE 0.0::float8
-        END)
-      ELSE
-        round(
-          GREATEST(
-            similarity(t.tag_unaccent, immutable_unaccent($4::text)),
-            word_similarity(immutable_unaccent($4::text), t.tag_unaccent)
-          )::numeric,
-          2
-        )::float8
-    END) AS score
+    round(
+      GREATEST(
+        similarity(t.tag_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), t.tag_unaccent)
+      )::numeric,
+      2
+    )::float8 AS score
   FROM tag AS t
-  WHERE t.user_id = $5
+  WHERE t.user_id = $4
     AND t.deleted_at IS NULL
     AND (
-      $6::uuid IS NULL
-      OR $7::int >= 2
+      $5::uuid IS NULL
+      OR $6::int >= 2
     )
     AND (
       t.normalized LIKE $2::text ESCAPE '\'
       OR t.tag_unaccent LIKE (
         replace(
           replace(
-            replace(immutable_unaccent($4::text), '\', '\\'),
+            replace(immutable_unaccent($3::text), '\', '\\'),
             '%',
             '\%'
           ),
@@ -947,29 +875,29 @@ prefix_ranked AS (
     p.score
   FROM prefix_all AS p
   WHERE
-    $6::uuid IS NULL
-    OR p.tier < $7::int
+    $5::uuid IS NULL
+    OR p.tier < $6::int
     OR (
-      p.tier = $7::int
-      AND p.score < $8::float8
+      p.tier = $6::int
+      AND p.score < $7::float8
     )
     OR (
-      p.tier = $7::int
-      AND p.score = $8::float8
-      AND p.last_used_at < $9::timestamptz
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at < $8::timestamptz
     )
     OR (
-      p.tier = $7::int
-      AND p.score = $8::float8
-      AND p.last_used_at = $9::timestamptz
-      AND p.item_count < $10::int
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at = $8::timestamptz
+      AND p.item_count < $9::int
     )
     OR (
-      p.tier = $7::int
-      AND p.score = $8::float8
-      AND p.last_used_at = $9::timestamptz
-      AND p.item_count = $10::int
-      AND p.id > $6::uuid
+      p.tier = $6::int
+      AND p.score = $7::float8
+      AND p.last_used_at = $8::timestamptz
+      AND p.item_count = $9::int
+      AND p.id > $5::uuid
     )
   ORDER BY
     p.tier DESC,
@@ -988,25 +916,25 @@ fuzzy_all AS (
     1::int AS tier,
     round(
       GREATEST(
-        similarity(t.tag_unaccent, immutable_unaccent($4::text)),
-        word_similarity(immutable_unaccent($4::text), t.tag_unaccent)
+        similarity(t.tag_unaccent, immutable_unaccent($3::text)),
+        word_similarity(immutable_unaccent($3::text), t.tag_unaccent)
       )::numeric,
       2
     )::float8 AS score
   FROM tag AS t
-  WHERE $3::bool
-    AND t.user_id = $5
+  WHERE $10::bool
+    AND t.user_id = $4
     AND t.deleted_at IS NULL
     AND (
-      t.tag_unaccent % immutable_unaccent($4::text)
-      OR immutable_unaccent($4::text) <% t.tag_unaccent
+      t.tag_unaccent % immutable_unaccent($3::text)
+      OR immutable_unaccent($3::text) <% t.tag_unaccent
     )
     AND NOT (
       t.normalized LIKE $2::text ESCAPE '\'
       OR t.tag_unaccent LIKE (
         replace(
           replace(
-            replace(immutable_unaccent($4::text), '\', '\\'),
+            replace(immutable_unaccent($3::text), '\', '\\'),
             '%',
             '\%'
           ),
@@ -1026,29 +954,29 @@ fuzzy_ranked AS (
     f.score
   FROM fuzzy_all AS f
   WHERE
-    $6::uuid IS NULL
-    OR f.tier < $7::int
+    $5::uuid IS NULL
+    OR f.tier < $6::int
     OR (
-      f.tier = $7::int
-      AND f.score < $8::float8
+      f.tier = $6::int
+      AND f.score < $7::float8
     )
     OR (
-      f.tier = $7::int
-      AND f.score = $8::float8
-      AND f.last_used_at < $9::timestamptz
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at < $8::timestamptz
     )
     OR (
-      f.tier = $7::int
-      AND f.score = $8::float8
-      AND f.last_used_at = $9::timestamptz
-      AND f.item_count < $10::int
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at = $8::timestamptz
+      AND f.item_count < $9::int
     )
     OR (
-      f.tier = $7::int
-      AND f.score = $8::float8
-      AND f.last_used_at = $9::timestamptz
-      AND f.item_count = $10::int
-      AND f.id > $6::uuid
+      f.tier = $6::int
+      AND f.score = $7::float8
+      AND f.last_used_at = $8::timestamptz
+      AND f.item_count = $9::int
+      AND f.id > $5::uuid
     )
   ORDER BY
     f.score DESC,
@@ -1095,7 +1023,6 @@ LIMIT $1
 type SearchTagsLexicalPageParams struct {
 	PageLimit        int32
 	QPrefix          string
-	Fuzzy            bool
 	Qn               string
 	UserID           uuid.UUID
 	CursorID         *uuid.UUID
@@ -1103,6 +1030,7 @@ type SearchTagsLexicalPageParams struct {
 	CursorScore      *float64
 	CursorLastUsedAt pgtype.Timestamptz
 	CursorCount      *int32
+	Fuzzy            bool
 }
 
 type SearchTagsLexicalPageRow struct {
@@ -1118,7 +1046,6 @@ func (q *Queries) SearchTagsLexicalPage(ctx context.Context, arg SearchTagsLexic
 	rows, err := q.db.Query(ctx, searchTagsLexicalPage,
 		arg.PageLimit,
 		arg.QPrefix,
-		arg.Fuzzy,
 		arg.Qn,
 		arg.UserID,
 		arg.CursorID,
@@ -1126,6 +1053,7 @@ func (q *Queries) SearchTagsLexicalPage(ctx context.Context, arg SearchTagsLexic
 		arg.CursorScore,
 		arg.CursorLastUsedAt,
 		arg.CursorCount,
+		arg.Fuzzy,
 	)
 	if err != nil {
 		return nil, err
