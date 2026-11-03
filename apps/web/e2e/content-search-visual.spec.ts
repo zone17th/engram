@@ -184,6 +184,9 @@ async function resetOmnibox(page: Page): Promise<void> {
   await page.keyboard.press('Backspace');
   await page.keyboard.press('Escape');
   await omnibox.blur();
+  // VIS-T22-2-2: move the pointer off any omnibox control (e.g. the ≈ toggle chip after a click) so `:hover` cannot mask
+  // `[aria-pressed="true"]` in subsequent captures.
+  await page.mouse.move(0, 0);
   await expectInputEmpty(omnibox);
   await expect(listboxOf(page)).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
   await settle(page);
@@ -1014,6 +1017,20 @@ async function expectStatusLineMarkup(line: Locator, label: string): Promise<voi
   expect.soft(structure, `${label}: status line markup`).toEqual({ outsideListbox: true, noLiveRole: true });
 }
 
+/**
+ * VIS-T22-2-2: before capturing a semantic-ON state, hard-assert that the `≈` chip has `aria-pressed="true"` and is not
+ * `:hover`ed (`.omni-sem-btn:hover:not(:disabled)` beats `.omni-sem-btn[aria-pressed='true']` in specificity, which otherwise
+ * paints the OFF style when the pointer stays parked on the chip after an earlier toggle click).
+ */
+async function expectSemanticChipPressedNotHovered(page: Page): Promise<void> {
+  const chip = page.getByTestId('omnibox-semantic-toggle');
+  await expect(chip).toHaveAttribute('aria-pressed', 'true');
+  expect(
+    await chip.evaluate((el) => el.matches(':hover')),
+    'omnibox-semantic-toggle must not be :hover before capture',
+  ).toBe(false);
+}
+
 /** Clicks `≈` (setting currently OFF) and expects the real `PATCH true` to be refused with 409 and the muted line to show. */
 async function clickEnableAndExpect409(page: Page): Promise<void> {
   const toggle = page.getByTestId('omnibox-semantic-toggle');
@@ -1217,7 +1234,13 @@ async function runSemanticVisualGroup(
           await expectNearShown(live);
           await activateNearRow(live);
         },
-        { requireRows: true, after: async () => expectThemeTokens(live, theme) },
+        {
+          requireRows: true,
+          after: async () => {
+            await expectSemanticChipPressedNotHovered(live);
+            await expectThemeTokens(live, theme);
+          },
+        },
       );
     });
 
@@ -1267,6 +1290,7 @@ async function runSemanticVisualGroup(
             requireRows: true,
             after: async () => {
               await expect(pending).toBeVisible();
+              await expectSemanticChipPressedNotHovered(live);
               await expectStatusLineMarkup(pending, `near-pending ${label}`);
               await scrollIntoPopoverAndAssertFramed(live, pending, 'the near-pending line');
             },
@@ -1311,6 +1335,7 @@ async function runSemanticVisualGroup(
         {
           requireRows: true,
           after: async () => {
+            await expectSemanticChipPressedNotHovered(live);
             await expectStatusLineMarkup(degraded, `degraded ${label}`);
             await scrollIntoPopoverAndAssertFramed(live, degraded, 'the degraded line');
           },
