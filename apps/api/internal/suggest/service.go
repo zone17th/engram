@@ -86,6 +86,8 @@ type Service struct {
 	cursorKey []byte
 	hooks     atomic.Pointer[TestHooks]
 	logger    atomic.Pointer[slog.Logger]
+
+	lexicalCustomPlanOff atomic.Bool
 }
 
 // NewService constructs a suggest Service.

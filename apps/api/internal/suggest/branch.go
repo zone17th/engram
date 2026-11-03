@@ -117,7 +117,7 @@ func (s *Service) runBranch(
 
 	phase = phaseSetLocal
 	t1 := time.Now()
-	cerr := configureLexicalTx(setupCtx, tx, trgm)
+	cerr := configureLexicalTx(setupCtx, tx, trgm, s.LexicalForceCustomPlan())
 	tm.setLocal = time.Since(t1)
 	if cerr != nil {
 		return fail(setupCtx, cerr, class)

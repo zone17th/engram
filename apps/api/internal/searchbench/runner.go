@@ -1481,12 +1481,16 @@ func RunBenchmark(ctx context.Context, env Env, dsn string, sr *SeedResult, rep 
 	}
 	defer h.Close()
 
+	lexPlanCacheMode := "force_custom_plan"
+	if !h.Service.LexicalForceCustomPlan() {
+		lexPlanCacheMode = "auto (off)"
+	}
 	rep.Harness = HarnessKnobs{
 		MinCos: float64(MinCos), GenerationID: BenchGenerationID, Partitions: sr.Spec.Partitions,
 		HnswM: generation.DefaultHnswM, HnswEfConstr: generation.DefaultHnswEfConstruction,
 		StubDelayMs: ms(StubEmbedDelay), RateLimitCapacity: BenchBucketCapacity, RateLimitRefill: BenchBucketRefill,
 		PoolMaxConns: h.PoolMax, Concurrency: []int{1, 8, 32}, Requests: cfg.RequestsNote,
-		ProductionKnobs: "ef_search 64, max_scan_tuples 20000, iterative_scan relaxed_order, exact max 5000, fallback max 20000, branch timeout 80 ms, fallback min budget 30 ms, lexical branch timeout 50 ms",
+		ProductionKnobs: "ef_search 64, max_scan_tuples 20000, iterative_scan relaxed_order, exact max 5000, fallback max 20000, branch timeout 80 ms, fallback min budget 30 ms, lexical branch timeout 50 ms, lexical plan_cache_mode " + lexPlanCacheMode,
 		SearchEndpoint:  "GET /api/v1/suggest (limit default, scope all)",
 		Notes: []string{
 			"Requests go through httpx.NewRouter + semantic.RequestScopeMiddleware + suggest.Mount with the production auth.SessionStore (real JWT parse and session/user DB lookups; validator clock frozen at start so the 10-minute access token never expires mid-run). No network listener.",
