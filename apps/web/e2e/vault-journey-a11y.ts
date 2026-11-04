@@ -30,9 +30,11 @@ export const A11Y_SCREENS = [
   'onboarding-step3',
   // U5 locked state on /app
   'locked-list',
-  // U4 unlock, forgot passphrase, recovery
+  'locked-list-coarse',
   'unlock-empty',
   'unlock-incorrect',
+  'unlock-device',
+  'unlock-device-fallback',
   'forgot-passphrase',
   'recovery-reauth',
   'recovery-enter-key',
