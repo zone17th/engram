@@ -1356,6 +1356,25 @@ export function JsonEntryCard({
       e.stopPropagation();
       setMenuOpen(false);
       menuTriggerRef.current?.focus();
+    } else if (e.key === 'Tab') {
+      // RFD-26: Focus the trigger synchronously before native Tab runs so sequential focus continues from the trigger
+      setMenuOpen(false);
+      menuTriggerRef.current?.focus();
+    } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const ch = e.key.toLowerCase();
+      const match =
+        items.find(
+          (item, idx) =>
+            idx > currentIndex && (item.textContent || '').trim().toLowerCase().startsWith(ch),
+        ) ??
+        items.find((item) =>
+          (item.textContent || '').trim().toLowerCase().startsWith(ch),
+        );
+      if (match) {
+        e.preventDefault();
+        e.stopPropagation();
+        match.focus();
+      }
     }
   };
 
@@ -1515,6 +1534,12 @@ export function JsonEntryCard({
             onClick={(e) => {
               e.stopPropagation();
               setMenuOpen((prev) => !prev);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                setMenuOpen(true);
+              }
             }}
           >
             ⋯

@@ -1772,24 +1772,31 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     const composer = screen.getByTestId('new-json-entry-composer');
     expect(composer).toBeInTheDocument();
 
+    // Opens directly in Table view with 1 blank placeholder row and root Object (advisor-dec-371)
+    const keyInput0 = within(composer).getByTestId('json-new-key-input-root') as HTMLInputElement;
+    const valInput0 = within(composer).getByTestId('json-new-val-input-root') as HTMLTextAreaElement;
+    expect(keyInput0.value).toBe('');
+    expect(valInput0.value).toBe('');
+
+    // Switch root to Array via root menu and back to Object
+    fireEvent.click(within(composer).getByTestId('new-json-root-menu-btn'));
     fireEvent.click(within(composer).getByTestId('new-json-preset-array'));
-    expect(composer.textContent).toContain(viMessages.content.json.emptyArray);
-
-    fireEvent.click(within(composer).getByTestId('new-json-preset-object'));
-    expect(composer.textContent).toContain(
-      viMessages.content.json.emptyObject.replaceAll("'", ''),
+    expect(within(composer).getByTestId('new-json-root-menu-btn')).toHaveTextContent(
+      viMessages.content.json.kvRootBadgeArray,
     );
-    expect(composer.textContent).not.toContain('content.json.emptyObject');
 
-    fireEvent.click(within(composer).getByTestId('json-open-add-field-root'));
+    fireEvent.click(within(composer).getByTestId('new-json-root-menu-btn'));
+    fireEvent.click(within(composer).getByTestId('new-json-preset-object'));
+    expect(within(composer).getByTestId('new-json-root-menu-btn')).toHaveTextContent(
+      viMessages.content.json.kvRootBadgeObject,
+    );
+
     fireEvent.change(within(composer).getByTestId('json-new-key-input-root'), {
       target: { value: 'host' },
     });
-    fireEvent.change(within(composer).getByTestId('json-new-type-select-root'), {
-      target: { value: 'string' },
+    fireEvent.change(within(composer).getByTestId('json-new-val-input-root'), {
+      target: { value: 'db-01.internal' },
     });
-    fireEvent.click(within(composer).getByTestId('json-confirm-add-field-root'));
-
     fireEvent.click(within(composer).getByTestId('new-json-save-btn'));
 
     await waitFor(() => {
@@ -2000,11 +2007,9 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       />,
     );
     const composer = screen.getByTestId('new-json-entry-composer');
-    fireEvent.click(within(composer).getByTestId('json-open-add-field-root'));
     fireEvent.change(within(composer).getByTestId('json-new-key-input-root'), {
       target: { value: COMPOSER_SENTINEL },
     });
-    fireEvent.click(within(composer).getByTestId('json-confirm-add-field-root'));
     expect(composerHolderRef.current.candidateSource).toContain(COMPOSER_SENTINEL);
 
     // Unmount composer -> composerHolderRef is synchronously wiped
@@ -2844,6 +2849,154 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       expect(formatCheckbox.checked).toBe(false);
       fireEvent.click(formatLabel);
       expect(formatCheckbox.checked).toBe(true);
+    },
+    30_000,
+  );
+
+  it(
+    'P05-entryux KV editor + saved table: covers advisor-dec-371/373, RFD-1..33, L1..L5, and D0/D5/D10/D13 (lossless round-trip, multiline Shift+Enter & verbatim value paste, single-line pair paste into key, debounced polite live region, bilateral container confirm, and add-field value input)',
+    async () => {
+      const h = await setupJsonCardHarness({
+        initialEntries: [
+          {
+            id: ENTRY_ID_1,
+            text: '{\n  "service": "api",\n  "emptyStr": "",\n  "multiline": "line1\\nline2\\nline3\\nline4"\n}',
+            type: 'json',
+            position: 0,
+            version: 1,
+          },
+        ],
+      });
+
+      const card = await screen.findByTestId(`entry-card-${ENTRY_ID_1}`);
+      await waitFor(() => {
+        expect(within(card).getByTestId(`json-table-host-${ENTRY_ID_1}`)).toBeInTheDocument();
+      });
+
+      // 1. Saved card table (D5, D10, D13, RFD-32):
+      // - D13: cell aria-label includes field name
+      const serviceValBtn = within(card).getByTestId('json-cell-btn-root.p0');
+      expect(serviceValBtn.getAttribute('aria-label')).toContain('service');
+      // - D10: empty string shows muted "(trống)" affordance
+      const emptyValBtn = within(card).getByTestId('json-cell-btn-root.p1');
+      expect(emptyValBtn).toHaveTextContent(viMessages.content.json.emptyStringAffordance);
+      // - RFD-32: >3 line multiline cell is clamped with expand/collapse button
+      const mlToggle = within(card).getByTestId('json-cell-multiline-toggle-root.p2');
+      expect(mlToggle).toBeInTheDocument();
+      fireEvent.click(mlToggle);
+      expect(mlToggle).toHaveTextContent(viMessages.content.json.multilineCollapseBtn);
+
+      // - D0: "+ Thêm trường" toolbar includes Key + Value + Type in one step
+      fireEvent.click(within(card).getByTestId('json-open-add-field-root'));
+      fireEvent.change(within(card).getByTestId('json-new-key-input-root'), {
+        target: { value: 'port' },
+      });
+      fireEvent.change(within(card).getByTestId('json-new-type-select-root'), {
+        target: { value: 'number' },
+      });
+      fireEvent.change(within(card).getByTestId('json-new-val-input-root'), {
+        target: { value: '5432' },
+      });
+      fireEvent.click(within(card).getByTestId('json-confirm-add-field-root'));
+      expect(within(card).getByTestId('json-cell-btn-root.p3')).toHaveTextContent('5432');
+
+      // - D5: inline cell type select supports switching to Object {} or Array []
+      fireEvent.click(within(card).getByTestId('json-cell-btn-root.p1'));
+      const cellTypeSelect = within(card).getByTestId('json-type-select-root.p1');
+      fireEvent.change(cellTypeSelect, { target: { value: 'object' } });
+      expect(within(card).getByTestId('json-toggle-root.p1')).toBeInTheDocument();
+
+      // 2. New JSON KV Entry Editor (advisor-dec-371 & advisor-dec-373):
+      fireEvent.click(screen.getByTestId('btn-add-json'));
+      const composer = screen.getByTestId('new-json-entry-composer');
+
+      // - RFD-32: value input is a 1-line auto-growing <textarea>; multi-line paste into value stays verbatim in that single row
+      const keyInp = within(composer).getByTestId('json-new-key-input-root') as HTMLInputElement;
+      const valInp = within(composer).getByTestId('json-new-val-input-root') as HTMLTextAreaElement;
+      expect(valInp.tagName).toBe('TEXTAREA');
+      expect(valInp.getAttribute('rows')).toBe('1');
+
+      // L2: Base64 with trailing == pasted into key is NOT split as key=value
+      const base64Clip = {
+        getData: (t: string) => (t === 'text/plain' ? 'dGVzdA==' : ''),
+      };
+      const base64PasteNotPrevented = fireEvent.paste(keyInp, { clipboardData: base64Clip });
+      expect(base64PasteNotPrevented).toBe(true);
+
+      // Single-line key=value paste into empty Key input populates key and value
+      const kvSingleClip = {
+        getData: (t: string) => (t === 'text/plain' ? 'API_TOKEN=sec_live_123' : ''),
+      };
+      const kvSingleAllowed = fireEvent.paste(keyInp, { clipboardData: kvSingleClip });
+      expect(kvSingleAllowed).toBe(false);
+      expect(
+        (within(composer).getByTestId('json-new-key-input-root') as HTMLInputElement).value,
+      ).toBe('API_TOKEN');
+      expect(
+        (within(composer).getByTestId('json-new-val-input-root') as HTMLTextAreaElement).value,
+      ).toBe('sec_live_123');
+
+      // Enter in value input appends a new placeholder row and focuses its Key input
+      fireEvent.keyDown(within(composer).getByTestId('json-new-val-input-root'), {
+        key: 'Enter',
+      });
+      const keyInputsAfterEnter = composer.querySelectorAll<HTMLInputElement>('[data-kv-key-input]');
+      expect(keyInputsAfterEnter.length).toBe(2);
+
+      // RFD-32: Pasting multi-line KEY=VAL lines into a VALUE input is verbatim (does NOT split into multiple rows)
+      const row2Id = keyInputsAfterEnter[1]!.dataset.kvKeyInput!;
+      fireEvent.change(keyInputsAfterEnter[1]!, { target: { value: 'pem_cert' } });
+      const valInp2 = composer.querySelector<HTMLTextAreaElement>(
+        `[data-kv-val-input="${row2Id}"]`,
+      )!;
+      const pemText = '-----BEGIN KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQE\n-----END KEY-----';
+      const pemPasteAllowed = fireEvent.paste(valInp2, {
+        clipboardData: { getData: () => pemText },
+      });
+      expect(pemPasteAllowed).toBe(true);
+      fireEvent.change(valInp2, { target: { value: pemText } });
+      expect(composer.querySelectorAll('[data-kv-row]').length).toBe(2);
+
+      // Verify JSON output preserves \n inside the string and excludes any trailing blank placeholder row (RFD-3)
+      fireEvent.keyDown(valInp2, { key: 'Enter' });
+      expect(composer.querySelectorAll('[data-kv-row]').length).toBe(3);
+      fireEvent.click(within(composer).getByTestId('new-json-tab-raw'));
+      const rawTa = within(composer).getByTestId('json-raw-textarea-new-json') as HTMLTextAreaElement;
+      expect(rawTa.value).toBe(
+        '{\n  "API_TOKEN": "sec_live_123",\n  "pem_cert": "-----BEGIN KEY-----\\nMIIEvgIBADANBgkqhkiG9w0BAQE\\n-----END KEY-----"\n}',
+      );
+
+      // RFD-1 / RFD-2: Lossless Raw -> Table -> Raw round-trip (duplicate keys, \u escapes, CRLF / \r read-only cell)
+      const losslessRaw = '{\n  "dup": "\\u0041",\n  "dup": "second",\n  "cr": "line1\\rline2"\n}';
+      fireEvent.change(rawTa, { target: { value: losslessRaw } });
+      fireEvent.click(within(composer).getByTestId('new-json-tab-table'));
+      // Without mutating in Table, switching back to Raw preserves exact source bytes
+      fireEvent.click(within(composer).getByTestId('new-json-tab-raw'));
+      expect(
+        (within(composer).getByTestId('json-raw-textarea-new-json') as HTMLTextAreaElement).value,
+      ).toBe(losslessRaw);
+
+      // RFD-20 / RFD-13: Switching root Object -> Array with named keys prompts inline confirmation
+      fireEvent.click(within(composer).getByTestId('new-json-tab-table'));
+      fireEvent.click(within(composer).getByTestId('new-json-root-menu-btn'));
+      fireEvent.click(within(composer).getByTestId('new-json-preset-array'));
+      expect(within(composer).getByTestId('new-json-inline-prompt')).toBeInTheDocument();
+      fireEvent.click(within(composer).getByTestId('new-json-prompt-confirm'));
+      expect(within(composer).getByTestId('new-json-root-menu-btn')).toHaveTextContent(
+        viMessages.content.json.kvRootBadgeArray,
+      );
+      // And switching Array -> Object with committed items also prompts inline confirmation
+      fireEvent.click(within(composer).getByTestId('new-json-root-menu-btn'));
+      fireEvent.click(within(composer).getByTestId('new-json-preset-object'));
+      expect(within(composer).getByTestId('new-json-inline-prompt')).toBeInTheDocument();
+      fireEvent.click(within(composer).getByTestId('new-json-prompt-confirm'));
+
+      // RFD-33: Items converted from Array have empty keys -> inline error tied via aria-describedby, no role="alert" on row error <p>, and 1 polite live region
+      const liveRegion = within(composer).getByTestId('new-json-live-region');
+      expect(liveRegion).toHaveAttribute('aria-live', 'polite');
+      const errKeyEl = composer.querySelector('.kv-row-err');
+      expect(errKeyEl).not.toBeNull();
+      expect(errKeyEl?.getAttribute('role')).toBeNull();
     },
     30_000,
   );

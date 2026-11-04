@@ -11,6 +11,24 @@ export {
 } from '@/features/json-table/json-entry-card';
 
 export {
+  formatReadOnlyStringSafe,
+  hasLoneSurrogateInStr,
+  isEffectivePlaceholderRow,
+  isRowCompletelyBlank,
+  parseMultiLineKeyValuePaste,
+  serializeContainer,
+  type KvContainerKind,
+  type KvEditorSnapshot,
+  type KvFocusDescriptor,
+  type KvInlinePromptState,
+  type KvRow,
+  type KvRowError,
+  type KvRowErrorItem,
+  type KvRowValueType,
+  type ParsedKvPaste,
+} from '@/features/json-table/json-new-entry-composer';
+
+export {
   JsonRawEditor,
   RAW_PARSE_DEBOUNCE_MS,
   validateRawJsonText,

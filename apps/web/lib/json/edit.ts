@@ -65,7 +65,14 @@ export type JsonEditOutcome =
       readonly error: JsonEditError;
     };
 
-export type JsonCellValueKind = 'string' | 'number' | 'true' | 'false' | 'null';
+export type JsonCellValueKind =
+  | 'string'
+  | 'number'
+  | 'true'
+  | 'false'
+  | 'null'
+  | 'object'
+  | 'array';
 
 /**
  * Minimal JSON string escaper per Task 12 rule 4:
@@ -723,6 +730,12 @@ export function changeCellType(
       break;
     case 'null':
       replacementLexeme = 'null';
+      break;
+    case 'object':
+      replacementLexeme = '{}';
+      break;
+    case 'array':
+      replacementLexeme = '[]';
       break;
   }
 
