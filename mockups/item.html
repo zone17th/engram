@@ -174,9 +174,9 @@
   </div>
 
   <!-- ===== đường dẫn ===== -->
-  <nav class="text-[13px] mb-5 text-muted" aria-label="Đường dẫn · Breadcrumb">
-    <a href="index.html" class="no-underline text-body font-medium hover:underline">Tất cả mục · <span lang="en" class="font-normal text-muted">All items</span></a>
-    <span class="mx-1.5">/</span><span id="breadcrumb-item-name">wifi</span>
+  <nav class="text-[13px] mb-5 text-muted flex flex-wrap items-center min-w-0" aria-label="Đường dẫn · Breadcrumb">
+    <a href="index.html" class="no-underline text-body font-medium hover:underline shrink-0">Tất cả mục · <span lang="en" class="font-normal text-muted">All items</span></a>
+    <span class="mx-1.5 shrink-0">/</span><span id="breadcrumb-item-name" class="min-w-0 break-all">wifi</span>
   </nav>
 
   <h1 id="item-page-heading" class="sr-only">wifi</h1>
@@ -294,6 +294,103 @@
       <!-- ===== danh sách entry (không có tiêu đề entry, không có ngày sửa trên card) ===== -->
       <div class="min-w-0 flex flex-col gap-3" id="entry-card-list">
 
+        <!-- entry 0 (ẩn cho tới khi bấm + JSON / bảng): Bộ soạn thảo Khoá–Giá trị / JSON mới (advisor-dec-371) -->
+        <article class="card min-w-0" data-seg-scope id="card-json-new" data-entry-card="new" hidden>
+          <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
+            <span class="badge-type badge-json">json</span>
+            <span class="text-[14px] font-semibold text-body">
+              Entry JSON mới · <span lang="en" class="font-normal text-muted">New JSON entry</span>
+            </span>
+            <span class="mono text-[12px] text-muted" data-kv-bytes id="new-json-bytes">2 / 262.144 B</span>
+
+            <div class="ml-auto flex flex-wrap items-center gap-1.5 relative">
+              <div class="seg" data-kv-mode-seg role="group" aria-label="Chế độ xem JSON mới · New JSON view mode">
+                <button type="button" data-target="ntbl" aria-pressed="true">Bảng · <span lang="en">Table</span></button>
+                <button type="button" data-target="nraw" aria-pressed="false">JSON gốc · <span lang="en">Raw JSON</span></button>
+              </div>
+              <div class="relative">
+                <button type="button" class="btn btn-tertiary btn-sm !px-2.5"
+                        data-kv-root-menu-btn
+                        aria-haspopup="menu" aria-expanded="false"
+                        aria-label="Kiểu cấu trúc gốc · Root container type">
+                  <span data-kv-root-badge>Gốc: Object · <span lang="en">Object root</span></span>
+                  <span class="text-muted text-[11px]" aria-hidden="true">▾</span>
+                </button>
+                <div data-kv-root-menu-pop role="menu" aria-label="Chọn cấu trúc gốc · Choose root structure" hidden
+                     class="popover menu-pop menu-pop-right">
+                  <button type="button" role="menuitem" class="menu-item" data-kv-root-choice="object">
+                    <span>Bảng khoá–giá trị (Object) · <span lang="en" class="text-muted">Key-value object</span></span>
+                    <span class="mono text-accent" data-kv-root-check>✓</span>
+                  </button>
+                  <button type="button" role="menuitem" class="menu-item" data-kv-root-choice="array">
+                    <span>Mảng danh sách · <span lang="en" class="text-muted">Array list</span></span>
+                    <span class="mono text-accent" data-kv-root-check hidden>✓</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div data-secret>
+            <div data-kv-switch-error hidden role="alert" class="field-error m-0 px-4 py-2.5 bg-surface rule-top-line"></div>
+            <div data-view="ntbl" id="newJsonTable" class="min-w-0"></div>
+            <div data-view="nraw" hidden id="newJsonRaw" data-json-raw-interactive="1" class="p-4 bg-surface">
+              <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <button type="button" class="btn btn-secondary btn-sm" data-json-raw-format id="new-json-format-btn">
+                    Định dạng · <span lang="en">Format</span>
+                  </button>
+                </div>
+                <span class="mono text-[12px] text-muted" data-json-raw-bytes>2 / 262.144 B</span>
+              </div>
+              <div data-json-eol-warning hidden role="status" class="auth-status mb-2.5 text-[13px]"></div>
+              <div data-json-format-msg hidden role="alert" class="field-error mt-0 mb-2.5"></div>
+              <label for="new-json-raw-textarea" class="field-label">
+                JSON gốc (đồng bộ hai chiều với Bảng) · <span lang="en" class="font-normal text-muted">Raw JSON (two-way synced with Table)</span>
+              </label>
+              <textarea id="new-json-raw-textarea" data-json-raw-textarea rows="7"
+                        class="json-raw-editor"
+                        data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+              <div data-json-raw-error id="new-json-raw-error" hidden role="alert" class="field-error mt-2.5 mb-0"></div>
+            </div>
+          </div>
+
+          <div class="card-foot kv-foot">
+            <span id="new-json-save-reason" data-kv-save-reason role="status" class="text-[12px] text-muted">
+              Nhập ít nhất một trường để lưu entry. · <span lang="en">Enter at least one field to save.</span>
+            </span>
+            <div class="flex flex-wrap items-center gap-2 ml-auto">
+              <button type="button" class="btn btn-tertiary btn-sm" data-kv-cancel-btn id="new-json-cancel-btn">
+                <span>Huỷ · <span lang="en">Cancel</span></span>
+                <kbd class="kbd">Esc</kbd>
+              </button>
+              <button type="button" class="btn btn-primary btn-sm" data-kv-save-btn id="new-json-save-btn" disabled aria-describedby="new-json-save-reason">
+                <span>Lưu · <span lang="en">Save</span></span>
+                <kbd class="kbd">Ctrl+S</kbd>
+              </button>
+            </div>
+
+            <div data-kv-discard-confirm hidden role="alert" class="auth-status w-full mt-2 mb-0 flex flex-wrap items-center justify-between gap-3">
+              <div class="min-w-0">
+                <p class="text-[14px] font-semibold text-body m-0">
+                  Bỏ thay đổi? · <span lang="en" class="font-normal text-muted">Discard unsaved changes?</span>
+                </p>
+                <p class="text-[13px] text-muted m-0 mt-0.5">
+                  Các trường vừa nhập trong entry JSON này chưa được lưu. · <span lang="en">Your edits in this JSON entry have not been saved.</span>
+                </p>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button type="button" class="btn btn-tertiary btn-sm" data-kv-keep-btn>
+                  Tiếp tục sửa · <span lang="en">Keep editing</span>
+                </button>
+                <button type="button" class="btn btn-danger btn-sm" data-kv-discard-btn>
+                  Bỏ thay đổi · <span lang="en">Discard changes</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </article>
+
         <!-- entry 1: text -->
         <article class="card min-w-0" id="card-text-1" data-entry-card="1">
           <div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
@@ -370,7 +467,8 @@
                     Định dạng · <span lang="en">Format</span>
                   </button>
                   <button type="button" class="btn btn-primary btn-sm" data-json-raw-save id="cfg-raw-save-btn">
-                    Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span>
+                    <span>Lưu · <span lang="en">Save</span></span>
+                    <kbd class="kbd">Ctrl+S</kbd>
                   </button>
                 </div>
                 <span class="mono text-[12px] text-muted" data-json-raw-bytes id="cfg-raw-bytes">412 / 262.144 B</span>
@@ -431,7 +529,8 @@
                     Định dạng · <span lang="en">Format</span>
                   </button>
                   <button type="button" class="btn btn-primary btn-sm" data-json-raw-save>
-                    Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span>
+                    <span>Lưu · <span lang="en">Save</span></span>
+                    <kbd class="kbd">Ctrl+S</kbd>
                   </button>
                 </div>
                 <span class="mono text-[12px] text-muted" data-json-raw-bytes>214 / 262.144 B</span>
@@ -507,7 +606,8 @@
                     Định dạng · <span lang="en">Format</span>
                   </button>
                   <button type="button" class="btn btn-primary btn-sm" data-json-raw-save>
-                    Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span>
+                    <span>Lưu · <span lang="en">Save</span></span>
+                    <kbd class="kbd">Ctrl+S</kbd>
                   </button>
                 </div>
                 <span class="mono text-[12px] text-muted" data-json-raw-bytes>180 / 262.144 B</span>
@@ -599,10 +699,12 @@ Router: Unifi U6 · VLAN 10 (trusted), VLAN 20 (iot), VLAN 30 (guest)</textarea>
             </div>
             <div class="flex flex-wrap items-center gap-2 ml-auto">
               <button type="button" id="entry-cancel-btn" class="btn btn-tertiary btn-sm">
-                Huỷ (<span class="mono">Esc</span>) · <span lang="en">Cancel</span>
+                <span>Huỷ · <span lang="en">Cancel</span></span>
+                <kbd class="kbd">Esc</kbd>
               </button>
               <button type="button" id="entry-save-btn" class="btn btn-primary btn-sm">
-                Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span>
+                <span>Lưu · <span lang="en">Save</span></span>
+                <kbd class="kbd">Ctrl+S</kbd>
               </button>
             </div>
           </div>
@@ -1165,91 +1267,54 @@ document.querySelectorAll('[data-edge-preset]').forEach((btn) => {
   });
 });
 
-/* Nút + JSON / bảng: tạo hoặc mở entry JSON rỗng {} và đưa focus vào thêm trường (S3RV1-20) */
+/* Nút + JSON / bảng: mở bộ soạn thảo Khoá–Giá trị (1 dòng trống, focus vào ô Trường, không qua bước Khởi tạo {} / []) */
 (function () {
   const addJsonBtn = document.getElementById('btn-add-json');
   const cardList = document.getElementById('entry-card-list');
-  if (!addJsonBtn || !cardList) return;
-  let newJsonCtrl = null;
-  addJsonBtn.addEventListener('click', () => {
-    let card = document.getElementById('card-json-new');
-    if (!card) {
-      card = document.createElement('article');
-      card.className = 'card min-w-0';
-      card.setAttribute('data-seg-scope', '');
-      card.id = 'card-json-new';
-      card.setAttribute('data-entry-card', 'new');
-      card.innerHTML = `<div class="card-head flex flex-wrap items-center gap-2 px-4 py-2.5">
-        <span class="mono cursor-grab select-none text-muted" aria-hidden="true">⠿</span>
-        <span class="badge-type badge-json">json</span>
-        <span class="mono text-[12px] text-muted" data-entry-pos>#1</span>
-        <div class="ml-auto flex flex-wrap items-center gap-1.5 relative" data-card-menu-host>
-          <div class="seg" data-seg role="group" aria-label="Chế độ xem JSON mới · New JSON view mode">
-            <button type="button" data-target="ntbl" aria-pressed="true">Bảng · <span lang="en">Table</span></button>
-            <button type="button" data-target="nraw" aria-pressed="false">JSON gốc · <span lang="en">Raw JSON</span></button>
-          </div>
-          <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã chép vào clipboard · Copied to clipboard')">Chép · <span lang="en">Copy</span></button>
-        </div>
-      </div>
-      <div data-secret>
-        <div data-view="ntbl" id="newJsonTable" class="overflow-x-auto card-table-clip"></div>
-        <div data-view="nraw" hidden id="newJsonRaw" data-json-raw-interactive="1" class="p-4 bg-surface">
-          <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-            <div class="flex flex-wrap items-center gap-1.5">
-              <button type="button" class="btn btn-secondary btn-sm" data-json-raw-format>Định dạng · <span lang="en">Format</span></button>
-              <button type="button" class="btn btn-primary btn-sm" data-json-raw-save>Lưu (<span class="mono">Ctrl+S</span>) · <span lang="en">Save</span></button>
-            </div>
-            <span class="mono text-[12px] text-muted" data-json-raw-bytes>2 / 262.144 B</span>
-          </div>
-          <div data-json-eol-warning hidden role="status" class="auth-status mb-2.5 text-[13px]"></div>
-          <div data-json-format-msg hidden role="alert" class="field-error mt-0 mb-2.5"></div>
-          <label for="new-json-raw-textarea" class="sr-only">JSON gốc entry mới · New Raw JSON entry</label>
-          <textarea id="new-json-raw-textarea" data-json-raw-textarea rows="5" class="json-raw-editor" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
-          <div data-json-raw-error hidden role="alert" class="field-error mt-2.5 mb-0"></div>
-        </div>
-      </div>`;
-      cardList.insertBefore(card, cardList.firstElementChild);
-      const seg = card.querySelector('[data-seg]');
-      if (seg) {
-        seg.addEventListener('click', (e) => {
-          const b = e.target.closest('button');
-          if (!b || !b.dataset.target) return;
-          seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-          card.querySelectorAll('[data-view]').forEach((v) => {
-            v.hidden = v.dataset.view !== b.dataset.target;
-          });
-        });
-      }
-      newJsonCtrl = SAK.initJsonEntryCard({
-        tableHost: 'newJsonTable',
-        rawHost: 'newJsonRaw',
-        initialSource: '{}'
-      });
-    } else {
-      card.hidden = false;
-      if (newJsonCtrl) newJsonCtrl.setSource('{}');
-    }
-    if (window.SAK && typeof window.SAK._syncVault === 'function') {
-      window.SAK._syncVault({ keepDraftForDemo: true });
-    }
-    Array.from(cardList.querySelectorAll('[data-entry-card]')).filter((c) => !c.hidden).forEach((c, idx) => {
+  const card = document.getElementById('card-json-new');
+  if (!addJsonBtn || !cardList || !card) return;
+
+  function renumberVisibleCards() {
+    Array.from(cardList.querySelectorAll('[data-entry-card]')).filter((c) => !c.hidden && c.id !== 'card-json-new').forEach((c, idx) => {
       const pos = c.querySelector('[data-entry-pos]');
       if (pos) pos.textContent = '#' + (idx + 1);
     });
-    if (!window.SAK || !window.SAK.state || !window.SAK.state.locked) {
-      const addFieldBtn = card.querySelector('[data-json-act="open-add-field"]');
-      if (addFieldBtn) addFieldBtn.click();
+  }
+
+  const newJsonEditor = SAK.initKvEntryEditor({
+    cardEl: card,
+    kvHost: 'newJsonTable',
+    rawHost: 'newJsonRaw',
+    onSave: () => {
+      card.hidden = true;
+      renumberVisibleCards();
+      SAK.toast('Đã mã hoá và lưu entry JSON mới · Encrypted and saved new JSON entry', 'Hoàn tác', {
+        originEl: addJsonBtn,
+        onAction: () => {
+          card.hidden = false;
+          newJsonEditor.focusFirstInput();
+        }
+      });
+    },
+    onCancel: () => {
+      card.hidden = true;
+      renumberVisibleCards();
+      addJsonBtn.focus();
     }
-    SAK.toast('Đã tạo entry JSON mới · Created new JSON entry', 'Hoàn tác', {
-      originEl: addJsonBtn,
-      onAction: () => {
-        card.hidden = true;
-        Array.from(cardList.querySelectorAll('[data-entry-card]')).filter((c) => !c.hidden).forEach((c, idx) => {
-          const pos = c.querySelector('[data-entry-pos]');
-          if (pos) pos.textContent = '#' + (idx + 1);
-        });
-      }
-    });
+  });
+  window.SAK.newJsonEditor = newJsonEditor;
+
+  addJsonBtn.addEventListener('click', () => {
+    card.hidden = false;
+    cardList.insertBefore(card, cardList.firstElementChild);
+    newJsonEditor.setPresetState('empty');
+    if (window.SAK && typeof window.SAK._syncVault === 'function') {
+      window.SAK._syncVault({ keepDraftForDemo: true });
+    }
+    renumberVisibleCards();
+    if (!window.SAK || !window.SAK.state || !window.SAK.state.locked) {
+      newJsonEditor.focusFirstInput();
+    }
   });
 })();
 

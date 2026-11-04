@@ -4458,15 +4458,20 @@
       return { parent, prop: parent.properties[idx], index: idx, parentPath };
     }
 
-    function makePositionalAriaLabel(rowNum, colNum) {
+    function makePositionalAriaLabel(rowNum, colNum, fieldName, isKey) {
       const r = Number.isFinite(rowNum) && rowNum >= 1 ? rowNum : 1;
-      const c = Number.isFinite(colNum) && colNum >= 1 ? colNum : 1;
+      const c = Number.isFinite(colNum) && Number.isFinite(colNum) >= 1 ? colNum : 1;
+      if (fieldName) {
+        return isKey
+          ? `Trường ${fieldName} (hàng ${r}) · Key ${fieldName} (row ${r})`
+          : `Giá trị của ${fieldName} (hàng ${r}) · Value for ${fieldName} (row ${r})`;
+      }
       return `Hàng ${r}, cột ${c} · Row ${r}, column ${c}`;
     }
 
     function renderPrimitiveCellHtml(node, path, cellOpts) {
       cellOpts = cellOpts || {};
-      const posLabel = makePositionalAriaLabel(cellOpts.rowNum, cellOpts.colNum);
+      const posLabel = makePositionalAriaLabel(cellOpts.rowNum, cellOpts.colNum, cellOpts.fieldName, cellOpts.isKey);
       if (!node) {
         if (!readOnlyCard && cellOpts.missingObjPath && cellOpts.missingColIndex != null) {
           return `<button type="button" class="json-cell-btn v-null" data-json-act="init-missing" data-obj-path="${esc(cellOpts.missingObjPath)}" data-arr-path="${esc(cellOpts.missingArrPath || 'root')}" data-col-index="${Number(cellOpts.missingColIndex)}" aria-label="${esc(posLabel)}" title="Nhấp để thêm trường · Click to add field">—</button>`;
@@ -4497,13 +4502,13 @@
           <label class="inline-flex items-center gap-1 text-[12px] text-muted">
             <span>Kiểu · <span lang="en">Type</span></span>
             <select class="json-type-btn" data-json-type-select="${esc(path)}" aria-label="Đổi kiểu ô · Change cell type">
-              <option value="string" ${node.kind === 'string' ? 'selected' : ''}>string</option>
-              <option value="number" ${node.kind === 'number' ? 'selected' : ''}>number</option>
+              <option value="string" ${node.kind === 'string' ? 'selected' : ''}>Văn bản · Text</option>
+              <option value="number" ${node.kind === 'number' ? 'selected' : ''}>Số · Number</option>
               <option value="true" ${node.kind === 'boolean' && node.value === true ? 'selected' : ''}>true</option>
               <option value="false" ${node.kind === 'boolean' && node.value === false ? 'selected' : ''}>false</option>
               <option value="null" ${node.kind === 'null' ? 'selected' : ''}>null</option>
-              <option value="object">object ({})</option>
-              <option value="array">array ([])</option>
+              <option value="object">Object</option>
+              <option value="array">Mảng · Array</option>
             </select>
           </label>` : '';
 
@@ -4530,6 +4535,8 @@
         valSpan = `<span class="v-bool">${esc(node.raw)}</span>`;
       } else if (node.kind === 'null') {
         valSpan = `<span class="v-null">null</span>`;
+      } else if (node.value === '') {
+        valSpan = `<span class="text-muted italic text-[13px]">(trống · <span lang="en">empty</span>)</span>`;
       } else {
         valSpan = `<span>${esc(node.value)}</span>`;
       }
@@ -4576,15 +4583,16 @@
         if (activeAddFormPath === path) {
           const errHtml = activeAddKeyError ? `<span role="alert" class="text-[12px] text-error-ink font-medium">${esc(activeAddKeyError)}</span>` : '';
           return `<div class="json-table-toolbar" data-json-add-field-form="${esc(path)}">
-            <input type="text" class="json-cell-input !w-[192px] shrink-0" data-json-new-key="${esc(path)}" placeholder="Tên khoá mới · New key" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+            <input type="text" class="json-cell-input !w-[168px] shrink-0" data-json-new-key="${esc(path)}" aria-label="Tên trường mới · New field key" placeholder="Tên trường · Key" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+            <input type="text" class="json-cell-input !w-[192px] shrink-0" data-json-new-val="${esc(path)}" aria-label="Giá trị mới · New field value" placeholder="Giá trị · Value" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
             <select class="json-type-btn" data-json-new-type="${esc(path)}" aria-label="Kiểu giá trị mới · New value type">
-              <option value="string">string ("")</option>
-              <option value="number">number (0)</option>
+              <option value="string" selected>Văn bản · Text</option>
+              <option value="number">Số · Number</option>
               <option value="true">true</option>
               <option value="false">false</option>
-              <option value="null" selected>null</option>
-              <option value="object">object ({})</option>
-              <option value="array">array ([])</option>
+              <option value="null">null</option>
+              <option value="object">Object</option>
+              <option value="array">Mảng · Array</option>
             </select>
             <button type="button" class="btn btn-primary btn-sm" data-json-act="confirm-add-field" data-path="${esc(path)}">Thêm · <span lang="en">Add</span></button>
             <button type="button" class="btn btn-tertiary btn-sm" data-json-act="cancel-add-field" data-path="${esc(path)}">Huỷ · <span lang="en">Cancel</span></button>
@@ -4628,8 +4636,8 @@
           ? `<td class="w-[44px] text-right json-col-act"><button type="button" class="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted" data-json-act="remove-field" data-path="${esc(path)}" data-prop-idx="${i}" aria-label="Xoá hàng ${rowNum} · Remove row ${rowNum}" title="Xoá hàng · Remove row">×</button></td>`
           : '';
         rowsHtml += `<tr>
-          <td class="k">${renderPrimitiveCellHtml(p.keyNode, keyPath, { isKey: true, rowNum, colNum: 1 })}${occBadge}</td>
-          <td>${renderCellHtml(p.valueNode, valPath, { rowNum, colNum: 2 })}</td>
+          <td class="k">${renderPrimitiveCellHtml(p.keyNode, keyPath, { isKey: true, rowNum, colNum: 1, fieldName: p.key })}${occBadge}</td>
+          <td>${renderCellHtml(p.valueNode, valPath, { rowNum, colNum: 2, fieldName: p.key })}</td>
           ${delBtn}
         </tr>`;
       }
@@ -5002,23 +5010,30 @@
 
     function submitAddField(path) {
       const keyInp = tableHost.querySelector(`[data-json-new-key="${CSS.escape(path)}"]`);
+      const valInp = tableHost.querySelector(`[data-json-new-val="${CSS.escape(path)}"]`);
       const typeSel = tableHost.querySelector(`[data-json-new-type="${CSS.escape(path)}"]`);
       const newKey = keyInp ? keyInp.value.trim() : '';
-      const newType = typeSel ? typeSel.value : 'null';
+      const rawVal = valInp ? valInp.value : '';
+      const newType = typeSel ? typeSel.value : 'string';
       const objNode = getNodeByPath(currentDoc.root, path);
       if (!objNode || objNode.kind !== 'object') return false;
       if (!newKey) {
-        activeAddKeyError = 'Nhập tên khoá · Enter a key name';
+        activeAddKeyError = 'Nhập tên trường · Enter a key name';
         paint({ kind: 'new-key', path });
         return false;
       }
       if (objNode.properties.some((p) => p.key === newKey)) {
-        activeAddKeyError = 'Key đã có · Key already exists';
+        activeAddKeyError = 'Trường đã có · Key already exists';
         paint({ kind: 'new-key', path });
         return false;
       }
-      const valLex = newType === 'string' ? '""'
-        : newType === 'number' ? '0'
+      if (newType === 'number' && rawVal.trim() !== '' && !isValidJsonNumberLexeme(rawVal.trim())) {
+        activeAddKeyError = 'Số không đúng cú pháp JSON · Invalid JSON number';
+        paint({ kind: 'new-key', path });
+        return false;
+      }
+      const valLex = newType === 'string' ? escapeJsonStringMinimal(rawVal)
+        : newType === 'number' ? (rawVal.trim() || '0')
         : newType === 'true' ? 'true'
         : newType === 'false' ? 'false'
         : newType === 'object' ? '{}'
@@ -5132,13 +5147,21 @@
       if (act === 'add-row') {
         const arrNode = getNodeByPath(currentDoc.root, path);
         if (!arrNode || arrNode.kind !== 'array') return;
-        let itemLex = 'null';
-        if (classifyArrayNode(arrNode) === 'array-of-objects') {
+        const arrKind = classifyArrayNode(arrNode);
+        let itemLex = '""';
+        if (arrKind === 'array-of-objects') {
           const { columns } = deriveArrayColumns(arrNode);
-          itemLex = columns.length ? `{ ${columns.map((c) => `${escapeJsonStringMinimal(c)}: null`).join(', ')} }` : '{}';
+          itemLex = columns.length ? `{ ${columns.map((c) => `${escapeJsonStringMinimal(c)}: ""`).join(', ')} }` : '{}';
         }
-        const edit = computeInsertionSpan(currentSource, arrNode.span, arrNode.elements, arrNode.elements.length, itemLex);
-        applySourceSplice(edit, 'Đã thêm hàng mới · Added new row', { kind: 'act', act: 'add-row', path });
+        const newElemIdx = arrNode.elements.length;
+        const edit = computeInsertionSpan(currentSource, arrNode.span, arrNode.elements, newElemIdx, itemLex);
+        if (applySourceSplice(edit, 'Đã thêm hàng mới · Added new row')) {
+          const newCellPath = arrKind === 'array-of-objects' ? `${path}.e${newElemIdx}.p0` : `${path}.e${newElemIdx}`;
+          activeEditCellKey = newCellPath;
+          paint({ kind: 'edit-input', path: newCellPath });
+          const inp = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(newCellPath)}"]`);
+          if (inp) { inp.focus(); if (inp.select) inp.select(); }
+        }
         return;
       }
       if (act === 'remove-row') {
@@ -5539,6 +5562,1212 @@
     return cardController;
   }
 
+  /* ---------- Key-Value / JSON Entry Editor (advisor-dec-371 + dec-370) ---------- */
+
+  const kvEditorInstances = [];
+
+  function initKvEntryEditor(config) {
+    const cardEl = typeof config.cardEl === 'string' ? document.getElementById(config.cardEl) : config.cardEl;
+    const kvHost = typeof config.kvHost === 'string' ? document.getElementById(config.kvHost) : config.kvHost;
+    const rawHost = typeof config.rawHost === 'string' ? document.getElementById(config.rawHost) : config.rawHost;
+    if (!kvHost) return null;
+
+    let nextRowId = 1;
+    let rootKind = config.initialRootKind === 'array' ? 'array' : 'object';
+    let openMenuRowId = null;
+    let openTypeMenuRowId = null;
+    let openRootMenu = false;
+    let discardPromptOpen = false;
+    let switchBlockedMsg = null;
+    let rawSyntaxIssue = null;
+    let lastRawErrorOffset = 0;
+
+    function makeRow(partial) {
+      const p = partial || {};
+      const type = p.type || 'string';
+      return {
+        id: 'r' + (nextRowId++),
+        key: p.key != null ? String(p.key) : '',
+        value: p.value != null ? String(p.value) : (type === 'boolean' ? 'true' : type === 'null' ? 'null' : ''),
+        type,
+        expanded: p.expanded !== undefined ? !!p.expanded : true,
+        children: Array.isArray(p.children) ? p.children : (type === 'object' || type === 'array' ? [makeRow({ type: 'string' })] : [])
+      };
+    }
+
+    let rows = [makeRow({ key: '', value: '', type: 'string' })];
+
+    function astNodeToRow(node, keyStr) {
+      if (!node) return makeRow({ key: keyStr || '', value: '', type: 'string' });
+      if (node.kind === 'string') {
+        return makeRow({ key: keyStr || '', value: node.value, type: 'string' });
+      }
+      if (node.kind === 'number') {
+        return makeRow({ key: keyStr || '', value: node.lexeme, type: 'number' });
+      }
+      if (node.kind === 'boolean') {
+        return makeRow({ key: keyStr || '', value: node.value ? 'true' : 'false', type: 'boolean' });
+      }
+      if (node.kind === 'null') {
+        return makeRow({ key: keyStr || '', value: 'null', type: 'null' });
+      }
+      if (node.kind === 'object') {
+        const children = node.properties.length
+          ? node.properties.map((p) => astNodeToRow(p.valueNode, p.key))
+          : [makeRow({ key: '', value: '', type: 'string' })];
+        return makeRow({ key: keyStr || '', value: '', type: 'object', expanded: true, children });
+      }
+      if (node.kind === 'array') {
+        const children = node.elements.length
+          ? node.elements.map((el) => astNodeToRow(el, ''))
+          : [makeRow({ key: '', value: '', type: 'string' })];
+        return makeRow({ key: keyStr || '', value: '', type: 'array', expanded: true, children });
+      }
+      return makeRow({ key: keyStr || '', value: '', type: 'string' });
+    }
+
+    function loadFromJsonString(jsonStr) {
+      const parsed = parseJsonStrict(jsonStr);
+      if (!parsed.ok) return false;
+      const root = parsed.document.root;
+      if (root.kind === 'array') {
+        rootKind = 'array';
+        rows = root.elements.length
+          ? root.elements.map((el) => astNodeToRow(el, ''))
+          : [makeRow({ key: '', value: '', type: 'string' })];
+      } else if (root.kind === 'object') {
+        rootKind = 'object';
+        rows = root.properties.length
+          ? root.properties.map((p) => astNodeToRow(p.valueNode, p.key))
+          : [makeRow({ key: '', value: '', type: 'string' })];
+      } else {
+        rootKind = 'object';
+        rows = [astNodeToRow(root, 'value')];
+      }
+      return true;
+    }
+
+    function isRowCompletelyBlank(r, parentKind) {
+      if (r.type !== 'string') return false;
+      if (parentKind === 'object') return r.key.trim() === '' && r.value === '';
+      return r.value === '';
+    }
+
+    function validateRows(list, parentKind, errorsMap) {
+      const keyCounts = new Map();
+      if (parentKind === 'object') {
+        list.forEach((r) => {
+          const k = r.key.trim();
+          if (k !== '') keyCounts.set(k, (keyCounts.get(k) || 0) + 1);
+        });
+      }
+
+      const multipleRows = list.length > 1;
+
+      list.forEach((r) => {
+        const rowErrs = {};
+        if (parentKind === 'object') {
+          const k = r.key.trim();
+          const hasNonDefaultContent = r.value !== '' || r.type !== 'string' || multipleRows;
+          if (k === '' && hasNonDefaultContent) {
+            rowErrs.key = {
+              code: 'EMPTY_KEY',
+              vi: 'Nhập tên trường hoặc xoá dòng trống.',
+              en: 'Enter a field name or remove the empty row.'
+            };
+          } else if (k !== '' && (keyCounts.get(k) || 0) > 1) {
+            rowErrs.key = {
+              code: 'DUPLICATE_KEY',
+              vi: `Trường “${k}” bị trùng trong cùng object.`,
+              en: `Duplicate key “${k}” in the same object.`
+            };
+          }
+        }
+
+        if (r.type === 'number') {
+          const v = r.value.trim();
+          if (v === '' || !isValidJsonNumberLexeme(v)) {
+            rowErrs.value = {
+              code: 'INVALID_NUMBER',
+              vi: 'Số không đúng định dạng JSON (ví dụ: 36, -1.5, 1e4; không có số 0 đứng đầu).',
+              en: 'Invalid JSON number (e.g. 36, -1.5, 1e4; no leading zeros).'
+            };
+          }
+        }
+
+        if (rowErrs.key || rowErrs.value) {
+          errorsMap.set(r.id, rowErrs);
+        }
+
+        if ((r.type === 'object' || r.type === 'array') && Array.isArray(r.children)) {
+          validateRows(r.children, r.type, errorsMap);
+        }
+      });
+    }
+
+    function hasAnyCommittedRow(list, parentKind) {
+      for (let i = 0; i < list.length; i++) {
+        const r = list[i];
+        if (!isRowCompletelyBlank(r, parentKind)) return true;
+      }
+      return false;
+    }
+
+    function serializeNodeValue(r, indent) {
+      if (r.type === 'string') {
+        return escapeJsonStringMinimal(r.value);
+      }
+      if (r.type === 'number') {
+        const v = r.value.trim();
+        return isValidJsonNumberLexeme(v) ? v : '0';
+      }
+      if (r.type === 'boolean') {
+        return r.value === 'false' ? 'false' : 'true';
+      }
+      if (r.type === 'null') {
+        return 'null';
+      }
+      if (r.type === 'object') {
+        return serializeContainer(r.children || [], 'object', indent);
+      }
+      if (r.type === 'array') {
+        return serializeContainer(r.children || [], 'array', indent);
+      }
+      return '""';
+    }
+
+    function serializeContainer(list, kind, indent) {
+      const childIndent = indent + '  ';
+      if (kind === 'object') {
+        const active = list.filter((r) => !(list.length === 1 && isRowCompletelyBlank(r, 'object')));
+        if (active.length === 0) return '{}';
+        const lines = active.map((r) => `${childIndent}${escapeJsonStringMinimal(r.key.trim())}: ${serializeNodeValue(r, childIndent)}`);
+        return `{\n${lines.join(',\n')}\n${indent}}`;
+      }
+      const active = list.filter((r) => !(list.length === 1 && isRowCompletelyBlank(r, 'array')));
+      if (active.length === 0) return '[]';
+      const lines = active.map((r) => `${childIndent}${serializeNodeValue(r, childIndent)}`);
+      return `[\n${lines.join(',\n')}\n${indent}]`;
+    }
+
+    function toJsonString() {
+      return serializeContainer(rows, rootKind, '');
+    }
+
+    function findRowAndParent(list, targetId, parentKind, parentRow) {
+      for (let i = 0; i < list.length; i++) {
+        const r = list[i];
+        if (r.id === targetId) {
+          return { row: r, list, index: i, parentKind, parentRow: parentRow || null };
+        }
+        if ((r.type === 'object' || r.type === 'array') && Array.isArray(r.children)) {
+          const found = findRowAndParent(r.children, targetId, r.type, r);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    function typeChipLabel(type) {
+      switch (type) {
+        case 'number':
+          return 'Số · <span lang="en">Number</span>';
+        case 'boolean':
+          return 'true / false';
+        case 'null':
+          return 'null';
+        case 'object':
+          return 'Object';
+        case 'array':
+          return 'Mảng · <span lang="en">Array</span>';
+        default:
+          return 'Văn bản · <span lang="en">Text</span>';
+      }
+    }
+
+    function parseMultiLineKeyValuePaste(text) {
+      const raw = String(text || '').trim();
+      if (!raw) return null;
+      if (raw.startsWith('{') || raw.startsWith('[')) {
+        const parsed = parseJsonStrict(raw);
+        if (parsed.ok && (parsed.document.root.kind === 'object' || parsed.document.root.kind === 'array')) {
+          return { kind: 'json', root: parsed.document.root };
+        }
+      }
+      const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      if (lines.length < 1) return null;
+      const pairs = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const m = /^([^:=]+?)\s*[:=]\s*(.*)$/.exec(line);
+        if (!m) return null;
+        const k = m[1].trim();
+        const v = m[2].trim();
+        if (!k) return null;
+        pairs.push({ key: k, value: v });
+      }
+      if (pairs.length === 1 && !raw.includes('\n') && !raw.includes(':') && !raw.includes('=')) {
+        return null;
+      }
+      return { kind: 'pairs', pairs };
+    }
+
+    function renderRowsListHtml(list, parentKind, errorsMap, depth, parentRowId) {
+      const isArr = parentKind === 'array';
+      const colHeadHtml = depth === 0 ? `<div class="kv-col-head ${isArr ? 'kv-col-head-arr' : ''}" aria-hidden="true">
+        <span>${isArr ? '#' : 'Trường · <span lang="en">Key</span>'}</span>
+        <span>Giá trị · <span lang="en">Value</span></span>
+        <span>Kiểu · <span lang="en">Type</span></span>
+      </div>` : '';
+
+      const itemsHtml = list.map((r, idx) => {
+        const rowNum = idx + 1;
+        const err = errorsMap.get(r.id) || {};
+        const keyErr = err.key || null;
+        const valErr = err.value || null;
+        const keyErrId = keyErr ? `kv-err-key-${r.id}` : '';
+        const valErrId = valErr ? `kv-err-val-${r.id}` : '';
+        const isInvalid = !!(keyErr || valErr);
+
+        const keyCellHtml = isArr
+          ? `<div class="kv-idx" aria-hidden="true">${rowNum}</div>`
+          : `<div class="kv-cell">
+              <label for="kv-key-${r.id}" class="kv-field-caption">Trường ${rowNum} · <span lang="en">Key ${rowNum}</span></label>
+              <input id="kv-key-${r.id}" type="text" class="kv-input kv-input-key"
+                data-kv-key-input="${esc(r.id)}"
+                value="${esc(r.key)}"
+                placeholder="Tên trường (vd: ssid) · Key"
+                aria-label="Trường hàng ${rowNum} · Key row ${rowNum}"
+                ${keyErr ? `aria-invalid="true" aria-describedby="${esc(keyErrId)}"` : ''}
+                data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+              ${keyErr ? `<p id="${esc(keyErrId)}" role="alert" class="kv-row-err">${esc(keyErr.vi)} · <span lang="en">${esc(keyErr.en)}</span></p>` : ''}
+            </div>`;
+
+        const suggestNumberChip = r.type === 'string' && r.value.trim() !== '' && isValidJsonNumberLexeme(r.value.trim())
+          ? `<button type="button" class="kv-num-suggest" data-kv-act="suggest-number" data-row-id="${esc(r.id)}" aria-label="Đổi dòng ${rowNum} sang kiểu Số · Switch row ${rowNum} to Number" title="Giá trị khớp số JSON — bấm để đổi sang kiểu Số · Value parses as a number — click to switch to Number">Số? · <span lang="en">Number?</span></button>`
+          : '';
+
+        let valueControlHtml = '';
+        if (r.type === 'string' || r.type === 'number') {
+          const ph = r.type === 'number'
+            ? 'Giá trị số (vd: 36) · Number value'
+            : (isArr ? `Giá trị mục #${rowNum} · Item #${rowNum} value` : 'Giá trị · Value');
+          valueControlHtml = `<div class="flex items-center gap-1.5 min-w-0">
+            <input id="kv-val-${r.id}" type="text"
+              class="kv-input ${r.type === 'number' ? 'kv-input-num' : ''}"
+              data-kv-val-input="${esc(r.id)}"
+              value="${esc(r.value)}"
+              placeholder="${esc(ph)}"
+              aria-label="Giá trị hàng ${rowNum} · Value row ${rowNum}"
+              ${valErr ? `aria-invalid="true" aria-describedby="${esc(valErrId)}"` : ''}
+              data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+            ${suggestNumberChip}
+          </div>`;
+        } else if (r.type === 'boolean') {
+          const isTrue = r.value !== 'false';
+          valueControlHtml = `<div class="kv-bool-seg" role="group" aria-label="Giá trị true/false hàng ${rowNum} · Boolean value row ${rowNum}">
+            <button type="button" data-kv-act="set-bool" data-row-id="${esc(r.id)}" data-bool-val="true" aria-pressed="${isTrue ? 'true' : 'false'}">true</button>
+            <button type="button" data-kv-act="set-bool" data-row-id="${esc(r.id)}" data-bool-val="false" aria-pressed="${!isTrue ? 'true' : 'false'}">false</button>
+          </div>`;
+        } else if (r.type === 'null') {
+          valueControlHtml = `<div class="kv-null-pill" aria-label="Giá trị null hàng ${rowNum} · Null value row ${rowNum}">null</div>`;
+        } else if (r.type === 'object' || r.type === 'array') {
+          const childList = r.children || [];
+          const nonBlankCount = childList.filter((c) => !isRowCompletelyBlank(c, r.type)).length;
+          const summaryVi = r.type === 'object' ? `${nonBlankCount} trường con` : `${nonBlankCount} phần tử`;
+          const summaryEn = r.type === 'object' ? `${nonBlankCount} nested fields` : `${nonBlankCount} items`;
+          valueControlHtml = `<button type="button" class="kv-container-pill" data-kv-act="toggle-expand" data-row-id="${esc(r.id)}" aria-expanded="${r.expanded ? 'true' : 'false'}">
+            <span class="caret" aria-hidden="true">›</span>
+            <span>${r.type === 'object' ? 'Object' : 'Mảng · Array'} (${summaryVi} · <span lang="en" class="text-muted">${summaryEn}</span>)</span>
+          </button>`;
+        }
+
+        const valueCellHtml = `<div class="kv-cell">
+          <label for="kv-val-${r.id}" class="kv-field-caption">Giá trị ${rowNum} · <span lang="en">Value ${rowNum}</span></label>
+          ${valueControlHtml}
+          ${valErr ? `<p id="${esc(valErrId)}" role="alert" class="kv-row-err">${esc(valErr.vi)} · <span lang="en">${esc(valErr.en)}</span></p>` : ''}
+        </div>`;
+
+        const isTypeOpen = openTypeMenuRowId === r.id;
+        const isRowMenuOpen = openMenuRowId === r.id;
+
+        const typePopHtml = isTypeOpen ? `<div role="menu" aria-label="Chọn kiểu dữ liệu hàng ${rowNum} · Select type row ${rowNum}" class="popover menu-pop menu-pop-right">
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="string">
+            <span>Văn bản · <span lang="en" class="text-muted">Text</span></span>
+            ${r.type === 'string' ? '<span class="mono text-accent">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="number">
+            <span>Số · <span lang="en" class="text-muted">Number</span></span>
+            ${r.type === 'number' ? '<span class="mono text-accent">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="boolean">
+            <span>true / false · <span lang="en" class="text-muted">Boolean</span></span>
+            ${r.type === 'boolean' ? '<span class="mono text-accent">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="null">
+            <span>null</span>
+            ${r.type === 'null' ? '<span class="mono text-accent">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="object">
+            <span>Object · <span lang="en" class="text-muted">Nested fields</span></span>
+            ${r.type === 'object' ? '<span class="mono text-accent">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="array">
+            <span>Mảng · <span lang="en" class="text-muted">Array</span></span>
+            ${r.type === 'array' ? '<span class="mono text-accent">✓</span>' : ''}
+          </button>
+        </div>` : '';
+
+        const rowMenuPopHtml = isRowMenuOpen ? `<div role="menu" aria-label="Thao tác dòng ${rowNum} · Row ${rowNum} actions" class="popover menu-pop menu-pop-right">
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="insert-below" data-row-id="${esc(r.id)}">
+            <span>Chèn dòng bên dưới · <span lang="en" class="text-muted">Insert row below</span></span>
+          </button>
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="move-row-up" data-row-id="${esc(r.id)}" ${idx <= 0 ? 'disabled' : ''}>
+            <span>Chuyển lên · <span lang="en" class="text-muted">Move up</span></span>
+            <span class="mono text-[12px] text-muted" aria-hidden="true">↑</span>
+          </button>
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="move-row-down" data-row-id="${esc(r.id)}" ${idx >= list.length - 1 ? 'disabled' : ''}>
+            <span>Chuyển xuống · <span lang="en" class="text-muted">Move down</span></span>
+            <span class="mono text-[12px] text-muted" aria-hidden="true">↓</span>
+          </button>
+          <button type="button" role="menuitem" class="menu-item menu-item-danger" data-kv-act="delete-row" data-row-id="${esc(r.id)}">
+            <span>Xoá dòng · <span lang="en" class="text-muted">Delete row</span></span>
+          </button>
+        </div>` : '';
+
+        const controlsHtml = `<div class="kv-controls">
+          <button type="button" class="kv-type-chip"
+            data-kv-act="toggle-type-menu"
+            data-row-id="${esc(r.id)}"
+            data-kv-type="${esc(r.type)}"
+            aria-haspopup="menu"
+            aria-expanded="${isTypeOpen ? 'true' : 'false'}"
+            aria-label="Kiểu dữ liệu hàng ${rowNum} · Type row ${rowNum}">
+            <span>${typeChipLabel(r.type)}</span>
+            <span class="text-muted text-[11px]" aria-hidden="true">▾</span>
+          </button>
+          <button type="button" class="kv-menu-btn"
+            data-kv-act="toggle-row-menu"
+            data-row-id="${esc(r.id)}"
+            aria-haspopup="menu"
+            aria-expanded="${isRowMenuOpen ? 'true' : 'false'}"
+            aria-label="Menu dòng ${rowNum} · Row ${rowNum} menu">⋯</button>
+          ${typePopHtml}
+          ${rowMenuPopHtml}
+        </div>`;
+
+        let nestedHtml = '';
+        if ((r.type === 'object' || r.type === 'array') && r.expanded) {
+          nestedHtml = `<div class="kv-nest" role="group" aria-label="${r.type === 'object' ? `Object con của ${esc(r.key || `hàng ${rowNum}`)}` : `Mảng con của ${esc(r.key || `hàng ${rowNum}`)}`}">
+            ${renderRowsListHtml(r.children || [], r.type, errorsMap, depth + 1, r.id)}
+          </div>`;
+        }
+
+        return `<li class="kv-row ${isInvalid ? 'is-invalid' : ''}" data-kv-row="${esc(r.id)}">
+          <div class="kv-row-grid ${isArr ? 'kv-row-grid-arr' : ''}">
+            ${keyCellHtml}
+            ${valueCellHtml}
+            ${controlsHtml}
+          </div>
+          ${nestedHtml}
+        </li>`;
+      }).join('');
+
+      const addBtnLabel = depth > 0
+        ? (isArr ? '+ dòng mảng · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add nested row</span>')
+        : (isArr ? '+ Thêm hàng · <span lang="en">Add row</span>' : '+ Thêm dòng · <span lang="en">Add row</span>');
+
+      const pasteHintHtml = depth === 0
+        ? `<span class="text-[12px] text-muted">Mẹo: dán nhiều dòng <span class="mono">key: value</span> hoặc JSON để điền nhanh · <span lang="en">Tip: paste <span class="mono">key: value</span> lines or JSON</span></span>`
+        : '';
+
+      return `${colHeadHtml}<ul class="kv-rows" role="list" aria-label="${depth === 0 ? (isArr ? 'Danh sách phần tử mảng · Array items' : 'Danh sách trường khoá-giá trị · Key-value fields') : 'Danh sách dòng con · Nested rows'}">${itemsHtml}</ul>
+      <div class="kv-add-bar">
+        <button type="button" class="btn btn-tertiary btn-sm" data-kv-act="add-row" data-parent-id="${esc(parentRowId || 'root')}">
+          ${addBtnLabel}
+        </button>
+        ${pasteHintHtml}
+      </div>`;
+    }
+
+    function syncHeaderControls() {
+      if (!cardEl) return;
+      const rootBadge = cardEl.querySelector('[data-kv-root-badge]');
+      if (rootBadge) {
+        rootBadge.innerHTML = rootKind === 'array'
+          ? 'Gốc: Mảng · <span lang="en">Array root</span>'
+          : 'Gốc: Object · <span lang="en">Object root</span>';
+      }
+      const rootMenuBtn = cardEl.querySelector('[data-kv-root-menu-btn]');
+      const rootMenuPop = cardEl.querySelector('[data-kv-root-menu-pop]');
+      if (rootMenuBtn) rootMenuBtn.setAttribute('aria-expanded', openRootMenu ? 'true' : 'false');
+      if (rootMenuPop) {
+        rootMenuPop.hidden = !openRootMenu;
+        rootMenuPop.querySelectorAll('[data-kv-root-choice]').forEach((b) => {
+          const k = b.dataset.kvRootChoice;
+          const check = b.querySelector('[data-kv-root-check]');
+          if (check) check.hidden = k !== rootKind;
+        });
+      }
+    }
+
+    function syncFooterAndRaw(errorsMap) {
+      const jsonText = toJsonString();
+      const bytes = measureUtf8Bytes(jsonText);
+      const overCap = bytes > JSON_MAX_UTF8_BYTES;
+      const hasRowErrors = errorsMap.size > 0;
+      const isBlank = !hasAnyCommittedRow(rows, rootKind);
+
+      if (rawHost) {
+        const ta = rawHost.querySelector('[data-json-raw-textarea]');
+        if (ta && document.activeElement !== ta && !rawSyntaxIssue) {
+          ta.value = jsonText;
+        }
+        const byteEl = rawHost.querySelector('[data-json-raw-bytes]');
+        if (byteEl) {
+          byteEl.textContent = `${formatByteCountVi(bytes)} / 262.144 B`;
+        }
+      }
+
+      if (!cardEl) return;
+      const byteHeaderEl = cardEl.querySelector('[data-kv-bytes]');
+      if (byteHeaderEl) {
+        byteHeaderEl.innerHTML = `${formatByteCountVi(bytes)} / 262.144 B`;
+      }
+
+      const saveBtn = cardEl.querySelector('[data-kv-save-btn]');
+      const reasonEl = cardEl.querySelector('[data-kv-save-reason]');
+      const discardBox = cardEl.querySelector('[data-kv-discard-confirm]');
+      const switchBanner = cardEl.querySelector('[data-kv-switch-error]');
+
+      if (switchBanner) {
+        if (switchBlockedMsg) {
+          switchBanner.hidden = false;
+          switchBanner.innerHTML = switchBlockedMsg;
+        } else {
+          switchBanner.hidden = true;
+        }
+      }
+
+      if (discardBox) {
+        discardBox.hidden = !discardPromptOpen;
+      }
+
+      let disableReason = null;
+      if (rawSyntaxIssue) {
+        disableReason = {
+          vi: `Chưa thể lưu: JSON gốc đang lỗi cú pháp (dòng ${rawSyntaxIssue.line}, cột ${rawSyntaxIssue.column}).`,
+          en: `Cannot save: Raw JSON has a syntax error (line ${rawSyntaxIssue.line}, col ${rawSyntaxIssue.column}).`
+        };
+      } else if (overCap) {
+        disableReason = {
+          vi: 'Chưa thể lưu: Nội dung vượt quá 256 KiB (262.144 B UTF-8).',
+          en: 'Cannot save: Entry exceeds 256 KiB (262,144 UTF-8 bytes).'
+        };
+      } else if (hasRowErrors) {
+        const firstErr = errorsMap.values().next().value;
+        const msg = firstErr.key || firstErr.value;
+        disableReason = {
+          vi: `Chưa thể lưu: ${msg.vi}`,
+          en: `Cannot save: ${msg.en}`
+        };
+      } else if (isBlank) {
+        disableReason = {
+          vi: rootKind === 'array'
+            ? 'Nhập ít nhất một giá trị để lưu entry.'
+            : 'Nhập ít nhất một trường để lưu entry.',
+          en: rootKind === 'array'
+            ? 'Enter at least one item value to save.'
+            : 'Enter at least one field to save.'
+        };
+      }
+
+      if (reasonEl) {
+        if (disableReason) {
+          reasonEl.hidden = false;
+          reasonEl.className = (hasRowErrors || rawSyntaxIssue || overCap) ? 'kv-save-reason' : 'text-[12px] text-muted';
+          reasonEl.innerHTML = `${esc(disableReason.vi)} · <span lang="en">${esc(disableReason.en)}</span>`;
+        } else {
+          reasonEl.hidden = false;
+          reasonEl.className = 'text-[12px] text-muted';
+          reasonEl.innerHTML = `Mã hoá đầu-cuối · <span class="kbd">Enter</span>/<span class="kbd">Tab</span> chuyển ô · <span lang="en">End-to-end encrypted</span>`;
+        }
+      }
+
+      if (saveBtn) {
+        saveBtn.disabled = !!disableReason;
+        if (reasonEl && reasonEl.id) {
+          saveBtn.setAttribute('aria-describedby', reasonEl.id);
+        }
+      }
+    }
+
+    function paint(focusDesc) {
+      if (state.locked && kvHost.closest('[data-secret]')) {
+        kvHost.innerHTML = '';
+        return;
+      }
+      const errorsMap = new Map();
+      validateRows(rows, rootKind, errorsMap);
+      kvHost.innerHTML = `<div class="kv-editor">${renderRowsListHtml(rows, rootKind, errorsMap, 0, 'root')}</div>`;
+      syncHeaderControls();
+      syncFooterAndRaw(errorsMap);
+
+      if (focusDesc) {
+        let targetEl = null;
+        if (focusDesc.kind === 'key' && focusDesc.rowId) {
+          targetEl = kvHost.querySelector(`[data-kv-key-input="${CSS.escape(focusDesc.rowId)}"]`);
+        } else if (focusDesc.kind === 'val' && focusDesc.rowId) {
+          targetEl = kvHost.querySelector(`[data-kv-val-input="${CSS.escape(focusDesc.rowId)}"]`) ||
+                     kvHost.querySelector(`[data-kv-act="toggle-type-menu"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+        } else if (focusDesc.kind === 'type' && focusDesc.rowId) {
+          targetEl = kvHost.querySelector(`[data-kv-act="toggle-type-menu"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+        } else if (focusDesc.kind === 'menu' && focusDesc.rowId) {
+          targetEl = kvHost.querySelector(`[data-kv-act="toggle-row-menu"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+        }
+        if (targetEl && typeof targetEl.focus === 'function') {
+          targetEl.focus();
+          if (focusDesc.select && typeof targetEl.select === 'function') targetEl.select();
+        }
+      }
+    }
+
+    /* Update inline validation & footer without destroying focused input DOM */
+    function refreshValidationInPlace() {
+      const errorsMap = new Map();
+      validateRows(rows, rootKind, errorsMap);
+      let needsFullPaint = false;
+      kvHost.querySelectorAll('[data-kv-row]').forEach((li) => {
+        const rId = li.dataset.kvRow;
+        const found = findRowAndParent(rows, rId, rootKind, null);
+        if (!found) return;
+        const r = found.row;
+        const err = errorsMap.get(rId) || {};
+        const hasErrNow = !!(err.key || err.value);
+        const hadErrDom = li.classList.contains('is-invalid');
+        const existingSug = li.querySelector('[data-kv-act="suggest-number"]');
+        const shouldHaveSug = r.type === 'string' && r.value.trim() !== '' && isValidJsonNumberLexeme(r.value.trim());
+        if (hasErrNow !== hadErrDom || !!existingSug !== shouldHaveSug || hasErrNow) {
+          needsFullPaint = true;
+        }
+      });
+      if (needsFullPaint) {
+        const active = document.activeElement;
+        let fDesc = null;
+        let selStart = null;
+        let selEnd = null;
+        if (active && kvHost.contains(active)) {
+          if (active.dataset.kvKeyInput) fDesc = { kind: 'key', rowId: active.dataset.kvKeyInput };
+          else if (active.dataset.kvValInput) fDesc = { kind: 'val', rowId: active.dataset.kvValInput };
+          selStart = active.selectionStart;
+          selEnd = active.selectionEnd;
+        }
+        paint(fDesc);
+        if (fDesc) {
+          const restored = fDesc.kind === 'key'
+            ? kvHost.querySelector(`[data-kv-key-input="${CSS.escape(fDesc.rowId)}"]`)
+            : kvHost.querySelector(`[data-kv-val-input="${CSS.escape(fDesc.rowId)}"]`);
+          if (restored && selStart != null && typeof restored.setSelectionRange === 'function') {
+            try { restored.setSelectionRange(selStart, selEnd); } catch (_) {}
+          }
+        }
+      } else {
+        syncFooterAndRaw(errorsMap);
+      }
+    }
+
+    kvHost.addEventListener('input', (e) => {
+      const keyInp = e.target.closest('[data-kv-key-input]');
+      if (keyInp) {
+        const found = findRowAndParent(rows, keyInp.dataset.kvKeyInput, rootKind, null);
+        if (found) {
+          found.row.key = keyInp.value;
+          discardPromptOpen = false;
+          refreshValidationInPlace();
+        }
+        return;
+      }
+      const valInp = e.target.closest('[data-kv-val-input]');
+      if (valInp) {
+        const found = findRowAndParent(rows, valInp.dataset.kvValInput, rootKind, null);
+        if (found) {
+          found.row.value = valInp.value;
+          discardPromptOpen = false;
+          refreshValidationInPlace();
+        }
+      }
+    });
+
+    kvHost.addEventListener('paste', (e) => {
+      const targetInp = e.target.closest('[data-kv-key-input], [data-kv-val-input]');
+      if (!targetInp || !e.clipboardData) return;
+      const text = e.clipboardData.getData('text/plain');
+      if (!text || (!text.includes('\n') && !text.includes(':') && !text.includes('=') && !text.trim().startsWith('{'))) return;
+      const rowId = targetInp.dataset.kvKeyInput || targetInp.dataset.kvValInput;
+      const found = findRowAndParent(rows, rowId, rootKind, null);
+      if (!found) return;
+      /* Only intercept multi-field paste on key input or when value input is empty and multi-line */
+      if (targetInp.dataset.kvValInput && (targetInp.value !== '' || !text.includes('\n'))) return;
+
+      const parsedPaste = parseMultiLineKeyValuePaste(text);
+      if (!parsedPaste) return;
+
+      if (parsedPaste.kind === 'json') {
+        e.preventDefault();
+        loadFromJsonString(text.trim());
+        paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: rows[0].id });
+        toast('Đã điền các trường từ JSON vừa dán · Filled fields from pasted JSON');
+        return;
+      }
+      if (parsedPaste.kind === 'pairs' && found.parentKind === 'object') {
+        e.preventDefault();
+        const newRows = parsedPaste.pairs.map((pair) => makeRow({ key: pair.key, value: pair.value, type: 'string' }));
+        if (isRowCompletelyBlank(found.row, 'object')) {
+          found.list.splice(found.index, 1, ...newRows);
+        } else {
+          found.list.splice(found.index + 1, 0, ...newRows);
+        }
+        const lastInserted = newRows[newRows.length - 1];
+        paint({ kind: 'val', rowId: lastInserted.id });
+        toast(`Đã điền ${newRows.length} dòng từ nội dung dán · Filled ${newRows.length} rows from paste`);
+      }
+    });
+
+    kvHost.addEventListener('keydown', (e) => {
+      const keyInp = e.target.closest('[data-kv-key-input]');
+      const valInp = e.target.closest('[data-kv-val-input]');
+
+      if (e.key === 'Escape' && (openMenuRowId || openTypeMenuRowId)) {
+        e.preventDefault();
+        e.stopPropagation();
+        const restoreTypeId = openTypeMenuRowId;
+        const restoreMenuId = openMenuRowId;
+        openTypeMenuRowId = null;
+        openMenuRowId = null;
+        paint(restoreTypeId ? { kind: 'type', rowId: restoreTypeId } : { kind: 'menu', rowId: restoreMenuId });
+        return;
+      }
+
+      if (keyInp) {
+        const rId = keyInp.dataset.kvKeyInput;
+        const found = findRowAndParent(rows, rId, rootKind, null);
+        if (!found) return;
+
+        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          paint({ kind: 'val', rowId: rId, select: true });
+          return;
+        }
+        if (e.key === 'Backspace' && keyInp.value === '' && found.row.value === '' && found.list.length > 1) {
+          e.preventDefault();
+          const prevIdx = Math.max(0, found.index - 1);
+          found.list.splice(found.index, 1);
+          const targetRow = found.list[prevIdx];
+          paint({ kind: 'val', rowId: targetRow.id });
+          return;
+        }
+      }
+
+      if (valInp) {
+        const rId = valInp.dataset.kvValInput;
+        const found = findRowAndParent(rows, rId, rootKind, null);
+        if (!found) return;
+
+        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          if (found.index < found.list.length - 1) {
+            const nextRow = found.list[found.index + 1];
+            paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nextRow.id, select: true });
+          } else {
+            const created = makeRow({ key: '', value: '', type: 'string' });
+            found.list.push(created);
+            paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: created.id });
+          }
+          return;
+        }
+        if (e.key === 'Tab' && !e.shiftKey) {
+          if (found.index < found.list.length - 1) {
+            e.preventDefault();
+            const nextRow = found.list[found.index + 1];
+            paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nextRow.id, select: true });
+            return;
+          }
+        }
+        if (e.key === 'Backspace' && valInp.value === '' && (found.parentKind === 'array' || found.row.key === '') && found.list.length > 1) {
+          e.preventDefault();
+          const prevIdx = Math.max(0, found.index - 1);
+          found.list.splice(found.index, 1);
+          const targetRow = found.list[prevIdx];
+          paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: targetRow.id });
+        }
+      }
+    });
+
+    kvHost.addEventListener('click', (e) => {
+      const actBtn = e.target.closest('[data-kv-act]');
+      if (!actBtn) return;
+      const act = actBtn.dataset.kvAct;
+      const rowId = actBtn.dataset.rowId;
+
+      if (act === 'toggle-type-menu') {
+        e.stopPropagation();
+        openMenuRowId = null;
+        openRootMenu = false;
+        openTypeMenuRowId = openTypeMenuRowId === rowId ? null : rowId;
+        paint({ kind: 'type', rowId });
+        return;
+      }
+      if (act === 'toggle-row-menu') {
+        e.stopPropagation();
+        openTypeMenuRowId = null;
+        openRootMenu = false;
+        openMenuRowId = openMenuRowId === rowId ? null : rowId;
+        paint({ kind: 'menu', rowId });
+        return;
+      }
+      if (act === 'pick-type') {
+        e.stopPropagation();
+        const nextType = actBtn.dataset.type || 'string';
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        openTypeMenuRowId = null;
+        if (!found) return;
+        const r = found.row;
+        r.type = nextType;
+        if (nextType === 'boolean') {
+          if (r.value !== 'true' && r.value !== 'false') r.value = 'true';
+        } else if (nextType === 'null') {
+          r.value = 'null';
+        } else if (nextType === 'number') {
+          if (!isValidJsonNumberLexeme(r.value.trim())) {
+            r.value = r.value.trim() || '0';
+          }
+        } else if (nextType === 'object' || nextType === 'array') {
+          r.expanded = true;
+          if (!Array.isArray(r.children) || r.children.length === 0) {
+            r.children = [makeRow({ key: '', value: '', type: 'string' })];
+          }
+        } else if (nextType === 'string') {
+          if (r.value === 'null') r.value = '';
+        }
+        const focusTarget = (nextType === 'object' || nextType === 'array') && r.children && r.children[0]
+          ? { kind: nextType === 'array' ? 'val' : 'key', rowId: r.children[0].id }
+          : { kind: 'val', rowId: r.id };
+        paint(focusTarget);
+        return;
+      }
+      if (act === 'suggest-number') {
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        found.row.type = 'number';
+        found.row.value = found.row.value.trim();
+        paint({ kind: 'val', rowId });
+        toast('Đã chuyển kiểu sang Số · Switched type to Number');
+        return;
+      }
+      if (act === 'set-bool') {
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        found.row.value = actBtn.dataset.boolVal === 'false' ? 'false' : 'true';
+        paint();
+        return;
+      }
+      if (act === 'toggle-expand') {
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        found.row.expanded = !found.row.expanded;
+        paint();
+        return;
+      }
+      if (act === 'add-row') {
+        const parentId = actBtn.dataset.parentId;
+        openTypeMenuRowId = null;
+        openMenuRowId = null;
+        if (!parentId || parentId === 'root') {
+          const created = makeRow({ key: '', value: '', type: 'string' });
+          rows.push(created);
+          paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: created.id });
+        } else {
+          const found = findRowAndParent(rows, parentId, rootKind, null);
+          if (found && (found.row.type === 'object' || found.row.type === 'array')) {
+            found.row.expanded = true;
+            found.row.children = found.row.children || [];
+            const created = makeRow({ key: '', value: '', type: 'string' });
+            found.row.children.push(created);
+            paint({ kind: found.row.type === 'array' ? 'val' : 'key', rowId: created.id });
+          }
+        }
+        return;
+      }
+      if (act === 'insert-below') {
+        openMenuRowId = null;
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        const created = makeRow({ key: '', value: '', type: 'string' });
+        found.list.splice(found.index + 1, 0, created);
+        paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: created.id });
+        return;
+      }
+      if (act === 'move-row-up') {
+        openMenuRowId = null;
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found || found.index <= 0) return;
+        const item = found.list.splice(found.index, 1)[0];
+        found.list.splice(found.index - 1, 0, item);
+        paint({ kind: 'menu', rowId });
+        return;
+      }
+      if (act === 'move-row-down') {
+        openMenuRowId = null;
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found || found.index >= found.list.length - 1) return;
+        const item = found.list.splice(found.index, 1)[0];
+        found.list.splice(found.index + 1, 0, item);
+        paint({ kind: 'menu', rowId });
+        return;
+      }
+      if (act === 'delete-row') {
+        openMenuRowId = null;
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        if (found.list.length <= 1) {
+          const replacement = makeRow({ key: '', value: '', type: 'string' });
+          found.list.splice(0, 1, replacement);
+          paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: replacement.id });
+        } else {
+          const nextIdx = Math.max(0, Math.min(found.index, found.list.length - 2));
+          found.list.splice(found.index, 1);
+          const nextTarget = found.list[nextIdx];
+          paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nextTarget.id });
+        }
+      }
+    });
+
+    /* Wire Raw JSON tab & Card-level controls */
+    if (rawHost) {
+      const ta = rawHost.querySelector('[data-json-raw-textarea]');
+      const formatBtn = rawHost.querySelector('[data-json-raw-format]');
+      const errBox = rawHost.querySelector('[data-json-raw-error]');
+      const formatMsgEl = rawHost.querySelector('[data-json-format-msg]');
+
+      function validateRawEditor() {
+        if (!ta) return true;
+        const draft = ta.value;
+        const bytes = measureUtf8Bytes(draft);
+        const byteEl = rawHost.querySelector('[data-json-raw-bytes]');
+        if (byteEl) byteEl.textContent = `${formatByteCountVi(bytes)} / 262.144 B`;
+
+        const res = parseJsonStrict(draft);
+        if (!res.ok) {
+          rawSyntaxIssue = res.error;
+          lastRawErrorOffset = res.error.offset || 0;
+          ta.setAttribute('aria-invalid', 'true');
+          if (errBox) {
+            errBox.hidden = false;
+            if (errBox.id) ta.setAttribute('aria-describedby', errBox.id);
+            errBox.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p class="font-semibold m-0 mb-0.5">JSON không hợp lệ — Dòng ${res.error.line}, cột ${res.error.column}</p>
+                <p class="m-0">${esc(res.error.messageVi)} · <span lang="en">${esc(res.error.messageEn)}</span></p>
+              </div>
+              <button type="button" class="btn btn-tertiary btn-sm" data-json-raw-goto>Đi tới lỗi · <span lang="en">Go to error</span></button>
+            </div>`;
+          }
+          const errorsMap = new Map();
+          validateRows(rows, rootKind, errorsMap);
+          syncFooterAndRaw(errorsMap);
+          return false;
+        }
+        rawSyntaxIssue = null;
+        switchBlockedMsg = null;
+        ta.removeAttribute('aria-invalid');
+        if (errBox) errBox.hidden = true;
+        loadFromJsonString(draft);
+        const errorsMap = new Map();
+        validateRows(rows, rootKind, errorsMap);
+        syncHeaderControls();
+        syncFooterAndRaw(errorsMap);
+        return true;
+      }
+
+      if (ta) {
+        ta.addEventListener('input', () => {
+          if (formatMsgEl) formatMsgEl.hidden = true;
+          validateRawEditor();
+        });
+      }
+      if (errBox && ta) {
+        errBox.addEventListener('click', (e) => {
+          const gotoBtn = e.target.closest('[data-json-raw-goto]');
+          if (!gotoBtn) return;
+          const normText = ta.value;
+          const pos = Math.max(0, Math.min(mapSourceOffsetToLfOffset(normText, lastRawErrorOffset), normText.length));
+          ta.focus();
+          ta.setSelectionRange(pos, Math.min(pos + 1, normText.length));
+        });
+      }
+      if (formatBtn && ta) {
+        formatBtn.addEventListener('click', () => {
+          const fmtRes = formatJsonStrict(ta.value, { eol: 'lf' });
+          if (!fmtRes.ok) {
+            if (formatMsgEl) {
+              formatMsgEl.hidden = false;
+              formatMsgEl.innerHTML = 'Không thể định dạng khi JSON đang lỗi cú pháp. · <span lang="en">Cannot format invalid JSON.</span>';
+            }
+            return;
+          }
+          ta.value = fmtRes.text;
+          if (formatMsgEl) formatMsgEl.hidden = true;
+          validateRawEditor();
+          toast('Đã định dạng JSON gốc · Formatted Raw JSON');
+        });
+      }
+    }
+
+    if (cardEl) {
+      const rootMenuBtn = cardEl.querySelector('[data-kv-root-menu-btn]');
+      const rootMenuPop = cardEl.querySelector('[data-kv-root-menu-pop]');
+      if (rootMenuBtn) {
+        rootMenuBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openTypeMenuRowId = null;
+          openMenuRowId = null;
+          openRootMenu = !openRootMenu;
+          syncHeaderControls();
+        });
+      }
+      if (rootMenuPop) {
+        rootMenuPop.addEventListener('click', (e) => {
+          const choiceBtn = e.target.closest('[data-kv-root-choice]');
+          if (!choiceBtn) return;
+          const nextKind = choiceBtn.dataset.kvRootChoice === 'array' ? 'array' : 'object';
+          openRootMenu = false;
+          if (nextKind !== rootKind) {
+            rootKind = nextKind;
+            paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: rows[0]?.id });
+            toast(rootKind === 'array'
+              ? 'Đã chuyển gốc sang Mảng · Switched root to Array'
+              : 'Đã chuyển gốc sang Object · Switched root to Object');
+          } else {
+            syncHeaderControls();
+          }
+        });
+      }
+
+      /* Tab switch guard: Table <-> Raw JSON */
+      const modeSeg = cardEl.querySelector('[data-kv-mode-seg]');
+      if (modeSeg) {
+        modeSeg.addEventListener('click', (e) => {
+          const b = e.target.closest('button[data-target]');
+          if (!b) return;
+          const target = b.dataset.target;
+          if (target === kvHost.dataset.view && rawSyntaxIssue) {
+            e.stopPropagation();
+            switchBlockedMsg = 'Chưa thể chuyển sang Bảng khi JSON gốc đang có lỗi cú pháp. · <span lang="en">Cannot switch to Table while Raw JSON has syntax errors.</span>';
+            const errorsMap = new Map();
+            validateRows(rows, rootKind, errorsMap);
+            syncFooterAndRaw(errorsMap);
+            return;
+          }
+          switchBlockedMsg = null;
+          modeSeg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+          cardEl.querySelectorAll('[data-view]').forEach((v) => {
+            v.hidden = v.dataset.view !== target;
+          });
+          if (target === kvHost.dataset.view) {
+            paint();
+          } else if (rawHost) {
+            const ta = rawHost.querySelector('[data-json-raw-textarea]');
+            if (ta) ta.value = toJsonString();
+          }
+        });
+      }
+
+      const saveBtn = cardEl.querySelector('[data-kv-save-btn]');
+      const cancelBtn = cardEl.querySelector('[data-kv-cancel-btn]');
+      const keepBtn = cardEl.querySelector('[data-kv-keep-btn]');
+      const discardBtn = cardEl.querySelector('[data-kv-discard-btn]');
+
+      function triggerSave() {
+        if (!saveBtn || saveBtn.disabled) return;
+        if (typeof config.onSave === 'function') {
+          config.onSave(toJsonString());
+        } else {
+          toast('Đã mã hoá và lưu entry JSON · Encrypted and saved JSON entry');
+        }
+      }
+
+      function triggerCancel() {
+        const isDirty = hasAnyCommittedRow(rows, rootKind) || rawSyntaxIssue !== null;
+        if (!isDirty) {
+          discardPromptOpen = false;
+          if (typeof config.onCancel === 'function') config.onCancel();
+          return;
+        }
+        discardPromptOpen = true;
+        const errorsMap = new Map();
+        validateRows(rows, rootKind, errorsMap);
+        syncFooterAndRaw(errorsMap);
+      }
+
+      if (saveBtn) saveBtn.addEventListener('click', triggerSave);
+      if (cancelBtn) cancelBtn.addEventListener('click', triggerCancel);
+      if (keepBtn) keepBtn.addEventListener('click', () => {
+        discardPromptOpen = false;
+        const errorsMap = new Map();
+        validateRows(rows, rootKind, errorsMap);
+        syncFooterAndRaw(errorsMap);
+      });
+      if (discardBtn) discardBtn.addEventListener('click', () => {
+        discardPromptOpen = false;
+        if (typeof config.onCancel === 'function') config.onCancel();
+      });
+
+      cardEl.addEventListener('keydown', (e) => {
+        const k = (e.key || '').toLowerCase();
+        if (k === 's' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          triggerSave();
+        } else if (e.key === 'escape' && !openMenuRowId && !openTypeMenuRowId && !openRootMenu) {
+          e.preventDefault();
+          triggerCancel();
+        }
+      });
+    }
+
+    document.addEventListener('click', (e) => {
+      if ((openTypeMenuRowId || openMenuRowId) && !kvHost.contains(e.target)) {
+        openTypeMenuRowId = null;
+        openMenuRowId = null;
+        paint();
+      }
+      if (openRootMenu && cardEl && !cardEl.contains(e.target)) {
+        openRootMenu = false;
+        syncHeaderControls();
+      }
+    });
+
+    paint();
+
+    const controller = {
+      paint,
+      focusFirstInput() {
+        const first = rows[0];
+        if (!first) return;
+        paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: first.id });
+      },
+      setPresetState(presetName) {
+        openMenuRowId = null;
+        openTypeMenuRowId = null;
+        openRootMenu = false;
+        discardPromptOpen = false;
+        switchBlockedMsg = null;
+        rawSyntaxIssue = null;
+
+        const showTab = (tabName) => {
+          if (!cardEl) return;
+          const modeSeg = cardEl.querySelector('[data-kv-mode-seg]');
+          if (modeSeg) {
+            modeSeg.querySelectorAll('button').forEach((b) => {
+              b.setAttribute('aria-pressed', String(b.dataset.target === tabName));
+            });
+          }
+          cardEl.querySelectorAll('[data-view]').forEach((v) => {
+            v.hidden = v.dataset.view !== tabName;
+          });
+        };
+
+        if (presetName === 'empty') {
+          rootKind = 'object';
+          rows = [makeRow({ key: '', value: '', type: 'string' })];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint({ kind: 'key', rowId: rows[0].id });
+        } else if (presetName === 'filled-3') {
+          rootKind = 'object';
+          rows = [
+            makeRow({ key: 'ssid', value: 'Zone17th-5G', type: 'string' }),
+            makeRow({ key: 'channel', value: '36', type: 'number' }),
+            makeRow({
+              key: 'guest',
+              value: '',
+              type: 'object',
+              expanded: true,
+              children: [
+                makeRow({ key: 'ssid', value: 'Zone17th-Guest', type: 'string' }),
+                makeRow({ key: 'vlan', value: '30', type: 'string' }),
+                makeRow({ key: 'isolate', value: 'true', type: 'boolean' })
+              ]
+            })
+          ];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint();
+        } else if (presetName === 'validation-error') {
+          rootKind = 'object';
+          rows = [
+            makeRow({ key: 'ssid', value: 'Zone17th-5G', type: 'string' }),
+            makeRow({ key: 'ssid', value: 'Zone17th-Backup', type: 'string' }),
+            makeRow({ key: 'channel', value: '036', type: 'number' }),
+            makeRow({ key: '', value: 'wpa3-personal', type: 'string' })
+          ];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint();
+        } else if (presetName === 'raw-tab') {
+          rootKind = 'object';
+          rows = [
+            makeRow({ key: 'ssid', value: 'Zone17th-5G', type: 'string' }),
+            makeRow({ key: 'channel', value: '36', type: 'number' }),
+            makeRow({
+              key: 'guest',
+              value: '',
+              type: 'object',
+              expanded: true,
+              children: [
+                makeRow({ key: 'ssid', value: 'Zone17th-Guest', type: 'string' }),
+                makeRow({ key: 'vlan', value: '30', type: 'string' }),
+                makeRow({ key: 'isolate', value: 'true', type: 'boolean' })
+              ]
+            })
+          ];
+          paint();
+          showTab(rawHost ? rawHost.dataset.view : 'nraw');
+          if (rawHost) {
+            const ta = rawHost.querySelector('[data-json-raw-textarea]');
+            if (ta) ta.value = toJsonString();
+            const errBox = rawHost.querySelector('[data-json-raw-error]');
+            if (errBox) errBox.hidden = true;
+          }
+        } else if (presetName === 'array-root') {
+          rootKind = 'array';
+          rows = [
+            makeRow({ key: '', value: '1.1.1.1', type: 'string' }),
+            makeRow({ key: '', value: '8.8.8.8', type: 'string' }),
+            makeRow({ key: '', value: '9.9.9.9', type: 'string' })
+          ];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint();
+        }
+      },
+      onVaultStateChange(isLocked) {
+        openMenuRowId = null;
+        openTypeMenuRowId = null;
+        openRootMenu = false;
+        discardPromptOpen = false;
+        if (isLocked) {
+          rows = [makeRow({ key: '', value: '', type: 'string' })];
+          if (kvHost.closest('[data-secret]')) kvHost.innerHTML = '';
+          if (rawHost) {
+            const ta = rawHost.querySelector('[data-json-raw-textarea]');
+            if (ta) ta.value = '';
+          }
+        } else {
+          paint();
+        }
+      },
+      toJsonString
+    };
+
+    kvEditorInstances.push(controller);
+    return controller;
+  }
   /* ---------- chrome chung: theme, khoá vault, tab ---------- */
 
   function initChrome() {
@@ -5599,6 +6828,11 @@
           jsonCardInstances.forEach((cardInst) => {
             if (cardInst && typeof cardInst.onVaultStateChange === 'function') {
               cardInst.onVaultStateChange(state.locked, prevLocked);
+            }
+          });
+          kvEditorInstances.forEach((kvInst) => {
+            if (kvInst && typeof kvInst.onVaultStateChange === 'function') {
+              kvInst.onVaultStateChange(state.locked, prevLocked);
             }
           });
         }
@@ -5678,7 +6912,7 @@
 
   window.SAK = {
     TAGS, ITEMS, SUGGEST_QUOTA, search, searchDemo, parseQuickAdd, initOmnibox, openDupDialog,
-    renderJsonTable, initJsonEntryCard, parseJsonStrict, formatJsonStrict,
+    renderJsonTable, initJsonEntryCard, initKvEntryEditor, parseJsonStrict, formatJsonStrict,
     detectEol, measureUtf8Bytes, isWellFormedUtf16,
     initChrome, toast, state, norm, normIdentity,
     undoShortcutLabel, isApplePlatform
