@@ -223,6 +223,10 @@ export function VaultUnlockFlow() {
           return;
         }
 
+        completedNavigationRef.current = true;
+        clearRecoveryCompletedNotice();
+        clearDeviceUnlockFallbackNotice();
+        router.replace(destinationPath);
         if (rememberOnUnlock) {
           const rememberedState = await rememberDeviceState.remember();
           if (!rememberedState.remembered) {
@@ -235,14 +239,10 @@ export function VaultUnlockFlow() {
               onUndo: () => {},
             });
           }
-          if (!isMountedRef.current || unlockIntentSeqRef.current !== intentSeq) {
-            return;
+          if (isMountedRef.current && unlockIntentSeqRef.current === intentSeq) {
+            router.replace(destinationPath);
           }
         }
-        completedNavigationRef.current = true;
-        clearRecoveryCompletedNotice();
-        clearDeviceUnlockFallbackNotice();
-        router.replace(destinationPath);
       } catch (err) {
         passphraseSnapshot = null;
         if (!isMountedRef.current || unlockIntentSeqRef.current !== intentSeq) {
@@ -444,6 +444,10 @@ export function VaultUnlockFlow() {
         {/* P03-T19: passkey card first (mockups/unlock.html view B); renders nothing when the user has no passkey. */}
         <PasskeyUnlockButton
           onUnlocked={async () => {
+            completedNavigationRef.current = true;
+            clearRecoveryCompletedNotice();
+            clearDeviceUnlockFallbackNotice();
+            router.replace(destinationPath);
             if (rememberOnUnlock) {
               const rememberedState = await rememberDeviceState.remember();
               if (!rememberedState.remembered) {
@@ -456,12 +460,10 @@ export function VaultUnlockFlow() {
                   onUndo: () => {},
                 });
               }
-              if (!isMountedRef.current) return;
+              if (isMountedRef.current) {
+                router.replace(destinationPath);
+              }
             }
-            completedNavigationRef.current = true;
-            clearRecoveryCompletedNotice();
-            clearDeviceUnlockFallbackNotice();
-            router.replace(destinationPath);
           }}
         />
         <section data-view="new" data-testid="unlock-passphrase-section">

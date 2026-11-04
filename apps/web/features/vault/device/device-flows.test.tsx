@@ -8,6 +8,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { LockedBanner } from '@/features/items/locked-banner';
 import { CRED_A, PRF_OUTPUT, fakeCredential, unlockOptionsResponse } from '@/features/vault/passkey/test-helpers';
 import { VaultUnlockFlow } from '@/features/vault/unlock/unlock-flow';
+import { clearDeviceUnlockFallbackNotice } from '@/features/vault/unlock/recovery-notice';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 import {
@@ -152,6 +153,8 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
   beforeEach(() => {
     document.cookie = 'sabk_csrf=test-csrf-token';
     resetVaultBroadcastForTests();
+    window.sessionStorage.clear();
+    clearDeviceUnlockFallbackNotice();
     locks = new FakeWebLocks();
     idb = new FakeDeviceIdb(locks);
     env = { idbFactory: idb.createFactory(), locksManager: locks.createLockManager() };
@@ -180,6 +183,8 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     cleanup();
     for (const shim of shims.splice(0)) shim.close();
     resetVaultBroadcastForTests();
+    window.sessionStorage.clear();
+    clearDeviceUnlockFallbackNotice();
     vi.unstubAllGlobals();
   });
 
@@ -2057,16 +2062,28 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
       </NextIntlClientProvider>,
     );
 
-    const unlockBtn = await screen.findByTestId('vault-unlock-button');
-    const bannerCta = await screen.findByTestId('vault-locked-unlock-cta');
-    expect(bannerCta).toHaveClass('btn', 'btn-primary', 'btn-sm', 'ml-auto', 'no-underline');
+    expect(await screen.findByTestId('vault-unlock-button')).toBeInTheDocument();
+    expect(await screen.findByTestId('vault-locked-unlock-cta')).toHaveClass(
+      'btn',
+      'btn-primary',
+      'btn-sm',
+      'ml-auto',
+      'no-underline',
+    );
 
-    // Initialize the lazy CryptoClient Worker and transition it to error state
+    // Start the lazy CryptoClient Worker via silentUnlock(), then crash it into error state
     await act(async () => {
-      vaultCtx.getClient();
+      const res = await vaultCtx.silentUnlock();
+      expect(res.status).toBe('unlocked');
+    });
+    await act(async () => {
       shim.simulateCrash();
     });
     expect(vaultCtx.state).toBe('error');
+
+    const unlockBtn = await screen.findByTestId('vault-unlock-button');
+    const bannerCta = await screen.findByTestId('vault-locked-unlock-cta');
+    expect(bannerCta).toHaveClass('btn', 'btn-primary', 'btn-sm', 'ml-auto', 'no-underline');
     await act(async () => {
       fireEvent.click(unlockBtn);
     });
@@ -2231,7 +2248,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
       fireEvent.click(screen.getByTestId('unlock-submit-button'));
     });
     await waitFor(() => expect(mocks.router.replace).toHaveBeenCalledWith('/app'), { timeout: 10_000 });
-    expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true);
+    await waitFor(() => expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true), { timeout: 10_000 });
     cleanup();
 
     // 3. Checked -> passkey unlock calls remember() and writes DevKey record
@@ -2284,7 +2301,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
       fireEvent.click(passkeyBtn);
     });
     await waitFor(() => expect(mocks.router.replace).toHaveBeenCalledWith('/app'), { timeout: 10_000 });
-    expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true);
+    await waitFor(() => expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true), { timeout: 10_000 });
   });
 });
 
