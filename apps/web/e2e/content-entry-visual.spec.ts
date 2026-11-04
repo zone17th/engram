@@ -1317,16 +1317,20 @@ test.describe('P05-entryux Stage T item page no-horizontal-overflow at 390/768/1
         body: JSON.stringify({ items: [], next_cursor: null }),
       });
     });
-    await context.route('**/api/v1/auth/notifications*', async (route) => {
+    await context.route('**/api/v1/me/notifications*', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: [] }),
+        body: JSON.stringify({ items: [], unread_count: 0, next_cursor: null }),
       });
     });
     await page.goto('/app/settings', {
       waitUntil: 'domcontentloaded',
       timeout: STEP_TIMEOUT,
+    });
+    await expect(page.locator('html')).toHaveAttribute('lang', 'vi', { timeout: UI_WAIT_MS });
+    await expect(page.getByRole('heading', { level: 1, name: 'Cài đặt' })).toBeVisible({
+      timeout: UI_WAIT_MS,
     });
     const viLocaleRadio = page.getByRole('radio', { name: 'Tiếng Việt' });
     await expect(viLocaleRadio).toHaveAttribute('aria-checked', 'true', { timeout: UI_WAIT_MS });
