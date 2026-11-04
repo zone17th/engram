@@ -23,6 +23,8 @@ import {
 import type { Me } from '@/lib/api/auth';
 import * as contentApi from '@/lib/api/content';
 import type { ItemSummary, Tag } from '@/lib/api/content';
+import * as searchApi from '@/lib/api/search';
+import type { SearchResponse, SuggestItem, SuggestResponse, SuggestTag } from '@/lib/api/search';
 import type { CreateVaultResult } from '@/lib/crypto/client';
 import { KEK_BYTES, type DeriveKekFn, type ValidatedKdfParams } from '@/lib/crypto/kdf';
 import type { Sodium } from '@/lib/crypto/sodium';
@@ -265,6 +267,133 @@ function bodyDataInCache(qc: QueryClient): unknown[] {
     .map((query) => query.queryKey);
 }
 
+function makeEmptySuggestResponse(): SuggestResponse {
+  return {
+    scope: 'all',
+    limit: 8,
+    mode: 'full',
+    quota: { tag: 3, lexical: 6, near: 2 },
+    tags: [],
+    items: [],
+    has_more: false,
+    lexical_partial: [],
+    semantic: false,
+    semantic_reason: 'disabled_server',
+    near: [],
+    generation: null,
+  };
+}
+
+function toSuggestItem(item: ItemSummary): SuggestItem {
+  return {
+    kind: 'item',
+    id: item.id,
+    name: item.name,
+    entry_count: item.entry_count,
+    created_at: item.created_at,
+    last_used_at: item.last_used_at,
+    tags: item.tags.slice(0, 3).map((tag) => ({ id: tag.id, display: tag.display })),
+    tag_total: item.tags.length,
+    match: 'prefix',
+  };
+}
+
+function toSuggestTag(tag: Tag): SuggestTag {
+  return {
+    kind: 'tag',
+    id: tag.id,
+    display: tag.display,
+    item_count: tag.item_count,
+    last_used_at: tag.last_used_at,
+    match: 'prefix',
+  };
+}
+
+/** Name / tag-display PREFIX match only, exactly like the server: a body-only query matches nothing. */
+function matchMetadata(q: string | undefined, scope: 'all' | 'item' | 'tag' | undefined) {
+  const normQ = normalizeForPrefixMatch(q ?? '');
+  const items =
+    scope === 'tag'
+      ? []
+      : MOCKED_API_ITEMS.filter(
+          (it) => normQ !== '' && normalizeForPrefixMatch(it.name).startsWith(normQ),
+        ).map(toSuggestItem);
+  const tags =
+    scope === 'item'
+      ? []
+      : MOCKED_API_TAGS.filter(
+          (t) => normQ !== '' && normalizeForPrefixMatch(t.display).startsWith(normQ),
+        ).map(toSuggestTag);
+  return { items, tags };
+}
+
+function makeSearchResponse(overrides: Partial<SearchResponse> = {}): SearchResponse {
+  return {
+    scope: 'all',
+    limit: 20,
+    mode: 'full',
+    items: [],
+    tags: [],
+    next_cursor: null,
+    semantic: false,
+    semantic_reason: 'disabled_server',
+    near: [],
+    generation: null,
+    ...overrides,
+  };
+}
+
+function dispatchNativeTextEdit(
+  textarea: HTMLElement,
+  params: {
+    readonly inputType: string;
+    readonly data?: string | null;
+    readonly nextValue: string;
+    readonly isComposing?: boolean;
+  },
+) {
+  const el = textarea as HTMLTextAreaElement;
+  el.dispatchEvent(
+    new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: params.inputType,
+      data: params.data ?? null,
+      isComposing: params.isComposing ?? false,
+    }),
+  );
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    'value',
+  )?.set;
+  setter?.call(el, params.nextValue);
+  el.dispatchEvent(
+    new InputEvent('input', {
+      bubbles: true,
+      inputType: params.inputType,
+      data: params.data ?? null,
+      isComposing: params.isComposing ?? false,
+    }),
+  );
+}
+
+function typeNativeString(textarea: HTMLElement, text: string) {
+  const el = textarea as HTMLTextAreaElement;
+  for (const ch of text) {
+    dispatchNativeTextEdit(el, {
+      inputType: 'insertText',
+      data: ch,
+      nextValue: el.value + ch,
+      isComposing: false,
+    });
+  }
+}
+
+function delayMs(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
 describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches body previews in any vault state', () => {
   const shims: Array<{ close: () => void }> = [];
 
@@ -300,6 +429,18 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
         ? MOCKED_API_TAGS.filter((t) => normalizeForPrefixMatch(t.display).startsWith(normQ))
         : MOCKED_API_TAGS;
       return { items: filtered, next_cursor: null };
+    });
+    // The Omnibox no longer calls `itemsList`/`tagsList` (kept above for the home-page ItemList): suggestions and Enter
+    // search come from `GET /suggest` and `GET /search`, answered here from item names / tag displays only.
+    vi.spyOn(searchApi, 'suggest').mockImplementation(async (params) => {
+      const scope = params?.scope ?? 'all';
+      const { items, tags } = matchMetadata(params?.q, scope);
+      return { ...makeEmptySuggestResponse(), scope, items, tags };
+    });
+    vi.spyOn(searchApi, 'search').mockImplementation(async (params) => {
+      const scope = params.scope ?? 'all';
+      const { items, tags } = matchMetadata(params.q, scope);
+      return makeSearchResponse({ scope, items, tags });
     });
   });
 
@@ -481,7 +622,9 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     fireEvent.change(input, { target: { value: '#công-thức' } });
     const tagListbox = await screen.findByRole('listbox', { name: 'Tag filter results' });
     expect(within(tagListbox).getByRole('option', { name: /#công-thức/ })).toBeInTheDocument();
-    expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 matching tag for #công-thức');
+    await waitFor(() => {
+      expect(screen.getByTestId('omnibox-live')).toHaveTextContent('1 matching tag for #công-thức');
+    });
     expect(findLeaks(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS])).toEqual([]);
 
     // Body-only query ("phin" appears only in D1.preview) -> matches 0 items, offers only Create item option
@@ -494,7 +637,7 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     assertNoPlaintextAttrs(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS]);
   }, 30_000);
 
-  it('unlocked: the Omnibox still never shows or matches entry body previews (P04 prefix search is name/tag only)', async () => {
+  it('unlocked: the Omnibox still never shows or matches entry body previews (/suggest and /search match name/tag only)', async () => {
     const h = await mountLockedWithFixture(() => <Omnibox />);
     await h.unlock();
 
@@ -553,8 +696,8 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     const inFlightCreateName = 'in-flight-nobody-create-4422';
 
     const { promise: heldSearch, resolve: resolveHeldSearch } =
-      Promise.withResolvers<contentApi.ItemList>();
-    const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockImplementation(() => heldSearch);
+      Promise.withResolvers<SearchResponse>();
+    const searchSpy = vi.spyOn(searchApi, 'search').mockImplementation(() => heldSearch);
 
     const { promise: heldCreate, resolve: resolveHeldCreate } =
       Promise.withResolvers<ItemSummary>();
@@ -562,9 +705,9 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
 
     const input = screen.getByRole('textbox', { name: 'Search or save' });
 
-    // 1. Start search (`GET /items?q=`), then lock while the search promise is still in flight
+    // 1. Start search (`GET /search`), then lock while the search promise is still in flight
     searchOnEnter(inFlightQuery);
-    expect(itemsSpy).toHaveBeenCalledTimes(1);
+    expect(searchSpy).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('listbox')).toBeNull();
 
     await act(async () => {
@@ -574,10 +717,9 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     expect(input).toHaveValue('');
 
     await act(async () => {
-      resolveHeldSearch({
-        items: [{ ...MOCKED_API_ITEMS[0]!, name: inFlightQuery }],
-        next_cursor: null,
-      });
+      resolveHeldSearch(
+        makeSearchResponse({ items: [toSuggestItem({ ...MOCKED_API_ITEMS[0]!, name: inFlightQuery })] }),
+      );
       await Promise.resolve();
     });
 
@@ -760,5 +902,276 @@ describe('FE1-2 (P04-T18a, advisor-dec-191): the Omnibox never shows or matches 
     expect(bodyDataInCache(qc)).toEqual([]);
     expect(findLeaks(document.body, SECRET_FRAGMENTS)).toEqual([]);
     assertNoPlaintextAttrs(document.body, [...DEMO_BODIES, ...SECRET_FRAGMENTS]);
+  });
+
+  describe('P05-T17 PR 17-1 — negative privacy invariants (advisor-dec-244 FE-1)', () => {
+    function renderStandaloneOmnibox() {
+      const suggestSpy = vi
+        .spyOn(searchApi, 'suggest')
+        .mockResolvedValue(makeEmptySuggestResponse());
+      const searchSpy = vi.spyOn(searchApi, 'search').mockResolvedValue({
+        scope: 'all',
+        limit: 20,
+        mode: 'full',
+        items: [],
+        tags: [],
+        next_cursor: null,
+        semantic: false,
+        semantic_reason: 'disabled_server',
+        near: [],
+        generation: null,
+      });
+      const itemsSpy = vi.spyOn(contentApi, 'itemsList');
+      const lookupSpy = vi.spyOn(contentApi, 'itemsLookupExact');
+      const tagsSpy = vi.spyOn(contentApi, 'tagsList');
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      qc.setQueryData(['auth', 'me', 0], {
+        user: { id: '11111111-1111-4111-8111-111111111111' },
+        settings: { semantic_suggest: true },
+        features: { semantic_available: true, semantic_external: false },
+      });
+
+      render(
+        <NextIntlClientProvider locale="en" messages={en}>
+          <QueryClientProvider client={qc}>
+            <UndoToastProvider>
+              <Omnibox />
+            </UndoToastProvider>
+          </QueryClientProvider>
+        </NextIntlClientProvider>,
+      );
+      const textarea = screen.getByRole('textbox', { name: 'Search or save' });
+      return { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy };
+    }
+
+    it('"#home:secretbody" sends no request with text after colon', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const secretBody = 'secretbody-tag-colon-9001';
+      const signals: AbortSignal[] = [];
+      // RV-T17-1-FE2-2: hold the `home` request pending so the abort on `:` is real (a settled request has already
+      // removed its controller, so aborting an empty set would leave `signals[0].aborted === false`).
+      const { promise: heldHomeSuggest, resolve: resolveHeldHomeSuggest } =
+        Promise.withResolvers<SuggestResponse>();
+      suggestSpy.mockImplementation((params, opts) => {
+        if (opts?.signal) {
+          signals.push(opts.signal);
+        }
+        if (params?.q === 'home') {
+          return heldHomeSuggest;
+        }
+        return Promise.resolve(makeEmptySuggestResponse());
+      });
+
+      // Realistic timing: type `#home`, wait for the request, then type `:secretbody` -> aborts signal and sends nothing after colon
+      typeNativeString(textarea, '#home');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(signals[0]?.aborted).toBe(false);
+
+      typeNativeString(textarea, `:${secretBody}`);
+      expect(signals[0]?.aborted).toBe(true);
+      await delayMs(160);
+      resolveHeldHomeSuggest(makeEmptySuggestResponse());
+
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+      const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
+      expect(allSuggestArgs).not.toContain(secretBody);
+      // RV-T17-1-FE3-2: JSON.stringify always writes `:` after every key, so assert on the `q` values themselves.
+      const sentQueries = suggestSpy.mock.calls.map(([p]) => p?.q);
+      expect(sentQueries).toEqual(['home']);
+      for (const q of sentQueries) {
+        expect(q ?? '').not.toMatch(/[:：]/);
+      }
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('"#home secret:x" sends nothing after colon', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const secretSuffix = 'secret-after-colon-9002';
+      const signals: AbortSignal[] = [];
+      // RV-T17-1-FE2-2: hold the `home` request pending so the abort on `:` is real (a settled request has already
+      // removed its controller, so aborting an empty set would leave `signals[0].aborted === false`).
+      const { promise: heldHomeSuggest, resolve: resolveHeldHomeSuggest } =
+        Promise.withResolvers<SuggestResponse>();
+      suggestSpy.mockImplementation((params, opts) => {
+        if (opts?.signal) {
+          signals.push(opts.signal);
+        }
+        if (params?.q === 'home') {
+          return heldHomeSuggest;
+        }
+        return Promise.resolve(makeEmptySuggestResponse());
+      });
+
+      // Type `#home secret` -> after debounce, sends only `q: 'home'` (never `secret`)
+      typeNativeString(textarea, '#home secret');
+      await waitFor(() => {
+        expect(suggestSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'home', scope: 'tag', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(signals[0]?.aborted).toBe(false);
+
+      // Now type `:${secretSuffix}` -> aborts the in-flight/previous request and sends no further request
+      typeNativeString(textarea, `:${secretSuffix}`);
+      expect(signals[0]?.aborted).toBe(true);
+      await delayMs(160);
+      resolveHeldHomeSuggest(makeEmptySuggestResponse());
+
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+      const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
+      expect(allSuggestArgs).not.toContain(secretSuffix);
+      expect(allSuggestArgs).not.toContain('secret');
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('"name: body" sends nothing after colon', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const secretBody = 'body-secret-payload-9003';
+
+      typeNativeString(textarea, `name: ${secretBody}`);
+      await delayMs(160);
+
+      const allSuggestArgs = JSON.stringify(suggestSpy.mock.calls);
+      expect(allSuggestArgs).not.toContain(secretBody);
+      expect(allSuggestArgs).not.toContain('name:');
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('pasted text (insertFromPaste) is never sent', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const pastedSecret = 'pasted-clipboard-passphrase-9004';
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertFromPaste',
+        data: pastedSecret,
+        nextValue: pastedSecret,
+      });
+      await delayMs(160);
+
+      expect(suggestSpy).not.toHaveBeenCalled();
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('paste then type name: sends nothing before Enter', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const pastedSecret = 'pasted-first-secret-9005';
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertFromPaste',
+        data: pastedSecret,
+        nextValue: pastedSecret,
+      });
+      // Prepend / type `name: ` so draft is `name: pasted-first-secret-9005` without pressing Enter
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertText',
+        data: ':',
+        nextValue: `name: ${pastedSecret}`,
+      });
+      await delayMs(160);
+
+      expect(suggestSpy).not.toHaveBeenCalled();
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('full-width colon ("wifi： mật khẩu") and "http://x" lock the gate and send nothing after colon', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const fullWidthSecret = 'mật-khẩu-ff1a-9006';
+
+      typeNativeString(textarea, `wifi： ${fullWidthSecret}`);
+      await delayMs(160);
+      expect(suggestSpy).not.toHaveBeenCalled();
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'deleteWordBackward',
+        nextValue: '',
+      });
+      typeNativeString(textarea, 'http://x');
+      await delayMs(160);
+
+      expect(suggestSpy).not.toHaveBeenCalled();
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    // P05-T17 PR 17-2a (FE-1, plan 2.24 item 1): Enter is the only way a pasted / colon-locked / "#" draft reaches the
+    // server, and then ONLY as a lexical `semantic=0` request (the standalone fixture has semantic on + available).
+    it('pasted text (insertFromPaste) + Enter sends exactly one /search with semantic=0 and never a /suggest', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const pastedSecret = 'pasted-enter-passphrase-9007';
+
+      dispatchNativeTextEdit(textarea, {
+        inputType: 'insertFromPaste',
+        data: pastedSecret,
+        nextValue: pastedSecret,
+      });
+      await delayMs(160);
+      expect(searchSpy).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      await waitFor(() => {
+        expect(searchSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(searchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: pastedSecret, scope: 'all', semantic: 0 }),
+        expect.anything(),
+      );
+      expect(suggestSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
+
+    it('"#home:secretbody" + Enter sends no /search and no /suggest at all (the text after the colon never leaves the page)', async () => {
+      const { textarea, suggestSpy, searchSpy, itemsSpy, lookupSpy, tagsSpy } =
+        renderStandaloneOmnibox();
+      const secretBody = 'secretbody-enter-9008';
+
+      typeNativeString(textarea, `#home:${secretBody}`);
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      await delayMs(160);
+
+      expect(JSON.stringify(searchSpy.mock.calls)).not.toContain(secretBody);
+      expect(JSON.stringify(suggestSpy.mock.calls)).not.toContain(secretBody);
+      for (const [params] of suggestSpy.mock.calls) {
+        expect(params?.q ?? '').not.toMatch(/[:：]/);
+      }
+      expect(searchSpy).not.toHaveBeenCalled();
+      expect(itemsSpy).not.toHaveBeenCalled();
+      expect(lookupSpy).not.toHaveBeenCalled();
+      expect(tagsSpy).not.toHaveBeenCalled();
+    });
   });
 });

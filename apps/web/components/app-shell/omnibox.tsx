@@ -13,6 +13,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
+import { ProblemError } from '@engram/shared-types';
 import { QueryClientContext } from '@tanstack/react-query';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
@@ -28,7 +29,6 @@ import {
   CONTENT_LOOKUP_QUERY_KEY_PREFIX,
   CONTENT_TAGS_QUERY_KEY_PREFIX,
   contentQueryKeys,
-  type ContentItemsQueryKey,
 } from '@/features/items/query-keys';
 import { ImportJsonDialog } from '@/features/json-table/import-dialog';
 import { openJsonImportFromHandoff } from '@/features/json-table/import-handoff-store';
@@ -43,6 +43,7 @@ import {
   createQuickAddSavePlan,
   executeQuickAddSavePlan,
   hasPlanCommittedMetadata,
+  QUICK_ADD_TARGET_TAG_CAP,
   type QuickAddSavePlan,
   type SavePlanStepKey,
   type SavePlanStepStatus,
@@ -50,8 +51,41 @@ import {
 import {
   filterCachedTagsByPrefix,
   parseTagFilterInput,
-  splitMarkedPrefix,
 } from '@/features/omnibox/search-helpers';
+import {
+  createInitialMergeState,
+  getRowKey,
+  suggestMergeReducer,
+  type SuggestMergeAction,
+  type SuggestMergeState,
+  type SuggestRow,
+} from '@/features/omnibox/suggest/merge';
+import {
+  buildSearchQueryKey,
+  buildSuggestQueryKey,
+  isCacheableSearchResponse,
+  isSearchQueryKeyPrefix,
+  SEARCH_QUERY_CACHE_OPTIONS,
+} from '@/features/omnibox/suggest/query-keys';
+import {
+  SEARCH_DEFAULT_LIMIT,
+  SUGGEST_DEFAULT_LIMIT,
+  SUGGEST_MOBILE_LIMIT,
+} from '@/features/omnibox/suggest/quota';
+import {
+  buildSuggestListModel,
+  getSuggestOptionDomId,
+  SuggestList,
+  type SuggestListKey,
+} from '@/features/omnibox/suggest/suggest-list';
+import {
+  createSendGate,
+  resolveOmniboxHelpTextKey,
+  SUGGEST_DEBOUNCE_MS,
+  type KeystrokeSendDecision,
+  type SendGateController,
+} from '@/features/omnibox/suggest/send-gate';
+import { useSemanticSuggestSetting } from '@/features/omnibox/suggest/use-semantic-suggest-setting';
 import {
   captureUnconfirmedSaveClearGeneration,
   dismissUnconfirmedSave,
@@ -74,41 +108,75 @@ import {
   getContentErrorI18nKey,
   itemCreate,
   itemDelete,
-  itemsList,
   itemsLookupExact,
-  tagsList,
   type ContentErrorCode,
-  type ItemList,
   type ItemSummary,
   type Tag,
   type TagList,
+  type TagRef,
 } from '@/lib/api/content';
 import { type Me } from '@/lib/api/auth';
+import {
+  search as fetchSearch,
+  suggest as fetchSuggest,
+  type SearchResponse,
+  type SearchScope,
+  type SemanticParam,
+  type SuggestLimit,
+  type SuggestResponse,
+} from '@/lib/api/search';
 import { subscribeSessionBroadcast } from '@/lib/auth/broadcast';
 import { subscribeUserChanged } from '@/lib/auth/user-changed';
 import { cn } from '@/lib/cn';
 
 const MAX_TEXTAREA_HEIGHT_PX = 132;
-const MAX_VISIBLE_OPTION_TAG_CHIPS = 3;
+/** Longest `Retry-After` the omnibox waits for its single automatic retry (plan 2.6: at most one retry). */
+const MAX_SUGGEST_RETRY_AFTER_SECONDS = 30;
+/** Delay before the live region reads "N suggestions" after the last keystroke (plan 2.8 rule 6). */
+const SUGGEST_LIVE_ANNOUNCE_MS = 500;
+/** Delay before the first-query skeleton shows (plan 2.10 pending state). */
+const SUGGEST_SKELETON_DELAY_MS = 150;
 
-export type OmniboxOption =
-  | {
-      readonly id: string;
-      readonly kind: 'item';
-      readonly item: ItemSummary;
-      readonly query: string;
-    }
-  | {
-      readonly id: string;
-      readonly kind: 'create';
-      readonly query: string;
-    }
-  | {
-      readonly id: string;
-      readonly kind: 'tag';
-      readonly tag: Tag;
-      readonly query: string;
-    };
+/** Item chosen with Tab: the next `name: body` save targets this item id instead of an exact-name lookup (OQ-2). */
+interface PinnedItem {
+  readonly id: string;
+  readonly name: string;
+  readonly tags: readonly TagRef[];
+  readonly tagTotal: number;
+}
+
+interface SuggestLegParams {
+  readonly decision: KeystrokeSendDecision;
+  readonly semanticFlag: SemanticParam;
+  readonly gen: number;
+  readonly limit: SuggestLimit;
+  readonly userId: string;
+  readonly epoch: number;
+  readonly expectSemantic: boolean;
+  readonly isRetry: boolean;
+}
+
+function isActionKey(key: SuggestListKey): key is 'action:more' | 'action:create' {
+  return key === 'action:more' || key === 'action:create';
+}
+
+/** `Retry-After` seconds of a `429 rate_limited` problem, `null` for any other failure. */
+function getRateLimitRetryAfterSeconds(error: unknown): number | null {
+  if (
+    error instanceof ProblemError &&
+    (error.problem.status === 429 || error.problem.code === 'rate_limited')
+  ) {
+    const retryAfter = error.problem.retry_after;
+    return typeof retryAfter === 'number' && retryAfter > 0 ? Math.ceil(retryAfter) : 1;
+  }
+  return null;
+}
+
+/** Everything a cursor page ("load more") must repeat from the first `/search` page. Memory only, never logged. */
+interface SearchCursorContext {
+  readonly q: string;
+  readonly scope: SearchScope;
+}
 
 interface DupPickerModalState {
   readonly name: string;
@@ -134,17 +202,6 @@ function SearchIcon({ compact }: { readonly compact: boolean }) {
   );
 }
 
-function MarkedPrefixText({ text, query }: { readonly text: string; readonly query: string }) {
-  const parts = splitMarkedPrefix(text, query);
-  return (
-    <>
-      {parts.before}
-      {parts.match ? <mark>{parts.match}</mark> : null}
-      {parts.after}
-    </>
-  );
-}
-
 function isImeComposing(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean {
   const native = event.nativeEvent;
   const isComposing = 'isComposing' in native && Boolean(native.isComposing);
@@ -159,6 +216,9 @@ function isImeComposing(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean
  * - `['content', 'lookup', name]`
  */
 function isOmniboxSearchQueryKey(queryKey: readonly unknown[]): boolean {
+  if (isSearchQueryKeyPrefix(queryKey)) {
+    return true;
+  }
   if (queryKey.length < 2 || queryKey[0] !== 'content') {
     return false;
   }
@@ -187,6 +247,12 @@ export function Omnibox({
   const tOmni = useTranslations('content.omnibox');
   const tPrivacy = useTranslations('content.privacy');
   const tErrors = useTranslations('content.errors');
+  const tSearchHelp = useTranslations('search.help');
+  const tSearchTab = useTranslations('search.tab');
+  const tSearchState = useTranslations('search.state');
+  const tSearchLive = useTranslations('search.live');
+  const tSearchToggle = useTranslations('search.toggle');
+  const tSearchListbox = useTranslations('search.listbox');
   const router = useRouter();
   const pathname = usePathname() ?? '/app';
   const queryClient = useContext(QueryClientContext);
@@ -200,7 +266,6 @@ export function Omnibox({
   const hintId = `${baseId}-hint`;
   const liveId = `${baseId}-live`;
   const guardAlertId = `${baseId}-guard-alert`;
-  const emptyBoxId = `${baseId}-search-empty`;
   const lockClearedNoticeId = `${baseId}-lock-cleared-notice`;
   const saveUnconfirmedNoticeId = `${baseId}-save-unconfirmed-notice`;
   const addPreviewId = `${baseId}-add-preview`;
@@ -213,10 +278,42 @@ export function Omnibox({
 
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // `#omni-pop` (advisor-dec-327): layout/a11y only. `popScrollable` mirrors "the popover overflows".
+  const popRef = useRef<HTMLDivElement>(null);
+  const [popScrollable, setPopScrollable] = useState(false);
   const retryPlanBtnRef = useRef<HTMLButtonElement>(null);
   const unlockToSaveBtnRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchAbortRef = useRef<AbortController | null>(null);
+  const suggestAbortControllersRef = useRef<Set<AbortController>>(new Set());
+  const suggestDebounceTimerRef = useRef<number | null>(null);
+  // At most one automatic retry per query generation after a 429 `Retry-After` (plan 2.6).
+  const suggestRetryTimersRef = useRef<Set<number>>(new Set());
+  const retriedLegsRef = useRef<Set<string>>(new Set());
+  const sendSuggestLegRef = useRef<((params: SuggestLegParams) => void) | null>(null);
+  // Generation whose lexical leg failed (429 / network / 5xx): keep the rows, drop `aria-busy`, no toast (dec-287).
+  const [lexicalFailedGen, setLexicalFailedGen] = useState(-1);
+  const pinnedItemRef = useRef<PinnedItem | null>(null);
+  const searchCursorRef = useRef<SearchCursorContext | null>(null);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const liveAnnounceTimerRef = useRef<number | null>(null);
+  const liveAnnouncedRef = useRef<{ gen: number; nearCount: number; degraded: boolean }>({
+    gen: -1,
+    nearCount: 0,
+    degraded: false,
+  });
+  // Set by the native `input` listener (observe-only), consumed by `handleInputChange` (see native listener effect).
+  const nativeInputPendingRef = useRef(false);
+  const nativeInputFlagTimerRef = useRef<number | null>(null);
+  const compositionDeferTimerRef = useRef<number | null>(null);
+  const gateRef = useRef<SendGateController | null>(null);
+  if (!gateRef.current) {
+    gateRef.current = createSendGate('');
+  }
+  const mergeStateRef = useRef<SuggestMergeState>(createInitialMergeState());
+  const [, setMergeStateTick] = useState(0);
+  const [, setGateRenderTick] = useState(0);
+  const [tabCannotFill, setTabCannotFill] = useState(false);
   const planAbortRef = useRef<AbortController | null>(null);
   const createPendingRef = useRef(false);
   const createAbortRef = useRef<AbortController | null>(null);
@@ -232,23 +329,76 @@ export function Omnibox({
   const [inputValue, setInputValue] = useState('');
   inputValueRef.current = inputValue;
 
-  const [listOpen, setListOpen] = useState(false);
-  const [listKind, setListKind] = useState<'search' | 'tag-filter' | null>(null);
-  const [activeIndex, setActiveIndex] = useState(-1);
+  const dispatchMerge = useCallback((action: SuggestMergeAction): SuggestMergeState => {
+    const next = suggestMergeReducer(mergeStateRef.current, action);
+    mergeStateRef.current = next;
+    setMergeStateTick((prev) => prev + 1);
+    return next;
+  }, []);
+
+  const clearSuggestDebounceTimer = useCallback(() => {
+    if (suggestDebounceTimerRef.current !== null) {
+      window.clearTimeout(suggestDebounceTimerRef.current);
+      suggestDebounceTimerRef.current = null;
+    }
+  }, []);
+
+  const clearLiveAnnounceTimer = useCallback(() => {
+    if (liveAnnounceTimerRef.current !== null) {
+      window.clearTimeout(liveAnnounceTimerRef.current);
+      liveAnnounceTimerRef.current = null;
+    }
+  }, []);
+
+  // Cancels the two macrotask timers armed by the native input / composition listeners and drops the hand-off flag
+  // (RV-T17-1-FE2-6: a lock / logout / user switch must not leave a late callback re-render or re-send for the old draft).
+  const clearNativeEditTimers = useCallback(() => {
+    if (nativeInputFlagTimerRef.current !== null) {
+      window.clearTimeout(nativeInputFlagTimerRef.current);
+      nativeInputFlagTimerRef.current = null;
+    }
+    if (compositionDeferTimerRef.current !== null) {
+      window.clearTimeout(compositionDeferTimerRef.current);
+      compositionDeferTimerRef.current = null;
+    }
+    nativeInputPendingRef.current = false;
+  }, []);
+
+  // Aborts the debounce timer, the pending `Retry-After` retries and every in-flight suggest request. Pure refs: it never
+  // schedules a React update, so the native `input` listener may call it (RV-T17-1-FE2-4).
+  const abortAllSuggestRequests = useCallback(() => {
+    clearSuggestDebounceTimer();
+    for (const timerId of suggestRetryTimersRef.current) {
+      window.clearTimeout(timerId);
+    }
+    suggestRetryTimersRef.current.clear();
+    for (const controller of suggestAbortControllersRef.current) {
+      controller.abort();
+    }
+    suggestAbortControllersRef.current.clear();
+  }, [clearSuggestDebounceTimer]);
+
+  const {
+    semanticSuggest,
+    semanticAvailable,
+    semanticExternal,
+    setSemanticSuggest,
+    isPending: semanticTogglePending,
+    isSemanticUnavailableError,
+    clearError: clearSemanticError,
+  } = useSemanticSuggestSetting();
+  const semanticSuggestRef = useRef(semanticSuggest);
+  semanticSuggestRef.current = semanticSuggest;
+  const semanticAvailableRef = useRef(semanticAvailable);
+  semanticAvailableRef.current = semanticAvailable;
+  const [actionActiveKey, setActionActiveKey] = useState<'action:more' | 'action:create' | null>(null);
+  const [localNoMatch, setLocalNoMatch] = useState<{ readonly query: string } | null>(null);
+  const [rateLimitedSeconds, setRateLimitedSeconds] = useState<number | null>(null);
+  const [showSkeleton, setShowSkeleton] = useState(false);
+  const [loadMoreBusy, setLoadMoreBusy] = useState(false);
   const [liveMessage, setLiveMessage] = useState('');
   const [guardKind, setGuardKind] = useState<'search' | 'tag' | null>(null);
   const [actionErrorCode, setActionErrorCode] = useState<ContentErrorCode | null>(null);
-
-  const [searchResults, setSearchResults] = useState<{
-    readonly query: string;
-    readonly items: readonly ItemSummary[];
-  } | null>(null);
-
-  const [tagFilterState, setTagFilterState] = useState<{
-    readonly token: string;
-    readonly tags: readonly Tag[];
-    readonly fromServer: boolean;
-  } | null>(null);
 
   // 18b quick-add state
   const [activePlan, setActivePlan] = useState<QuickAddSavePlan | null>(null);
@@ -328,6 +478,14 @@ export function Omnibox({
     reconcileUnconfirmedSavesUser(activeUserId);
     reconcileLockClearedNoticeUser(activeUserId);
   }, [activeUserId]);
+
+  // RV-T9-FE3-2: synchronize `semanticEnabled` in merge state from `Me.settings.semantic_suggest` on user switch / Me cache updates.
+  useEffect(() => {
+    dispatchMerge({
+      type: 'sync_semantic_enabled',
+      enabled: semanticSuggest,
+    });
+  }, [activeUserId, dispatchMerge, semanticSuggest]);
 
   const visibleUnconfirmedRecord =
     isVaultUnlocked && unconfirmedSaves.length > 0
@@ -410,18 +568,478 @@ export function Omnibox({
     }
   }, []);
 
-  const closeListbox = useCallback((clearLive: boolean) => {
-    searchAbortRef.current?.abort();
-    searchAbortRef.current = null;
-    setListOpen(false);
-    setListKind(null);
-    setActiveIndex(-1);
-    setSearchResults(null);
-    setTagFilterState(null);
-    if (clearLive) {
-      setLiveMessage('');
+  /**
+   * Single helper for all omnibox-owned programmatic writes (`setDraft(value)` — plan section 2.1 rule 1 & 3, M4/FE-21):
+   * writes `setInputValue` + `inputValueRef` + `textareaRef.current.value`, then calls `gate.syncOwnWrite(value)`.
+   */
+  const setDraft = useCallback(
+    (value: string) => {
+      setInputValue(value);
+      inputValueRef.current = value;
+      if (textareaRef.current) {
+        textareaRef.current.value = value;
+        syncTextareaHeight(textareaRef.current);
+      }
+      if (value === '') {
+        // A cleared draft (save done, Esc, reset) can no longer target a Tab-pinned item.
+        pinnedItemRef.current = null;
+      }
+      gateRef.current?.syncOwnWrite(value);
+      setTabCannotFill(false);
+      setGateRenderTick((prev) => prev + 1);
+    },
+    [syncTextareaHeight],
+  );
+
+  const resolveSuggestLimit = useCallback((): SuggestLimit => {
+    if (typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 768) {
+      return SUGGEST_MOBILE_LIMIT;
     }
+    return SUGGEST_DEFAULT_LIMIT;
   }, []);
+
+  /** Closes the dropdown and forgets every row, in-flight request and transient status line (plan 2.24 item 2). */
+  const closeListbox = useCallback(
+    (clearLive: boolean) => {
+      searchAbortRef.current?.abort();
+      searchAbortRef.current = null;
+      loadMoreAbortRef.current?.abort();
+      loadMoreAbortRef.current = null;
+      searchCursorRef.current = null;
+      abortAllSuggestRequests();
+      clearLiveAnnounceTimer();
+      dispatchMerge({ type: 'close_gate', keepLocalTagCache: false });
+      setActionActiveKey(null);
+      setLocalNoMatch(null);
+      setRateLimitedSeconds(null);
+      setLoadMoreBusy(false);
+      setShowSkeleton(false);
+      clearSemanticError();
+      if (clearLive) {
+        setLiveMessage('');
+      }
+    },
+    [abortAllSuggestRequests, clearLiveAnnounceTimer, clearSemanticError, dispatchMerge],
+  );
+
+  const getSemanticContext = useCallback(
+    () => ({
+      semanticAvailable: semanticAvailableRef.current,
+      semanticSuggest: semanticSuggestRef.current,
+    }),
+    [],
+  );
+
+  /**
+   * Sends ONE `/suggest` leg (`semantic=0` or `semantic=1`) for generation `gen`.
+   * - A response of a stale generation / reset epoch / other user / aborted request is dropped without any state change.
+   * - 429 keeps the rows and retries at most once after `Retry-After`, re-running the gate at send time; other failures
+   *   keep the rows too. Never a toast, never red text while typing (plan 2.6, dec-287).
+   */
+  const sendSuggestLeg = useCallback(
+    (params: SuggestLegParams) => {
+      const { decision, semanticFlag, gen, limit, userId, epoch, expectSemantic, isRetry } = params;
+      const controller = new AbortController();
+      suggestAbortControllersRef.current.add(controller);
+      const isStale = () =>
+        controller.signal.aborted ||
+        resetEpochRef.current !== epoch ||
+        activeUserIdRef.current !== userId ||
+        mergeStateRef.current.queryGen !== gen;
+
+      void (async () => {
+        try {
+          const res: SuggestResponse = await fetchSuggest(
+            {
+              ...(decision.q !== undefined ? { q: decision.q } : {}),
+              scope: decision.scope,
+              limit,
+              semantic: semanticFlag,
+            },
+            { signal: controller.signal },
+          );
+          if (isStale()) {
+            return;
+          }
+
+          if (queryClient && isCacheableSearchResponse(res)) {
+            const cacheKey = buildSuggestQueryKey({
+              userId,
+              scope: decision.scope,
+              limit,
+              requestMode: decision.requestMode,
+              semanticSuggestSetting: semanticSuggestRef.current,
+              generationId: res.generation,
+              qn: decision.qn,
+            });
+            if (cacheKey) {
+              queryClient.setQueryDefaults(cacheKey, SEARCH_QUERY_CACHE_OPTIONS);
+              queryClient.setQueryData(cacheKey, res, {
+                updatedAt: Date.now(),
+              });
+            }
+          }
+
+          dispatchMerge({
+            type: 'receive_suggest',
+            gen,
+            qn: decision.qn,
+            response: res,
+            expectSemantic,
+          });
+        } catch (error) {
+          if (isStale()) {
+            return;
+          }
+          const retryAfter = getRateLimitRetryAfterSeconds(error);
+          const legKey = `${gen}:${semanticFlag}`;
+          if (
+            retryAfter !== null &&
+            !isRetry &&
+            retryAfter <= MAX_SUGGEST_RETRY_AFTER_SECONDS &&
+            !retriedLegsRef.current.has(legKey)
+          ) {
+            retriedLegsRef.current.add(legKey);
+            const timerId = window.setTimeout(() => {
+              suggestRetryTimersRef.current.delete(timerId);
+              if (
+                resetEpochRef.current !== epoch ||
+                activeUserIdRef.current !== userId ||
+                mergeStateRef.current.queryGen !== gen
+              ) {
+                return;
+              }
+              // Re-run the gate at send time: the draft may have changed or become unclean (2.24 item 8).
+              const fresh = gateRef.current?.decideKeystroke(
+                getSemanticContext(),
+                textareaRef.current?.value ?? inputValueRef.current,
+              );
+              if (
+                fresh === undefined ||
+                !fresh.canSend ||
+                fresh.qn !== decision.qn ||
+                fresh.scope !== decision.scope ||
+                !fresh.semanticFlags.includes(semanticFlag)
+              ) {
+                if (semanticFlag === 0) setLexicalFailedGen(gen);
+                return;
+              }
+              sendSuggestLegRef.current?.({ ...params, decision: fresh, isRetry: true });
+            }, Math.max(1, retryAfter) * 1000);
+            suggestRetryTimersRef.current.add(timerId);
+            return;
+          }
+          if (semanticFlag === 1) {
+            dispatchMerge({ type: 'semantic_leg_failed', gen, aborted: false });
+          } else {
+            setLexicalFailedGen(gen);
+          }
+        } finally {
+          suggestAbortControllersRef.current.delete(controller);
+        }
+      })();
+    },
+    [dispatchMerge, getSemanticContext, queryClient],
+  );
+  sendSuggestLegRef.current = sendSuggestLeg;
+
+  const executeSuggestTick = useCallback(
+    (decisionOverride?: KeystrokeSendDecision) => {
+      const gate = gateRef.current;
+      if (!gate) return;
+      const currentDomVal = textareaRef.current?.value ?? inputValueRef.current;
+      const decision =
+        decisionOverride ?? gate.decideKeystroke(getSemanticContext(), currentDomVal);
+
+      if (!decision.canSend) {
+        if (decision.gateClosed) {
+          abortAllSuggestRequests();
+          dispatchMerge({
+            type: 'close_gate',
+            keepLocalTagCache: decision.keepLocalTagCacheRows,
+          });
+        }
+        return;
+      }
+
+      const userId = activeUserIdRef.current;
+      if (!userId) {
+        return;
+      }
+
+      abortAllSuggestRequests();
+      const limit = resolveSuggestLimit();
+      const expectSemantic = decision.allowSemantic && decision.semanticFlags.includes(1);
+      const startedState = dispatchMerge({
+        type: 'start_query',
+        qn: decision.qn,
+        scope: decision.scope,
+        limit,
+        expectSemantic,
+      });
+      const gen = startedState.queryGen;
+      const epoch = resetEpochRef.current;
+
+      for (const semanticFlag of decision.semanticFlags) {
+        sendSuggestLeg({
+          decision,
+          semanticFlag,
+          gen,
+          limit,
+          userId,
+          epoch,
+          expectSemantic,
+          isRetry: false,
+        });
+      }
+    },
+    [
+      abortAllSuggestRequests,
+      dispatchMerge,
+      getSemanticContext,
+      resolveSuggestLimit,
+      sendSuggestLeg,
+    ],
+  );
+
+  const scheduleKeystrokeSuggest = useCallback(() => {
+    const gate = gateRef.current;
+    if (!gate) return;
+    const currentDomVal = textareaRef.current?.value ?? inputValueRef.current;
+    const decision = gate.decideKeystroke(getSemanticContext(), currentDomVal);
+
+    if (!decision.canSend) {
+      clearSuggestDebounceTimer();
+      if (decision.gateClosed) {
+        abortAllSuggestRequests();
+        dispatchMerge({
+          type: 'close_gate',
+          keepLocalTagCache: decision.keepLocalTagCacheRows,
+        });
+      }
+      return;
+    }
+
+    // Rule 6: the empty draft sends `recent` only on focus. Clearing the draft drops the rows of the old query.
+    if (decision.mode === 'recent') {
+      abortAllSuggestRequests();
+      dispatchMerge({ type: 'close_gate', keepLocalTagCache: false });
+      return;
+    }
+
+    clearSuggestDebounceTimer();
+    suggestDebounceTimerRef.current = window.setTimeout(() => {
+      suggestDebounceTimerRef.current = null;
+      executeSuggestTick();
+    }, SUGGEST_DEBOUNCE_MS);
+  }, [
+    abortAllSuggestRequests,
+    clearSuggestDebounceTimer,
+    dispatchMerge,
+    executeSuggestTick,
+    getSemanticContext,
+  ]);
+
+  /**
+   * Enter without an active row: `GET /search` page 1 into the listbox (plan 2.9, 2.24 items 1/8/9, FE-C25).
+   * - Normalised-empty `q` (`!!!`, lone `#`) -> local no-match, no request (FE-17).
+   * - A draft the keystroke gate would not send (tainted, colon, `#`) goes out as `semantic=0` (decided by the gate).
+   */
+  const runEnterSearch = useCallback(() => {
+    const gate = gateRef.current;
+    if (!gate) return;
+    const draft = textareaRef.current?.value ?? inputValueRef.current;
+    const decision = gate.decideEnterSearch(getSemanticContext(), draft);
+
+    if (decision.isLocalEmptyMatch) {
+      abortAllSuggestRequests();
+      searchAbortRef.current?.abort();
+      searchAbortRef.current = null;
+      loadMoreAbortRef.current?.abort();
+      loadMoreAbortRef.current = null;
+      searchCursorRef.current = null;
+      dispatchMerge({ type: 'close_gate', keepLocalTagCache: false });
+      setActionActiveKey(null);
+      setRateLimitedSeconds(null);
+      const shown = trimUnicodeWhiteSpace(draft);
+      setLocalNoMatch({ query: shown });
+      setLiveMessage(tSearchLive('noMatch', { query: shown }));
+      return;
+    }
+    if (!decision.canSearch) {
+      closeListbox(true);
+      return;
+    }
+    const userId = activeUserIdRef.current;
+    if (!userId) {
+      return;
+    }
+
+    abortAllSuggestRequests();
+    searchAbortRef.current?.abort();
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    const epoch = resetEpochRef.current;
+    setActionErrorCode(null);
+    setLocalNoMatch(null);
+    setRateLimitedSeconds(null);
+    setActionActiveKey(null);
+    setLoadMoreBusy(false);
+    searchCursorRef.current = { q: decision.q, scope: decision.scope };
+
+    // RV-T9-FE3-1: always pass `expectSemantic` explicitly on the first `/search` page (default false).
+    const expectSemantic = decision.semantic === 1;
+    const startedState = dispatchMerge({
+      type: 'start_query',
+      qn: decision.qn,
+      scope: decision.scope,
+      limit: SEARCH_DEFAULT_LIMIT,
+      expectSemantic,
+    });
+    const gen = startedState.queryGen;
+    const isStale = () =>
+      controller.signal.aborted ||
+      resetEpochRef.current !== epoch ||
+      activeUserIdRef.current !== userId ||
+      mergeStateRef.current.queryGen !== gen;
+
+    void (async () => {
+      try {
+        const res: SearchResponse = await fetchSearch(
+          {
+            q: decision.q,
+            scope: decision.scope,
+            limit: SEARCH_DEFAULT_LIMIT,
+            semantic: decision.semantic,
+          },
+          { signal: controller.signal },
+        );
+        if (isStale()) {
+          return;
+        }
+        if (queryClient && isCacheableSearchResponse(res)) {
+          const cacheKey = buildSearchQueryKey({
+            userId,
+            scope: decision.scope,
+            limit: SEARCH_DEFAULT_LIMIT,
+            requestMode: decision.requestMode,
+            semanticSuggestSetting: semanticSuggestRef.current,
+            generationId: res.generation,
+            qn: decision.qn,
+          });
+          if (cacheKey) {
+            queryClient.setQueryDefaults(cacheKey, SEARCH_QUERY_CACHE_OPTIONS);
+            queryClient.setQueryData(cacheKey, res, { updatedAt: Date.now() });
+          }
+        }
+        dispatchMerge({
+          type: 'receive_search_first_page',
+          gen,
+          qn: decision.qn,
+          response: res,
+          expectSemantic,
+        });
+      } catch (error) {
+        if (isStale()) {
+          return;
+        }
+        setLexicalFailedGen(gen);
+        const retryAfter = getRateLimitRetryAfterSeconds(error);
+        if (retryAfter !== null) {
+          // Plan 2.6: Enter while rate limited -> muted line, rows kept, no toast.
+          setRateLimitedSeconds(retryAfter);
+          return;
+        }
+        const code = getContentErrorI18nKey(error).replace(
+          /^content\.errors\./,
+          '',
+        ) as ContentErrorCode;
+        setActionErrorCode(code);
+      } finally {
+        if (searchAbortRef.current === controller) {
+          searchAbortRef.current = null;
+        }
+      }
+    })();
+  }, [
+    abortAllSuggestRequests,
+    closeListbox,
+    dispatchMerge,
+    getSemanticContext,
+    queryClient,
+    tSearchLive,
+  ]);
+
+  /** "Load more": next `/search` cursor page, always lexical (`semantic=0`, 2.24 item 8), appended with `(kind,id)` dedupe. */
+  const loadMoreResults = useCallback(() => {
+    const snapshot = mergeStateRef.current.snapshot;
+    const cursorContext = searchCursorRef.current;
+    const userId = activeUserIdRef.current;
+    if (
+      !snapshot ||
+      snapshot.source !== 'search' ||
+      snapshot.nextCursor === null ||
+      cursorContext === null ||
+      userId === null ||
+      loadMoreAbortRef.current !== null
+    ) {
+      return;
+    }
+    const gen = snapshot.gen;
+    const cursor = snapshot.nextCursor;
+    const epoch = resetEpochRef.current;
+    const controller = new AbortController();
+    loadMoreAbortRef.current = controller;
+    setLoadMoreBusy(true);
+    setRateLimitedSeconds(null);
+    setActionErrorCode(null);
+    const isStale = () =>
+      controller.signal.aborted ||
+      resetEpochRef.current !== epoch ||
+      activeUserIdRef.current !== userId ||
+      mergeStateRef.current.queryGen !== gen;
+
+    void (async () => {
+      try {
+        const res: SearchResponse = await fetchSearch(
+          {
+            q: cursorContext.q,
+            scope: cursorContext.scope,
+            limit: SEARCH_DEFAULT_LIMIT,
+            cursor,
+            semantic: 0,
+          },
+          { signal: controller.signal },
+        );
+        if (isStale()) {
+          return;
+        }
+        dispatchMerge({ type: 'receive_search_cursor_page', gen, response: res });
+      } catch (error) {
+        if (isStale()) {
+          return;
+        }
+        const retryAfter = getRateLimitRetryAfterSeconds(error);
+        if (retryAfter !== null) {
+          setRateLimitedSeconds(retryAfter);
+          return;
+        }
+        const code = getContentErrorI18nKey(error).replace(
+          /^content\.errors\./,
+          '',
+        ) as ContentErrorCode;
+        setActionErrorCode(code);
+      } finally {
+        if (loadMoreAbortRef.current === controller) {
+          loadMoreAbortRef.current = null;
+          setLoadMoreBusy(false);
+        }
+      }
+    })();
+  }, [dispatchMerge]);
+
 
   const removeOmniboxSearchQueries = useCallback(() => {
     if (!queryClient) return;
@@ -448,12 +1066,19 @@ export function Omnibox({
   }, []);
 
   // Register synchronous vault lock / logout / user-switch / reset cleanup (plan §2.10, §2.11 step 5, P4FE1-12, P4FE3-5, P4FE4-8).
-  useEffect(() => {
-    if (!vault?.registerSecretFormReset) return;
-    return vault.registerSecretFormReset(() => {
+  const resetOmniboxOnLockOrUserChange = useCallback(
+    (opts: { readonly recordLockNotice: boolean }) => {
       resetEpochRef.current += 1;
+      abortAllSuggestRequests();
+      clearNativeEditTimers();
+      clearLiveAnnounceTimer();
       searchAbortRef.current?.abort();
       searchAbortRef.current = null;
+      loadMoreAbortRef.current?.abort();
+      loadMoreAbortRef.current = null;
+      searchCursorRef.current = null;
+      pinnedItemRef.current = null;
+      retriedLegsRef.current.clear();
       createAbortRef.current?.abort();
       createAbortRef.current = null;
       createPendingRef.current = false;
@@ -474,24 +1099,23 @@ export function Omnibox({
         activePlanRef.current = null;
       }
 
-      if (hadDraftOrPlan) {
+      if (opts.recordLockNotice && hadDraftOrPlan) {
         recordLockClearedNotice({
           userId: activeUserIdRef.current,
           kind: hadCommittedMeta ? 'plan' : 'draft',
         });
       }
-      if (textareaRef.current) {
-        textareaRef.current.value = '';
-        textareaRef.current.style.height = '';
-        textareaRef.current.style.overflowY = 'hidden';
-      }
-      inputValueRef.current = '';
-      setInputValue('');
-      setListOpen(false);
-      setListKind(null);
-      setActiveIndex(-1);
-      setSearchResults(null);
-      setTagFilterState(null);
+      setDraft('');
+      gateRef.current?.reset();
+      dispatchMerge({ type: 'reset' });
+      setActionActiveKey(null);
+      setLocalNoMatch(null);
+      setRateLimitedSeconds(null);
+      setLoadMoreBusy(false);
+      setShowSkeleton(false);
+      setLexicalFailedGen(-1);
+      clearSemanticError();
+      liveAnnouncedRef.current = { gen: -1, nearCount: 0, degraded: false };
       setLiveMessage('');
       setGuardKind(null);
       setActionErrorCode(null);
@@ -502,17 +1126,162 @@ export function Omnibox({
       lookupPendingRef.current = false;
       undoToast?.clearOmniboxJustCleared();
       removeOmniboxSearchQueries();
+    },
+    [
+      abortAllSuggestRequests,
+      clearLiveAnnounceTimer,
+      clearNativeEditTimers,
+      clearSemanticError,
+      dispatchMerge,
+      removeOmniboxSearchQueries,
+      setDraft,
+      undoToast,
+    ],
+  );
+
+  useEffect(() => {
+    if (!vault?.registerSecretFormReset) return;
+    return vault.registerSecretFormReset(() => {
+      resetOmniboxOnLockOrUserChange({ recordLockNotice: true });
     });
-  }, [removeOmniboxSearchQueries, undoToast, vault]);
+  }, [resetOmniboxOnLockOrUserChange, vault]);
+
+  useEffect(() => {
+    return subscribeUserChanged(() => {
+      resetOmniboxOnLockOrUserChange({ recordLockNotice: false });
+    });
+  }, [resetOmniboxOnLockOrUserChange]);
 
   useEffect(() => {
     return () => {
+      abortAllSuggestRequests();
       searchAbortRef.current?.abort();
+      // RV-T17-2-FE1-8: a late "load more" page must not dispatch / set state after unmount, and the delayed live
+      // announcement must not fire on a dead instance.
+      loadMoreAbortRef.current?.abort();
+      clearLiveAnnounceTimer();
       createAbortRef.current?.abort();
       savePlanStartAbortRef.current?.abort();
       planAbortRef.current?.abort();
     };
-  }, []);
+  }, [abortAllSuggestRequests, clearLiveAnnounceTimer]);
+
+  // Native `beforeinput`, `input`, `compositionstart`, and `compositionend` listeners on the textarea ref
+  // (plan section 2.1 rules 1–2, L3, FE-5a: never React's synthetic `onBeforeInput`).
+  useEffect(() => {
+    const el = textareaRef.current;
+    const gate = gateRef.current;
+    if (!el || !gate) return;
+
+    // CI-41431143632-E2E-QA402 / CI-41431143632-SMOKE-LOCKED: these native listeners must only OBSERVE (mutate the
+    // gate's own ref state) and must never call a React state setter or dispatch to the merge reducer. In a real
+    // browser the native `input` event reaches the textarea listener BEFORE React's root `onChange` listener, and
+    // React 19 flushes a sync-lane update scheduled from a native listener in a microtask that runs between the two
+    // listeners. That render re-applies the stale controlled `value={inputValue}` to the DOM, wiping the typed /
+    // `fill()`ed text before `onChange` can read it (jsdom's script `dispatchEvent` never exposes this).
+    // Render ticks and the debounced `/suggest` are therefore driven from `handleInputChange` (React's own event
+    // dispatch, after the controlled state is committed) or from a macrotask for composition events.
+    const clearNativeInputFlagTimer = () => {
+      if (nativeInputFlagTimerRef.current !== null) {
+        window.clearTimeout(nativeInputFlagTimerRef.current);
+        nativeInputFlagTimerRef.current = null;
+      }
+    };
+    const deferComposition = (fn: () => void) => {
+      if (compositionDeferTimerRef.current !== null) {
+        window.clearTimeout(compositionDeferTimerRef.current);
+      }
+      compositionDeferTimerRef.current = window.setTimeout(() => {
+        compositionDeferTimerRef.current = null;
+        fn();
+      }, 0);
+    };
+
+    const onNativeBeforeInput = (event: Event) => {
+      if (activePlanRef.current?.running) return;
+      const inputEvt = event as InputEvent;
+      gate.handleBeforeInput({
+        inputType: typeof inputEvt.inputType === 'string' ? inputEvt.inputType : undefined,
+        data: 'data' in inputEvt ? inputEvt.data : undefined,
+        isComposing: 'isComposing' in inputEvt ? Boolean(inputEvt.isComposing) : undefined,
+        currentDomValue: el.value,
+      });
+    };
+
+    const onNativeInput = (event: Event) => {
+      if (activePlanRef.current?.running) return;
+      const inputEvt = event as InputEvent;
+      gate.handleInput({
+        inputType: typeof inputEvt.inputType === 'string' ? inputEvt.inputType : undefined,
+        data: 'data' in inputEvt ? inputEvt.data : undefined,
+        isComposing: 'isComposing' in inputEvt ? Boolean(inputEvt.isComposing) : undefined,
+        value: el.value,
+      });
+      // RV-T17-1-FE2-4: whatever happens next, the old draft's in-flight suggest requests are stale. Aborting only touches
+      // refs (no React update), so it is safe inside this native listener.
+      abortAllSuggestRequests();
+      // Hand off to `handleInputChange` (React `onChange`) which renders + schedules `/suggest` for this edit. If React
+      // never fires `onChange` for this event (value unchanged / tracker skipped it), a macrotask fallback re-renders and
+      // re-evaluates the gate itself. It runs after the whole event dispatch, so it cannot wipe the controlled value.
+      nativeInputPendingRef.current = true;
+      clearNativeInputFlagTimer();
+      nativeInputFlagTimerRef.current = window.setTimeout(() => {
+        nativeInputFlagTimerRef.current = null;
+        if (!nativeInputPendingRef.current) return;
+        nativeInputPendingRef.current = false;
+        // `onChange` never ran for this edit. Adopt the DOM value into the controlled state BEFORE re-rendering, otherwise the
+        // render would re-apply the stale controlled value and wipe the typed text (same hazard as CI-41431143632-E2E-QA402).
+        // This runs in a macrotask, after the whole event dispatch, so it cannot race React's own onChange.
+        const domValue = el.value;
+        if (domValue !== inputValueRef.current) {
+          inputValueRef.current = domValue;
+          setInputValue(domValue);
+        }
+        setGateRenderTick((prev) => prev + 1);
+        scheduleKeystrokeSuggest();
+      }, 0);
+    };
+
+    const onNativeCompositionStart = () => {
+      if (activePlanRef.current?.running) return;
+      clearSuggestDebounceTimer();
+      gate.handleCompositionStart(el.value);
+      deferComposition(() => {
+        setGateRenderTick((prev) => prev + 1);
+      });
+    };
+
+    const onNativeCompositionEnd = (event: Event) => {
+      if (activePlanRef.current?.running) return;
+      const compEvt = event as CompositionEvent;
+      gate.handleCompositionEnd({
+        value: el.value,
+        data: typeof compEvt.data === 'string' ? compEvt.data : undefined,
+      });
+      deferComposition(() => {
+        setGateRenderTick((prev) => prev + 1);
+        scheduleKeystrokeSuggest();
+      });
+    };
+
+    el.addEventListener('beforeinput', onNativeBeforeInput);
+    el.addEventListener('input', onNativeInput);
+    el.addEventListener('compositionstart', onNativeCompositionStart);
+    el.addEventListener('compositionend', onNativeCompositionEnd);
+
+    return () => {
+      el.removeEventListener('beforeinput', onNativeBeforeInput);
+      el.removeEventListener('input', onNativeInput);
+      el.removeEventListener('compositionstart', onNativeCompositionStart);
+      el.removeEventListener('compositionend', onNativeCompositionEnd);
+      clearNativeInputFlagTimer();
+      nativeInputPendingRef.current = false;
+      if (compositionDeferTimerRef.current !== null) {
+        window.clearTimeout(compositionDeferTimerRef.current);
+        compositionDeferTimerRef.current = null;
+      }
+    };
+  }, [abortAllSuggestRequests, clearSuggestDebounceTimer, scheduleKeystrokeSuggest]);
 
   // Global keyboard shortcuts (`Ctrl+K` / `⌘K` and `/` when focus is not in an input/textarea) + outside click.
   useEffect(() => {
@@ -559,48 +1328,216 @@ export function Omnibox({
     };
   }, [closeListbox, compact, syncTextareaHeight]);
 
-  // Build the active options list for the open listbox.
-  const options: readonly OmniboxOption[] = useMemo(() => {
-    if (!listOpen) return [];
-    if (listKind === 'search' && searchResults) {
-      if (searchResults.items.length > 0) {
-        return searchResults.items.map((item, idx) => ({
-          id: `${baseId}-opt-item-${item.id}-${idx}`,
-          kind: 'item' as const,
-          item,
-          query: searchResults.query,
-        }));
+  // Dropdown model derived from the merge snapshot (plan 2.8): visual order === keyboard order === `navKeys`.
+  const mergeState = mergeStateRef.current;
+  const snapshot = mergeState.snapshot;
+  const tagToken = parsed.mode === 'tag-filter' ? parseTagFilterInput(inputValue).token : '';
+  const displayQuery = parsed.mode === 'tag-filter' ? `#${tagToken}` : trimmedInput;
+  const suggestModel = buildSuggestListModel({
+    snapshot,
+    localNoMatchQuery: localNoMatch?.query ?? null,
+    displayQuery,
+    allowMore: true,
+    waiting: mergeState.isBusy && lexicalFailedGen !== mergeState.queryGen,
+  });
+  const listOpen = suggestModel !== null;
+  const hasOptionChildren = suggestModel !== null && suggestModel.navKeys.length > 0;
+  const candidateActiveKey: SuggestListKey | null = actionActiveKey ?? mergeState.activeKey;
+  const activeKey: SuggestListKey | null =
+    suggestModel !== null && candidateActiveKey !== null && suggestModel.navKeys.includes(candidateActiveKey)
+      ? candidateActiveKey
+      : null;
+  const activeDescendantId =
+    hasOptionChildren && activeKey !== null ? getSuggestOptionDomId(baseId, activeKey) : undefined;
+  const listBusy = mergeState.isBusy && lexicalFailedGen !== mergeState.queryGen;
+  const waitingForFirstRows = mergeState.isBusy && snapshot === null;
+  const semanticEnable409Visible = isSemanticUnavailableError;
+  const popoverVisible =
+    listOpen ||
+    (showSkeleton && waitingForFirstRows && localNoMatch === null) ||
+    semanticEnable409Visible ||
+    rateLimitedSeconds !== null;
+
+  // advisor-dec-327 (RV-T22-1-FE1-3 / FE1-6), `#omni-pop` only; no send-gate, draft, request or cache logic.
+  // (O1b) axe `scrollable-region-focusable` needs a tab-order node on an overflowing region, so the popover gets
+  //   tabIndex=0 + role=region + a label ONLY while scrollHeight > clientHeight (a real region that can be scrolled
+  //   with the keyboard once it has focus). The textarea keeps focus while typing / arrowing and keeps its
+  //   implicit textbox role (dec-152); `aria-activedescendant` is untouched.
+  // (P1) at <=639px the popover is bounded to the visual viewport above the undo-toast stack, so the action row
+  //   stays reachable (FU10). `--undo-stack-h` is published on <html> by UndoToastProvider while a toast shows.
+  useEffect(() => {
+    const pop = popRef.current;
+    if (!popoverVisible || pop === null || typeof window === 'undefined') {
+      setPopScrollable(false);
+      return;
+    }
+
+    const NARROW_MAX_WIDTH_PX = 639;
+    const POP_MAX_HEIGHT_PX = 440;
+    const POP_MIN_HEIGHT_PX = 160;
+    const POP_BOTTOM_GAP_PX = 24;
+    const htmlEl = document.documentElement;
+
+    const measure = () => {
+      const el = popRef.current;
+      if (el === null) {
+        return;
       }
-      return [
-        {
-          id: `${baseId}-opt-create`,
-          kind: 'create' as const,
-          query: searchResults.query,
-        },
-      ];
+      const narrow = window.innerWidth <= NARROW_MAX_WIDTH_PX;
+      if (narrow) {
+        const vv = window.visualViewport;
+        const viewportH = vv?.height ?? window.innerHeight;
+        const viewportTop = vv?.offsetTop ?? 0;
+        const popTop = el.getBoundingClientRect().top - viewportTop;
+        const stackH = Number.parseFloat(htmlEl.style.getPropertyValue('--undo-stack-h')) || 0;
+        const bound = Math.min(
+          POP_MAX_HEIGHT_PX,
+          viewportH - popTop - stackH - POP_BOTTOM_GAP_PX,
+        );
+        el.style.maxHeight = `${Math.max(POP_MIN_HEIGHT_PX, Math.floor(bound))}px`;
+      } else {
+        el.style.removeProperty('max-height');
+      }
+
+      const overflowing = el.scrollHeight > el.clientHeight;
+      if (!overflowing && document.activeElement === el) {
+        // The region is about to lose its tab stop: hand focus back to the textarea first.
+        textareaRef.current?.focus();
+      }
+      setPopScrollable(overflowing);
+    };
+
+    measure();
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => measure());
+    resizeObserver?.observe(pop);
+    // `#omni-pop` hangs off the root (`top-[calc(100%+8px)]`): when the root grows (textarea autogrow, hint / guard / add
+    // preview wrapping) the popover only MOVES, so the root's size is the trigger for re-measuring its top.
+    if (rootRef.current !== null) {
+      resizeObserver?.observe(rootRef.current);
     }
-    if (listKind === 'tag-filter' && tagFilterState) {
-      return tagFilterState.tags.map((tag, idx) => ({
-        id: `${baseId}-opt-tag-${idx}`,
-        kind: 'tag' as const,
-        tag,
-        query: tagFilterState.token,
-      }));
+    for (const child of Array.from(pop.children)) {
+      resizeObserver?.observe(child);
     }
-    return [];
-  }, [baseId, listKind, listOpen, searchResults, tagFilterState]);
+    const mutationObserver =
+      typeof MutationObserver === 'undefined'
+        ? null
+        : new MutationObserver((records) => {
+            for (const record of records) {
+              for (const node of Array.from(record.addedNodes)) {
+                if (node.parentNode === pop && node instanceof Element) {
+                  resizeObserver?.observe(node);
+                }
+              }
+            }
+            measure();
+          });
+    // Rows arrive / disappear / change text inside the popover, and the toast stack publishes its height on <html>.
+    mutationObserver?.observe(pop, { childList: true, subtree: true, characterData: true });
+    mutationObserver?.observe(htmlEl, {
+      attributes: true,
+      attributeFilter: ['style', 'data-undo-stack-active'],
+    });
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, { passive: true });
+    window.visualViewport?.addEventListener('resize', measure);
+    window.visualViewport?.addEventListener('scroll', measure);
+
+    return () => {
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure);
+      window.visualViewport?.removeEventListener('resize', measure);
+      window.visualViewport?.removeEventListener('scroll', measure);
+      pop.style.removeProperty('max-height');
+    };
+  }, [popoverVisible]);
 
   useEffect(() => {
-    if (activeIndex >= 0 && options[activeIndex]) {
-      const optEl = optionRefs.current[options[activeIndex].id];
+    if (activeKey !== null) {
+      const optEl = optionRefs.current[activeKey];
       if (optEl && typeof optEl.scrollIntoView === 'function') {
         optEl.scrollIntoView({ block: 'nearest' });
       }
     }
-  }, [activeIndex, options]);
+  }, [activeKey]);
 
-  const activeDescendantId =
-    listOpen && activeIndex >= 0 && options[activeIndex] ? options[activeIndex].id : undefined;
+  // Plan 2.10 pending state: first query, no rows yet -> skeleton rows after 150 ms.
+  useEffect(() => {
+    if (!waitingForFirstRows) {
+      setShowSkeleton(false);
+      return;
+    }
+    const timerId = window.setTimeout(() => {
+      setShowSkeleton(true);
+    }, SUGGEST_SKELETON_DELAY_MS);
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [waitingForFirstRows]);
+
+  // Spoken text only (plan 2.8 rule 6, FE-23): "N suggestions" 500 ms after the rows settle, "added N similar-meaning" when near
+  // arrives, degraded once per session. The visible status lines live in `SuggestList`, outside this live region.
+  const latestSnapshotRef = useRef(snapshot);
+  latestSnapshotRef.current = snapshot;
+  useEffect(() => {
+    if (snapshot === null) {
+      return;
+    }
+    const last = liveAnnouncedRef.current;
+    const total = snapshot.lexical.length + snapshot.near.length;
+
+    if (snapshot.scope === 'tag') {
+      const token = parseTagFilterInput(inputValueRef.current).token;
+      setLiveMessage(
+        total > 0
+          ? tOmni('tagLiveCount', { count: total, query: token })
+          : tOmni('tagEmptyTitle', { query: token }),
+      );
+      liveAnnouncedRef.current = { ...last, gen: snapshot.gen, nearCount: 0 };
+      return;
+    }
+
+    // Reads the LATEST snapshot when the 500 ms timer fires, so a near zone that landed in between is counted too.
+    const announceBase = () => {
+      const latest = latestSnapshotRef.current ?? snapshot;
+      const totalNow = latest.lexical.length + latest.near.length;
+      return totalNow > 0
+        ? snapshot.source === 'search'
+          ? tSearchState('resultCount', { count: totalNow })
+          : tSearchLive('suggestionsCount', { count: totalNow })
+        : tSearchLive('noMatch', { query: trimUnicodeWhiteSpace(inputValueRef.current) });
+    };
+
+    if (last.gen !== snapshot.gen) {
+      liveAnnouncedRef.current = { ...last, gen: snapshot.gen, nearCount: snapshot.near.length };
+      clearLiveAnnounceTimer();
+      if (snapshot.source === 'search') {
+        setLiveMessage(announceBase());
+      } else {
+        liveAnnounceTimerRef.current = window.setTimeout(() => {
+          liveAnnounceTimerRef.current = null;
+          setLiveMessage(announceBase());
+        }, SUGGEST_LIVE_ANNOUNCE_MS);
+      }
+    } else if (snapshot.near.length > last.nearCount) {
+      // While the 500 ms 'N suggestions' timer is still pending it announces the combined total; speak 'added N' only afterwards.
+      if (liveAnnounceTimerRef.current === null) {
+        setLiveMessage(tSearchLive('nearAppended', { count: snapshot.near.length - last.nearCount }));
+      }
+      liveAnnouncedRef.current = { ...last, nearCount: snapshot.near.length };
+    } else if (snapshot.near.length < last.nearCount) {
+      liveAnnouncedRef.current = { ...last, nearCount: snapshot.near.length };
+    }
+
+    const afterNear = liveAnnouncedRef.current;
+    if (snapshot.nearState === 'degraded' && !afterNear.degraded) {
+      liveAnnouncedRef.current = { ...afterNear, degraded: true };
+      setLiveMessage(tSearchState('degraded'));
+    }
+  }, [clearLiveAnnounceTimer, snapshot, tOmni, tSearchLive, tSearchState]);
+
 
   const invalidateAllContentMetadataCaches = useCallback(async () => {
     if (!queryClient) return;
@@ -632,13 +1569,8 @@ export function Omnibox({
           return;
         }
         closeListbox(false);
-        setInputValue('');
-        inputValueRef.current = '';
-        if (textareaRef.current) {
-          textareaRef.current.value = '';
-          syncTextareaHeight(textareaRef.current);
-          textareaRef.current.focus();
-        }
+        setDraft('');
+        textareaRef.current?.focus();
         undoToast?.markOmniboxJustCleared(textareaRef.current);
         void invalidateAllContentMetadataCaches();
 
@@ -675,7 +1607,7 @@ export function Omnibox({
         }
       }
     },
-    [closeListbox, invalidateAllContentMetadataCaches, syncTextareaHeight, tOmni, undoToast],
+    [closeListbox, invalidateAllContentMetadataCaches, setDraft, tOmni, undoToast],
   );
 
   const getStepLocalizedLabel = useCallback(
@@ -746,22 +1678,12 @@ export function Omnibox({
         submittedDraftRef.current = null;
 
         if (submittedVal === null || currentVal === submittedVal) {
-          setInputValue('');
-          inputValueRef.current = '';
-          if (textareaRef.current) {
-            textareaRef.current.value = '';
-            syncTextareaHeight(textareaRef.current);
-            textareaRef.current.focus();
-          }
+          setDraft('');
+          textareaRef.current?.focus();
           // Mark omnibox as just cleared by save so immediate Ctrl+Z / ⌘Z triggers Undo (plan §2.11 step 4, SPEC §7.8).
           undoToast?.markOmniboxJustCleared(textareaRef.current);
         } else {
-          setInputValue(currentVal);
-          inputValueRef.current = currentVal;
-          if (textareaRef.current) {
-            textareaRef.current.value = currentVal;
-            syncTextareaHeight(textareaRef.current);
-          }
+          setDraft(currentVal);
         }
         // Push Undo toast ONLY after entry 201 commit; Undo deletes ONLY the entry (Q18, dec-116, P4BE1-2, P4FE2-13).
         undoToast?.pushUndoToast({
@@ -814,12 +1736,7 @@ export function Omnibox({
           setActivePlan(null);
           setTargetTagLimitCount(null);
           submittedDraftRef.current = null;
-          setInputValue('');
-          inputValueRef.current = '';
-          if (textareaRef.current) {
-            textareaRef.current.value = '';
-            syncTextareaHeight(textareaRef.current);
-          }
+          setDraft('');
           const code = classifiedError.i18nKey.replace(
             /^content\.errors\./,
             '',
@@ -839,12 +1756,7 @@ export function Omnibox({
           setActivePlan(null);
           setTargetTagLimitCount(null);
           submittedDraftRef.current = null;
-          setInputValue('');
-          inputValueRef.current = '';
-          if (textareaRef.current) {
-            textareaRef.current.value = '';
-            syncTextareaHeight(textareaRef.current);
-          }
+          setDraft('');
           const code = classifiedError.i18nKey.replace(
             /^content\.errors\./,
             '',
@@ -896,7 +1808,7 @@ export function Omnibox({
       getStepLocalizedLabel,
       invalidateAllContentMetadataCaches,
       queryClient,
-      syncTextareaHeight,
+      setDraft,
       tOmni,
       undoToast,
       vault,
@@ -910,17 +1822,30 @@ export function Omnibox({
       readonly body: string;
       readonly targetItem: ItemSummary | null;
       readonly isNewItem: boolean;
+      /** Item chosen with Tab: the plan targets this id, no exact-name lookup (plan 2.9, OQ-2). */
+      readonly pinnedItem?: PinnedItem | null;
     }) => {
       if (savePlanStartingRef.current || activePlanRef.current?.running) {
         return;
       }
       const { name, tags, body, targetItem, isNewItem } = params;
+      const pinnedItem = params.pinnedItem ?? null;
 
       // Pre-check 20-tag cap before building plan or sending any write request (SPEC §3.4 step 2, plan §2.11 step 2).
       if (!isNewItem && targetItem) {
         const capCheck = checkTargetTagCap(targetItem.tags ?? [], tags);
         if (!capCheck.allowed) {
           setTargetTagLimitCount(capCheck.existingTagCount);
+          setActionErrorCode(null);
+          return;
+        }
+      } else if (!isNewItem && pinnedItem) {
+        // The suggest row may carry only some of the item's tags (`tag_total`): count the rest as occupied. Tags the
+        // item already has but the row hides are counted as new here, so this can only over-block, never under-block.
+        const capCheck = checkTargetTagCap(pinnedItem.tags, tags);
+        const existingCount = Math.max(pinnedItem.tagTotal, pinnedItem.tags.length);
+        if (existingCount + capCheck.newUnassignedCount > QUICK_ADD_TARGET_TAG_CAP) {
+          setTargetTagLimitCount(existingCount);
           setActionErrorCode(null);
           return;
         }
@@ -968,6 +1893,7 @@ export function Omnibox({
           body,
           targetItem,
           isNewItem,
+          pinnedItemId: !isNewItem && targetItem === null ? (pinnedItem?.id ?? null) : null,
           vault: effectiveVault,
         });
 
@@ -1042,6 +1968,21 @@ export function Omnibox({
           body: currentParsed.body,
           targetItem: null,
           isNewItem: true,
+        });
+        return;
+      }
+
+      // An item picked with Tab is pinned by id: save to it directly, no lookup (plan 2.9, OQ-2). Editing the name part of
+      // the draft drops the pin (`handleInputChange`), so this only matches an untouched `name:` prefix.
+      const pinnedItem = pinnedItemRef.current;
+      if (pinnedItem !== null && pinnedItem.name === currentParsed.name) {
+        await startSavePlanForTarget({
+          name: currentParsed.name,
+          tags: currentParsed.tags,
+          body: currentParsed.body,
+          targetItem: null,
+          isNewItem: false,
+          pinnedItem,
         });
         return;
       }
@@ -1165,148 +2106,67 @@ export function Omnibox({
     textareaRef.current?.focus();
   }, []);
 
-  const executeOption = useCallback(
-    (option: OmniboxOption) => {
-      if (option.kind === 'item') {
+  /** Click / Enter on an option: open the item or tag, create an empty item, or load the next page. */
+  const executeKey = useCallback(
+    (key: SuggestListKey) => {
+      if (key === 'action:create') {
+        void createEmptyItemWithName(textareaRef.current?.value ?? inputValueRef.current);
+        return;
+      }
+      if (key === 'action:more') {
+        loadMoreResults();
+        return;
+      }
+      const snap = mergeStateRef.current.snapshot;
+      const row: SuggestRow | undefined = snap
+        ? [...snap.lexical, ...snap.near].find((candidate) => getRowKey(candidate) === key)
+        : undefined;
+      if (!row) {
+        return;
+      }
+      if (row.kind === 'item') {
         closeListbox(false);
-        router?.push(`/app/items/${option.item.id}`);
+        router?.push(`/app/items/${row.id}`);
         return;
       }
-      if (option.kind === 'create') {
-        void createEmptyItemWithName(option.query);
-        return;
-      }
-      if (option.kind === 'tag') {
-        closeListbox(false);
-        setInputValue('');
-        inputValueRef.current = '';
-        if (textareaRef.current) {
-          textareaRef.current.value = '';
-          syncTextareaHeight(textareaRef.current);
-        }
-        router?.push(`/app?tag=${encodeURIComponent(option.tag.id)}`);
-      }
+      closeListbox(false);
+      setDraft('');
+      router?.push(`/app?tag=${encodeURIComponent(row.id)}`);
     },
-    [closeListbox, createEmptyItemWithName, router, syncTextareaHeight],
+    [closeListbox, createEmptyItemWithName, loadMoreResults, router, setDraft],
   );
 
-  const runPrefixSearch = useCallback(
-    async (rawQuery: string) => {
-      const q = trimUnicodeWhiteSpace(rawQuery);
-      if (!q) {
-        closeListbox(true);
-        return;
+
+  const handleTextareaFocus = () => {
+    if (activePlanRef.current?.running) return;
+    const gate = gateRef.current;
+    if (!gate) return;
+    const currentDomVal = textareaRef.current?.value ?? inputValueRef.current;
+    if (trimUnicodeWhiteSpace(currentDomVal) === '') {
+      const decision = gate.decideKeystroke(getSemanticContext(), currentDomVal);
+      if (decision.canSend && decision.mode === 'recent') {
+        executeSuggestTick(decision);
       }
-
-      searchAbortRef.current?.abort();
-      const controller = new AbortController();
-      searchAbortRef.current = controller;
-      setActionErrorCode(null);
-
-      const searchKey: ContentItemsQueryKey = contentQueryKeys.items({
-        sort: 'alpha',
-        q,
-      });
-
-      try {
-        const data: ItemList = queryClient
-          ? await queryClient.fetchQuery({
-              queryKey: searchKey,
-              queryFn: ({ signal }) => itemsList({ sort: 'alpha', q, signal }),
-              gcTime: 0,
-              staleTime: 0,
-            })
-          : await itemsList({ sort: 'alpha', q, signal: controller.signal });
-
-        if (controller.signal.aborted || searchAbortRef.current !== controller) return;
-        const items = data.items ?? [];
-        setSearchResults({ query: q, items });
-        setListKind('search');
-        setListOpen(true);
-        // After Enter search, NO option is active (plan §2.11, dec-156).
-        setActiveIndex(-1);
-        setLiveMessage(
-          items.length > 0
-            ? tOmni('searchLiveCount', { count: items.length })
-            : tOmni('searchEmptyTitle', { query: q }),
-        );
-      } catch (error) {
-        if (controller.signal.aborted || searchAbortRef.current !== controller) return;
-        const code = getContentErrorI18nKey(error).replace(
-          /^content\.errors\./,
-          '',
-        ) as ContentErrorCode;
-        setActionErrorCode(code);
-      }
-    },
-    [closeListbox, queryClient, tOmni],
-  );
-
-  const runServerTagLookup = useCallback(
-    async (token: string) => {
-      searchAbortRef.current?.abort();
-      const controller = new AbortController();
-      searchAbortRef.current = controller;
-      setActionErrorCode(null);
-
-      const tagSearchKey = contentQueryKeys.tags({
-        sort: 'alpha',
-        q: token || undefined,
-      });
-
-      try {
-        const data: TagList = queryClient
-          ? await queryClient.fetchQuery({
-              queryKey: tagSearchKey,
-              queryFn: ({ signal }) =>
-                tagsList({ sort: 'alpha', q: token || undefined, signal }),
-              gcTime: 0,
-              staleTime: 0,
-            })
-          : await tagsList({
-              sort: 'alpha',
-              q: token || undefined,
-              signal: controller.signal,
-            });
-
-        if (controller.signal.aborted || searchAbortRef.current !== controller) return;
-        const matched = data.items ?? [];
-        setTagFilterState({
-          token,
-          tags: matched,
-          fromServer: true,
-        });
-        setListKind('tag-filter');
-        setListOpen(true);
-        setActiveIndex(matched.length > 0 ? 0 : -1);
-        setLiveMessage(
-          matched.length > 0
-            ? tOmni('tagLiveCount', { count: matched.length, query: token })
-            : tOmni('tagEmptyTitle', { query: token }),
-        );
-      } catch (error) {
-        if (controller.signal.aborted || searchAbortRef.current !== controller) return;
-        const code = getContentErrorI18nKey(error).replace(
-          /^content\.errors\./,
-          '',
-        ) as ContentErrorCode;
-        setActionErrorCode(code);
-      }
-    },
-    [queryClient, tOmni],
-  );
+    }
+  };
 
   const handleInputChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     // Prevent silent data loss or draft/plan divergence while a save plan is actively running (HM18B-R1-3).
     if (activePlanRef.current?.running) {
-      if (textareaRef.current) {
-        textareaRef.current.value = inputValueRef.current;
-      }
+      setDraft(inputValueRef.current);
       return;
     }
     const nextValue = event.target.value;
     setInputValue(nextValue);
     inputValueRef.current = nextValue;
+    // Reconcile non-native/synthetic changes (e.g. fireEvent.change in tests or browser autofill without native input)
+    // inside the event handler so render stays pure (RV-T17-1-FE1-8).
+    gateRef.current?.decideKeystroke(getSemanticContext(), nextValue);
+    setTabCannotFill(false);
+    // Native `input` only observed this edit; the render and the debounced `/suggest` are driven from here (React's own
+    // event dispatch) so no React update is ever scheduled between the native listener and `onChange` (CI-41431143632-E2E-QA402).
+    nativeInputPendingRef.current = false;
+    setGateRenderTick((prev) => prev + 1);
     setGuardKind(null);
     setActionErrorCode(null);
     clearLockClearedNotice();
@@ -1318,34 +2178,69 @@ export function Omnibox({
 
     syncTextareaHeight(event.target);
 
-    // Always discard any in-flight search or server tag lookup result when the user edits the input (HM18A-R1-6, HM18A-R2-4).
+    // Any edit invalidates a pending Enter search, "load more" page and transient status line (HM18A-R1-6, HM18A-R2-4).
     searchAbortRef.current?.abort();
     searchAbortRef.current = null;
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    searchCursorRef.current = null;
+    clearLiveAnnounceTimer();
+    setLocalNoMatch(null);
+    setRateLimitedSeconds(null);
+    setActionActiveKey(null);
+    setLoadMoreBusy(false);
+    clearSemanticError();
 
     const nextParsed = parseQuickAdd(nextValue);
-    if (nextParsed.mode === 'tag-filter') {
-      const { token } = parseTagFilterInput(nextValue);
-      const cached = filterCachedTagsByPrefix(getCachedTags(), token);
-      setSearchResults(null);
-      setTagFilterState({
-        token,
-        tags: cached,
-        fromServer: false,
-      });
-      setListKind('tag-filter');
-      setListOpen(true);
-      setActiveIndex(cached.length > 0 ? 0 : -1);
-      setLiveMessage(
-        cached.length > 0
-          ? tOmni('tagLiveCount', { count: cached.length, query: token })
-          : tOmni('tagEmptyTitle', { query: token }),
-      );
-      return;
+    // The Tab-pinned item only survives while the name part of the draft is unchanged (plan 2.9).
+    const pinned = pinnedItemRef.current;
+    if (
+      pinned !== null &&
+      !((nextParsed.mode === 'add' || nextParsed.mode === 'add-invalid') && nextParsed.name === pinned.name)
+    ) {
+      pinnedItemRef.current = null;
     }
 
-    // Editing the input while search results are open closes the listbox immediately (plan §2.11).
-    if (listOpen) {
-      closeListbox(true);
+    // Rows of an Enter search belong to the previous draft; the next suggest response opens a fresh dropdown.
+    if (mergeStateRef.current.snapshot?.source === 'search') {
+      dispatchMerge({ type: 'close_gate', keepLocalTagCache: false });
+    }
+
+    if (nextParsed.mode === 'tag-filter') {
+      // Plan 2.8 rule 7: cached tag rows show instantly with the first row active; the server response replaces them.
+      const { token } = parseTagFilterInput(nextValue);
+      dispatchMerge({
+        type: 'seed_tag_cache',
+        qn: token,
+        tags: filterCachedTagsByPrefix(getCachedTags(), token),
+      });
+    }
+    scheduleKeystrokeSuggest();
+  };
+
+  const setActiveByKey = (key: SuggestListKey) => {
+    if (isActionKey(key)) {
+      setActionActiveKey(key);
+      dispatchMerge({ type: 'set_active_key', activeKey: null });
+      return;
+    }
+    setActionActiveKey(null);
+    dispatchMerge({ type: 'set_active_key', activeKey: key });
+  };
+
+  const moveActive = (direction: 1 | -1) => {
+    if (!suggestModel || suggestModel.navKeys.length === 0) return;
+    const keys = suggestModel.navKeys;
+    const current = activeKey !== null ? keys.indexOf(activeKey) : -1;
+    const nextIndex =
+      current < 0
+        ? direction === 1
+          ? 0
+          : keys.length - 1
+        : (current + direction + keys.length) % keys.length;
+    const nextKey = keys[nextIndex];
+    if (nextKey !== undefined) {
+      setActiveByKey(nextKey);
     }
   };
 
@@ -1356,7 +2251,7 @@ export function Omnibox({
       // Ctrl+Enter in #… mode is ignored (plan §2.11, P4FE5-7).
       if (isCtrl) return;
 
-      const { token, searchable } = parseTagFilterInput(inputValue);
+      const { searchable } = parseTagFilterInput(inputValue);
       if (!searchable) {
         closeListbox(false);
         setGuardKind('tag');
@@ -1365,28 +2260,23 @@ export function Omnibox({
       }
 
       setGuardKind(null);
-      if (listOpen && listKind === 'tag-filter' && activeIndex >= 0 && options[activeIndex]) {
-        executeOption(options[activeIndex]);
+      // The active row (the first cached / server tag in `#` mode) opens; otherwise `GET /search?scope=tag&semantic=0`
+      // (plan 2.8 rule 7, 2.24 item 9, FE-C25). No more `GET /tags?q=` on Enter.
+      if (activeKey !== null) {
+        executeKey(activeKey);
         return;
       }
-
-      const cached = filterCachedTagsByPrefix(getCachedTags(), token);
-      if (cached.length > 0) {
-        executeOption({
-          id: `${baseId}-opt-tag-0`,
-          kind: 'tag',
-          tag: cached[0]!,
-          query: token,
-        });
-        return;
-      }
-
-      // Not in cache -> Enter sends GET /tags?q=<token> (one token <= 50 runes).
-      void runServerTagLookup(token);
+      runEnterSearch();
       return;
     }
 
     if (parsed.mode === 'search') {
+      // An active row (also in the `recent` list of an empty draft) opens/executes before any search.
+      if (!isCtrl && activeKey !== null) {
+        executeKey(activeKey);
+        return;
+      }
+
       if (!hasNonEmptyInput) {
         closeListbox(true);
         return;
@@ -1407,13 +2297,7 @@ export function Omnibox({
         return;
       }
 
-      // Enter with an active option opens/executes it; without one searches (or searches again).
-      if (listOpen && listKind === 'search' && activeIndex >= 0 && options[activeIndex]) {
-        executeOption(options[activeIndex]);
-        return;
-      }
-
-      void runPrefixSearch(trimmedInput);
+      runEnterSearch();
       return;
     }
 
@@ -1439,18 +2323,112 @@ export function Omnibox({
   };
 
   const handleDiscardDraft = () => {
+    abortAllSuggestRequests();
     searchAbortRef.current?.abort();
     searchAbortRef.current = null;
     abortAndClearSavePlan();
-    setInputValue('');
-    inputValueRef.current = '';
+    setDraft('');
+    closeListbox(true);
     setGuardKind(null);
     setActionErrorCode(null);
-    setLiveMessage('');
-    if (textareaRef.current) {
-      textareaRef.current.value = '';
-      syncTextareaHeight(textareaRef.current);
-      textareaRef.current.focus();
+    textareaRef.current?.focus();
+  };
+
+  const handleTabFillKey = (event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean => {
+    // Plan section 2.9 (RV-T17-1-FE1-5): Tab is intercepted only when the listbox is open and a ROW (not an action) is
+    // active; otherwise Tab keeps default browser focus navigation.
+    if (activeKey === null || isActionKey(activeKey)) {
+      return false;
+    }
+    const snap = mergeStateRef.current.snapshot;
+    const row: SuggestRow | undefined = snap
+      ? [...snap.lexical, ...snap.near].find((candidate) => getRowKey(candidate) === activeKey)
+      : undefined;
+    if (!row) {
+      return false;
+    }
+
+    event.preventDefault();
+
+    if (row.kind === 'tag') {
+      const disp = row.display;
+      if (disp === '' || /[\s#:：]/u.test(disp)) {
+        setTabCannotFill(true);
+        setLiveMessage(tSearchTab('cannotFill'));
+        return true;
+      }
+      const cur = textareaRef.current?.value ?? inputValueRef.current;
+      const replaced = cur.replace(/^(\s*)#[^\s:：]*\s*/, `$1#${disp} `);
+      const nextDraft = replaced !== cur ? replaced : `#${disp} `;
+      setDraft(nextDraft);
+      scheduleKeystrokeSuggest();
+      return true;
+    }
+
+    // Item: `name: ` (add mode, plan 2.9). Names with `:`/`：`, a leading `#` or a line break cannot be typed back as a
+    // `name:` prefix, so Tab does nothing but say so. Whitespace inside the name is fine (`wifi guest: `).
+    const itemName = row.name;
+    if (
+      itemName === '' ||
+      itemName.includes(':') ||
+      itemName.includes('：') ||
+      itemName.startsWith('#') ||
+      /[\r\n]/.test(itemName)
+    ) {
+      setTabCannotFill(true);
+      setLiveMessage(tSearchTab('cannotFill'));
+      return true;
+    }
+    setDraft(`${itemName}: `);
+    // Pin AFTER `setDraft` (which unpins on an empty draft): the save targets this item id, no exact-name lookup (OQ-2).
+    pinnedItemRef.current = {
+      id: row.id,
+      name: itemName,
+      tags: row.tags,
+      tagTotal: row.tag_total,
+    };
+    scheduleKeystrokeSuggest();
+    return true;
+  };
+
+  /** Toggle ≈ on a clean draft re-sends `semantic=1` for the current generation (2.24 item 8: unclean -> PATCH only). */
+  const reissueSemanticLeg = () => {
+    const gate = gateRef.current;
+    const snap = mergeStateRef.current.snapshot;
+    const userId = activeUserIdRef.current;
+    if (!gate || !snap || !userId || snap.source !== 'suggest') return;
+    const draft = textareaRef.current?.value ?? inputValueRef.current;
+    const context = { semanticAvailable: semanticAvailableRef.current, semanticSuggest: true };
+    if (!gate.decideSemanticReissue(context, draft).canSendSemantic) return;
+    const decision = gate.decideKeystroke(context, draft);
+    if (!decision.canSend || !decision.semanticFlags.includes(1)) return;
+    dispatchMerge({ type: 'toggle_semantic_on_pending' });
+    sendSuggestLeg({
+      decision,
+      semanticFlag: 1,
+      gen: mergeStateRef.current.queryGen,
+      limit: snap.limit as SuggestLimit,
+      userId,
+      epoch: resetEpochRef.current,
+      expectSemantic: true,
+      isRetry: false,
+    });
+  };
+
+  const handleToggleSemantic = async () => {
+    const turnOn = !semanticSuggest;
+    if (!turnOn) {
+      const hadNear = (mergeStateRef.current.snapshot?.near.length ?? 0) > 0;
+      const ok = await setSemanticSuggest(false);
+      if (ok && hadNear) {
+        setLiveMessage(tSearchLive('nearHidden'));
+      }
+      return;
+    }
+    // 409 `semantic_unavailable` -> the hook exposes `isSemanticUnavailableError` and the muted line shows in the dropdown.
+    const ok = await setSemanticSuggest(true);
+    if (ok) {
+      reissueSemanticLeg();
     }
   };
 
@@ -1458,18 +2436,23 @@ export function Omnibox({
     if (isImeComposing(event)) {
       return;
     }
+    if (event.key === 'Tab' && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      if (handleTabFillKey(event)) {
+        return;
+      }
+    }
 
     if (event.key === 'ArrowDown') {
-      if (!listOpen || options.length === 0) return;
+      if (!suggestModel || suggestModel.navKeys.length === 0) return;
       event.preventDefault();
-      setActiveIndex((prev) => (prev < 0 ? 0 : (prev + 1) % options.length));
+      moveActive(1);
       return;
     }
 
     if (event.key === 'ArrowUp') {
-      if (!listOpen || options.length === 0) return;
+      if (!suggestModel || suggestModel.navKeys.length === 0) return;
       event.preventDefault();
-      setActiveIndex((prev) => (prev <= 0 ? options.length - 1 : prev - 1));
+      moveActive(-1);
       return;
     }
 
@@ -1485,7 +2468,7 @@ export function Omnibox({
     }
 
     if (event.key === 'Escape') {
-      if (listOpen) {
+      if (popoverVisible) {
         event.preventDefault();
         closeListbox(false);
         return;
@@ -1500,6 +2483,7 @@ export function Omnibox({
     }
   };
 
+
   const handleRootBlur = (event: FocusEvent<HTMLDivElement>) => {
     const nextTarget = event.relatedTarget as Node | null;
     if (!nextTarget || !rootRef.current?.contains(nextTarget)) {
@@ -1508,9 +2492,17 @@ export function Omnibox({
   };
 
   const isAddLike = parsed.mode === 'add' || parsed.mode === 'add-invalid';
-  const showSearchHint = parsed.mode === 'search' && hasNonEmptyInput && guardKind === null;
-  const showTagHint = parsed.mode === 'tag-filter' && hasNonEmptyInput && guardKind === null;
-  const showHint = showSearchHint || showTagHint;
+  const helpTextKey = gateRef.current
+    ? resolveOmniboxHelpTextKey(gateRef.current.getState(), {
+        semanticExternal,
+        currentValue: inputValue,
+      })
+    : 'search.help.sentToServerExternal';
+  const showSearchHint =
+    parsed.mode === 'search' && (hasNonEmptyInput || tabCannotFill) && guardKind === null;
+  const showTagHint =
+    parsed.mode === 'tag-filter' && (hasNonEmptyInput || tabCannotFill) && guardKind === null;
+  const showHint = !isAddLike && (showSearchHint || showTagHint);
   const isSearchInvalid = parsed.mode === 'search' && hasNonEmptyInput && !parsed.searchable;
 
   const hasGrammarErr = parsed.mode === 'add-invalid';
@@ -1566,7 +2558,6 @@ export function Omnibox({
   };
 
   const failedStep = activePlan?.steps.find((s) => s.status === 'failed') ?? null;
-  const hasOptionChildren = options.length > 0;
 
   return (
     <div
@@ -1590,6 +2581,7 @@ export function Omnibox({
           value={inputValue}
           readOnly={isPlanRunning}
           aria-busy={isPlanRunning || undefined}
+          onFocus={handleTextareaFocus}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
           placeholder={tOmni('placeholder')}
@@ -1607,6 +2599,25 @@ export function Omnibox({
           )}
           {...getVaultSecretInputProps()}
         />
+        {semanticAvailable ? (
+          <button
+            type="button"
+            data-omni-sem-toggle=""
+            data-testid="omnibox-semantic-toggle"
+            aria-pressed={semanticSuggest}
+            aria-label={tSearchToggle('semanticAriaLabel')}
+            disabled={semanticTogglePending}
+            // RV-T17-2-FE1-5: WebKit does not focus a clicked <button>; without this the textarea blurs with a null
+            // relatedTarget, `handleRootBlur` closes the listbox and the re-issue finds no snapshot.
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              void handleToggleSemantic();
+            }}
+            className="omni-sem-btn mono"
+          >
+            <span aria-hidden="true">≈</span>
+          </button>
+        ) : null}
         <Kbd>Ctrl K</Kbd>
       </label>
 
@@ -1683,13 +2694,19 @@ export function Omnibox({
             !showHint && 'hidden',
           )}
         >
-          {showSearchHint
-            ? tOmni.rich('searchHint', {
-                mono: (chunks) => <span className="mono">{chunks}</span>,
-              })
-            : showTagHint
+          {tabCannotFill
+            ? tSearchTab('cannotFill')
+            : helpTextKey === 'content.omnibox.tagHint'
               ? tOmni('tagHint')
-              : ''}
+              : helpTextKey === 'search.help.enterToSearch'
+                ? tSearchHelp('enterToSearch')
+                : helpTextKey === 'search.help.sentToServer'
+                  ? tSearchHelp.rich('sentToServer', {
+                      mono: (chunks) => <span className="mono">{chunks}</span>,
+                    })
+                  : tSearchHelp.rich('sentToServerExternal', {
+                      mono: (chunks) => <span className="mono">{chunks}</span>,
+                    })}
         </div>
 
         <div
@@ -1741,6 +2758,16 @@ export function Omnibox({
                   {tOmni.rich('addDestLabel', {
                     name: parsed.name || '…',
                   })}
+                  {pinnedItemRef.current !== null && pinnedItemRef.current.name === parsed.name ? (
+                    <span
+                      data-testid="omnibox-add-dest-pinned"
+                      title={tSearchTab('pinned')}
+                      className="ml-1 text-accent"
+                    >
+                      <span aria-hidden="true">✓</span>
+                      <span className="sr-only">{tSearchTab('pinned')}</span>
+                    </span>
+                  ) : null}
                 </span>
                 <span
                   data-part="dest-tags"
@@ -1848,13 +2875,8 @@ export function Omnibox({
                       body: parsed.body,
                       userId: activeUserId,
                       onSavedEntry: () => {
-                        setInputValue('');
-                        inputValueRef.current = '';
-                        if (textareaRef.current) {
-                          textareaRef.current.value = '';
-                          syncTextareaHeight(textareaRef.current);
-                          textareaRef.current.focus();
-                        }
+                        setDraft('');
+                        textareaRef.current?.focus();
                         undoToast?.markOmniboxJustCleared(textareaRef.current);
                       },
                       onRestoreFocus: () => {
@@ -1972,10 +2994,26 @@ export function Omnibox({
         ) : null}
       </div>
 
-      {listOpen ? (
+      {popoverVisible ? (
         <div
+          ref={popRef}
           id={popId}
           data-pop=""
+          // advisor-dec-327 (O1b): a tab-order region ONLY while it overflows, so axe `scrollable-region-focusable`
+          // passes without a permanent extra Tab stop. The label is static copy (never the draft).
+          tabIndex={popScrollable ? 0 : undefined}
+          role={popScrollable ? 'region' : undefined}
+          aria-label={popScrollable ? tSearchListbox('regionAriaLabel') : undefined}
+          onKeyDown={(event) => {
+            // Only reachable while the region itself has focus (the textarea handles its own keys).
+            if (event.target === event.currentTarget && event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              // Focus first: `handleRootBlur` sees a relatedTarget inside the root and does not close early.
+              textareaRef.current?.focus();
+              closeListbox(false);
+            }
+          }}
           onMouseDown={(event) => {
             // Keep focus on the textarea when clicking inside the popover so `handleRootBlur`
             // does not close the listbox before `onClick` fires (HM18A-R1-2).
@@ -1983,223 +3021,38 @@ export function Omnibox({
           }}
           className="popover absolute left-0 right-0 top-[calc(100%+8px)] z-30 max-h-[440px] overflow-auto"
         >
-          {listKind === 'search' && searchResults ? (
-            <>
-              {searchResults.items.length > 0 ? (
-                <div className="sugg-group" aria-hidden="true">
-                  {tOmni('searchGroupHeader', {
-                    count: searchResults.items.length,
-                    query: searchResults.query,
-                  })}
-                </div>
-              ) : (
-                <div
-                  id={emptyBoxId}
-                  aria-hidden="true"
-                  data-testid="omnibox-search-empty"
-                  className="omni-empty-box border-b border-line bg-surface px-4 py-4"
-                >
-                  <p className="t-label mb-1 text-muted">{tOmni('searchEmptyEyebrow')}</p>
-                  <p className="m-0 mb-1 text-[14px] font-semibold text-body">
-                    {tOmni('searchEmptyTitle', { query: searchResults.query })}
-                  </p>
-                  <p className="m-0 text-[12px] text-muted">{tOmni('searchEmptyBody')}</p>
-                </div>
-              )}
-
-              <div
-                id={listboxId}
-                role="listbox"
-                aria-label={tOmni('searchListboxAriaLabel')}
-                className="omni-listbox"
-              >
-                {options.map((option, index) => {
-                  const isSelected = activeIndex === index;
-                  if (option.kind === 'item') {
-                    const shownTags = option.item.tags.slice(0, MAX_VISIBLE_OPTION_TAG_CHIPS);
-                    const extraTags = Math.max(
-                      0,
-                      option.item.tags.length - MAX_VISIBLE_OPTION_TAG_CHIPS,
-                    );
-                    const shownTagChipsLabel = shownTags
-                      .map((tag) => `#${tag.display}`)
-                      .join(' ');
-                    const extraTagsLabel =
-                      extraTags > 0
-                        ? tOmni('searchMoreTagsAria', { count: extraTags })
-                        : '';
-                    const optionMainLabel = [
-                      option.item.name,
-                      shownTagChipsLabel,
-                      extraTagsLabel,
-                    ]
-                      .filter(Boolean)
-                      .join(' ');
-                    return (
-                      <div
-                        key={option.id}
-                        ref={(el) => {
-                          optionRefs.current[option.id] = el;
-                        }}
-                        id={option.id}
-                        role="option"
-                        aria-label={`${optionMainLabel} — ${tOmni('searchEntryCount', { count: option.item.entry_count })}`}
-                        aria-selected={isSelected}
-                        data-opt-idx={index}
-                        onMouseMove={() => {
-                          if (activeIndex !== index) {
-                            setActiveIndex(index);
-                          }
-                        }}
-                        onClick={() => executeOption(option)}
-                        className="sugg-row"
-                      >
-                        <span className="omni-opt-main flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-                          <span className="omni-opt-title font-semibold text-ink [overflow-wrap:anywhere]">
-                            <MarkedPrefixText text={option.item.name} query={option.query} />
-                          </span>
-                          {shownTags.map((tag) => (
-                            <span
-                              key={tag.id}
-                              className="chip dup-chip inline-block max-w-full truncate !px-2 !py-0.5 !text-[12px]"
-                            >
-                              #{tag.display}
-                            </span>
-                          ))}
-                          {extraTags > 0 ? (
-                            <>
-                              <span aria-hidden="true" className="mono text-[12px] text-muted">
-                                +{extraTags}
-                              </span>
-                              <span className="sr-only">
-                                {tOmni('searchMoreTagsAria', { count: extraTags })}
-                              </span>
-                            </>
-                          ) : null}
-                        </span>
-                        <span className="sugg-meta mono">
-                          {tOmni('searchEntryCount', { count: option.item.entry_count })}
-                        </span>
-                      </div>
-                    );
-                  }
-
-                  if (option.kind === 'create') {
-                    return (
-                      <div
-                        key={option.id}
-                        ref={(el) => {
-                          optionRefs.current[option.id] = el;
-                        }}
-                        id={option.id}
-                        role="option"
-                        aria-selected={isSelected}
-                        data-opt-idx={index}
-                        onMouseMove={() => {
-                          if (activeIndex !== index) {
-                            setActiveIndex(index);
-                          }
-                        }}
-                        onClick={() => executeOption(option)}
-                        className="sugg-row omni-create-option border-t border-dashed border-line bg-canvas px-4 py-3.5"
-                      >
-                        <span className="mono text-accent">+</span>
-                        <span className="!whitespace-normal !overflow-visible">
-                          <strong>{tOmni('createItemOption', { query: option.query })}</strong>
-                        </span>
-                        <span className="sugg-meta">
-                          <Kbd>Enter</Kbd>
-                        </span>
-                      </div>
-                    );
-                  }
-
-                  return null;
-                })}
-              </div>
-            </>
-          ) : null}
-
-          {listKind === 'tag-filter' && tagFilterState ? (
-            <>
-              <div className="sugg-group" aria-hidden="true">
-                {tagFilterState.fromServer
-                  ? tOmni('tagGroupServer', { count: tagFilterState.tags.length })
-                  : tOmni('tagGroupCache', { count: tagFilterState.tags.length })}
-              </div>
-
-              {tagFilterState.tags.length === 0 ? (
-                <div
-                  aria-hidden="true"
-                  data-testid="omnibox-tag-empty"
-                  className="omni-empty-box border-b border-line bg-surface px-4 py-4"
-                >
-                  <p className="m-0 mb-1 text-[14px] font-semibold text-body">
-                    {tOmni('tagEmptyTitle', { query: tagFilterState.token })}
-                  </p>
-                  <p className="m-0 text-[12px] text-muted">
-                    {tagFilterState.fromServer
-                      ? tOmni('tagEmptyServerBody')
-                      : tOmni('tagEmptyCacheBody')}
-                  </p>
-                </div>
-              ) : null}
-
-              {options.length > 0 ? (
-                <div
-                  id={listboxId}
-                  role="listbox"
-                  aria-label={tOmni('tagListboxAriaLabel')}
-                  className="omni-listbox"
-                >
-                  {options.map((option, index) => {
-                    if (option.kind !== 'tag') return null;
-                    const isSelected = activeIndex === index;
-                    return (
-                      <div
-                        key={option.id}
-                        ref={(el) => {
-                          optionRefs.current[option.id] = el;
-                        }}
-                        id={option.id}
-                        role="option"
-                        aria-label={`#${option.tag.display} — ${tOmni('tagItemCount', { count: option.tag.item_count })}`}
-                        aria-selected={isSelected}
-                        data-opt-idx={index}
-                        onMouseMove={() => {
-                          if (activeIndex !== index) {
-                            setActiveIndex(index);
-                          }
-                        }}
-                        onClick={() => executeOption(option)}
-                        className="sugg-row"
-                      >
-                        <span className="mono text-accent">#</span>
-                        <span>
-                          <MarkedPrefixText text={option.tag.display} query={option.query} />
-                        </span>
-                        <span className="sugg-meta mono">
-                          {tOmni('tagItemCount', { count: option.tag.item_count })}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </>
-          ) : null}
+          <SuggestList
+            baseId={baseId}
+            listboxId={listboxId}
+            model={suggestModel}
+            activeKey={activeKey}
+            busy={listBusy || loadMoreBusy}
+            showSkeleton={showSkeleton}
+            rateLimitedSeconds={rateLimitedSeconds}
+            enable409={semanticEnable409Visible}
+            onActivate={executeKey}
+            onOptionRef={(key, el) => {
+              optionRefs.current[key] = el;
+            }}
+          />
         </div>
       ) : null}
 
-      <DupPickerDialog
-        open={dupPickerState !== null}
-        name={dupPickerState?.name ?? ''}
-        initialItems={dupPickerState?.initialItems ?? []}
-        total={dupPickerState?.total ?? 0}
-        initialNextCursor={dupPickerState?.nextCursor ?? null}
-        onPick={handleDupPickerPick}
-        onCancel={handleDupPickerCancel}
-      />
+
+      {/* RV-T17-2-FE1-3: mount the picker only while it has state. It seeds its item list from `initialItems` at
+          mount, so an always-mounted dialog painted one frame with items=[] (create option only) before its passive
+          effect filled them. */}
+      {dupPickerState !== null ? (
+        <DupPickerDialog
+          open
+          name={dupPickerState.name}
+          initialItems={dupPickerState.initialItems}
+          total={dupPickerState.total}
+          initialNextCursor={dupPickerState.nextCursor ?? null}
+          onPick={handleDupPickerPick}
+          onCancel={handleDupPickerCancel}
+        />
+      ) : null}
       <ImportJsonDialog listenToHandoff />
     </div>
   );

@@ -5,7 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"net/http"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,11 +16,17 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/clock"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
+	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
+	"github.com/zone17th/engram/apps/api/internal/embedding/jobargs"
+	"github.com/zone17th/engram/apps/api/internal/embedding/store"
+	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
 
@@ -32,8 +38,36 @@ type Notifier interface {
 	NotifySecurity(ctx context.Context, tx pgx.Tx, n secevent.Notice) error
 }
 
-type SemanticProbe interface {
-	Available(ctx context.Context) bool
+// SemanticRuntime is the static semantic state the auth service reads for
+// `features.semantic_available` / `features.semantic_external` and the
+// `PATCH /me/settings` semantic_suggest guard (plan P05 mục 2.18, Task 13).
+// *semantic.Runtime implements it; none of the methods may perform network I/O.
+type SemanticRuntime interface {
+	// Availability is the static, cached semantic_available value (breaker state
+	// never flips it).
+	Availability(ctx context.Context) bool
+	// External reports whether the active generation's provider is
+	// openai_compat (features.semantic_external).
+	External(ctx context.Context) bool
+	// IsBreakerOpen reports the active provider's API breaker; PATCH
+	// semantic_suggest=true is refused while it is open.
+	IsBreakerOpen() bool
+}
+
+// JobInserter is the River insert surface PatchSettings needs to enqueue
+// reembed_user inside the settings transaction (*river.Client[pgx.Tx]).
+type JobInserter interface {
+	InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
+}
+
+// ServiceOption customizes NewService without changing its positional signature.
+type ServiceOption func(*Service)
+
+// WithJobInserter sets the River client used to enqueue reembed_user when a user
+// turns semantic_suggest back on. Without it no job is enqueued (the periodic
+// Reconcile still catches the user up).
+func WithJobInserter(j JobInserter) ServiceOption {
+	return func(s *Service) { s.jobs = j }
 }
 
 type Mailer interface {
@@ -54,7 +88,9 @@ type Service struct {
 	clk             clock.Clock
 	audit           Auditor
 	notify          Notifier
-	probe           SemanticProbe
+	sem             SemanticRuntime
+	jobs            JobInserter
+	reembedLimit    *httpx.TokenBucket
 	mail            Mailer
 	vault           VaultStatus
 	ipPepper        []byte
@@ -71,7 +107,7 @@ type Service struct {
 	onLogoutRevoked func()
 }
 
-func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, csrf *CSRF, tokens *TokenIssuer, grants *Grants, lockout *Lockout, clk clock.Clock, audit Auditor, notify Notifier, probe SemanticProbe, mail Mailer, vault VaultStatus) (*Service, error) {
+func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, csrf *CSRF, tokens *TokenIssuer, grants *Grants, lockout *Lockout, clk clock.Clock, audit Auditor, notify Notifier, sem SemanticRuntime, mail Mailer, vault VaultStatus, opts ...ServiceOption) (*Service, error) {
 	if cfg == nil || pool == nil || sessions == nil || csrf == nil || tokens == nil || grants == nil || lockout == nil || audit == nil || notify == nil {
 		return nil, errors.New("auth service thiếu dependency bắt buộc")
 	}
@@ -81,16 +117,21 @@ func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, 
 	if vault == nil {
 		vault = func(context.Context, uuid.UUID) (string, error) { return "absent", nil }
 	}
-	if probe == nil {
-		probe = staticProbe(false)
+	if sem == nil {
+		sem = noSemantic{}
 	}
-	// initialized above
 	svc := &Service{
 		cfg: cfg, pool: pool, q: gen.New(pool), sessions: sessions, csrf: csrf,
 		tokens: tokens, grants: grants, lockout: lockout, clk: clk,
-		audit: audit, notify: notify, probe: probe, mail: mail, vault: vault,
+		audit: audit, notify: notify, sem: sem, mail: mail, vault: vault,
 		ipPepper: cfg.AuthIPPepper, emPepper: cfg.AuthEmailPepper,
-		forgotQueue: make(chan ForgotJob, ForgotQueueSize),
+		forgotQueue:  make(chan ForgotJob, ForgotQueueSize),
+		reembedLimit: httpx.NewTokenBucket(reembedBucketCapacity, reembedBucketRefillPerSec, clk),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(svc)
+		}
 	}
 	svc.forgotWorkerCtx, svc.forgotCancel = context.WithCancel(context.Background())
 	svc.forgotDone = make(chan struct{})
@@ -98,61 +139,13 @@ func NewService(cfg *config.Config, pool *pgxpool.Pool, sessions *SessionStore, 
 	return svc, nil
 }
 
-type staticProbe bool
+// noSemantic is the runtime used when none is wired: semantic is unavailable
+// and there is no active provider, so semantic_external is false.
+type noSemantic struct{}
 
-func (s staticProbe) Available(context.Context) bool { return bool(s) }
-
-const semanticProbeTimeout = 300 * time.Millisecond
-
-type runtimeSemanticProbe struct {
-	endpoint string
-	client   *http.Client
-}
-
-func (p *runtimeSemanticProbe) Available(ctx context.Context) bool {
-	if p == nil || p.endpoint == "" {
-		return false
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, semanticProbeTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, p.endpoint, nil)
-	if err != nil {
-		return false
-	}
-	client := p.client
-	if client == nil {
-		client = &http.Client{
-			Timeout: semanticProbeTimeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode == http.StatusOK
-}
-
-func ConfigProbe(cfg *config.Config) SemanticProbe {
-	if cfg == nil || !cfg.SemanticAvailable() {
-		return staticProbe(false)
-	}
-	return &runtimeSemanticProbe{
-		endpoint: strings.TrimRight(cfg.TEIURL, "/") + "/health",
-		client: &http.Client{
-			Timeout: semanticProbeTimeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-	}
-}
+func (noSemantic) Availability(context.Context) bool { return false }
+func (noSemantic) External(context.Context) bool     { return false }
+func (noSemantic) IsBreakerOpen() bool               { return false }
 
 func (s *Service) PublicConfig() AuthConfig {
 	return AuthConfig{
@@ -215,7 +208,8 @@ func (s *Service) BuildMe(ctx context.Context, userID uuid.UUID) (Me, error) {
 		},
 		Identities: identities,
 		Features: MeFeatures{
-			SemanticAvailable:           s.probe.Available(ctx),
+			SemanticAvailable:           s.sem.Availability(ctx),
+			SemanticExternal:            s.sem.External(ctx),
 			EmailVerificationRequired:   s.cfg.RequireEmailVerification,
 			OAuthProviders:              s.cfg.OAuthProviders(),
 			OAuthReauthProviders:        s.cfg.OAuthReauthProviders(),
@@ -444,7 +438,9 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 			return Me{}, ErrInvalidRequest
 		}
 	}
-	if patch.SemanticSuggest != nil && *patch.SemanticSuggest && !s.probe.Available(ctx) {
+	// Static check, no network call (plan P05 mục 2.18 row 1–3b, 8): unavailable
+	// deployment or an open API breaker refuses turning semantic on.
+	if patch.SemanticSuggest != nil && *patch.SemanticSuggest && (!s.sem.Availability(ctx) || s.sem.IsBreakerOpen()) {
 		return Me{}, ErrSemanticUnavailable
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -453,7 +449,10 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
-	if _, err := q.GetUserByIDForUpdate(ctx, p.UserID); err != nil {
+	// Lock order (OQ-16, plan P05 mục 2.15): app_user row first, then the
+	// generation-set advisory lock (shared) inside applySemanticSuggestTx.
+	userRow, err := q.GetUserByIDForUpdate(ctx, p.UserID)
+	if err != nil {
 		return Me{}, err
 	}
 	if err := s.sessions.EnsureLiveTx(ctx, q, p); err != nil {
@@ -477,9 +476,7 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 		return Me{}, err
 	}
 	if patch.SemanticSuggest != nil {
-		if _, err := q.UpdateUserSemanticSuggest(ctx, gen.UpdateUserSemanticSuggestParams{
-			ID: p.UserID, SemanticSuggest: *patch.SemanticSuggest,
-		}); err != nil {
+		if err := s.applySemanticSuggestTx(ctx, tx, q, p.UserID, userRow.Settings, *patch.SemanticSuggest); err != nil {
 			return Me{}, err
 		}
 	}
@@ -507,6 +504,119 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 		return Me{}, err
 	}
 	return s.BuildMe(ctx, p.UserID)
+}
+
+// reembedUserPriority and reembedUserQueue mirror plan P05 mục 2.17 (queue
+// "embedding", priority 3); the job's Reconcile(User) covers every generation
+// in R, so a single insert per toggle is enough.
+const (
+	reembedUserQueue    = "embedding"
+	reembedUserPriority = 3
+
+	// reembedBucketCapacity / reembedBucketRefillPerSec bound how often one
+	// user can enqueue reembed_user through off->on toggles: 5 per 600 s, per
+	// user, in memory (plan P05 mục 2.18; advisor-dec-301 addendum). The insert
+	// has no uniqueness (see reembedUserInsertOpts), and PATCH /me/settings has
+	// no rate limit of its own, so without this a user could amplify paid
+	// external-provider embedding calls by toggling.
+	reembedBucketCapacity     = 5
+	reembedBucketRefillPerSec = 5.0 / 600.0
+)
+
+// reembedUserInsertOpts deliberately carries no UniqueOpts (RV-T13-BE-1). Only
+// an off->on transition inserts, so the volume is bounded by the user's own
+// toggles (and by the per-user reembedLimit bucket). A uniqueness window that includes running would let a later off->on
+// dedupe against a pass that is already past the user's external targets (or
+// skipped the user while off), silently dropping the backfill until the 24 h
+// periodic Reconcile. Reconcile(User) is idempotent, so a redundant pass is
+// harmless.
+func reembedUserInsertOpts() *river.InsertOpts {
+	return &river.InsertOpts{
+		Queue:    reembedUserQueue,
+		Priority: reembedUserPriority,
+	}
+}
+
+// semanticSuggestSetting reads settings.semantic_suggest with the same default
+// the embedding jobs use (absent or unreadable => on, matching the column
+// default {"semantic_suggest": true}).
+func semanticSuggestSetting(raw []byte) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var parsed struct {
+		SemanticSuggest *bool `json:"semantic_suggest"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.SemanticSuggest == nil {
+		return true
+	}
+	return *parsed.SemanticSuggest
+}
+
+// applySemanticSuggestTx stores the new semantic_suggest value together with
+// its side effects inside the PatchSettings transaction (plan P05 mục 2.18,
+// rows 7 and 11; BE-3). The caller already holds the app_user row lock.
+//
+//   - off (always 200): delete the user's vectors in every openai_compat
+//     generation that still has tables (state <> dropped, retired past the
+//     rollback window included); tei generations keep them.
+//   - on, from off: enqueue one reembed_user so Reconcile(User) re-embeds the
+//     user into every openai_compat generation in R (tei is already current).
+//     Only when R contains such a generation.
+//   - on, already on: nothing (idempotent).
+//
+// Nothing here logs or returns provider URLs, keys, query text or names.
+func (s *Service) applySemanticSuggestTx(ctx context.Context, tx pgx.Tx, q *gen.Queries, userID uuid.UUID, prevSettings []byte, on bool) error {
+	switch {
+	case !on:
+		if err := generation.LockGenerationSetShared(ctx, tx); err != nil {
+			return err
+		}
+		if err := store.DeleteUserExternal(ctx, tx, userID); err != nil {
+			return err
+		}
+	case !semanticSuggestSetting(prevSettings):
+		if err := generation.LockGenerationSetShared(ctx, tx); err != nil {
+			return err
+		}
+		if err := s.enqueueReembedUserTx(ctx, tx, userID); err != nil {
+			return err
+		}
+	}
+	_, err := q.UpdateUserSemanticSuggest(ctx, gen.UpdateUserSemanticSuggestParams{
+		ID: userID, SemanticSuggest: on,
+	})
+	return err
+}
+
+func (s *Service) enqueueReembedUserTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	if s.jobs == nil {
+		return nil
+	}
+	gens, err := generation.ReceivingGenerations(ctx, tx)
+	if err != nil {
+		return err
+	}
+	external := false
+	for _, g := range gens {
+		if g.Provider == generation.ProviderOpenAICompat {
+			external = true
+			break
+		}
+	}
+	if !external {
+		return nil
+	}
+	// Over the limit: the setting change still succeeds (OpenAPI declares no 429
+	// for PATCH /me/settings), only the immediate backfill is skipped; the
+	// periodic 24 h Reconcile catches the user up. A token is spent only when an
+	// insert would otherwise happen (not on true->true, off, or a 409).
+	if ok, _ := s.reembedLimit.AllowUser(userID); !ok {
+		slog.Warn("reembed_user enqueue skipped", slog.String("reason", "reembed_rate_limited"))
+		return nil
+	}
+	_, err = s.jobs.InsertTx(ctx, tx, jobargs.ReembedUserArgs{UserID: userID.String()}, reembedUserInsertOpts())
+	return err
 }
 
 func (s *Service) ListSessions(ctx context.Context, p authctx.Principal, limit int, cursor string) (CursorPage[SessionItem], error) {

@@ -10,7 +10,7 @@ import { UI_WAIT_MS, findBodyLeaks, installApiMocks } from './vault-locked-suppo
 
 /**
  * P03-T21 locked state U5 search (`list search on /app` and `item header search`), split from `vault-locked.spec.ts`
- * and migrated in Task 18a to Enter-only prefix search (P4FE3-1, P4FE4-1, P4FE5-4).
+ * and migrated in Task 18a to Enter-only prefix search and in P05-T17 to `GET /search` (P4FE3-1, P4FE4-1, P4FE5-4).
  */
 const BODIES = DEMO_ITEMS.map((item) => item.preview);
 
@@ -67,7 +67,7 @@ test.describe('P03-T21 Locked state U5', () => {
       expect(placeholderMetrics.activeWidth).toBeLessThanOrEqual(placeholderMetrics.contentBoxWidth);
       await page.setViewportSize({ width: 1280, height: 800 });
 
-      // Name prefix query: typing sends nothing; Enter queries GET /items?q= and opens the listbox with no body.
+      // Name prefix query: a fill-style edit sends nothing; Enter queries GET /search (lexical, semantic=0) and opens the listbox with no body.
       await input.fill('Cà phê');
       await expect(page.getByRole('listbox')).toHaveCount(0);
       await input.press('Enter');
@@ -116,7 +116,7 @@ test.describe('P03-T21 Locked state U5', () => {
       const input = page.locator('header textarea[data-vault-secret]');
       await expect(input).toBeVisible({ timeout: UI_WAIT_MS });
 
-      // Name prefix query: typing sends nothing; Enter queries GET /items?q= and opens the listbox with no body.
+      // Name prefix query: a fill-style edit sends nothing; Enter queries GET /search (lexical, semantic=0) and opens the listbox with no body.
       await input.fill('Cà phê');
       await expect(page.getByRole('listbox')).toHaveCount(0);
       await input.press('Enter');

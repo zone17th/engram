@@ -140,13 +140,43 @@ type LookupResult struct {
 	NextCursor *string   `json:"next_cursor"`
 }
 
-// EmbedEnqueueHook là điểm mở rộng giữ chỗ (no-op ở P04; P05 gắn River job re-embed)
-// được gọi khi tạo mới item hoặc khi `name`/`hint` thay đổi.
-// Ràng buộc user-dec-016: hook chỉ nhận `(userID, itemID)`, tuyệt đối không nhận hay log plaintext.
-type EmbedEnqueueHook func(ctx context.Context, userID, itemID uuid.UUID)
+// EmbedKind identifies the target corpus ("item" or "tag") for transactional
+// embedding hooks (plan P05 mục 2.17, Task 11b).
+type EmbedKind string
 
-// NoopEmbedEnqueueHook là hook mặc định không làm gì cho tới P05.
-func NoopEmbedEnqueueHook(_ context.Context, _, _ uuid.UUID) {}
+const (
+	// EmbedKindItem identifies an item target for embedding enqueue/delete.
+	EmbedKindItem EmbedKind = "item"
+	// EmbedKindTag identifies a tag target for embedding enqueue/delete.
+	EmbedKindTag EmbedKind = "tag"
+)
+
+// EmbedHook is the transactional embedding hook invoked inside item and tag
+// mutation transactions after the target row write and before CommitIdempotencyTx
+// (plan P05 mục 2.17, Task 11b; SPEC §6.6).
+//
+// input passed to OnUpsert is the v1 document embedding input built by the
+// caller via embedding.ItemInput(name, hint) or embedding.TagInput(display).
+// Implementations compute the per-generation SHA-256 input_hash in memory and
+// enqueue River jobs containing ONLY IDs and hex hashes — never storing or
+// logging plaintext names, hints, or tag displays (user-dec-016).
+type EmbedHook interface {
+	OnUpsert(ctx context.Context, tx pgx.Tx, userID uuid.UUID, kind EmbedKind, id uuid.UUID, input string) error
+	OnDelete(ctx context.Context, tx pgx.Tx, userID uuid.UUID, kind EmbedKind, id uuid.UUID) error
+}
+
+// NoopEmbedHook is a no-op EmbedHook implementation.
+type NoopEmbedHook struct{}
+
+// OnUpsert is a no-op that returns nil.
+func (NoopEmbedHook) OnUpsert(_ context.Context, _ pgx.Tx, _ uuid.UUID, _ EmbedKind, _ uuid.UUID, _ string) error {
+	return nil
+}
+
+// OnDelete is a no-op that returns nil.
+func (NoopEmbedHook) OnDelete(_ context.Context, _ pgx.Tx, _ uuid.UUID, _ EmbedKind, _ uuid.UUID) error {
+	return nil
+}
 
 // BuildSummaryFromRow chuyển đổi một `gen.Item` và danh sách `TagRef` đã truy vấn
 // thành `Summary` chuẩn OpenAPI (đảm bảo `Tags` không bao giờ `nil` và giới hạn <= 20).
@@ -389,9 +419,9 @@ func decodeLookupCursor(raw string, expectedNameNormalized string) (time.Time, u
 
 // Service cung cấp các thao tác đọc và hỗ trợ domain cho thực thể `Item`.
 type Service struct {
-	pool    *pgxpool.Pool
-	clk     clock.Clock
-	onEmbed EmbedEnqueueHook
+	pool      *pgxpool.Pool
+	clk       clock.Clock
+	embedHook EmbedHook
 }
 
 // NewService khởi tạo `*Service` cho `Item`.
@@ -400,9 +430,9 @@ func NewService(pool *pgxpool.Pool, clk clock.Clock) *Service {
 		clk = clock.System{}
 	}
 	return &Service{
-		pool:    pool,
-		clk:     clk,
-		onEmbed: NoopEmbedEnqueueHook,
+		pool:      pool,
+		clk:       clk,
+		embedHook: NoopEmbedHook{},
 	}
 }
 
@@ -412,20 +442,21 @@ func (s *Service) Pool() *pgxpool.Pool { return s.pool }
 // Clock trả về `clock.Clock`.
 func (s *Service) Clock() clock.Clock { return s.clk }
 
-// SetEmbedEnqueueHook đăng ký hook giữ chỗ re-embed (no-op ở P04, dùng ở P05).
-func (s *Service) SetEmbedEnqueueHook(fn EmbedEnqueueHook) {
-	if fn == nil {
-		s.onEmbed = NoopEmbedEnqueueHook
+// SetEmbedHook registers the transactional EmbedHook on Service (nil resets to NoopEmbedHook).
+func (s *Service) SetEmbedHook(h EmbedHook) {
+	if h == nil {
+		s.embedHook = NoopEmbedHook{}
 		return
 	}
-	s.onEmbed = fn
+	s.embedHook = h
 }
 
-// EnqueueEmbed gọi hook giữ chỗ re-embed (không truyền bất kỳ dữ liệu plaintext nào).
-func (s *Service) EnqueueEmbed(ctx context.Context, userID, itemID uuid.UUID) {
-	if s.onEmbed != nil {
-		s.onEmbed(ctx, userID, itemID)
+// EmbedHook returns a non-nil EmbedHook (defaulting to NoopEmbedHook).
+func (s *Service) EmbedHook() EmbedHook {
+	if s == nil || s.embedHook == nil {
+		return NoopEmbedHook{}
 	}
+	return s.embedHook
 }
 
 // Get đọc một item sống của `userID` theo `itemID` và cập nhật `last_used_at` nếu đã quá

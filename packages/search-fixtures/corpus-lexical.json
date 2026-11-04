@@ -1,0 +1,1795 @@
+{
+  "$comment": "P05 plan mục 2.2 + 2.3 + Task 2 — Corpus lexical tổng hợp (150 items + 40 tags trên 2 user u1/u2, vi/en, 100% synthetic, không có hint/body) và các truy vấn kiểm thứ tự xếp hạng (tier DESC, score DESC, last_used_at DESC, count DESC, id ASC), prefix đúng dấu (tier 3), prefix bỏ dấu (tier 2, gồm cả full-width ｗｉｆｉ -> wifi theo advisor-dec-264), đ/d, typo >= 5 ký tự (pasword->password, wiifi->wifi, wi-fi->wifi, tier 1), ca âm wfii, trùng tên mục, phá hoà theo last_used_at/count/id, và cô lập dữ liệu giữa hai user.",
+  "version": 1,
+  "schema": "engram-search-corpus-lexical-v1",
+  "users": {
+    "u1": "11111111-1111-4000-8000-000000000001",
+    "u2": "22222222-2222-4000-8000-000000000002"
+  },
+  "items": [
+    {
+      "id": "00000000-0001-4000-8000-000000000001",
+      "user": "u1",
+      "name": "Đường sắt",
+      "entry_count": 5,
+      "last_used_at": "2026-10-20T12:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000002",
+      "user": "u1",
+      "name": "Duong bo",
+      "entry_count": 3,
+      "last_used_at": "2026-10-20T11:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000003",
+      "user": "u1",
+      "name": "Đà Nẵng chuyến đi",
+      "entry_count": 4,
+      "last_used_at": "2026-10-20T10:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000004",
+      "user": "u1",
+      "name": "Da Nang khach san",
+      "entry_count": 2,
+      "last_used_at": "2026-10-20T09:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000005",
+      "user": "u1",
+      "name": "Mã xác thực",
+      "entry_count": 8,
+      "last_used_at": "2026-10-20T08:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000006",
+      "user": "u1",
+      "name": "Ma trận",
+      "entry_count": 6,
+      "last_used_at": "2026-10-20T07:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000007",
+      "user": "u1",
+      "name": "password",
+      "entry_count": 10,
+      "last_used_at": "2026-10-20T06:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000008",
+      "user": "u1",
+      "name": "password manager",
+      "entry_count": 4,
+      "last_used_at": "2026-10-20T05:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000009",
+      "user": "u1",
+      "name": "wifi",
+      "entry_count": 12,
+      "last_used_at": "2026-10-20T04:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000000a",
+      "user": "u1",
+      "name": "wifi phòng khách",
+      "entry_count": 5,
+      "last_used_at": "2026-10-20T03:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000000b",
+      "user": "u1",
+      "name": "Tài khoản ngân hàng",
+      "entry_count": 2,
+      "last_used_at": "2026-10-22T15:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000000c",
+      "user": "u1",
+      "name": "Tài khoản ngân hàng",
+      "entry_count": 9,
+      "last_used_at": "2026-10-21T15:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000000d",
+      "user": "u1",
+      "name": "Tiebreak Alpha",
+      "entry_count": 1,
+      "last_used_at": "2026-10-25T10:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000000e",
+      "user": "u1",
+      "name": "Tiebreak Alpha",
+      "entry_count": 7,
+      "last_used_at": "2026-10-24T10:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000000f",
+      "user": "u1",
+      "name": "Tiebreak Alpha",
+      "entry_count": 3,
+      "last_used_at": "2026-10-24T10:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000010",
+      "user": "u1",
+      "name": "Tiebreak Alpha",
+      "entry_count": 3,
+      "last_used_at": "2026-10-24T10:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000011",
+      "user": "u1",
+      "name": "C++ toolchain",
+      "entry_count": 4,
+      "last_used_at": "2026-10-19T12:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000012",
+      "user": "u1",
+      "name": "Hồ sơ bảo hiểm 1018",
+      "entry_count": 1,
+      "last_used_at": "2026-10-04T18:06:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000013",
+      "user": "u1",
+      "name": "Hợp đồng thuê trọ 1019",
+      "entry_count": 2,
+      "last_used_at": "2026-10-05T19:13:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000014",
+      "user": "u1",
+      "name": "Sổ khám sức khỏe 1020",
+      "entry_count": 3,
+      "last_used_at": "2026-10-06T20:20:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000015",
+      "user": "u1",
+      "name": "Chứng chỉ ngoại ngữ 1021",
+      "entry_count": 4,
+      "last_used_at": "2026-10-07T21:27:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000016",
+      "user": "u1",
+      "name": "Biên lai học phí 1022",
+      "entry_count": 5,
+      "last_used_at": "2026-10-08T22:34:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000017",
+      "user": "u1",
+      "name": "Lịch bảo dưỡng xe 1023",
+      "entry_count": 6,
+      "last_used_at": "2026-10-09T23:41:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000018",
+      "user": "u1",
+      "name": "Thẻ thư viện tỉnh 1024",
+      "entry_count": 7,
+      "last_used_at": "2026-10-10T00:48:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000019",
+      "user": "u1",
+      "name": "Hóa đơn điện nước 1025",
+      "entry_count": 8,
+      "last_used_at": "2026-10-11T01:55:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000001a",
+      "user": "u1",
+      "name": "Ghi chú họp nhóm 1026",
+      "entry_count": 9,
+      "last_used_at": "2026-10-12T02:02:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000001b",
+      "user": "u1",
+      "name": "Kế hoạch tiết kiệm 1027",
+      "entry_count": 1,
+      "last_used_at": "2026-10-13T03:09:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000001c",
+      "user": "u1",
+      "name": "Server staging log 1028",
+      "entry_count": 2,
+      "last_used_at": "2026-10-14T04:16:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000001d",
+      "user": "u1",
+      "name": "SSH bastion host 1029",
+      "entry_count": 3,
+      "last_used_at": "2026-10-15T05:23:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000001e",
+      "user": "u1",
+      "name": "Kubernetes cluster 1030",
+      "entry_count": 4,
+      "last_used_at": "2026-10-01T06:30:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000001f",
+      "user": "u1",
+      "name": "Postgres backup note 1031",
+      "entry_count": 5,
+      "last_used_at": "2026-10-02T07:37:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000020",
+      "user": "u1",
+      "name": "Grafana dashboard 1032",
+      "entry_count": 6,
+      "last_used_at": "2026-10-03T08:44:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000021",
+      "user": "u1",
+      "name": "Cloudflare DNS zone 1033",
+      "entry_count": 7,
+      "last_used_at": "2026-10-04T09:51:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000022",
+      "user": "u1",
+      "name": "GitHub deploy token 1034",
+      "entry_count": 8,
+      "last_used_at": "2026-10-05T10:58:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000023",
+      "user": "u1",
+      "name": "Docker registry key 1035",
+      "entry_count": 9,
+      "last_used_at": "2026-10-06T11:05:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000024",
+      "user": "u1",
+      "name": "Terraform state lock 1036",
+      "entry_count": 1,
+      "last_used_at": "2026-10-07T12:12:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000025",
+      "user": "u1",
+      "name": "Ansible inventory 1037",
+      "entry_count": 2,
+      "last_used_at": "2026-10-08T13:19:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000026",
+      "user": "u1",
+      "name": "Hồ sơ bảo hiểm 2038",
+      "entry_count": 3,
+      "last_used_at": "2026-10-09T14:26:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000027",
+      "user": "u1",
+      "name": "Hợp đồng thuê trọ 2039",
+      "entry_count": 4,
+      "last_used_at": "2026-10-10T15:33:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000028",
+      "user": "u1",
+      "name": "Sổ khám sức khỏe 2040",
+      "entry_count": 5,
+      "last_used_at": "2026-10-11T16:40:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000029",
+      "user": "u1",
+      "name": "Chứng chỉ ngoại ngữ 2041",
+      "entry_count": 6,
+      "last_used_at": "2026-10-12T17:47:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000002a",
+      "user": "u1",
+      "name": "Biên lai học phí 2042",
+      "entry_count": 7,
+      "last_used_at": "2026-10-13T18:54:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000002b",
+      "user": "u1",
+      "name": "Lịch bảo dưỡng xe 2043",
+      "entry_count": 8,
+      "last_used_at": "2026-10-14T19:01:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000002c",
+      "user": "u1",
+      "name": "Thẻ thư viện tỉnh 2044",
+      "entry_count": 9,
+      "last_used_at": "2026-10-15T20:08:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000002d",
+      "user": "u1",
+      "name": "Hóa đơn điện nước 2045",
+      "entry_count": 1,
+      "last_used_at": "2026-10-01T21:15:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000002e",
+      "user": "u1",
+      "name": "Ghi chú họp nhóm 2046",
+      "entry_count": 2,
+      "last_used_at": "2026-10-02T22:22:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000002f",
+      "user": "u1",
+      "name": "Kế hoạch tiết kiệm 2047",
+      "entry_count": 3,
+      "last_used_at": "2026-10-03T23:29:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000030",
+      "user": "u1",
+      "name": "Server staging log 2048",
+      "entry_count": 4,
+      "last_used_at": "2026-10-04T00:36:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000031",
+      "user": "u1",
+      "name": "SSH bastion host 2049",
+      "entry_count": 5,
+      "last_used_at": "2026-10-05T01:43:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000032",
+      "user": "u1",
+      "name": "Kubernetes cluster 2050",
+      "entry_count": 6,
+      "last_used_at": "2026-10-06T02:50:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000033",
+      "user": "u1",
+      "name": "Postgres backup note 2051",
+      "entry_count": 7,
+      "last_used_at": "2026-10-07T03:57:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000034",
+      "user": "u1",
+      "name": "Grafana dashboard 2052",
+      "entry_count": 8,
+      "last_used_at": "2026-10-08T04:04:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000035",
+      "user": "u1",
+      "name": "Cloudflare DNS zone 2053",
+      "entry_count": 9,
+      "last_used_at": "2026-10-09T05:11:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000036",
+      "user": "u1",
+      "name": "GitHub deploy token 2054",
+      "entry_count": 1,
+      "last_used_at": "2026-10-10T06:18:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000037",
+      "user": "u1",
+      "name": "Docker registry key 2055",
+      "entry_count": 2,
+      "last_used_at": "2026-10-11T07:25:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000038",
+      "user": "u1",
+      "name": "Terraform state lock 2056",
+      "entry_count": 3,
+      "last_used_at": "2026-10-12T08:32:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000039",
+      "user": "u1",
+      "name": "Ansible inventory 2057",
+      "entry_count": 4,
+      "last_used_at": "2026-10-13T09:39:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000003a",
+      "user": "u1",
+      "name": "Hồ sơ bảo hiểm 3058",
+      "entry_count": 5,
+      "last_used_at": "2026-10-14T10:46:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000003b",
+      "user": "u1",
+      "name": "Hợp đồng thuê trọ 3059",
+      "entry_count": 6,
+      "last_used_at": "2026-10-15T11:53:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000003c",
+      "user": "u1",
+      "name": "Sổ khám sức khỏe 3060",
+      "entry_count": 7,
+      "last_used_at": "2026-10-01T12:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000003d",
+      "user": "u1",
+      "name": "Chứng chỉ ngoại ngữ 3061",
+      "entry_count": 8,
+      "last_used_at": "2026-10-02T13:07:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000003e",
+      "user": "u1",
+      "name": "Biên lai học phí 3062",
+      "entry_count": 9,
+      "last_used_at": "2026-10-03T14:14:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000003f",
+      "user": "u1",
+      "name": "Lịch bảo dưỡng xe 3063",
+      "entry_count": 1,
+      "last_used_at": "2026-10-04T15:21:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000040",
+      "user": "u1",
+      "name": "Thẻ thư viện tỉnh 3064",
+      "entry_count": 2,
+      "last_used_at": "2026-10-05T16:28:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000041",
+      "user": "u1",
+      "name": "Hóa đơn điện nước 3065",
+      "entry_count": 3,
+      "last_used_at": "2026-10-06T17:35:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000042",
+      "user": "u1",
+      "name": "Ghi chú họp nhóm 3066",
+      "entry_count": 4,
+      "last_used_at": "2026-10-07T18:42:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000043",
+      "user": "u1",
+      "name": "Kế hoạch tiết kiệm 3067",
+      "entry_count": 5,
+      "last_used_at": "2026-10-08T19:49:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000044",
+      "user": "u1",
+      "name": "Server staging log 3068",
+      "entry_count": 6,
+      "last_used_at": "2026-10-09T20:56:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000045",
+      "user": "u1",
+      "name": "SSH bastion host 3069",
+      "entry_count": 7,
+      "last_used_at": "2026-10-10T21:03:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000046",
+      "user": "u1",
+      "name": "Kubernetes cluster 3070",
+      "entry_count": 8,
+      "last_used_at": "2026-10-11T22:10:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000047",
+      "user": "u1",
+      "name": "Postgres backup note 3071",
+      "entry_count": 9,
+      "last_used_at": "2026-10-12T23:17:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000048",
+      "user": "u1",
+      "name": "Grafana dashboard 3072",
+      "entry_count": 1,
+      "last_used_at": "2026-10-13T00:24:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000049",
+      "user": "u1",
+      "name": "Cloudflare DNS zone 3073",
+      "entry_count": 2,
+      "last_used_at": "2026-10-14T01:31:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000004a",
+      "user": "u1",
+      "name": "GitHub deploy token 3074",
+      "entry_count": 3,
+      "last_used_at": "2026-10-15T02:38:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000004b",
+      "user": "u1",
+      "name": "Docker registry key 3075",
+      "entry_count": 4,
+      "last_used_at": "2026-10-01T03:45:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000004c",
+      "user": "u1",
+      "name": "Terraform state lock 3076",
+      "entry_count": 5,
+      "last_used_at": "2026-10-02T04:52:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000004d",
+      "user": "u1",
+      "name": "Ansible inventory 3077",
+      "entry_count": 6,
+      "last_used_at": "2026-10-03T05:59:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000004e",
+      "user": "u1",
+      "name": "Hồ sơ bảo hiểm 4078",
+      "entry_count": 7,
+      "last_used_at": "2026-10-04T06:06:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000004f",
+      "user": "u1",
+      "name": "Hợp đồng thuê trọ 4079",
+      "entry_count": 8,
+      "last_used_at": "2026-10-05T07:13:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000050",
+      "user": "u1",
+      "name": "Sổ khám sức khỏe 4080",
+      "entry_count": 9,
+      "last_used_at": "2026-10-06T08:20:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000051",
+      "user": "u1",
+      "name": "Chứng chỉ ngoại ngữ 4081",
+      "entry_count": 1,
+      "last_used_at": "2026-10-07T09:27:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000052",
+      "user": "u1",
+      "name": "Biên lai học phí 4082",
+      "entry_count": 2,
+      "last_used_at": "2026-10-08T10:34:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000053",
+      "user": "u1",
+      "name": "Lịch bảo dưỡng xe 4083",
+      "entry_count": 3,
+      "last_used_at": "2026-10-09T11:41:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000054",
+      "user": "u1",
+      "name": "Thẻ thư viện tỉnh 4084",
+      "entry_count": 4,
+      "last_used_at": "2026-10-10T12:48:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000055",
+      "user": "u1",
+      "name": "Hóa đơn điện nước 4085",
+      "entry_count": 5,
+      "last_used_at": "2026-10-11T13:55:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000056",
+      "user": "u1",
+      "name": "Ghi chú họp nhóm 4086",
+      "entry_count": 6,
+      "last_used_at": "2026-10-12T14:02:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000057",
+      "user": "u1",
+      "name": "Kế hoạch tiết kiệm 4087",
+      "entry_count": 7,
+      "last_used_at": "2026-10-13T15:09:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000058",
+      "user": "u1",
+      "name": "Server staging log 4088",
+      "entry_count": 8,
+      "last_used_at": "2026-10-14T16:16:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000059",
+      "user": "u1",
+      "name": "SSH bastion host 4089",
+      "entry_count": 9,
+      "last_used_at": "2026-10-15T17:23:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000005a",
+      "user": "u1",
+      "name": "Kubernetes cluster 4090",
+      "entry_count": 1,
+      "last_used_at": "2026-10-01T18:30:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000005b",
+      "user": "u1",
+      "name": "Postgres backup note 4091",
+      "entry_count": 2,
+      "last_used_at": "2026-10-02T19:37:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000005c",
+      "user": "u1",
+      "name": "Grafana dashboard 4092",
+      "entry_count": 3,
+      "last_used_at": "2026-10-03T20:44:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000005d",
+      "user": "u1",
+      "name": "Cloudflare DNS zone 4093",
+      "entry_count": 4,
+      "last_used_at": "2026-10-04T21:51:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000005e",
+      "user": "u1",
+      "name": "GitHub deploy token 4094",
+      "entry_count": 5,
+      "last_used_at": "2026-10-05T22:58:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-00000000005f",
+      "user": "u1",
+      "name": "Docker registry key 4095",
+      "entry_count": 6,
+      "last_used_at": "2026-10-06T23:05:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000060",
+      "user": "u1",
+      "name": "Terraform state lock 4096",
+      "entry_count": 7,
+      "last_used_at": "2026-10-07T00:12:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000061",
+      "user": "u1",
+      "name": "Ansible inventory 4097",
+      "entry_count": 8,
+      "last_used_at": "2026-10-08T01:19:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000062",
+      "user": "u1",
+      "name": "Hồ sơ bảo hiểm 5098",
+      "entry_count": 9,
+      "last_used_at": "2026-10-09T02:26:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000063",
+      "user": "u1",
+      "name": "Hợp đồng thuê trọ 5099",
+      "entry_count": 1,
+      "last_used_at": "2026-10-10T03:33:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0001-4000-8000-000000000064",
+      "user": "u1",
+      "name": "Sổ khám sức khỏe 50100",
+      "entry_count": 2,
+      "last_used_at": "2026-10-11T04:40:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000065",
+      "user": "u2",
+      "name": "Tenant2 Secret Vault",
+      "entry_count": 15,
+      "last_used_at": "2026-10-25T12:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000066",
+      "user": "u2",
+      "name": "wifi tenant2 riêng",
+      "entry_count": 6,
+      "last_used_at": "2026-10-25T11:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000067",
+      "user": "u2",
+      "name": "Đường sắt tenant2",
+      "entry_count": 4,
+      "last_used_at": "2026-10-25T10:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000068",
+      "user": "u2",
+      "name": "U2 Hồ sơ bảo hiểm 104",
+      "entry_count": 7,
+      "last_used_at": "2026-10-15T08:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000069",
+      "user": "u2",
+      "name": "U2 Hợp đồng thuê trọ 105",
+      "entry_count": 1,
+      "last_used_at": "2026-10-01T09:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000006a",
+      "user": "u2",
+      "name": "U2 Sổ khám sức khỏe 106",
+      "entry_count": 2,
+      "last_used_at": "2026-10-02T10:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000006b",
+      "user": "u2",
+      "name": "U2 Chứng chỉ ngoại ngữ 107",
+      "entry_count": 3,
+      "last_used_at": "2026-10-03T11:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000006c",
+      "user": "u2",
+      "name": "U2 Biên lai học phí 108",
+      "entry_count": 4,
+      "last_used_at": "2026-10-04T12:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000006d",
+      "user": "u2",
+      "name": "U2 Lịch bảo dưỡng xe 109",
+      "entry_count": 5,
+      "last_used_at": "2026-10-05T13:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000006e",
+      "user": "u2",
+      "name": "U2 Thẻ thư viện tỉnh 110",
+      "entry_count": 6,
+      "last_used_at": "2026-10-06T14:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000006f",
+      "user": "u2",
+      "name": "U2 Hóa đơn điện nước 111",
+      "entry_count": 7,
+      "last_used_at": "2026-10-07T15:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000070",
+      "user": "u2",
+      "name": "U2 Ghi chú họp nhóm 112",
+      "entry_count": 1,
+      "last_used_at": "2026-10-08T16:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000071",
+      "user": "u2",
+      "name": "U2 Kế hoạch tiết kiệm 113",
+      "entry_count": 2,
+      "last_used_at": "2026-10-09T17:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000072",
+      "user": "u2",
+      "name": "U2 Server staging log 114",
+      "entry_count": 3,
+      "last_used_at": "2026-10-10T18:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000073",
+      "user": "u2",
+      "name": "U2 SSH bastion host 115",
+      "entry_count": 4,
+      "last_used_at": "2026-10-11T19:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000074",
+      "user": "u2",
+      "name": "U2 Kubernetes cluster 116",
+      "entry_count": 5,
+      "last_used_at": "2026-10-12T20:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000075",
+      "user": "u2",
+      "name": "U2 Postgres backup note 117",
+      "entry_count": 6,
+      "last_used_at": "2026-10-13T21:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000076",
+      "user": "u2",
+      "name": "U2 Grafana dashboard 118",
+      "entry_count": 7,
+      "last_used_at": "2026-10-14T22:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000077",
+      "user": "u2",
+      "name": "U2 Cloudflare DNS zone 119",
+      "entry_count": 1,
+      "last_used_at": "2026-10-15T23:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000078",
+      "user": "u2",
+      "name": "U2 GitHub deploy token 120",
+      "entry_count": 2,
+      "last_used_at": "2026-10-01T00:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000079",
+      "user": "u2",
+      "name": "U2 Docker registry key 121",
+      "entry_count": 3,
+      "last_used_at": "2026-10-02T01:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000007a",
+      "user": "u2",
+      "name": "U2 Terraform state lock 122",
+      "entry_count": 4,
+      "last_used_at": "2026-10-03T02:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000007b",
+      "user": "u2",
+      "name": "U2 Ansible inventory 123",
+      "entry_count": 5,
+      "last_used_at": "2026-10-04T03:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000007c",
+      "user": "u2",
+      "name": "U2 Hồ sơ bảo hiểm 124",
+      "entry_count": 6,
+      "last_used_at": "2026-10-05T04:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000007d",
+      "user": "u2",
+      "name": "U2 Hợp đồng thuê trọ 125",
+      "entry_count": 7,
+      "last_used_at": "2026-10-06T05:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000007e",
+      "user": "u2",
+      "name": "U2 Sổ khám sức khỏe 126",
+      "entry_count": 1,
+      "last_used_at": "2026-10-07T06:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000007f",
+      "user": "u2",
+      "name": "U2 Chứng chỉ ngoại ngữ 127",
+      "entry_count": 2,
+      "last_used_at": "2026-10-08T07:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000080",
+      "user": "u2",
+      "name": "U2 Biên lai học phí 128",
+      "entry_count": 3,
+      "last_used_at": "2026-10-09T08:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000081",
+      "user": "u2",
+      "name": "U2 Lịch bảo dưỡng xe 129",
+      "entry_count": 4,
+      "last_used_at": "2026-10-10T09:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000082",
+      "user": "u2",
+      "name": "U2 Thẻ thư viện tỉnh 130",
+      "entry_count": 5,
+      "last_used_at": "2026-10-11T10:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000083",
+      "user": "u2",
+      "name": "U2 Hóa đơn điện nước 131",
+      "entry_count": 6,
+      "last_used_at": "2026-10-12T11:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000084",
+      "user": "u2",
+      "name": "U2 Ghi chú họp nhóm 132",
+      "entry_count": 7,
+      "last_used_at": "2026-10-13T12:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000085",
+      "user": "u2",
+      "name": "U2 Kế hoạch tiết kiệm 133",
+      "entry_count": 1,
+      "last_used_at": "2026-10-14T13:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000086",
+      "user": "u2",
+      "name": "U2 Server staging log 134",
+      "entry_count": 2,
+      "last_used_at": "2026-10-15T14:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000087",
+      "user": "u2",
+      "name": "U2 SSH bastion host 135",
+      "entry_count": 3,
+      "last_used_at": "2026-10-01T15:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000088",
+      "user": "u2",
+      "name": "U2 Kubernetes cluster 136",
+      "entry_count": 4,
+      "last_used_at": "2026-10-02T16:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000089",
+      "user": "u2",
+      "name": "U2 Postgres backup note 137",
+      "entry_count": 5,
+      "last_used_at": "2026-10-03T17:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000008a",
+      "user": "u2",
+      "name": "U2 Grafana dashboard 138",
+      "entry_count": 6,
+      "last_used_at": "2026-10-04T18:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000008b",
+      "user": "u2",
+      "name": "U2 Cloudflare DNS zone 139",
+      "entry_count": 7,
+      "last_used_at": "2026-10-05T19:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000008c",
+      "user": "u2",
+      "name": "U2 GitHub deploy token 140",
+      "entry_count": 1,
+      "last_used_at": "2026-10-06T20:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000008d",
+      "user": "u2",
+      "name": "U2 Docker registry key 141",
+      "entry_count": 2,
+      "last_used_at": "2026-10-07T21:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000008e",
+      "user": "u2",
+      "name": "U2 Terraform state lock 142",
+      "entry_count": 3,
+      "last_used_at": "2026-10-08T22:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-00000000008f",
+      "user": "u2",
+      "name": "U2 Ansible inventory 143",
+      "entry_count": 4,
+      "last_used_at": "2026-10-09T23:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000090",
+      "user": "u2",
+      "name": "U2 Hồ sơ bảo hiểm 144",
+      "entry_count": 5,
+      "last_used_at": "2026-10-10T00:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000091",
+      "user": "u2",
+      "name": "U2 Hợp đồng thuê trọ 145",
+      "entry_count": 6,
+      "last_used_at": "2026-10-11T01:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000092",
+      "user": "u2",
+      "name": "U2 Sổ khám sức khỏe 146",
+      "entry_count": 7,
+      "last_used_at": "2026-10-12T02:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000093",
+      "user": "u2",
+      "name": "U2 Chứng chỉ ngoại ngữ 147",
+      "entry_count": 1,
+      "last_used_at": "2026-10-13T03:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000094",
+      "user": "u2",
+      "name": "U2 Biên lai học phí 148",
+      "entry_count": 2,
+      "last_used_at": "2026-10-14T04:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000095",
+      "user": "u2",
+      "name": "U2 Lịch bảo dưỡng xe 149",
+      "entry_count": 3,
+      "last_used_at": "2026-10-15T05:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    },
+    {
+      "id": "00000000-0002-4000-8000-000000000096",
+      "user": "u2",
+      "name": "U2 Thẻ thư viện tỉnh 150",
+      "entry_count": 4,
+      "last_used_at": "2026-10-01T06:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z"
+    }
+  ],
+  "tags": [
+    {
+      "id": "00000000-0011-4000-8000-000000000001",
+      "user": "u1",
+      "display": "wifi-khách",
+      "item_count": 8,
+      "last_used_at": "2026-10-22T12:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000002",
+      "user": "u1",
+      "display": "wifi-nhà",
+      "item_count": 5,
+      "last_used_at": "2026-10-21T12:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000003",
+      "user": "u1",
+      "display": "đường-bộ",
+      "item_count": 6,
+      "last_used_at": "2026-10-22T10:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000004",
+      "user": "u1",
+      "display": "duong-sat",
+      "item_count": 4,
+      "last_used_at": "2026-10-21T10:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000005",
+      "user": "u1",
+      "display": "đà-nẵng",
+      "item_count": 7,
+      "last_used_at": "2026-10-22T09:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000006",
+      "user": "u1",
+      "display": "da-nang-trip",
+      "item_count": 3,
+      "last_used_at": "2026-10-21T09:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000007",
+      "user": "u1",
+      "display": "mã-pin",
+      "item_count": 9,
+      "last_used_at": "2026-10-22T08:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000008",
+      "user": "u1",
+      "display": "ma-vach",
+      "item_count": 4,
+      "last_used_at": "2026-10-21T08:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000009",
+      "user": "u1",
+      "display": "password-work",
+      "item_count": 11,
+      "last_used_at": "2026-10-22T07:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-00000000000a",
+      "user": "u1",
+      "display": "gia-đình",
+      "item_count": 5,
+      "last_used_at": "2026-10-11T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-00000000000b",
+      "user": "u1",
+      "display": "công-việc",
+      "item_count": 6,
+      "last_used_at": "2026-10-12T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-00000000000c",
+      "user": "u1",
+      "display": "tài-chính",
+      "item_count": 1,
+      "last_used_at": "2026-10-13T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-00000000000d",
+      "user": "u1",
+      "display": "bảo-hiểm",
+      "item_count": 2,
+      "last_used_at": "2026-10-14T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-00000000000e",
+      "user": "u1",
+      "display": "du-lịch",
+      "item_count": 3,
+      "last_used_at": "2026-10-15T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-00000000000f",
+      "user": "u1",
+      "display": "học-tập",
+      "item_count": 4,
+      "last_used_at": "2026-10-01T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000010",
+      "user": "u1",
+      "display": "sức-khỏe",
+      "item_count": 5,
+      "last_used_at": "2026-10-02T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000011",
+      "user": "u1",
+      "display": "mua-sắm",
+      "item_count": 6,
+      "last_used_at": "2026-10-03T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000012",
+      "user": "u1",
+      "display": "hạ-tầng",
+      "item_count": 1,
+      "last_used_at": "2026-10-04T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000013",
+      "user": "u1",
+      "display": "máy-chủ",
+      "item_count": 2,
+      "last_used_at": "2026-10-05T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000014",
+      "user": "u1",
+      "display": "dự-án-a",
+      "item_count": 3,
+      "last_used_at": "2026-10-06T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000015",
+      "user": "u1",
+      "display": "dự-án-b",
+      "item_count": 4,
+      "last_used_at": "2026-10-07T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000016",
+      "user": "u1",
+      "display": "khẩn-cấp",
+      "item_count": 5,
+      "last_used_at": "2026-10-08T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000017",
+      "user": "u1",
+      "display": "lưu-trữ",
+      "item_count": 6,
+      "last_used_at": "2026-10-09T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000018",
+      "user": "u1",
+      "display": "hợp-đồng",
+      "item_count": 1,
+      "last_used_at": "2026-10-10T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-000000000019",
+      "user": "u1",
+      "display": "thuế-2026",
+      "item_count": 2,
+      "last_used_at": "2026-10-11T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-00000000001a",
+      "user": "u1",
+      "display": "ngân-hàng",
+      "item_count": 3,
+      "last_used_at": "2026-10-12T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-00000000001b",
+      "user": "u1",
+      "display": "chứng-khoán",
+      "item_count": 4,
+      "last_used_at": "2026-10-13T06:00:00Z"
+    },
+    {
+      "id": "00000000-0011-4000-8000-00000000001c",
+      "user": "u1",
+      "display": "bất-động-sản",
+      "item_count": 5,
+      "last_used_at": "2026-10-14T06:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-00000000001d",
+      "user": "u2",
+      "display": "tenant2-only-tag",
+      "item_count": 10,
+      "last_used_at": "2026-10-25T12:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-00000000001e",
+      "user": "u2",
+      "display": "wifi-tenant2",
+      "item_count": 5,
+      "last_used_at": "2026-10-25T11:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-00000000001f",
+      "user": "u2",
+      "display": "u2-gia-đình",
+      "item_count": 1,
+      "last_used_at": "2026-10-01T05:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-000000000020",
+      "user": "u2",
+      "display": "u2-công-việc",
+      "item_count": 2,
+      "last_used_at": "2026-10-02T05:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-000000000021",
+      "user": "u2",
+      "display": "u2-tài-chính",
+      "item_count": 3,
+      "last_used_at": "2026-10-03T05:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-000000000022",
+      "user": "u2",
+      "display": "u2-bảo-hiểm",
+      "item_count": 4,
+      "last_used_at": "2026-10-04T05:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-000000000023",
+      "user": "u2",
+      "display": "u2-du-lịch",
+      "item_count": 5,
+      "last_used_at": "2026-10-05T05:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-000000000024",
+      "user": "u2",
+      "display": "u2-học-tập",
+      "item_count": 6,
+      "last_used_at": "2026-10-06T05:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-000000000025",
+      "user": "u2",
+      "display": "u2-sức-khỏe",
+      "item_count": 7,
+      "last_used_at": "2026-10-07T05:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-000000000026",
+      "user": "u2",
+      "display": "u2-mua-sắm",
+      "item_count": 8,
+      "last_used_at": "2026-10-08T05:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-000000000027",
+      "user": "u2",
+      "display": "u2-hạ-tầng",
+      "item_count": 9,
+      "last_used_at": "2026-10-09T05:00:00Z"
+    },
+    {
+      "id": "00000000-0022-4000-8000-000000000028",
+      "user": "u2",
+      "display": "u2-máy-chủ",
+      "item_count": 10,
+      "last_used_at": "2026-10-10T05:00:00Z"
+    }
+  ],
+  "queries": [
+    {
+      "name": "exact-prefix-diacritic-duong-tier3-before-tier2",
+      "q": "đường",
+      "scope": "item",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000001",
+          "name": "Đường sắt",
+          "tier": 3,
+          "match": "prefix"
+        }
+      ]
+    },
+    {
+      "name": "folded-prefix-duong-matches-both-diacritic-and-plain",
+      "q": "duong",
+      "scope": "item",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000002",
+          "name": "Duong bo",
+          "tier": 3,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0001-4000-8000-000000000001",
+          "name": "Đường sắt",
+          "tier": 2,
+          "match": "prefix_folded"
+        }
+      ]
+    },
+    {
+      "name": "folded-prefix-da-nang-matches-plain-tier3-then-folded-tier2",
+      "q": "da nang",
+      "scope": "item",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000004",
+          "name": "Da Nang khach san",
+          "tier": 3,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0001-4000-8000-000000000003",
+          "name": "Đà Nẵng chuyến đi",
+          "tier": 2,
+          "match": "prefix_folded"
+        }
+      ]
+    },
+    {
+      "name": "diacritic-ma-tilde-tier3-before-plain-ma-tier1-fuzzy",
+      "q": "mã",
+      "scope": "item",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000005",
+          "name": "Mã xác thực",
+          "tier": 3,
+          "match": "prefix"
+        }
+      ]
+    },
+    {
+      "name": "plain-ma-tier3-plain-then-tier2-folded-ma-tilde",
+      "q": "ma",
+      "scope": "item",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000006",
+          "name": "Ma trận",
+          "tier": 3,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0001-4000-8000-000000000005",
+          "name": "Mã xác thực",
+          "tier": 2,
+          "match": "prefix_folded"
+        }
+      ]
+    },
+    {
+      "name": "typo-5plus-chars-pasword-matches-password-fuzzy-tier1",
+      "q": "pasword",
+      "scope": "item",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000007",
+          "name": "password",
+          "tier": 1,
+          "match": "fuzzy"
+        },
+        {
+          "id": "00000000-0001-4000-8000-000000000008",
+          "name": "password manager",
+          "tier": 1,
+          "match": "fuzzy"
+        }
+      ]
+    },
+    {
+      "name": "typo-5plus-chars-wiifi-matches-wifi-fuzzy-tier1",
+      "q": "wiifi",
+      "scope": "item",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000009",
+          "name": "wifi",
+          "tier": 1,
+          "match": "fuzzy"
+        },
+        {
+          "id": "00000000-0001-4000-8000-00000000000a",
+          "name": "wifi phòng khách",
+          "tier": 1,
+          "match": "fuzzy"
+        }
+      ]
+    },
+    {
+      "name": "hyphen-wi-fi-matches-wifi-fuzzy-tier1",
+      "q": "wi-fi",
+      "scope": "item",
+      "user": "u1",
+      "comment": "pg_trgm treats '-' as a word separator, so trigrams('wi-fi') = {'  f','  w',' fi',' wi','fi ','wi '} (6 trigrams). Against 'wifi' ({'  w',' wi','fi ','ifi','wif'}), similarity = 3/8 = 0.375 >= 0.35 and word_similarity = 3/8 = 0.375 -> rounded score 0.38 (tier 1 fuzzy match). Against 'wifi phòng khách', whole-string similarity = 3/20 = 0.15 < 0.35 and word_similarity = 3/8 = 0.375 < 0.50 (pg_trgm.word_similarity_threshold), so only 'wifi' is returned.",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000009",
+          "name": "wifi",
+          "tier": 1,
+          "score": 0.38,
+          "match": "fuzzy"
+        }
+      ]
+    },
+    {
+      "name": "fullwidth-wifi-matches-ascii-wifi-tier2-prefix-folded",
+      "q": "\uff57\uff49\uff46\uff49",
+      "scope": "item",
+      "user": "u1",
+      "comment": "advisor-dec-264: NormalizeQuery keeps NFC full-width 'ｗｉｆｉ' (qn), while PostgreSQL 16 immutable_unaccent transliterates full-width Latin to 'wifi' (qa), matching 'wifi' and 'wifi phòng khách' via the folded prefix arm (tier 2 / prefix_folded) with word_similarity('wifi', ...) = 1.00.",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-000000000009",
+          "name": "wifi",
+          "tier": 2,
+          "score": 1.0,
+          "match": "prefix_folded"
+        },
+        {
+          "id": "00000000-0001-4000-8000-00000000000a",
+          "name": "wifi phòng khách",
+          "tier": 2,
+          "score": 1.0,
+          "match": "prefix_folded"
+        }
+      ]
+    },
+    {
+      "name": "negative-short-transposition-wfii-below-trgm-threshold",
+      "q": "wfii",
+      "scope": "item",
+      "user": "u1",
+      "expect_empty": true,
+      "expect_top": []
+    },
+    {
+      "name": "duplicate-names-ordered-by-last-used-at-desc",
+      "q": "tài khoản ngân hàng",
+      "scope": "item",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-00000000000b",
+          "name": "Tài khoản ngân hàng",
+          "tier": 3,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0001-4000-8000-00000000000c",
+          "name": "Tài khoản ngân hàng",
+          "tier": 3,
+          "match": "prefix"
+        }
+      ]
+    },
+    {
+      "name": "tiebreak-chain-last-used-at-then-count-then-id-asc",
+      "q": "tiebreak alpha",
+      "scope": "item",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0001-4000-8000-00000000000d",
+          "name": "Tiebreak Alpha",
+          "tier": 3,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0001-4000-8000-00000000000e",
+          "name": "Tiebreak Alpha",
+          "tier": 3,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0001-4000-8000-00000000000f",
+          "name": "Tiebreak Alpha",
+          "tier": 3,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0001-4000-8000-000000000010",
+          "name": "Tiebreak Alpha",
+          "tier": 3,
+          "match": "prefix"
+        }
+      ]
+    },
+    {
+      "name": "cross-user-isolation-u1-never-sees-u2-secret",
+      "q": "tenant2",
+      "scope": "item",
+      "user": "u1",
+      "expect_empty": true,
+      "expect_top": []
+    },
+    {
+      "name": "cross-user-isolation-u2-sees-own-secret",
+      "q": "tenant2",
+      "scope": "item",
+      "user": "u2",
+      "expect_top": [
+        {
+          "id": "00000000-0002-4000-8000-000000000065",
+          "name": "Tenant2 Secret Vault",
+          "tier": 3,
+          "match": "prefix"
+        }
+      ]
+    },
+    {
+      "name": "tag-prefix-wifi-orders-by-score-and-recency",
+      "q": "wifi",
+      "scope": "tag",
+      "user": "u1",
+      "comment": "RV-T2-BE-2: Both 'wifi-khách' and 'wifi-nhà' are tier 3 exact-prefix matches and contain the full word 'wifi', so word_similarity('wifi', tag_unaccent) = 1.0 and rounded score = 1.00 for both. Tie-break by last_used_at DESC puts 'wifi-khách' (2026-10-22T12:00:00Z) before 'wifi-nhà' (2026-10-21T12:00:00Z).",
+      "expect_top": [
+        {
+          "id": "00000000-0011-4000-8000-000000000001",
+          "display": "wifi-khách",
+          "tier": 3,
+          "score": 1.0,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0011-4000-8000-000000000002",
+          "display": "wifi-nhà",
+          "tier": 3,
+          "score": 1.0,
+          "match": "prefix"
+        }
+      ]
+    },
+    {
+      "name": "tag-folded-prefix-duong-tier3-before-tier2",
+      "q": "duong",
+      "scope": "tag",
+      "user": "u1",
+      "expect_top": [
+        {
+          "id": "00000000-0011-4000-8000-000000000004",
+          "display": "duong-sat",
+          "tier": 3,
+          "match": "prefix"
+        },
+        {
+          "id": "00000000-0011-4000-8000-000000000003",
+          "display": "đường-bộ",
+          "tier": 2,
+          "match": "prefix_folded"
+        }
+      ]
+    },
+    {
+      "name": "tag-cross-user-isolation-u1-never-sees-u2-tag",
+      "q": "tenant2-only",
+      "scope": "tag",
+      "user": "u1",
+      "expect_empty": true,
+      "expect_top": []
+    }
+  ]
+}

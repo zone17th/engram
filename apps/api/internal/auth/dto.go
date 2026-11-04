@@ -35,6 +35,7 @@ type MeIdentity struct {
 
 type MeFeatures struct {
 	SemanticAvailable           bool     `json:"semantic_available"`
+	SemanticExternal            bool     `json:"semantic_external"`
 	EmailVerificationRequired   bool     `json:"email_verification_required"`
 	OAuthProviders              []string `json:"oauth_providers"`
 	OAuthReauthProviders        []string `json:"oauth_reauth_providers"`

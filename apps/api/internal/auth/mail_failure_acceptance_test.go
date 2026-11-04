@@ -13,7 +13,6 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/auth"
 	"github.com/zone17th/engram/apps/api/internal/clock"
 	"github.com/zone17th/engram/apps/api/internal/config"
-	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
 	"github.com/zone17th/engram/apps/api/internal/notification"
 	"github.com/zone17th/engram/apps/api/internal/secevent"
 )
@@ -48,9 +47,7 @@ func mailFailureToken(t *testing.T, mailer *acceptanceRecordingMailer, index int
 }
 
 func TestVerificationMailFailureRequiresResendAndInvalidatesOldToken(t *testing.T) {
-	dsn := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsn)
-	pool := dbtest.Pool(t, dsn)
+	pool := semNewPool(t)
 	clk := clock.NewFixed(time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 	mailer := &acceptanceRecordingMailer{fail: true}
 	cfg := &config.Config{
@@ -110,9 +107,7 @@ func (a *failingAuditor) Record(context.Context, pgx.Tx, secevent.Record) error 
 }
 
 func TestSignupRollsBackWhenAuditFails(t *testing.T) {
-	dsn := dbtest.StartPostgres(t)
-	dbtest.MigrateUp(t, dsn)
-	pool := dbtest.Pool(t, dsn)
+	pool := semNewPool(t)
 	clk := clock.NewFixed(time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 	mailer := &acceptanceRecordingMailer{}
 	cfg := &config.Config{

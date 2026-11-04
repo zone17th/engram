@@ -88,6 +88,118 @@ export async function installHomeContentMetadataRoutes(context: BrowserContext):
       }),
     });
   });
+
+  await context.route('**/api/v1/suggest*', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const url = new URL(route.request().url());
+    const scope = (url.searchParams.get('scope') ?? 'all') as 'all' | 'item' | 'tag';
+    const limit = Number(url.searchParams.get('limit') ?? 8);
+    const rawQ = url.searchParams.get('q') ?? '';
+    const normQ = normalizeForPrefixMatch(rawQ);
+    const filteredTags =
+      scope === 'item'
+        ? []
+        : normQ
+          ? MOCKED_HOME_TAGS.filter((tag) => normalizeForPrefixMatch(tag.display).startsWith(normQ))
+          : MOCKED_HOME_TAGS;
+    const filteredItems =
+      scope === 'tag'
+        ? []
+        : normQ
+          ? MOCKED_HOME_ITEMS.filter((item) => normalizeForPrefixMatch(item.name).startsWith(normQ))
+          : MOCKED_HOME_ITEMS;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        scope,
+        limit,
+        mode: 'full',
+        quota: { tag: 3, lexical: 6, near: 2 },
+        tags: filteredTags.map((tag) => ({
+          kind: 'tag',
+          id: tag.id,
+          display: tag.display,
+          item_count: tag.item_count,
+        })),
+        items: filteredItems.map((item) => ({
+          kind: 'item',
+          id: item.id,
+          name: item.name,
+          entry_count: item.entry_count,
+          created_at: item.created_at,
+          last_used_at: item.last_used_at,
+          tags: item.tags,
+          tag_total: item.tags.length,
+          match: 'prefix',
+        })),
+        has_more: false,
+        lexical_partial: [],
+        semantic: false,
+        semantic_reason: 'disabled_server',
+        near: [],
+        generation: null,
+      }),
+    });
+  });
+
+  await context.route('**/api/v1/search*', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const url = new URL(route.request().url());
+    const scope = (url.searchParams.get('scope') ?? 'all') as 'all' | 'item' | 'tag';
+    const limit = Number(url.searchParams.get('limit') ?? 20);
+    const rawQ = url.searchParams.get('q') ?? '';
+    const normQ = normalizeForPrefixMatch(rawQ);
+    const filteredTags =
+      scope === 'item'
+        ? []
+        : normQ
+          ? MOCKED_HOME_TAGS.filter((tag) => normalizeForPrefixMatch(tag.display).startsWith(normQ))
+          : MOCKED_HOME_TAGS;
+    const filteredItems =
+      scope === 'tag'
+        ? []
+        : normQ
+          ? MOCKED_HOME_ITEMS.filter((item) => normalizeForPrefixMatch(item.name).startsWith(normQ))
+          : MOCKED_HOME_ITEMS;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        scope,
+        limit,
+        mode: 'full',
+        tags: filteredTags.map((tag) => ({
+          kind: 'tag',
+          id: tag.id,
+          display: tag.display,
+          item_count: tag.item_count,
+        })),
+        items: filteredItems.map((item) => ({
+          kind: 'item',
+          id: item.id,
+          name: item.name,
+          entry_count: item.entry_count,
+          created_at: item.created_at,
+          last_used_at: item.last_used_at,
+          tags: item.tags,
+          tag_total: item.tags.length,
+          match: 'prefix',
+        })),
+        next_cursor: null,
+        semantic: false,
+        semantic_reason: 'disabled_server',
+        near: [],
+        generation: null,
+      }),
+    });
+  });
 }
 
 export async function gotoLockedHomeList(page: Page, route: string, theme: Theme): Promise<void> {

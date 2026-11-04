@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProblemError } from '@engram/shared-types';
 import { AppHeader } from '../components/app-shell/app-header';
 import { EmptyState } from '../components/app-shell/empty-state';
@@ -14,8 +14,13 @@ import { Rail } from '../components/app-shell/rail';
 import { ThemeProvider } from '../components/theme-provider';
 import { UndoToastProvider } from '../components/ui/undo-toast';
 import { contentQueryKeys } from '../features/items/query-keys';
+import { setKnownDeviceSessionUserId } from '../features/vault/device-store';
 import * as contentApi from '../lib/api/content';
 import type { Tag } from '../lib/api/content';
+import * as searchApi from '../lib/api/search';
+import { getSessionEpoch } from '../lib/api/auth-fetch';
+import { commitAuthenticatedUser, __testing as userChangedTesting } from '../lib/auth/user-changed';
+import type { SearchResponse, SuggestItem, SuggestResponse } from '../lib/api/search';
 import enMessages from '../messages/en.json';
 import viMessages from '../messages/vi.json';
 
@@ -374,6 +379,7 @@ describe('EmptyState', () => {
 });
 
 describe('Omnibox', () => {
+  const OMNIBOX_USER_ID = 'aaaa0000-0000-4000-8000-000000000001';
   const SAMPLE_ITEMS: contentApi.ItemSummary[] = [
     {
       id: 'd1111111-1111-4111-8111-111111111111',
@@ -399,15 +405,97 @@ describe('Omnibox', () => {
     },
   ];
 
+  function toSuggestItem(item: contentApi.ItemSummary): SuggestItem {
+    return {
+      kind: 'item',
+      id: item.id,
+      name: item.name,
+      entry_count: item.entry_count,
+      created_at: item.created_at,
+      last_used_at: item.last_used_at,
+      tags: item.tags.slice(0, 3).map((tag) => ({ id: tag.id, display: tag.display })),
+      tag_total: item.tags.length,
+      match: 'prefix',
+    };
+  }
+
+  function makeSuggestResponse(items: contentApi.ItemSummary[] = []): SuggestResponse {
+    return {
+      scope: 'all',
+      limit: 8,
+      mode: 'full',
+      quota: { tag: 3, lexical: 6, near: 2 },
+      tags: [],
+      items: items.map(toSuggestItem),
+      has_more: false,
+      lexical_partial: [],
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
+    };
+  }
+
+  function makeSearchResponse(items: contentApi.ItemSummary[] = []): SearchResponse {
+    return {
+      scope: 'all',
+      limit: 20,
+      mode: 'full',
+      items: items.map(toSuggestItem),
+      tags: [],
+      next_cursor: null,
+      semantic: false,
+      semantic_reason: 'disabled_server',
+      near: [],
+      generation: null,
+    };
+  }
+
+  /** Real native beforeinput + input per rune (a clean typed edit, not `fireEvent.change`). */
+  function typeNative(textarea: HTMLElement, text: string) {
+    const el = textarea as HTMLTextAreaElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    for (const ch of text) {
+      el.dispatchEvent(
+        new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: ch,
+        }),
+      );
+      setter?.call(el, el.value + ch);
+      el.dispatchEvent(
+        new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ch }),
+      );
+    }
+  }
+
   beforeEach(() => {
     vi.restoreAllMocks();
     mockRouterPush.mockClear();
     mockRouterReplace.mockClear();
+    // The Omnibox never sends /suggest or /search without a session user (plan 2.7): seed one like omnibox.test.tsx does.
+    userChangedTesting.resetCommittedUserForTests();
+    setKnownDeviceSessionUserId(OMNIBOX_USER_ID);
+    commitAuthenticatedUser(OMNIBOX_USER_ID);
+    vi.spyOn(searchApi, 'suggest').mockResolvedValue(makeSuggestResponse());
+    vi.spyOn(searchApi, 'search').mockResolvedValue(makeSearchResponse());
+  });
+
+  afterEach(() => {
+    setKnownDeviceSessionUserId(null);
+    userChangedTesting.resetCommittedUserForTests();
   });
 
   function renderOmnibox(ui: ReactNode = <Omnibox />) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], {
+      user: { id: OMNIBOX_USER_ID },
+      settings: { semantic_suggest: false },
+      features: { semantic_available: false, semantic_external: false },
     });
     return render(
       <NextIntlClientProvider locale="vi" messages={viMessages}>
@@ -418,33 +506,71 @@ describe('Omnibox', () => {
     );
   }
 
-  it('focus bằng Ctrl K, không gửi request khi gõ, và chỉ tìm khi nhấn Enter', async () => {
-    const itemsSpy = vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
-      items: [SAMPLE_ITEMS[0]!],
-      next_cursor: null,
-    });
+  it('focus bằng Ctrl K gửi /suggest không q, gõ sạch gửi /suggest sau debounce, và Enter không có hàng active gọi /search', async () => {
+    const suggestSpy = vi
+      .spyOn(searchApi, 'suggest')
+      .mockResolvedValue(makeSuggestResponse([SAMPLE_ITEMS[0]!]));
+    const searchSpy = vi
+      .spyOn(searchApi, 'search')
+      .mockResolvedValue(makeSearchResponse([SAMPLE_ITEMS[0]!]));
+    // The home-page list endpoint is no longer used by the Omnibox at all.
+    const itemsSpy = vi.spyOn(contentApi, 'itemsList');
     renderOmnibox();
     const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
+    // Focus (Ctrl K) -> one `recent` /suggest without `q`
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
     expect(input).toHaveFocus();
+    await waitFor(() => {
+      expect(suggestSpy).toHaveBeenCalledTimes(1);
+    });
+    expect(suggestSpy.mock.calls[0]?.[0]).not.toHaveProperty('q');
+    suggestSpy.mockClear();
+
+    // Clean typing -> NOTHING before the 120 ms debounce, then /suggest (semantic=0), never /search
+    typeNative(input, 'Cà phê');
+    expect(suggestSpy).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(suggestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'Cà phê', scope: 'all', semantic: 0 }),
+        expect.anything(),
+      );
+    });
+    expect(searchSpy).not.toHaveBeenCalled();
+    expect(await screen.findByRole('listbox', { name: 'Gợi ý tìm kiếm' })).toBeInTheDocument();
+
+    // No row active -> Enter runs GET /search (not itemsList)
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(searchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ q: 'Cà phê', scope: 'all', semantic: 0 }),
+      expect.anything(),
+    );
+    expect(await screen.findByRole('listbox', { name: 'Kết quả tìm kiếm' })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /Cà phê sữa đá tỉ lệ 1:2/ })).toBeInTheDocument();
+    expect(itemsSpy).not.toHaveBeenCalled();
+  });
+
+  it('gõ bằng fireEvent.change (không phải gõ sạch) không gửi request nào cho tới khi nhấn Enter', async () => {
+    const suggestSpy = vi.spyOn(searchApi, 'suggest');
+    const searchSpy = vi.spyOn(searchApi, 'search');
+    renderOmnibox();
+    const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
     fireEvent.change(input, { target: { value: 'Cà phê' } });
-    expect(itemsSpy).not.toHaveBeenCalled();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 160));
+    expect(suggestSpy).not.toHaveBeenCalled();
+    expect(searchSpy).not.toHaveBeenCalled();
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
 
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(itemsSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ sort: 'alpha', q: 'Cà phê' }),
+    expect(searchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ q: 'Cà phê', semantic: 0 }),
+      expect.anything(),
     );
-    expect(await screen.findByRole('option', { name: /Cà phê sữa đá tỉ lệ 1:2/ })).toBeInTheDocument();
   });
 
   it('hỗ trợ Cmd K và Escape đóng danh sách kết quả tìm kiếm', async () => {
-    vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
-      items: [SAMPLE_ITEMS[1]!],
-      next_cursor: null,
-    });
+    vi.spyOn(searchApi, 'search').mockResolvedValue(makeSearchResponse([SAMPLE_ITEMS[1]!]));
     renderOmnibox();
     const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
     fireEvent.keyDown(window, { key: 'k', metaKey: true });
@@ -461,10 +587,7 @@ describe('Omnibox', () => {
   });
 
   it('xoá lựa chọn và aria-activedescendant khi mất focus hoặc đóng danh sách', async () => {
-    vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
-      items: [SAMPLE_ITEMS[1]!],
-      next_cursor: null,
-    });
+    vi.spyOn(searchApi, 'search').mockResolvedValue(makeSearchResponse([SAMPLE_ITEMS[1]!]));
     renderOmnibox();
     const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 
@@ -483,10 +606,7 @@ describe('Omnibox', () => {
   });
 
   it('xoá lựa chọn khi mở một mục từ danh sách', async () => {
-    vi.spyOn(contentApi, 'itemsList').mockResolvedValue({
-      items: [SAMPLE_ITEMS[1]!],
-      next_cursor: null,
-    });
+    vi.spyOn(searchApi, 'search').mockResolvedValue(makeSearchResponse([SAMPLE_ITEMS[1]!]));
     renderOmnibox();
     const input = screen.getByRole('textbox', { name: 'Tìm hoặc lưu' });
 

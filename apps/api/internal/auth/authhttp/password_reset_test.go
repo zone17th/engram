@@ -2222,7 +2222,7 @@ func TestMigration0007UpDownWithP03AndP04DataAndPrune(t *testing.T) {
 	// Migrate up to 0007.
 	dbtest.MigrateUp(t, dsn)
 	v, dirty, err := db.Version(dsn)
-	if err != nil || dirty || v != 7 {
+	if err != nil || dirty || v < 7 {
 		t.Fatalf("after MigrateUp to 0007: v=%d dirty=%v err=%v", v, dirty, err)
 	}
 

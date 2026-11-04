@@ -120,6 +120,11 @@ export interface CreateQuickAddSavePlanInput {
   readonly body: string;
   readonly targetItem: ItemSummary | null;
   readonly isNewItem: boolean;
+  /**
+   * Item id chosen with Tab in the omnibox (plan 2.9, OQ-2): the entry is saved to this existing item and no
+   * `POST /items` step is planned. Takes precedence over `isNewItem`/`targetItem`; `name` is the typed name.
+   */
+  readonly pinnedItemId?: string | null;
   readonly vault: EntrySealVaultContext;
 }
 
@@ -130,8 +135,14 @@ export interface CreateQuickAddSavePlanInput {
 export async function createQuickAddSavePlan(
   input: CreateQuickAddSavePlanInput,
 ): Promise<QuickAddSavePlan> {
-  const isNewItem = input.isNewItem || input.targetItem === null;
-  const itemId = isNewItem ? crypto.randomUUID().toLowerCase() : input.targetItem.id;
+  const pinnedItemId = input.pinnedItemId ?? null;
+  const isNewItem = pinnedItemId === null && (input.isNewItem || input.targetItem === null);
+  const itemId =
+    pinnedItemId !== null
+      ? pinnedItemId
+      : isNewItem
+        ? crypto.randomUUID().toLowerCase()
+        : (input.targetItem as ItemSummary).id;
   const itemName = !isNewItem && input.targetItem ? input.targetItem.name : input.name;
   const entryId = crypto.randomUUID().toLowerCase();
   const entryIdempotencyKey = createIdempotencyKey();

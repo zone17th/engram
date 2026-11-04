@@ -92,14 +92,42 @@ async function collectOmniboxFailureDiagnostics(
   });
 }
 
+function pathnameOf(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url.split('?')[0]?.split('#')[0] ?? '';
+  }
+}
+
+function queryParamsOf(url: string): URLSearchParams {
+  try {
+    return new URL(url).searchParams;
+  } catch {
+    return new URLSearchParams();
+  }
+}
+
+/** `GET /api/v1/suggest` (any), the keystroke / focus suggest endpoint (P05 T17). */
+function isSuggestRequest(rec: CapturedRequestRecord): boolean {
+  return rec.method === 'GET' && pathnameOf(rec.url) === '/api/v1/suggest';
+}
+
+/** `GET /api/v1/search` (any), the Enter search endpoint (P05 T17). */
+function isSearchRequest(rec: CapturedRequestRecord): boolean {
+  return rec.method === 'GET' && pathnameOf(rec.url) === '/api/v1/search';
+}
+
 function isOmniboxRelevantRequest(rec: CapturedRequestRecord): boolean {
   const { method, url } = rec;
-  // Match only omnibox-initiated reads (`sort=alpha` search/tag lookups and `/items/lookup`),
-  // excluding background `/app` home-list or rail refetches (`sort=recent`; HM18-R4-6).
+  // Match only omnibox-initiated reads: `GET /search` (Enter), `GET /suggest` WITH a `q` (a keystroke, never the
+  // `q`-less `recent` suggest that focus sends: asserted separately in step 0) and `/items/lookup`. Background `/app`
+  // home-list or rail refetches (`sort=recent`) are excluded (HM18-R4-6). The old `GET /items?q=&sort=alpha` and
+  // `GET /tags?q=&sort=alpha` omnibox reads no longer exist (P05 T17 PR 17-2a).
   if (
-    (url.includes('/items?') && url.includes('sort=alpha')) ||
-    url.includes('/items/lookup') ||
-    (url.includes('/tags?') && url.includes('sort=alpha'))
+    isSearchRequest(rec) ||
+    (isSuggestRequest(rec) && queryParamsOf(url).has('q')) ||
+    url.includes('/items/lookup')
   ) {
     return true;
   }
@@ -273,6 +301,45 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
       'longtag-',
     ] as const;
 
+    // 0. P05 T17 positive controls for the keystroke endpoint (nothing secret is typed here):
+    // 0a. Focus sends exactly the `recent` `GET /suggest` WITHOUT `q`.
+    await omnibox.blur();
+    const markFocus = recorder.records.length;
+    await omnibox.focus();
+    await expect
+      .poll(() => recorder.records.slice(markFocus).filter(isSuggestRequest).length, {
+        timeout: UI_WAIT_MS,
+      })
+      .toBeGreaterThanOrEqual(1);
+    for (const rec of recorder.records.slice(markFocus).filter(isSuggestRequest)) {
+      expect(queryParamsOf(rec.url).has('q')).toBe(false);
+    }
+    expect(recorder.records.slice(markFocus).filter(isSearchRequest)).toHaveLength(0);
+
+    // 0b. Clean typing (real key events -> native beforeinput/input with `insertText`) sends `GET /suggest` with `q`
+    // after the 120 ms debounce, always `semantic=0` here (the account has the semantic toggle off), and never `/search`.
+    const markTyped = recorder.records.length;
+    await omnibox.pressSequentially('typed-probe');
+    await expect
+      .poll(
+        () =>
+          recorder.records
+            .slice(markTyped)
+            .filter((r) => isSuggestRequest(r) && queryParamsOf(r.url).get('q') === 'typed-probe')
+            .length,
+        { timeout: UI_WAIT_MS },
+      )
+      .toBeGreaterThanOrEqual(1);
+    await recorder.flushPending();
+    for (const rec of recorder.records.slice(markTyped).filter(isSuggestRequest)) {
+      expect(queryParamsOf(rec.url).get('semantic')).toBe('0');
+    }
+    expect(recorder.records.slice(markTyped).filter(isSearchRequest)).toHaveLength(0);
+    await omnibox.press('Control+A');
+    await omnibox.press('Backspace');
+    await omnibox.press('Escape');
+    await page.waitForTimeout(300);
+
     // 1. Paste `secret-body-123`, wait >= 1 s, then type `name: ` in front -> no request contains `secret-body-123` at any time.
     const mark1 = recorder.records.length;
     await setSecretTextareaValue(omnibox, secretBody123);
@@ -389,7 +456,8 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     recorder.assertNeverContains(allSentinels);
 
     // 7. Positive controls (HM18A-R1-8, HM18A-R2-5):
-    // 7a. Valid one-line search + Enter records `GET /api/v1/items?...q=positive-probe` and no sentinel leaks.
+    // 7a. Valid one-line search + Enter records exactly one `GET /api/v1/search?q=positive-probe&semantic=0` (the pasted-style
+    // draft is tainted, so no keystroke `/suggest` and no `GET /items?q=`) and no sentinel leaks.
     const markPos = recorder.records.length;
     await setSecretTextareaValue(omnibox, 'positive-probe');
     await omnibox.press('Enter');
@@ -398,25 +466,55 @@ test.describe('P04-T18a A4 omnibox network capture (search & pre-Enter boundarie
     expect(recorder.countSince(markPos)).toBeGreaterThanOrEqual(1);
     const positiveSearchRecords = recorder.records
       .slice(markPos)
-      .filter((r) => r.method === 'GET' && r.url.includes('/api/v1/items') && r.url.includes('q=positive-probe'));
+      .filter((r) => isSearchRequest(r) && queryParamsOf(r.url).get('q') === 'positive-probe');
     expect(positiveSearchRecords).toHaveLength(1);
+    expect(queryParamsOf(positiveSearchRecords[0]!.url).get('semantic')).toBe('0');
+    expect(
+      recorder.records
+        .slice(markPos)
+        .filter((r) => isSuggestRequest(r) && queryParamsOf(r.url).get('q') === 'positive-probe'),
+    ).toHaveLength(0);
+    expect(
+      recorder.records
+        .slice(markPos)
+        .filter((r) => r.method === 'GET' && /\/api\/v1\/(items|tags)$/.test(pathnameOf(r.url)) && queryParamsOf(r.url).has('q')),
+    ).toHaveLength(0);
     recorder.assertNeverContains(allSentinels);
 
-    // 7b. Valid tag-mode Enter (`#positive-tag`) when not in cache records `GET /api/v1/tags?...q=positive-tag` (HM18A-R2-5).
+    // 7b. Valid tag-mode draft (`#positive-tag`, typed with real key events) sends `GET /api/v1/suggest?scope=tag&q=positive-tag`
+    // by keystroke (never `GET /tags?q=`); Enter with no active row then sends `GET /search?scope=tag&semantic=0` (HM18A-R2-5).
+    await omnibox.press('Control+A');
+    await omnibox.press('Backspace');
     const markPosTag = recorder.records.length;
-    await setSecretTextareaValue(omnibox, '#positive-tag');
+    await omnibox.pressSequentially('#positive-tag');
+    await expect
+      .poll(
+        () =>
+          recorder.records
+            .slice(markPosTag)
+            .filter(
+              (r) =>
+                isSuggestRequest(r) &&
+                queryParamsOf(r.url).get('scope') === 'tag' &&
+                queryParamsOf(r.url).get('q') === 'positive-tag',
+            ).length,
+        { timeout: UI_WAIT_MS },
+      )
+      .toBeGreaterThanOrEqual(1);
     await omnibox.press('Enter');
     await expect(page.getByTestId('omnibox-tag-empty')).toBeVisible({ timeout: UI_WAIT_MS });
     await recorder.flushPending();
-    const positiveTagRecords = recorder.records
+    const positiveTagSearch = recorder.records
       .slice(markPosTag)
-      .filter(
-        (r) =>
-          r.method === 'GET' &&
-          r.url.includes('/api/v1/tags') &&
-          r.url.includes('q=positive-tag'),
-      );
-    expect(positiveTagRecords).toHaveLength(1);
+      .filter((r) => isSearchRequest(r) && queryParamsOf(r.url).get('q') === 'positive-tag');
+    expect(positiveTagSearch).toHaveLength(1);
+    expect(queryParamsOf(positiveTagSearch[0]!.url).get('scope')).toBe('tag');
+    expect(queryParamsOf(positiveTagSearch[0]!.url).get('semantic')).toBe('0');
+    expect(
+      recorder.records
+        .slice(markPosTag)
+        .filter((r) => r.method === 'GET' && pathnameOf(r.url) === '/api/v1/tags' && queryParamsOf(r.url).has('q')),
+    ).toHaveLength(0);
     recorder.assertNeverContains(allSentinels);
 
     // 7c. Valid `Ctrl+Enter` create in search mode (`positive-created-item`) records `POST /api/v1/items` with `{ name }` only and no entry (HM18A-R2-5).

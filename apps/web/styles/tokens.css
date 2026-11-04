@@ -976,9 +976,89 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
   }
   .tag-menu-trigger, .btn-icon { min-width: 44px; }
   .chip-x::after {
-    content: ''; position: absolute; left: 50%; top: 50%;
-    width: 44px; height: 44px; transform: translate(-50%, -50%);
+    content: none;
   }
+  .chip-x {
+    min-width: 44px; min-height: 44px;
+  }
+  .json-cell-input { min-height: 44px; }
+  .json-table .json-col-act {
+    width: 68px;
+    min-width: 68px;
+    position: static;
+    right: auto;
+    z-index: auto;
+    box-shadow: none;
+  }
+  /* FU11-COARSE-STICKY r2 (advisor-dec-254, RV-T26-FE1-1/3/5): CI 41391288078 proved dropping
+     sticky alone did not fix bottom-corner hit-testing on `json-remove-field-root-0` because in
+     taller rows (h=65 px when another row holds a nested table) or when the root table overflows
+     the host (366 > 348 px, scrollLeft=6), a 44 px top-aligned button with 6 px border-radius does
+     not own the full cell box. Keep non-action `.json-col-idx` at 44 px so the root table fits the
+     348 px host (scrollLeft=0), and stretch the action button to fill the full action cell. */
+  .json-table td.json-col-act {
+    height: 1px;
+    padding: 0;
+    vertical-align: middle;
+  }
+  .json-table td.json-col-act .btn-sm {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    border-radius: 0;
+  }
+  /* FU11-COARSE-STICKY r3 (advisor-dec-263, last round): CI 41395397310 showed the r2 full-cell
+     action buttons pass all 5 probes while the same bottom-right-band miss moved to the
+     inline-block value button `json-cell-btn-root.p1` (td padding 8/12, top-aligned, 44 px tall in
+     a 61 px row). Apply the same fill-the-cell pattern to every cell whose only element child is a
+     `.json-cell-btn` (key, value and missing cells; a key cell with a duplicate-occurrence badge or
+     a cell holding the editor keeps its padding): the cell drops its padding and the button
+     becomes a block that fills the cell box. The button padding (10/18 + 1 px border) equals the
+     old cell padding + button padding, so text keeps its inset and the column min/max-content
+     widths stay the same; `stretch` / `-webkit-fill-available` (not 100%) keeps the intrinsic
+     contribution content-based so the 390 root table still fits its 348 px host. */
+  .json-table td:has(> .json-cell-btn:only-child) {
+    height: 1px;
+    padding: 0;
+    vertical-align: middle;
+  }
+  .json-table td > .json-cell-btn:only-child {
+    display: block;
+    width: 100%;
+    width: -webkit-fill-available;
+    width: stretch;
+    height: 100%;
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    padding: 10px 18px;
+    border-radius: 0;
+  }
+  /* FU11-VALUE-CELL-HITTEST r4 (advisor-dec-266, CI 41399827031 hit grid): Chromium hit-tests the
+     pixel-snapped ROUNDED border box, and the spec probes each control 1.5 px inside its box
+     corners. After snapping a fractional box edge (.38) the probe sits ~1.05 px from the edges,
+     which is outside the corner arc for a radius >= ~4 px (r = 6: distance 4.1 > 4 misses). Every
+     remaining probed control therefore gets a coarse-only radius of 2 px (worst case ~1.4 < 2 hits).
+     Selectors carry two classes (0,2,0) so they beat Tailwind `.rounded` (0,1,0, emitted later),
+     `.btn-sm` / `.field-input` and the global `:focus-visible { border-radius }` rule (0,1,0) that
+     re-rounds the auto-focused editor and add-field inputs to 6 px. Radius only: no box change. */
+  .json-table .json-cell-btn,
+  .json-table .json-type-btn,
+  .json-cell-edit-wrap .json-cell-input,
+  .json-cell-edit-wrap .json-type-btn,
+  .json-cell-edit-wrap .btn-sm,
+  .json-table-toolbar .json-cell-input,
+  .json-table-toolbar .json-type-btn,
+  .json-table-toolbar .btn-sm {
+    border-radius: 2px;
+  }
+  .json-table .json-toggle { border-radius: 0; }
+  .json-table .json-nest .json-table thead ~ tbody > tr > td:not(.k):not(.json-col-act):not([colspan]) { min-width: 0; }
+  .json-cell-btn, .json-type-btn,
+  .json-cell-edit-wrap .btn-sm, .json-table-toolbar .btn-sm { min-width: 44px; }
 }
 
 :focus-visible {
@@ -989,4 +1069,201 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
+
+/* ------------------------------------------------------------------
+   P05 search & suggest component styles (U15, U16, U18) — folded from the
+   former mockups/search.css (advisor-dec-270). Uses only existing custom
+   properties; sits last so the cascade matches the old stylesheet order.
+------------------------------------------------------------------ */
+
+.omni-sem-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  padding: 4px 10px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
+.omni-sem-btn:hover:not(:disabled) {
+  background: var(--surface-alt);
+  border-color: var(--border-strong);
+  color: var(--body);
+}
+.omni-sem-btn[aria-pressed='true'] {
+  background: var(--pale-accent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+[data-theme='dark'] .omni-sem-btn[aria-pressed='true'] {
+  background: var(--surface-alt);
+}
+
+.omni-listbox .sugg-row {
+  min-height: 44px;
+}
+
+.sugg-zone {
+  border-top: 1px solid var(--border);
+}
+.sugg-zone:first-child {
+  border-top: 0;
+}
+.sugg-zone > .sugg-group {
+  border-top: 0;
+}
+.sugg-zone-actions {
+  border-top: 1px dashed var(--border);
+}
+.sugg-zone-near-append {
+  animation: sugg-near-fade .16s ease-out;
+}
+@keyframes sugg-near-fade {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sugg-zone-near-append { animation: none !important; }
+}
+
+.sugg-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  padding: 9px 16px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.sugg-status-line-top {
+  border-top: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sugg-match-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-alt);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.sugg-near-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  background: var(--pale-accent);
+  color: var(--accent);
+  white-space: nowrap;
+}
+[data-theme='dark'] .sugg-near-badge {
+  background: var(--surface-alt);
+}
+
+.sugg-skeleton-wrap {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--border);
+}
+.sugg-skeleton-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+}
+.sugg-skeleton-bar {
+  height: 14px;
+  border-radius: var(--r-sm);
+  background: var(--surface-alt);
+}
+.sugg-skeleton-meta {
+  height: 12px;
+  width: 68px;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  flex: none;
+}
+
+.omni-listbox-busy[aria-busy='true'] {
+  opacity: .72;
+}
+
+.switch:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.chip-more-mobile {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .omni-opt-main > .dup-chip:nth-child(n+4),
+  .dup-row-tags > .dup-chip:nth-of-type(n+3) {
+    display: none;
+  }
+  .chip-more-desktop {
+    display: none;
+  }
+  .chip-more-mobile {
+    display: inline;
+  }
+  .omni-listbox .sugg-row {
+    flex-wrap: wrap;
+    gap: 6px 8px;
+  }
+  .omni-listbox .sugg-row .sugg-meta {
+    white-space: normal;
+    flex-wrap: wrap;
+  }
+}
+
+@media (pointer: coarse) {
+  .sugg-row,
+  .omni-sem-btn {
+    min-height: 44px;
+  }
+  .omni-sem-btn {
+    min-width: 44px;
+  }
+  .sugg-row .dup-chip,
+  .dup-row .dup-chip {
+    min-height: 0;
+  }
+  .switch::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* P05 T22 FU10 / omni-pop (advisor-dec-327): while the overflowing popover is a keyboard region (tabindex=0), keep its
+   own radius and draw the global accent focus ring inside the border so no ancestor can clip it. */
+.popover[data-pop]:focus-visible {
+  border-radius: var(--r-lg);
+  outline-offset: -3px;
 }
