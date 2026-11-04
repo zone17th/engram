@@ -114,7 +114,7 @@ export function createRememberDeviceStore(options: RememberDeviceStoreOptions): 
 
   const refresh = async (): Promise<void> => {
     const ctx = options.getContext();
-    if (!ctx || !ctx.vaultKeyId) return;
+    if (!ctx) return;
     const capturedUserId = ctx.userId;
     const capturedVaultKeyId = ctx.vaultKeyId;
     const seq = ++readSeq;
@@ -129,7 +129,12 @@ export function createRememberDeviceStore(options: RememberDeviceStoreOptions): 
     try {
       const snapshot = await readDeviceSnapshot(capturedUserId, options.env);
       if (seq !== readSeq || !isContextStillOwned(capturedUserId, capturedVaultKeyId)) return;
-      const own = snapshot.entries.find((e) => e.vaultKeyId === capturedVaultKeyId);
+      // When `vaultKeyId` is not yet loaded on `/app/unlock`, fall back to the user's single stored entry (`entries[0]`)
+      // so the primary "Unlock on this device" button can render immediately; `silentUnlock()` still verifies the live
+      // `vault_key_id` against `GET /vault` and cleanly falls back if stale.
+      const own = capturedVaultKeyId
+        ? snapshot.entries.find((e) => e.vaultKeyId === capturedVaultKeyId)
+        : snapshot.entries[0];
       setState({
         status: 'ready',
         remembered: own?.record != null,

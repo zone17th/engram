@@ -22,6 +22,7 @@ import { Switch } from '@/components/ui/switch';
 import { Toast } from '@/components/ui/toast';
 import * as vaultProviderMod from '@/features/vault/vault-provider';
 import type { VaultContextValue } from '@/features/vault/vault-provider';
+import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 import { NextIntlClientProvider } from 'next-intl';
 
@@ -1005,14 +1006,41 @@ describe('FU3 UI-TOUCH-44: coarse-pointer 44x44 touch targets on header actions 
     const logoLink = screen.getByRole('link', { name: 'engram — Mục gần đây' });
     const settingsLink = screen.getByRole('link', { name: 'Cài đặt' });
     const themeButton = screen.getByRole('button', { name: 'Đổi giao diện sáng/tối' });
-    const mobileLockedStandIn = screen.getByLabelText('Vault đang khoá');
+    const desktopUnlockBtn = screen.getByTestId('vault-unlock-button');
+    const mobileLockedStandIn = screen.getByTestId('vault-unlock-button-mobile');
 
     expect(logoLink).toHaveClass('touch-target');
     expect(settingsLink).toHaveClass('btn', 'btn-tertiary', 'touch-target');
     expect(themeButton).toHaveClass('btn', 'btn-tertiary', 'btn-icon');
+    expect(desktopUnlockBtn).toHaveAccessibleName('Vault đang khoá — Mở khoá vault');
+    expect(desktopUnlockBtn).toHaveClass('touch-target');
+    expect(desktopUnlockBtn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+    expect(desktopUnlockBtn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+    expect(desktopUnlockBtn.querySelector('.vault-pill')?.className).toContain(
+      '[@media(pointer:coarse)]:min-h-[44px]',
+    );
+    expect(mobileLockedStandIn).toHaveAccessibleName('Vault đang khoá — Mở khoá vault');
+    expect(mobileLockedStandIn).toHaveClass('touch-target');
     expect(mobileLockedStandIn.className).toContain('[@media(pointer:coarse)]:h-[44px]');
     expect(mobileLockedStandIn.className).toContain('[@media(pointer:coarse)]:w-[44px]');
 
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <AppHeader vault={{ state: 'locked' }} showLogout={false} />
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+    const desktopUnlockBtnEn = screen.getByTestId('vault-unlock-button');
+    const mobileLockedStandInEn = screen.getByTestId('vault-unlock-button-mobile');
+    expect(desktopUnlockBtnEn).toHaveAccessibleName('Vault locked — Unlock vault');
+    expect(desktopUnlockBtnEn).toHaveClass('touch-target');
+    expect(desktopUnlockBtnEn.className).toContain('[@media(pointer:coarse)]:min-h-[44px]');
+    expect(desktopUnlockBtnEn.className).toContain('[@media(pointer:coarse)]:min-w-[44px]');
+    expect(mobileLockedStandInEn).toHaveAccessibleName('Vault locked — Unlock vault');
+    expect(mobileLockedStandInEn).toHaveClass('touch-target');
+    expect(mobileLockedStandInEn.className).toContain('[@media(pointer:coarse)]:h-[44px]');
+    expect(mobileLockedStandInEn.className).toContain('[@media(pointer:coarse)]:w-[44px]');
     // Simulate unlocked vault context so lock buttons render
     useOptionalVaultSpy.mockReturnValue({
       state: 'unlocked',

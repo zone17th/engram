@@ -187,11 +187,17 @@ test.describe('Remember device against the real API', () => {
       await expect(page.getByTestId('unlock-passphrase-input')).toHaveCount(0);
     });
 
-    await test.step('4. a manual lock is not silently re-opened by the remembered device', async () => {
+    await test.step('4. a manual lock is not silently re-opened by the remembered device, and clicking the locked pill re-opens via silentUnlock() without passphrase', async () => {
       await page.getByTestId('vault-lock-button').click();
       // Under advisor-dec-048 (P03-T21), locking on `/app` stays on `/app` and renders the locked U5 state.
       await expectLockedListOnApp(page);
       await page.waitForTimeout(1500);
+      await expectLockedListOnApp(page);
+
+      // P05-FIX B1/B2: clicking the locked pill re-opens via silentUnlock() with no passphrase prompt.
+      await page.getByTestId('vault-unlock-button').click();
+      await expectVaultOpen(page);
+      await page.getByTestId('vault-lock-button').click();
       await expectLockedListOnApp(page);
     });
 

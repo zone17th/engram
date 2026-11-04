@@ -1,3 +1,25 @@
+import { useRouter } from 'next/navigation';
+import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
+import type { VaultStateMachineMode } from '@/features/vault/vault-provider';
+import type { SilentUnlockResult } from '@/lib/crypto/device';
+
+/**
+ * Safe wrapper around `useRouter()` for shared chrome components (`AppHeader`, `VaultSecurityPanel`, `LockedBanner`)
+ * that may also be rendered in isolated unit tests without the Next.js App Router mounted.
+ */
+export function useOptionalRouterPush(): (url: string) => void {
+  try {
+    const router = useRouter();
+    return (url: string) => router.push(url);
+  } catch {
+    return (url: string) => {
+      if (typeof window !== 'undefined' && typeof window.location?.assign === 'function') {
+        window.location.assign(url);
+      }
+    };
+  }
+}
+
 /**
  * Non-secret hand-off between the recovery flow and the unlock page (FE1-7): when a recovery commits on the server while
  * this tab locked, the recovery route navigates to `/app/unlock`. The notice must outlive that real route change, so it
@@ -45,4 +67,98 @@ export function clearRecoveryCompletedNotice(): void {
   } catch {
     // ignore
   }
+}
+
+const DEVICE_UNLOCK_FALLBACK_NOTICE_STORAGE_KEY = 'engram.vault.deviceUnlockFallbackNotice';
+const deviceFallbackNoticeListeners = new Set<() => void>();
+
+function notifyDeviceFallbackNoticeListeners(): void {
+  for (const listener of [...deviceFallbackNoticeListeners]) {
+    try {
+      listener();
+    } catch {
+      // ignore listener errors
+    }
+  }
+}
+
+export function subscribeDeviceUnlockFallbackNotice(listener: () => void): () => void {
+  deviceFallbackNoticeListeners.add(listener);
+  return () => {
+    deviceFallbackNoticeListeners.delete(listener);
+  };
+}
+
+export function rememberDeviceUnlockFallbackNotice(userId: string | null): void {
+  try {
+    const payload: StoredRecoveryNotice = { userId, at: Date.now() };
+    window.sessionStorage.setItem(DEVICE_UNLOCK_FALLBACK_NOTICE_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Storage can be unavailable (private mode); the notice is a courtesy, never a requirement.
+  }
+  notifyDeviceFallbackNoticeListeners();
+}
+
+export function hasDeviceUnlockFallbackNotice(userId: string | null): boolean {
+  try {
+    const raw = window.sessionStorage.getItem(DEVICE_UNLOCK_FALLBACK_NOTICE_STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as Partial<StoredRecoveryNotice> | null;
+    if (!parsed || typeof parsed.at !== 'number') return false;
+    if (Date.now() - parsed.at > RECOVERY_NOTICE_TTL_MS) {
+      window.sessionStorage.removeItem(DEVICE_UNLOCK_FALLBACK_NOTICE_STORAGE_KEY);
+      return false;
+    }
+    if (parsed.userId !== null && parsed.userId !== undefined && parsed.userId !== userId) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearDeviceUnlockFallbackNotice(): void {
+  try {
+    window.sessionStorage.removeItem(DEVICE_UNLOCK_FALLBACK_NOTICE_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+  notifyDeviceFallbackNoticeListeners();
+}
+
+/** Appends the short notice query flag (`notice=device_unlock_failed`) to an unlock URL when silentUnlock fell back. */
+export function appendDeviceFallbackNoticeParam(url: string): string {
+  return url.includes('?') ? `${url}&notice=device_unlock_failed` : `${url}?notice=device_unlock_failed`;
+}
+
+export interface UnlockOrNavigateVault {
+  readonly state: VaultStateMachineMode;
+  readonly inFlight: boolean;
+  readonly silentUnlock: () => Promise<SilentUnlockResult>;
+}
+
+/**
+ * Attempts `silentUnlock()` in place only when `vault.state === 'locked'` and not `inFlight`;
+ * otherwise (or when not remembered / fallback) navigates to `targetUrl` (appending the short
+ * fallback notice flag when a saved DevKey could not unlock).
+ */
+export async function unlockOrNavigate(
+  vault: UnlockOrNavigateVault | null | undefined,
+  targetUrl: string,
+  navigate: (url: string) => void,
+): Promise<SilentUnlockResult | null> {
+  if (!vault || vault.state !== 'locked' || vault.inFlight) {
+    navigate(targetUrl);
+    return null;
+  }
+  const res = await vault.silentUnlock();
+  if (res.status === 'unlocked' || res.reason === 'stale') {
+    return res;
+  }
+  if (res.status === 'fallback') {
+    rememberDeviceUnlockFallbackNotice(getKnownDeviceSessionUserId());
+    navigate(appendDeviceFallbackNoticeParam(targetUrl));
+    return res;
+  }
+  navigate(targetUrl);
+  return res;
 }

@@ -84,6 +84,21 @@ export function unlockUrl(returnTo?: string): string {
   }
   return `${UNLOCK}?returnTo=${encodeURIComponent(safe)}`;
 }
+export function resolveUnlockDestination(returnTo?: string | null): string {
+  const safe = sanitizeReturnTo(returnTo, '/app');
+  const base = safe.split(/[?#]/, 1)[0] ?? safe;
+  if (
+    base === '/app' ||
+    base === UNLOCK ||
+    base === ONBOARDING ||
+    isRecoveryOrForgotRoute(base) ||
+    isAuthRoute(base)
+  ) {
+    return '/app';
+  }
+  return safe;
+}
+
 
 export function needsEmailVerify(me: Me): boolean {
   return me.features.email_verification_required && !me.user.email_verified;
@@ -94,8 +109,9 @@ export function resolveGuardRedirect(input: {
   pathname: string;
   me: Me | null;
   vaultState?: GuardVaultState;
+  returnTo?: string | null;
 }): string | null {
-  const { status, pathname, me, vaultState } = input;
+  const { status, pathname, me, vaultState, returnTo } = input;
   if (status === 'loading' || status === 'unavailable') return null;
 
   const auth = isAuthRoute(pathname);
@@ -151,7 +167,7 @@ export function resolveGuardRedirect(input: {
       if (allowedWhileLocked) return null;
       return unlockUrl(pathname);
     }
-    if (unlock) return '/app';
+    if (unlock) return resolveUnlockDestination(returnTo);
   }
 
   if (onboarding) return '/app';

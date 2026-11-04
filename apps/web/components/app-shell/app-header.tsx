@@ -5,10 +5,13 @@ import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { Logo } from '@/components/landing/logo';
 import { useVaultPillLabel, VaultPill, type VaultPillState, vaultModeToPillState } from '@/components/ui/vault-pill';
 import { AppShellLogoutButton } from '@/features/auth/route-guard';
+import { unlockUrl } from '@/features/auth/guard-redirect';
+import { unlockOrNavigate, useOptionalRouterPush } from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-
+import { useEffect, useRef } from 'react';
 /**
  * Header dính, nền mờ, cao 68px — chép từ mockups/index.html.
  *
@@ -35,20 +38,53 @@ export function AppHeader({
   const tHeader = useTranslations('app.header');
   const tVault = useTranslations('vault.state');
   const vaultCtx = useOptionalVault();
+  const pathname = usePathname() ?? '/app';
+  const routerPush = useOptionalRouterPush();
   const effectivePillState: VaultPillState = vaultCtx
     ? vaultModeToPillState(vaultCtx.state)
     : (vault?.state ?? 'locked');
   const effectiveMinutesLeft = vault?.minutesLeft ?? vaultCtx?.minutesLeft;
   const canLockNow = effectivePillState === 'open' && Boolean(vaultCtx);
-  // FE1-1: the accessible name of the lock button must contain the pill's visible text ("Vault open · N min").
+  const canUnlockNow = effectivePillState === 'locked';
+  // FE1-1: the accessible name of the lock/unlock button must contain the pill's visible text ("Vault open · N min" / "Vault locked").
   const pillLabel = useVaultPillLabel(effectivePillState, effectiveMinutesLeft);
   const lockNowName = tHeader('lockNowNamed', { state: pillLabel });
+  const unlockNowName = tHeader('unlockVaultNamed', { state: pillLabel });
+
+  const lockButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileLockButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusTargetRef = useRef<'desktop' | 'mobile' | null>(null);
+
+  useEffect(() => {
+    if (!canLockNow || restoreFocusTargetRef.current === null) return;
+    const target = restoreFocusTargetRef.current;
+    restoreFocusTargetRef.current = null;
+    const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+    if (
+      activeEl === null ||
+      activeEl === document.body ||
+      activeEl === document.documentElement
+    ) {
+      if (target === 'mobile') {
+        mobileLockButtonRef.current?.focus();
+      } else {
+        lockButtonRef.current?.focus();
+      }
+    }
+  }, [canLockNow]);
 
   const handleLockClick = () => {
     if (!vaultCtx) return;
     void vaultCtx.lockNow();
   };
 
+  const handleUnlockClick = async (variant: 'desktop' | 'mobile') => {
+    restoreFocusTargetRef.current = variant;
+    const res = await unlockOrNavigate(vaultCtx, unlockUrl(pathname), routerPush);
+    if (res?.status !== 'unlocked') {
+      restoreFocusTargetRef.current = null;
+    }
+  };
   const mobilePillLabel =
     effectivePillState === 'open'
       ? tVault('unlocked')
@@ -66,6 +102,7 @@ export function AppHeader({
         <div className="ml-auto flex min-w-0 max-w-full shrink-0 items-center justify-end gap-1 sm:gap-2">
           {canLockNow ? (
             <button
+              ref={lockButtonRef}
               type="button"
               data-vault=""
               data-testid="vault-lock-button"
@@ -73,6 +110,19 @@ export function AppHeader({
               aria-label={lockNowName}
               aria-keyshortcuts="L"
               title={tHeader('lockNow')}
+              className="touch-target hidden cursor-pointer items-center border-0 bg-transparent p-0 sm:inline-flex [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+            >
+              <VaultPill state={effectivePillState} minutesLeft={effectiveMinutesLeft} className="[@media(pointer:coarse)]:min-h-[44px]" />
+            </button>
+          ) : canUnlockNow ? (
+            <button
+              type="button"
+              data-vault=""
+              data-testid="vault-unlock-button"
+              onClick={() => void handleUnlockClick('desktop')}
+              disabled={vaultCtx?.inFlight}
+              aria-label={unlockNowName}
+              title={tHeader('unlockVault')}
               className="touch-target hidden cursor-pointer items-center border-0 bg-transparent p-0 sm:inline-flex [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
             >
               <VaultPill state={effectivePillState} minutesLeft={effectiveMinutesLeft} className="[@media(pointer:coarse)]:min-h-[44px]" />
@@ -86,6 +136,7 @@ export function AppHeader({
           )}
           {canLockNow ? (
             <button
+              ref={mobileLockButtonRef}
               type="button"
               data-testid="vault-lock-button-mobile"
               onClick={handleLockClick}
@@ -94,6 +145,18 @@ export function AppHeader({
               title={tHeader('openAndLockNow')}
             >
               🔓
+            </button>
+          ) : canUnlockNow ? (
+            <button
+              type="button"
+              data-testid="vault-unlock-button-mobile"
+              onClick={() => void handleUnlockClick('mobile')}
+              disabled={vaultCtx?.inFlight}
+              className="touch-target grid h-[38px] w-[38px] cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden [@media(pointer:coarse)]:h-[44px] [@media(pointer:coarse)]:w-[44px]"
+              aria-label={tHeader('lockedAndUnlock')}
+              title={tHeader('lockedAndUnlock')}
+            >
+              🔒
             </button>
           ) : (
             <span

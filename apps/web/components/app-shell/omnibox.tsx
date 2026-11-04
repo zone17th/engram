@@ -101,6 +101,7 @@ import {
   subscribeLockClearedNotice,
 } from '@/features/omnibox/unconfirmed-save-store';
 import { getKnownDeviceSessionUserId, subscribeDevicePurge } from '@/features/vault/device-store';
+import { unlockOrNavigate } from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import {
   createIdempotencyKey,
@@ -2126,6 +2127,9 @@ export function Omnibox({
       }
       if (row.kind === 'item') {
         closeListbox(false);
+        if (vault && vault.state === 'locked' && !vault.inFlight) {
+          void vault.silentUnlock();
+        }
         router?.push(`/app/items/${row.id}`);
         return;
       }
@@ -2133,7 +2137,7 @@ export function Omnibox({
       setDraft('');
       router?.push(`/app?tag=${encodeURIComponent(row.id)}`);
     },
-    [closeListbox, createEmptyItemWithName, loadMoreResults, router, setDraft],
+    [closeListbox, createEmptyItemWithName, loadMoreResults, router, setDraft, vault],
   );
 
 
@@ -2797,7 +2801,7 @@ export function Omnibox({
                   data-omni-unlock-save="1"
                   data-testid="omnibox-unlock-to-save-btn"
                   onClick={() => {
-                    router?.push(unlockUrl(pathname));
+                    void unlockOrNavigate(vault, unlockUrl(pathname), (url) => router?.push(url));
                   }}
                   className="btn btn-primary btn-sm"
                 >

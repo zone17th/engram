@@ -227,10 +227,28 @@ describe('resolveGuardRedirect while the vault holds no key (U5, advisor-dec-048
     expect(guard('/app', 'resetting')).toBe('/app/unlock');
   });
 
-  it('unlocked users are unchanged: app routes stay, the unlock page leaves for /app', () => {
+  it('unlocked users are unchanged: app routes stay, the unlock page leaves for /app or sanitized returnTo', () => {
     expect(guard('/app', 'unlocked')).toBeNull();
     expect(guard('/app/items/d1', 'unlocked')).toBeNull();
     expect(guard('/app/unlock', 'unlocked')).toBe('/app');
+    expect(
+      resolveGuardRedirect({
+        status: 'authenticated_with_vault',
+        pathname: '/app/unlock',
+        me,
+        vaultState: 'unlocked',
+        returnTo: '/app/settings',
+      }),
+    ).toBe('/app/settings');
+    expect(
+      resolveGuardRedirect({
+        status: 'authenticated_with_vault',
+        pathname: '/app/unlock',
+        me,
+        vaultState: 'unlocked',
+        returnTo: 'https://evil.example/phish',
+      }),
+    ).toBe('/app');
     expect(guard('/app/auth/forgot-password', 'unlocked')).toBeNull();
     expect(guard('/app/auth/reset-password', 'unlocked')).toBeNull();
   });

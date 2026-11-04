@@ -100,6 +100,9 @@
       "lockNow": "Lock vault now (L)",
       "openAndLockNow": "Vault open — Lock vault now (L)",
       "lockNowNamed": "{state} — Lock vault now (L)",
+      "unlockVault": "Unlock vault",
+      "lockedAndUnlock": "Vault locked — Unlock vault",
+      "unlockVaultNamed": "{state} — Unlock vault",
       "settings": "Settings",
       "settingsDone": "Done"
     },
@@ -1083,6 +1086,18 @@
     "submitting": "Unlocking…",
     "caption": "Slow devices may take a few seconds. Key derivation runs entirely inside your browser.",
     "forgotPassphrase": "I forgot my passphrase",
+    "rememberDeviceLabel": "Remember this device",
+    "rememberDeviceDescription": "Next time this device opens on its own, without typing. Do not turn on on a shared machine.",
+    "device": {
+      "button": "Unlock on this device",
+      "pending": "Unlocking with remembered device…",
+      "caption": "This device’s key stays in this browser and never leaves here. No typing needed.",
+      "rememberedTitle": "This device is remembered",
+      "rememberedBody": "Signing out does not delete the device key, so you still sign in to your account before this browser opens the vault.",
+      "forgetButton": "Forget this device",
+      "fallbackNoticeTitle": "Could not unlock with the saved device key",
+      "fallbackNoticeBody": "The saved device key on this browser is no longer available. Unlock with your passphrase or passkey below."
+    },
     "errors": {
       "empty": "Enter your vault passphrase.",
       "incorrectPassphraseBadge": "wrong passphrase",

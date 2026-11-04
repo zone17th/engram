@@ -100,6 +100,9 @@
       "lockNow": "Khoá vault ngay (L)",
       "openAndLockNow": "Vault mở — Khoá vault ngay (L)",
       "lockNowNamed": "{state} — Khoá vault ngay (L)",
+      "unlockVault": "Mở khoá vault",
+      "lockedAndUnlock": "Vault đang khoá — Mở khoá vault",
+      "unlockVaultNamed": "{state} — Mở khoá vault",
       "settings": "Cài đặt",
       "settingsDone": "Xong"
     },
@@ -1083,6 +1086,18 @@
     "submitting": "Đang mở khoá…",
     "caption": "Máy chậm có thể mất vài giây. Việc này chạy hẳn trong trình duyệt.",
     "forgotPassphrase": "Tôi quên passphrase",
+    "rememberDeviceLabel": "Nhớ thiết bị này",
+    "rememberDeviceDescription": "Lần sau máy này tự mở, không cần gõ. Đừng bật trên máy dùng chung.",
+    "device": {
+      "button": "Mở khoá trên thiết bị này",
+      "pending": "Đang mở khoá bằng thiết bị đã nhớ…",
+      "caption": "Khoá của máy này nằm trong trình duyệt và không rời khỏi đây. Không cần gõ gì.",
+      "rememberedTitle": "Đã nhớ thiết bị này",
+      "rememberedBody": "Đăng xuất không xoá khoá thiết bị, nhưng lần sau vẫn phải đăng nhập tài khoản trước khi máy tự mở vault.",
+      "forgetButton": "Quên thiết bị này",
+      "fallbackNoticeTitle": "Không mở được bằng khoá thiết bị",
+      "fallbackNoticeBody": "Khoá đã lưu trên trình duyệt này không còn dùng được. Hãy mở khoá bằng passphrase hoặc passkey bên dưới."
+    },
     "errors": {
       "empty": "Hãy nhập passphrase của vault.",
       "incorrectPassphraseBadge": "sai passphrase",

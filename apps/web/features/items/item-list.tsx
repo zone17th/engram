@@ -1,9 +1,11 @@
 'use client';
 
 import Link from 'next/link';
+import type { MouseEvent } from 'react';
 import { BadgeType } from '@/components/ui/badge-type';
 import { loadDemoEntryBody } from '@/features/items/demo-body-loader';
 import { EntryBody, type EntryBodyLoader } from '@/features/items/entry-body';
+import { useOptionalVault } from '@/features/vault/vault-provider';
 
 /** Metadata that stays readable while the vault is locked (SPEC §5.1: name, tag, type are not encrypted). */
 export interface ItemListEntry {
@@ -26,12 +28,20 @@ export function ItemList({
   load?: EntryBodyLoader;
   openLabel: string;
 }) {
+  const vault = useOptionalVault();
+  const handleCardClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    if (vault && vault.state === 'locked' && !vault.inFlight) {
+      void vault.silentUnlock();
+    }
+  };
   return (
     <div className="grid gap-4 sm:grid-cols-2" data-testid="item-list">
       {items.map((item) => (
         <Link
           key={item.id}
           href={`/app/items/${item.id}`}
+          onClick={handleCardClick}
           data-testid="item-card"
           className="card flex flex-col gap-2 p-5 no-underline !text-body"
         >

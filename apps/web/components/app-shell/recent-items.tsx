@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type MouseEvent } from 'react';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
+import { useOptionalVault } from '@/features/vault/vault-provider';
 import type { ItemSummary } from '@/lib/api/content';
 
 export const MAX_VISIBLE_ITEM_TAG_CHIPS = 3;
@@ -18,12 +19,21 @@ export interface RecentItemCardProps {
  */
 export function RecentItemCard({ item }: RecentItemCardProps) {
   const tRecent = useTranslations('content.home.recent');
+  const vault = useOptionalVault();
   const visibleTags = item.tags.slice(0, MAX_VISIBLE_ITEM_TAG_CHIPS);
   const hiddenTagCount = Math.max(0, item.tags.length - MAX_VISIBLE_ITEM_TAG_CHIPS);
+
+  const handleCardClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    if (vault && vault.state === 'locked' && !vault.inFlight) {
+      void vault.silentUnlock();
+    }
+  };
 
   return (
     <Link
       href={`/app/items/${item.id}`}
+      onClick={handleCardClick}
       data-testid="item-card"
       data-item-card={item.id}
       className="card flex min-w-0 flex-col gap-3 p-5 no-underline !text-body"

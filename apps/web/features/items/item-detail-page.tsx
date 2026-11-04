@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type MouseEvent,
 } from 'react';
 import { AppHeader } from '@/components/app-shell/app-header';
 import {
@@ -33,6 +34,7 @@ import {
 } from '@/features/entries/changes-sync';
 import { type EntryBodyLoader } from '@/features/items/entry-body';
 import { ItemHeader } from '@/features/items/item-header';
+import { unlockOrNavigate } from '@/features/vault/unlock/recovery-notice';
 import { LockedBanner } from '@/features/items/locked-banner';
 import { contentQueryKeys } from '@/features/items/query-keys';
 import {
@@ -1146,6 +1148,12 @@ export function ItemDetailPage({
                       <div className="flex flex-wrap justify-center gap-2">
                         <Link
                           href={unlockUrl(pathname ?? `/app/items/${encodeURIComponent(itemId)}`)}
+                          onClick={(e: MouseEvent<HTMLAnchorElement>) => {
+                            if (!vault || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                            e.preventDefault();
+                            const targetUrl = unlockUrl(pathname ?? `/app/items/${encodeURIComponent(itemId)}`);
+                            void unlockOrNavigate(vault, targetUrl, (url) => router.push(url));
+                          }}
                           data-testid="empty-unlock-cta"
                           className="btn btn-primary btn-sm no-underline"
                         >

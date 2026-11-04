@@ -1,6 +1,6 @@
 'use client';
 
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { type ReactNode, useEffect } from 'react';
 import { AuthStatus } from '@/components/ui/field';
@@ -41,6 +41,23 @@ function UnavailableFrame({
     </div>
   );
 }
+function readOptionalReturnTo(): string | null {
+  try {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const searchParams = useSearchParams();
+    return searchParams?.get('returnTo') ?? null;
+  } catch {
+    if (typeof window !== 'undefined') {
+      try {
+        return new URLSearchParams(window.location.search).get('returnTo');
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
 
 export function RouteGuard({ children }: { children: ReactNode }) {
   const { status, me, refetchMe } = useSession();
@@ -48,14 +65,15 @@ export function RouteGuard({ children }: { children: ReactNode }) {
   const vaultState = vault?.state;
   const pathname = usePathname() ?? '/app';
   const router = useRouter();
+  const returnTo = readOptionalReturnTo();
   const t = useTranslations('auth.guard');
 
   useEffect(() => {
-    const next = resolveGuardRedirect({ status, pathname, me, vaultState });
+    const next = resolveGuardRedirect({ status, pathname, me, vaultState, returnTo });
     if (next && next !== pathname) {
       router.replace(next);
     }
-  }, [status, me, pathname, router, vaultState]);
+  }, [status, me, pathname, returnTo, router, vaultState]);
   // `me` is still in hand when a session-epoch bump re-keys the query (password
   // replacement, silent refresh). Swapping the tree for the loading frame there
   // unmounts the page and drops transient state such as the account success
