@@ -5,8 +5,15 @@ import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { Logo } from '@/components/landing/logo';
 import { useVaultPillLabel, VaultPill, type VaultPillState, vaultModeToPillState } from '@/components/ui/vault-pill';
 import { AppShellLogoutButton } from '@/features/auth/route-guard';
+import { unlockUrl } from '@/features/auth/guard-redirect';
+import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
+import {
+  appendDeviceFallbackNoticeParam,
+  rememberDeviceUnlockFallbackNotice,
+} from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 
 /**
@@ -35,20 +42,42 @@ export function AppHeader({
   const tHeader = useTranslations('app.header');
   const tVault = useTranslations('vault.state');
   const vaultCtx = useOptionalVault();
+  const pathname = usePathname() ?? '/app';
+  const router = useRouter();
   const effectivePillState: VaultPillState = vaultCtx
     ? vaultModeToPillState(vaultCtx.state)
     : (vault?.state ?? 'locked');
   const effectiveMinutesLeft = vault?.minutesLeft ?? vaultCtx?.minutesLeft;
   const canLockNow = effectivePillState === 'open' && Boolean(vaultCtx);
-  // FE1-1: the accessible name of the lock button must contain the pill's visible text ("Vault open · N min").
+  const canUnlockNow = effectivePillState === 'locked';
+  // FE1-1: the accessible name of the lock/unlock button must contain the pill's visible text ("Vault open · N min" / "Vault locked").
   const pillLabel = useVaultPillLabel(effectivePillState, effectiveMinutesLeft);
   const lockNowName = tHeader('lockNowNamed', { state: pillLabel });
+  const unlockNowName = tHeader('unlockVaultNamed', { state: pillLabel });
 
   const handleLockClick = () => {
     if (!vaultCtx) return;
     void vaultCtx.lockNow();
   };
 
+  const handleUnlockClick = async () => {
+    const targetUrl = unlockUrl(pathname);
+    if (vaultCtx) {
+      const res = await vaultCtx.silentUnlock();
+      if (res.status === 'unlocked') {
+        return;
+      }
+      if (res.status === 'fallback') {
+        rememberDeviceUnlockFallbackNotice(getKnownDeviceSessionUserId());
+        router.push(appendDeviceFallbackNoticeParam(targetUrl));
+        return;
+      }
+      if (res.reason === 'busy' || res.reason === 'stale' || res.reason === 'not_locked') {
+        return;
+      }
+    }
+    router.push(targetUrl);
+  };
   const mobilePillLabel =
     effectivePillState === 'open'
       ? tVault('unlocked')
@@ -77,6 +106,19 @@ export function AppHeader({
             >
               <VaultPill state={effectivePillState} minutesLeft={effectiveMinutesLeft} className="[@media(pointer:coarse)]:min-h-[44px]" />
             </button>
+          ) : canUnlockNow ? (
+            <button
+              type="button"
+              data-vault=""
+              data-testid="vault-unlock-button"
+              onClick={() => void handleUnlockClick()}
+              disabled={vaultCtx?.inFlight}
+              aria-label={unlockNowName}
+              title={tHeader('unlockVault')}
+              className="touch-target hidden cursor-pointer items-center border-0 bg-transparent p-0 sm:inline-flex [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+            >
+              <VaultPill state={effectivePillState} minutesLeft={effectiveMinutesLeft} className="[@media(pointer:coarse)]:min-h-[44px]" />
+            </button>
           ) : (
             <VaultPill
               state={effectivePillState}
@@ -94,6 +136,18 @@ export function AppHeader({
               title={tHeader('openAndLockNow')}
             >
               🔓
+            </button>
+          ) : canUnlockNow ? (
+            <button
+              type="button"
+              data-testid="vault-unlock-button-mobile"
+              onClick={() => void handleUnlockClick()}
+              disabled={vaultCtx?.inFlight}
+              className="touch-target grid h-[38px] w-[38px] cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden [@media(pointer:coarse)]:h-[44px] [@media(pointer:coarse)]:w-[44px]"
+              aria-label={tHeader('lockedAndUnlock')}
+              title={tHeader('lockedAndUnlock')}
+            >
+              🔒
             </button>
           ) : (
             <span

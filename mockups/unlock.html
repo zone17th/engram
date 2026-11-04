@@ -28,7 +28,7 @@
       <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink hidden min-[480px]:inline">engram</span>
     </a>
     <div class="ml-auto flex items-center gap-1 sm:gap-2">
-      <span class="vault-pill vault-shut !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3" aria-label="Vault đã khoá · Vault locked"><span aria-hidden="true">🔒</span><span class="hidden sm:inline">Vault đã khoá</span></span>
+      <button type="button" class="vault-pill vault-shut btn-icon !w-[38px] !h-[38px] !p-0 justify-center sm:!w-auto sm:!h-auto sm:!py-1.5 sm:!px-3 [@media(pointer:coarse)]:!h-[44px]" data-vault aria-label="Vault đã khoá — Mở khoá vault · Vault locked — Unlock vault"><span aria-hidden="true">🔒</span><span class="hidden sm:inline">Vault đã khoá</span></button>
       <a href="settings.html" class="btn btn-tertiary no-underline !text-body">Cài đặt</a>
       <button type="button" class="btn btn-tertiary btn-icon !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
       <a href="landing.html" class="btn btn-tertiary no-underline !text-body">Đăng xuất</a>
@@ -102,6 +102,14 @@
         <input type="password" class="w-full text-[15px]"
                style="border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;background:var(--canvas);color:var(--body);outline:none">
       </label>
+      <label class="flex gap-3 items-start mb-5 cursor-pointer">
+        <input type="checkbox" class="mt-1">
+        <span class="text-[14px]">
+          Nhớ thiết bị này
+          <span class="block text-[13px]" style="color:var(--muted)">Lần sau máy này tự mở, không cần gõ. Đừng bật trên máy dùng chung.</span>
+        </span>
+      </label>
+
       <button class="btn btn-secondary w-full !justify-center">Mở khoá</button>
     </div>
 
@@ -123,12 +131,17 @@
   <!-- C — thiết bị đã nhớ: mở im lặng sau auto-lock                   -->
   <!-- ============================================================= -->
   <section data-view="known" hidden>
-    <div class="card p-6 mb-4 text-center">
-      <div class="w-12 h-12 rounded-pill grid place-items-center mx-auto mb-4 text-[20px]"
-           style="background:var(--pale-accent)">🔓</div>
-      <div class="text-[15px] font-semibold mb-1">Đang mở khoá bằng thiết bị đã nhớ…</div>
+    <div class="card p-6 mb-4">
+      <button class="btn btn-primary w-full !justify-center mb-2"
+              onclick="SAK.toast('Đang mở khoá bằng thiết bị đã nhớ…')">🔓 Mở khoá trên thiết bị này</button>
+      <p class="t-caption text-center m-0" style="color:var(--muted)">
+        Khoá của máy này nằm trong trình duyệt và không rời khỏi đây. Không cần gõ gì. · <span lang="en">Unlock on this device — the device key stays in this browser; no passphrase needed.</span>
+      </p>
+    </div>
+    <div class="card p-4 mb-4" id="unlock-device-fallback-notice" style="background:var(--surface)">
+      <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Không mở được bằng khoá thiết bị · <span lang="en" class="font-normal" style="color:var(--muted)">Could not unlock with the saved device key</span></p>
       <p class="text-[13px] m-0" style="color:var(--muted)">
-        Khoá của máy này nằm trong trình duyệt và không rời khỏi đây. Không cần gõ gì.
+        Khoá đã lưu trên trình duyệt này không còn dùng được. Hãy mở khoá bằng passphrase hoặc passkey bên dưới. · <span lang="en">The saved device key on this browser is no longer available. Unlock with your passphrase or passkey below.</span>
       </p>
     </div>
     <div class="rounded-md p-4 mb-4" style="background:var(--surface)">

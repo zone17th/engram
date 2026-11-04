@@ -9,7 +9,7 @@ import { usePasskeyUnlock } from './use-passkey-unlock';
 
 export interface PasskeyUnlockButtonProps {
   /** Called after the Worker accepted the PWK and the vault is unlocked. */
-  onUnlocked?: () => void;
+  onUnlocked?: () => void | Promise<void>;
   className?: string;
 }
 
@@ -105,7 +105,7 @@ export function PasskeyUnlockButton({ onUnlocked, className }: PasskeyUnlockButt
   }
   const run = async () => {
     const outcome: PasskeyUnlockOutcome = await unlock();
-    if (outcome.ok && mountedRef.current) onUnlocked?.();
+    if (outcome.ok && mountedRef.current) await onUnlocked?.();
   };
 
   let message: string | null = null;

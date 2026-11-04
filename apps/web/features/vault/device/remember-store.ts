@@ -114,7 +114,7 @@ export function createRememberDeviceStore(options: RememberDeviceStoreOptions): 
 
   const refresh = async (): Promise<void> => {
     const ctx = options.getContext();
-    if (!ctx || !ctx.vaultKeyId) return;
+    if (!ctx) return;
     const capturedUserId = ctx.userId;
     const capturedVaultKeyId = ctx.vaultKeyId;
     const seq = ++readSeq;
@@ -129,7 +129,9 @@ export function createRememberDeviceStore(options: RememberDeviceStoreOptions): 
     try {
       const snapshot = await readDeviceSnapshot(capturedUserId, options.env);
       if (seq !== readSeq || !isContextStillOwned(capturedUserId, capturedVaultKeyId)) return;
-      const own = snapshot.entries.find((e) => e.vaultKeyId === capturedVaultKeyId);
+      const own = capturedVaultKeyId
+        ? snapshot.entries.find((e) => e.vaultKeyId === capturedVaultKeyId)
+        : snapshot.entries[0];
       setState({
         status: 'ready',
         remembered: own?.record != null,

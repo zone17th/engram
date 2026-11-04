@@ -19,9 +19,13 @@ import { useRetryCountdown } from '@/lib/auth/use-retry-countdown';
 import { CryptoClientError } from '@/lib/crypto/client';
 import { hasLoneSurrogate } from '@/lib/crypto/protocol';
 import {
+  clearDeviceUnlockFallbackNotice,
   clearRecoveryCompletedNotice,
+  hasDeviceUnlockFallbackNotice,
   hasRecoveryCompletedNotice,
+  subscribeDeviceUnlockFallbackNotice,
 } from './recovery-notice';
+import { useRememberDevice } from '@/features/vault/device/use-remember-device';
 import { PasskeyUnlockButton } from '@/features/vault/passkey/passkey-unlock-button';
 import { Callout } from '@/components/ui/callout';
 
@@ -44,14 +48,17 @@ export function VaultUnlockFlow() {
   const { me } = useSession();
   const vault = useVault();
 
+  const rememberDeviceState = useRememberDevice();
   const [passphrase, setPassphrase] = useState('');
+  const [rememberOnUnlock, setRememberOnUnlock] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [deviceUnlocking, setDeviceUnlocking] = useState(false);
+  const [deviceFallbackNotice, setDeviceFallbackNotice] = useState(false);
   const [errorState, setErrorState] = useState<UnlockErrorState | null>(null);
   const [rateLimitDeadline, setRateLimitDeadline] = useState<number | null>(null);
   // FE1-7: recovery that committed while its tab locked hands this notice over through sessionStorage (route change).
   const [recoveredNotice, setRecoveredNotice] = useState(false);
   const meUserId = me?.user.id ?? null;
-
   const passInputRef = useRef<HTMLInputElement>(null);
   const vaultRef = useRef(vault);
   vaultRef.current = vault;
@@ -67,6 +74,7 @@ export function VaultUnlockFlow() {
 
   const returnToParam = searchParams.get('returnTo');
   const destinationPath = sanitizeReturnTo(returnToParam, '/app');
+  const noticeParam = searchParams.get('notice');
 
   const clearPassphraseField = useCallback(() => {
     setPassphrase('');
@@ -79,6 +87,15 @@ export function VaultUnlockFlow() {
     setRecoveredNotice(hasRecoveryCompletedNotice(meUserId));
   }, [meUserId]);
 
+  useEffect(() => {
+    const syncFallbackNotice = () => {
+      setDeviceFallbackNotice(
+        noticeParam === 'device_unlock_failed' || hasDeviceUnlockFallbackNotice(meUserId),
+      );
+    };
+    syncFallbackNotice();
+    return subscribeDeviceUnlockFallbackNotice(syncFallbackNotice);
+  }, [meUserId, noticeParam]);
   // Register secret form reset with VaultProvider so any lock / logout / account switch wipes state synchronously.
   useEffect(() => {
     return vault.registerSecretFormReset(() => {
@@ -103,6 +120,35 @@ export function VaultUnlockFlow() {
       }
     };
   }, [clearPassphraseField]);
+  const handleDeviceUnlock = useCallback(async () => {
+    if (submitting || deviceUnlocking || vault.inFlight) return;
+    setErrorState(null);
+    setDeviceUnlocking(true);
+    try {
+      const res = await vault.silentUnlock();
+      if (!isMountedRef.current) return;
+      if (res.status === 'unlocked') {
+        completedNavigationRef.current = true;
+        clearRecoveryCompletedNotice();
+        clearDeviceUnlockFallbackNotice();
+        router.replace(destinationPath);
+        return;
+      }
+      await rememberDeviceState.refresh();
+      if (!isMountedRef.current) return;
+      setDeviceFallbackNotice(true);
+    } finally {
+      if (isMountedRef.current) {
+        setDeviceUnlocking(false);
+      }
+    }
+  }, [destinationPath, deviceUnlocking, rememberDeviceState, router, submitting, vault]);
+
+  const handleForgetRememberedDevice = useCallback(async () => {
+    if (rememberDeviceState.busy || submitting || deviceUnlocking || vault.inFlight) return;
+    await rememberDeviceState.forget();
+  }, [deviceUnlocking, rememberDeviceState, submitting, vault.inFlight]);
+
   const handleUnlockSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
@@ -168,9 +214,16 @@ export function VaultUnlockFlow() {
           return;
         }
 
+        if (rememberOnUnlock) {
+          await rememberDeviceState.remember();
+          if (!isMountedRef.current || unlockIntentSeqRef.current !== intentSeq) {
+            return;
+          }
+        }
         completedNavigationRef.current = true;
         activeWorkerUnlockOpGenRef.current = null;
         clearRecoveryCompletedNotice();
+        clearDeviceUnlockFallbackNotice();
         router.replace(destinationPath);
       } catch (err) {
         passphraseSnapshot = null;
@@ -248,6 +301,8 @@ export function VaultUnlockFlow() {
       destinationPath,
       isRateLimitedActive,
       passphrase,
+      rememberDeviceState,
+      rememberOnUnlock,
       router,
       submitting,
       vault,
@@ -293,6 +348,20 @@ export function VaultUnlockFlow() {
             </p>
           </div>
         ) : null}
+        {deviceFallbackNotice ? (
+          <div
+            role="status"
+            className="card mb-6 p-5 card-warning"
+            data-testid="unlock-device-fallback-notice"
+          >
+            <p className="m-0 mb-1 text-[14px] font-semibold text-body">
+              {t('device.fallbackNoticeTitle')}
+            </p>
+            <p className="m-0 text-[13px] text-muted">
+              {t('device.fallbackNoticeBody')}
+            </p>
+          </div>
+        ) : null}
         <p
           className="t-label mb-2 min-w-0 max-w-full break-words text-muted [overflow-wrap:anywhere]"
           style={{ overflowWrap: 'anywhere' }}
@@ -307,15 +376,63 @@ export function VaultUnlockFlow() {
           {t('lead')}
         </p>
 
+        {rememberDeviceState.status === 'ready' && rememberDeviceState.remembered ? (
+          <section data-view="known" data-testid="unlock-device-section">
+            <div className="card mb-4 p-6">
+              <Button
+                type="button"
+                variant="primary"
+                className="mb-3 w-full !justify-center"
+                onClick={() => void handleDeviceUnlock()}
+                disabled={deviceUnlocking || submitting || vault.inFlight}
+                aria-busy={deviceUnlocking}
+                data-testid="unlock-device-button"
+              >
+                <span aria-hidden="true">🔓</span>{' '}
+                {deviceUnlocking ? t('device.pending') : t('device.button')}
+              </Button>
+              <p className="t-caption m-0 text-center text-muted">
+                {t('device.caption')}
+              </p>
+            </div>
+            <div className="mb-4 rounded-md bg-surfaceAlt p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0 flex-1 basis-[220px]">
+                  <p className="m-0 mb-0.5 text-[14px] font-semibold text-body">
+                    {t('device.rememberedTitle')}
+                  </p>
+                  <p className="m-0 text-[13px] text-muted">
+                    {t('device.rememberedBody')}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="tertiary"
+                  size="sm"
+                  onClick={() => void handleForgetRememberedDevice()}
+                  disabled={rememberDeviceState.busy || deviceUnlocking || submitting || vault.inFlight}
+                  data-testid="unlock-device-forget-button"
+                >
+                  {t('device.forgetButton')}
+                </Button>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
         {/* P03-T19: passkey card first (mockups/unlock.html view B); renders nothing when the user has no passkey. */}
         <PasskeyUnlockButton
-          onUnlocked={() => {
+          onUnlocked={async () => {
+            if (rememberOnUnlock) {
+              await rememberDeviceState.remember();
+              if (!isMountedRef.current) return;
+            }
             completedNavigationRef.current = true;
             clearRecoveryCompletedNotice();
+            clearDeviceUnlockFallbackNotice();
             router.replace(destinationPath);
           }}
         />
-
         <section data-view="new" data-testid="unlock-passphrase-section">
           <form onSubmit={handleUnlockSubmit} noValidate>
             <div className="card mb-4 p-6">
@@ -344,7 +461,30 @@ export function VaultUnlockFlow() {
                   data-testid="unlock-passphrase-input"
                 />
               </div>
-              {/* FE1-3: "Remember this device" checkbox is hidden until T18 (WebAuthn PRF + DevKey) implements device persistence. */}
+              {rememberDeviceState.status !== 'unavailable' ? (
+                <label
+                  htmlFor="unlock-remember-device"
+                  className="mb-5 flex cursor-pointer items-start gap-3"
+                >
+                  <input
+                    id="unlock-remember-device"
+                    type="checkbox"
+                    className="mt-1"
+                    checked={rememberOnUnlock}
+                    disabled={submitting || deviceUnlocking || vault.inFlight || isRateLimitedActive}
+                    onChange={(e) => setRememberOnUnlock(e.target.checked)}
+                    data-testid="unlock-remember-device-checkbox"
+                  />
+                  <span>
+                    <span className="block text-[14px] font-semibold text-body">
+                      {t('rememberDeviceLabel')}
+                    </span>
+                    <span className="text-[13px] text-muted">
+                      {t('rememberDeviceDescription')}
+                    </span>
+                  </span>
+                </label>
+              ) : null}
               <Button
                 type="submit"
                 variant="primary"

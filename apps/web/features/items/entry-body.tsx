@@ -596,8 +596,19 @@ export function useEntryBody(
 /** `🔒 ••••••` block (mockups `.lock-veil`). No plaintext, no `data-*` carrying content. */
 export function LockMask({ className, testId = 'entry-body-locked' }: { className?: string; testId?: string }) {
   const t = useTranslations('vault.locked');
+  const vault = useOptionalVault();
+  const handleClick = () => {
+    if (vault && vault.state === 'locked' && !vault.inFlight) {
+      void vault.silentUnlock();
+    }
+  };
   return (
-    <div className={cn('lock-veil', className)} data-testid={testId} data-vault-body="locked">
+    <div
+      className={cn('lock-veil', className)}
+      data-testid={testId}
+      data-vault-body="locked"
+      onClick={handleClick}
+    >
       <span aria-hidden="true">{LOCK_MASK_TEXT}</span>
       <span className="sr-only">{t('maskLabel')}</span>
     </div>

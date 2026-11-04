@@ -29,15 +29,28 @@ export function useVaultPillLabel(state: VaultPillState, minutesLeft?: number): 
  * `useSyncExternalStore` snapshot that gates decrypted bodies), so it can never disagree with the surface under it;
  * outside a provider it falls back to `locked`. `data-vault-state` exposes the resolved state to tests.
  */
+export interface VaultPillProps {
+  state?: VaultPillState;
+  minutesLeft?: number;
+  className?: string;
+  /** When provided on a non-absent pill, renders a keyboard-accessible `<button type="button">` instead of a `<span>`. */
+  onClick?: () => void;
+  disabled?: boolean;
+  ariaLabel?: string;
+  title?: string;
+  testId?: string;
+}
+
 export function VaultPill({
   state,
   minutesLeft,
   className,
-}: {
-  state?: VaultPillState;
-  minutesLeft?: number;
-  className?: string;
-}) {
+  onClick,
+  disabled,
+  ariaLabel,
+  title,
+  testId,
+}: VaultPillProps) {
   const t = useTranslations('vault');
   const vault = useOptionalVault();
   const resolved: VaultPillState = state ?? (vault ? vaultModeToPillState(vault.state) : 'locked');
@@ -49,6 +62,7 @@ export function VaultPill({
         className={cn('vault-pill vault-shut', className)}
         aria-disabled="true"
         data-vault-state="absent"
+        data-testid={testId}
       >
         <span aria-hidden="true">🔒</span>
         <span>{t('state.noVault')}</span>
@@ -57,16 +71,42 @@ export function VaultPill({
   }
 
   const open = resolved === 'open';
-  return (
-    <span
-      className={cn('vault-pill', open ? 'vault-open' : 'vault-shut', className)}
-      data-vault-state={open ? 'unlocked' : 'locked'}
-    >
+  const content = (
+    <>
       <span aria-hidden="true">{open ? '🔓' : '🔒'}</span>
       <span>{open ? t('state.unlocked') : t('state.locked')}</span>
       {open && resolvedMinutesLeft !== undefined && (
         <span>{t('pill.minutesLeft', { minutes: resolvedMinutesLeft })}</span>
       )}
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        title={title}
+        data-testid={testId}
+        className={cn('vault-pill', open ? 'vault-open' : 'vault-shut', className)}
+        data-vault-state={open ? 'unlocked' : 'locked'}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <span
+      aria-label={ariaLabel}
+      title={title}
+      data-testid={testId}
+      className={cn('vault-pill', open ? 'vault-open' : 'vault-shut', className)}
+      data-vault-state={open ? 'unlocked' : 'locked'}
+    >
+      {content}
     </span>
   );
 }

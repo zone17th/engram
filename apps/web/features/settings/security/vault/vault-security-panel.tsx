@@ -2,14 +2,19 @@
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { AuthStatus } from '@/components/ui/field';
 import { Toast } from '@/components/ui/toast';
 import { useSession } from '@/features/auth/session-provider';
+import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
+import {
+  appendDeviceFallbackNoticeParam,
+  rememberDeviceUnlockFallbackNotice,
+} from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault, useVault } from '@/features/vault/vault-provider';
-import { fetchRecoveryKeysStatus } from '@/lib/api/vault';
 import { ChangePassphraseDialog } from './change-passphrase-dialog';
 import { RecoveryKeysDialog, type RecoveryKeysDialogMode } from './recovery-keys-dialogs';
 import { ResetVaultDialog } from './reset-vault-dialog';
@@ -51,7 +56,8 @@ function VaultSecurityPanelInner({
   const t = useTranslations('settings.vaultSecurity');
   const queryClient = useQueryClient();
   const { me, sessionEpoch, refetchMe } = useSession();
-  const { workerState, inFlight, vaultMeta, reloadVaultMeta } = useVault();
+  const router = useRouter();
+  const { workerState, inFlight, vaultMeta, reloadVaultMeta, silentUnlock } = useVault();
 
   const [passDialogOpen, setPassDialogOpen] = useState(false);
   const [rkDialogMode, setRkDialogMode] = useState<RecoveryKeysDialogMode | null>(null);
@@ -180,6 +186,22 @@ function VaultSecurityPanelInner({
             </div>
             <Link
               href="/app/unlock?returnTo=%2Fapp%2Fsettings"
+              onClick={(e: MouseEvent<HTMLAnchorElement>) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                e.preventDefault();
+                const targetUrl = '/app/unlock?returnTo=%2Fapp%2Fsettings';
+                void (async () => {
+                  const res = await silentUnlock();
+                  if (res.status === 'unlocked') return;
+                  if (res.status === 'fallback') {
+                    rememberDeviceUnlockFallbackNotice(getKnownDeviceSessionUserId());
+                    router.push(appendDeviceFallbackNoticeParam(targetUrl));
+                    return;
+                  }
+                  if (res.reason === 'busy' || res.reason === 'stale' || res.reason === 'not_locked') return;
+                  router.push(targetUrl);
+                })();
+              }}
               className="btn btn-secondary btn-sm ml-auto no-underline"
             >
               {t('stateBanner.lockedCta')}
