@@ -1825,9 +1825,15 @@ textarea.kv-input {
   }
 }
 
+/* textarea.kv-input sets its own min-height above; this repeats the coarse 44px floor at higher specificity. */
+@media (pointer: coarse) {
+  textarea.kv-input {
+    min-height: 44px;
+  }
+}
+
 @media (pointer: coarse) {
   .kv-input,
-  textarea.kv-input,
   .kv-type-chip,
   .kv-bool-seg,
   .kv-bool-seg button,
