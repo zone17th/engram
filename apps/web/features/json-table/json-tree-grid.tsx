@@ -1220,7 +1220,7 @@ export function JsonTreeGrid({
               placeholder={tJson('addFieldValuePlaceholder')}
               aria-label={tJson('addFieldValueAria')}
               data-testid={`json-new-val-input-${containerPath}`}
-              className="field-input json-cell-input !w-[192px] shrink-0 px-2 py-1 text-[13px]"
+              className="field-input json-cell-input !w-[192px] shrink-0 px-2 py-1 text-[13px] [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
               {...VAULT_SECRET_INPUT_PROPS}
               onChange={(e) =>
                 setActiveAddField((prev) =>
