@@ -874,7 +874,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     expect(dupOcc0.querySelector('.sr-only')).toHaveTextContent('Lần xuất hiện thứ 1');
     expect(dupOcc1.querySelector('.sr-only')).toHaveTextContent('Lần xuất hiện thứ 2');
     expect(within(card1).getByTestId('json-cell-btn-root.k0')).toHaveAccessibleName(
-      'Hàng 1, cột 1',
+      'Trường dup (hàng 1) · Hàng 1, cột 1',
     );
     // Exact 64-bit integer lexeme 9007199254740993 rendered without Number() rounding
     expect(within(card1).getByTestId('json-cell-btn-root.p2')).toHaveTextContent('9007199254740993');
@@ -1178,7 +1178,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
               parentId: null,
             },
             action.key,
-            { initialValueLexeme: 'null' },
+            { initialValueLexeme: '""' },
           );
           if (expectedLib.ok && expectedLib.edit) {
             expectedSplice = expectedLib.edit;
@@ -2624,11 +2624,9 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       const genBeforeCompSwitch = unconfirmedSaveStoreTesting.getClearGenerationForTests();
       fireEvent.click(screen.getByTestId('btn-add-json'));
       const composer = screen.getByTestId('new-json-entry-composer');
-      fireEvent.click(within(composer).getByTestId('json-open-add-field-root'));
       fireEvent.change(within(composer).getByTestId('json-new-key-input-root'), {
         target: { value: 'compKey' },
       });
-      fireEvent.click(within(composer).getByTestId('json-confirm-add-field-root'));
       fireEvent.click(within(composer).getByTestId('new-json-save-btn'));
       await compLogoutEntered;
 
@@ -2857,7 +2855,7 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
   it(
     'P05-entryux KV editor + saved table: covers advisor-dec-371/373, RFD-1..33, L1..L5, and D0/D5/D10/D13 (lossless round-trip, multiline Shift+Enter & verbatim value paste, single-line pair paste into key, debounced polite live region, bilateral container confirm, and add-field value input)',
     async () => {
-      const h = await setupJsonCardHarness({
+      await setupJsonCardHarness({
         initialEntries: [
           {
             id: ENTRY_ID_1,
@@ -3011,12 +3009,14 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       render(
         <NextIntlClientProvider locale="vi" messages={viMessages}>
           <QueryClientProvider client={qc}>
-            <NewJsonEntryComposer
-              itemId={ITEM_ID}
-              itemName="Test"
-              onSaved={vi.fn()}
-              onCancel={vi.fn()}
-            />
+            <SessionProvider>
+              <NewJsonEntryComposer
+                itemId={ITEM_ID}
+                itemName="Test"
+                onSaved={vi.fn()}
+                onCancel={vi.fn()}
+              />
+            </SessionProvider>
           </QueryClientProvider>
         </NextIntlClientProvider>,
       );
@@ -3088,13 +3088,15 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     render(
       <NextIntlClientProvider locale="vi" messages={viMessages}>
         <QueryClientProvider client={qc}>
-          <NewJsonEntryComposer
-            itemId={ITEM_ID}
-            itemName="Test"
-            initialPreset="empty-array"
-            onSaved={vi.fn()}
-            onCancel={vi.fn()}
-          />
+          <SessionProvider>
+            <NewJsonEntryComposer
+              itemId={ITEM_ID}
+              itemName="Test"
+              initialPreset="empty-array"
+              onSaved={vi.fn()}
+              onCancel={vi.fn()}
+            />
+          </SessionProvider>
         </QueryClientProvider>
       </NextIntlClientProvider>,
     );

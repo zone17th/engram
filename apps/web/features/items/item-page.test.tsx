@@ -5130,7 +5130,7 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
 
     // Unlocked empty state shows emptyBody and add buttons
-    const emptyBox = screen.getByTestId('item-entries-empty');
+    const emptyBox = await screen.findByTestId('item-entries-empty');
     expect(emptyBox).toHaveTextContent(viMessages.content.item.emptyBody);
     expect(within(emptyBox).getByTestId('empty-add-text-btn')).toBeInTheDocument();
     expect(within(emptyBox).queryByTestId('empty-unlock-cta')).toBeNull();

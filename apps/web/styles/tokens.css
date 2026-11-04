@@ -1827,6 +1827,7 @@ textarea.kv-input {
 
 @media (pointer: coarse) {
   .kv-input,
+  textarea.kv-input,
   .kv-type-chip,
   .kv-bool-seg,
   .kv-bool-seg button,
