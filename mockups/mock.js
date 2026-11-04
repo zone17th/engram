@@ -5582,8 +5582,11 @@
     let rawSyntaxIssue = null;
     let lastRawErrorOffset = 0;
     let canonicalRawText = null;
+    let rawEditedSinceSwitch = false;
     let inlinePromptState = null;
     let lastErrorSignature = '';
+    let lastReasonHtml = null;
+    let lastReasonClass = null;
     let liveAnnounceTimer = null;
 
     function hasLoneSurrogateInStr(str) {
@@ -5652,6 +5655,7 @@
         rootKind,
         rows: cloneRowTree(rows),
         canonicalRawText,
+        rawEditedSinceSwitch,
         rawSyntaxIssue,
         switchBlockedMsg
       };
@@ -5662,6 +5666,7 @@
       rootKind = snap.rootKind;
       rows = cloneRowTree(snap.rows);
       canonicalRawText = snap.canonicalRawText;
+      rawEditedSinceSwitch = !!snap.rawEditedSinceSwitch;
       rawSyntaxIssue = snap.rawSyntaxIssue;
       switchBlockedMsg = snap.switchBlockedMsg;
       inlinePromptState = null;
@@ -5767,6 +5772,10 @@
     function isEffectivePlaceholderRow(r, idx, list, parentKind) {
       if (r.placeholder) return true;
       if (r.fromRaw) return false;
+      /* RFD-21: In object containers, any table-authored completely blank string row (any position) is a placeholder */
+      if (parentKind === 'object' && isRowCompletelyBlank(r, 'object')) {
+        return true;
+      }
       if (idx === list.length - 1 && isRowCompletelyBlank(r, parentKind)) {
         return true;
       }
@@ -5907,6 +5916,23 @@
       return null;
     }
 
+    function getRowAncestorPath(targetId, list, parentKind, prefix) {
+      const curList = list || rows;
+      const curKind = parentKind || rootKind;
+      const curPrefix = prefix || '';
+      for (let i = 0; i < curList.length; i++) {
+        const r = curList[i];
+        if (r.id === targetId) return curPrefix;
+        if ((r.type === 'object' || r.type === 'array') && Array.isArray(r.children)) {
+          const childName = r.key || (curKind === 'array' ? `#${i + 1}` : `hàng ${i + 1}`);
+          const childPath = curPrefix ? `${curPrefix} › ${childName}` : childName;
+          const found = getRowAncestorPath(targetId, r.children, r.type, childPath);
+          if (found !== null) return found;
+        }
+      }
+      return null;
+    }
+
     function typeChipLabel(type) {
       switch (type) {
         case 'number':
@@ -5924,11 +5950,11 @@
       }
     }
 
-    function parseMultiLineKeyValuePaste(text, targetParentKind) {
+    function parseMultiLineKeyValuePaste(text, targetParentKind, isValueInput) {
       const raw = String(text || '');
       const trimmed = raw.trim();
       if (!trimmed) return null;
-      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      if (!isValueInput && (trimmed.startsWith('{') || trimmed.startsWith('['))) {
         const parsed = parseJsonStrict(trimmed);
         if (parsed.ok && (parsed.document.root.kind === 'object' || parsed.document.root.kind === 'array')) {
           return { kind: 'json', root: parsed.document.root, rawText: trimmed };
@@ -5938,9 +5964,23 @@
       const nonEmptyLines = rawLines.filter((l) => l.trim() !== '');
       if (nonEmptyLines.length < 1) return null;
 
-      /* In array containers, support multi-line plain item paste if lines aren't key:value */
+      /* RFD-19: On value inputs, never intercept single-line text (URLs, base64 ==, 10:30 stay a single value) */
+      if (isValueInput && nonEmptyLines.length < 2) {
+        return null;
+      }
+
+      /* On key inputs, single-line pair paste requires >= 2 lines OR explicit 'key: value' (colon + space) / 'key=value' */
+      if (!isValueInput && nonEmptyLines.length === 1) {
+        const singleLine = nonEmptyLines[0];
+        const mSingle = /^([^:=\s][^:=]*?)\s*(?::\s+|=\s?)(.+)$/.exec(singleLine);
+        if (!mSingle || !mSingle[1].trim() || /^https?$/i.test(mSingle[1].trim())) {
+          return null;
+        }
+        return { kind: 'pairs', pairs: [{ key: mSingle[1].trim(), value: mSingle[2] }] };
+      }
+
       const pairs = [];
-      let allPairs = true;
+      let allPairs = nonEmptyLines.length >= 2;
       for (let i = 0; i < nonEmptyLines.length; i++) {
         const line = nonEmptyLines[i];
         const m = /^([^:=]+?)\s*[:=]\s?(.*)$/.exec(line);
@@ -5950,13 +5990,10 @@
         }
         pairs.push({ key: m[1].trim(), value: m[2] });
       }
-      if (allPairs) {
-        if (pairs.length === 1 && !raw.includes('\n') && !raw.includes(':') && !raw.includes('=')) {
-          return null;
-        }
+      if (allPairs && pairs.length >= 2) {
         return { kind: 'pairs', pairs };
       }
-      if (targetParentKind === 'array' && nonEmptyLines.length > 1) {
+      if (targetParentKind === 'array' && nonEmptyLines.length >= 2) {
         return { kind: 'lines', items: nonEmptyLines };
       }
       return null;
@@ -5976,8 +6013,8 @@
         const emptyVi = isArr ? 'Mảng rỗng [] (0 phần tử)' : 'Object rỗng {} (0 trường)';
         const emptyEn = isArr ? 'Empty array [] (0 items)' : 'Empty object {} (0 fields)';
         const addBtnLabel = depth > 0
-          ? (isArr ? '+ dòng · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add nested row</span>')
-          : (isArr ? '+ Thêm hàng · <span lang="en">Add row</span>' : '+ Thêm dòng · <span lang="en">Add row</span>');
+          ? (isArr ? '+ phần tử · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add field</span>')
+          : (isArr ? '+ Thêm phần tử · <span lang="en">Add item</span>' : '+ Thêm dòng · <span lang="en">Add field</span>');
         return `${colHeadHtml}<div class="kv-empty-container">
           <span class="mono">${emptyVi} · <span lang="en">${emptyEn}</span></span>
           <button type="button" class="btn btn-tertiary btn-sm" data-kv-act="add-row" data-parent-id="${esc(parentRowId || 'root')}">
@@ -6005,9 +6042,12 @@
           ? `<span class="kv-occ-badge" aria-label="Lần xuất hiện thứ ${r.occurrenceIndex + 1} · Occurrence ${r.occurrenceIndex + 1}" title="Khoá trùng lần ${r.occurrenceIndex + 1} · Duplicate key occurrence #${r.occurrenceIndex + 1}">⁽${toSuperscriptNum(r.occurrenceIndex + 1)}⁾</span>`
           : '';
 
-        const keySpaceWarnHtml = !isArr && !keyErr && r.key !== '' && r.key !== r.key.trim()
-          ? `<p class="text-[11px] text-warning-ink m-0 mt-0.5">Khoá có khoảng trắng đầu/cuối (được giữ nguyên) · <span lang="en">Key has leading/trailing spaces (preserved verbatim)</span></p>`
+        const keyWarnId = `kv-warn-key-${r.id}`;
+        const hasKeySpaceWarn = !isArr && !keyErr && r.key !== '' && r.key !== r.key.trim();
+        const keySpaceWarnHtml = hasKeySpaceWarn
+          ? `<p id="${esc(keyWarnId)}" class="text-[11px] text-warning-ink m-0 mt-0.5">Khoá có khoảng trắng đầu/cuối (được giữ nguyên) · <span lang="en">Key has leading/trailing spaces (preserved verbatim)</span></p>`
           : '';
+        const keyDescribedBy = keyErr ? keyErrId : (hasKeySpaceWarn ? keyWarnId : '');
 
         let keyCellHtml = '';
         if (isArr) {
@@ -6029,7 +6069,7 @@
                 value="${esc(r.key)}"
                 placeholder="Tên trường (vd: ssid) · Key"
                 aria-label="${esc(ctxPrefixVi)}Trường hàng ${rowNum} · ${esc(ctxPrefixEn)}Key row ${rowNum}"
-                ${keyErr ? `aria-invalid="true" aria-describedby="${esc(keyErrId)}"` : ''}
+                ${keyErr ? 'aria-invalid="true"' : ''} ${keyDescribedBy ? `aria-describedby="${esc(keyDescribedBy)}"` : ''}
                 data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
               ${occBadgeHtml}
             </div>
@@ -6056,7 +6096,7 @@
         } else if (r.type === 'string' || r.type === 'number') {
           const ph = r.type === 'number'
             ? 'Giá trị số (vd: 36) · Number value'
-            : (isArr ? `Giá trị mục #${rowNum} · Item #${rowNum} value` : 'Giá trị · Value');
+            : (isArr ? `Giá trị mục #${rowNum} (trống = "") · Item #${rowNum} value` : 'Giá trị · Value');
           const isMultiline = r.type === 'string' && r.value.includes('\n');
           const rowsCount = isMultiline ? Math.min(6, Math.max(2, r.value.split('\n').length)) : 1;
           const inputHtml = isMultiline
@@ -6097,7 +6137,8 @@
           const summaryEn = r.type === 'object' ? `${nonBlankCount} nested fields` : `${nonBlankCount} items`;
           valueControlHtml = `<button type="button" class="kv-container-pill" data-kv-act="toggle-expand" data-row-id="${esc(r.id)}" aria-expanded="${r.expanded ? 'true' : 'false'}" aria-label="${esc(ctxPrefixVi)}${r.type === 'object' ? 'Object' : 'Mảng'} hàng ${rowNum} (${summaryVi}) · ${esc(ctxPrefixEn)}${r.type === 'object' ? 'Object' : 'Array'} row ${rowNum} (${summaryEn})">
             <span class="caret" aria-hidden="true">›</span>
-            <span>${r.type === 'object' ? 'Object' : 'Mảng · Array'} (${summaryVi} · <span lang="en" class="text-muted">${summaryEn}</span>)</span>
+            <span class="kv-pill-full">${r.type === 'object' ? 'Object' : 'Mảng · Array'} (${summaryVi} · <span lang="en" class="text-muted">${summaryEn}</span>)</span>
+            <span class="kv-pill-compact" aria-hidden="true">${r.type === 'object' ? 'Object' : 'Mảng'} (${nonBlankCount})</span>
           </button>`;
         }
 
@@ -6202,8 +6243,8 @@
       }).join('');
 
       const addBtnLabel = depth > 0
-        ? (isArr ? '+ dòng · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add nested row</span>')
-        : (isArr ? '+ Thêm hàng · <span lang="en">Add row</span>' : '+ Thêm dòng · <span lang="en">Add row</span>');
+        ? (isArr ? '+ phần tử · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add field</span>')
+        : (isArr ? '+ Thêm phần tử · <span lang="en">Add item</span>' : '+ Thêm dòng · <span lang="en">Add field</span>');
 
       const pasteHintHtml = depth === 0
         ? (isArr
@@ -6243,7 +6284,7 @@
       }
     }
 
-    function syncInlinePromptBanner() {
+    function syncInlinePromptBanner(focusFirstBtn) {
       if (!cardEl) return;
       const promptEl = cardEl.querySelector('[data-kv-inline-prompt]');
       if (!promptEl) return;
@@ -6253,13 +6294,19 @@
         return;
       }
       promptEl.hidden = false;
-      promptEl.innerHTML = `<div class="min-w-0">
+      promptEl.innerHTML = `<div class="min-w-0" role="alert">
         <p class="font-semibold m-0 text-[13px] text-body">${inlinePromptState.titleHtml}</p>
         ${inlinePromptState.descHtml ? `<p class="m-0 mt-0.5 text-[12px] text-muted">${inlinePromptState.descHtml}</p>` : ''}
       </div>
-      <div class="flex flex-wrap items-center gap-2 shrink-0">
+      <div class="flex flex-wrap items-center gap-2 min-w-0">
         ${inlinePromptState.actionsHtml}
       </div>`;
+      if (focusFirstBtn) {
+        const firstAction = promptEl.querySelector('button[data-kv-prompt-act]');
+        if (firstAction && typeof firstAction.focus === 'function') {
+          firstAction.focus();
+        }
+      }
     }
 
     function scheduleLiveErrorAnnouncement(errorsMap) {
@@ -6368,14 +6415,19 @@
       }
 
       if (reasonEl) {
-        if (disableReason) {
-          reasonEl.hidden = false;
-          reasonEl.className = (hasRowErrors || rawSyntaxIssue || overCap) ? 'kv-save-reason' : 'text-[12px] text-muted';
-          reasonEl.innerHTML = `${esc(disableReason.vi)} · <span lang="en">${esc(disableReason.en)}</span>`;
-        } else {
-          reasonEl.hidden = false;
-          reasonEl.className = 'text-[12px] text-muted';
-          reasonEl.innerHTML = `Mã hoá đầu-cuối · <span class="kbd">Enter</span>/<span class="kbd">Tab</span> chuyển ô · <span class="kbd">Alt+↓</span> đổi kiểu · <span lang="en">End-to-end encrypted</span>`;
+        reasonEl.hidden = false;
+        const nextClass = (disableReason && (hasRowErrors || rawSyntaxIssue || overCap)) ? 'kv-save-reason' : 'text-[12px] text-muted';
+        const nextHtml = disableReason
+          ? `${esc(disableReason.vi)} · <span lang="en">${esc(disableReason.en)}</span>`
+          : `Mã hoá đầu-cuối · <span class="kbd">Enter</span>/<span class="kbd">Tab</span> chuyển ô · <span class="kbd">Alt+↓</span> đổi kiểu · <span lang="en">End-to-end encrypted</span>`;
+        /* RFD-24: Only mutate footer reason DOM when class or text actually changes */
+        if (lastReasonClass !== nextClass) {
+          reasonEl.className = nextClass;
+          lastReasonClass = nextClass;
+        }
+        if (lastReasonHtml !== nextHtml) {
+          reasonEl.innerHTML = nextHtml;
+          lastReasonHtml = nextHtml;
         }
       }
 
@@ -6446,11 +6498,42 @@
 
         li.classList.toggle('is-invalid', hasErrNow);
 
+        /* RFD-29: Keep row group aria-label, key-space warning, and Số? aria-label in sync during in-place refresh */
+        const rowNum = found.index + 1;
+        const isArr = found.parentKind === 'array';
+        const ancPath = getRowAncestorPath(rId) || '';
+        const ctxPrefixVi = ancPath ? `${ancPath} › ` : '';
+        const ctxPrefixEn = ancPath ? `${ancPath} › ` : '';
+        const rowLabelText = isArr
+          ? `${ctxPrefixVi}Phần tử #${rowNum} · ${ctxPrefixEn}Item #${rowNum}`
+          : `${ctxPrefixVi}Dòng ${rowNum}${r.key ? `: ${r.key}` : ''} · ${ctxPrefixEn}Row ${rowNum}${r.key ? `: ${r.key}` : ''}`;
+        if (li.getAttribute('aria-label') !== rowLabelText) {
+          li.setAttribute('aria-label', rowLabelText);
+        }
+
         const keyInp = li.querySelector(`[data-kv-key-input="${CSS.escape(rId)}"]`);
         const keyCell = keyInp ? keyInp.closest('.kv-cell-key') : null;
         if (keyInp && keyCell) {
           const keyErrId = `kv-err-key-${rId}`;
+          const keyWarnId = `kv-warn-key-${rId}`;
           let errP = keyCell.querySelector(`#${CSS.escape(keyErrId)}`);
+          let warnP = keyCell.querySelector(`#${CSS.escape(keyWarnId)}`);
+          const hasKeySpaceWarn = !isArr && !keyErr && r.key !== '' && r.key !== r.key.trim();
+
+          if (hasKeySpaceWarn) {
+            const warnHtml = 'Khoá có khoảng trắng đầu/cuối (được giữ nguyên) · <span lang="en">Key has leading/trailing spaces (preserved verbatim)</span>';
+            if (!warnP) {
+              warnP = document.createElement('p');
+              warnP.id = keyWarnId;
+              warnP.className = 'text-[11px] text-warning-ink m-0 mt-0.5';
+              warnP.innerHTML = warnHtml;
+              if (errP) keyCell.insertBefore(warnP, errP);
+              else keyCell.appendChild(warnP);
+            }
+          } else if (warnP) {
+            warnP.remove();
+          }
+
           if (keyErr) {
             keyInp.setAttribute('aria-invalid', 'true');
             keyInp.setAttribute('aria-describedby', keyErrId);
@@ -6466,7 +6549,11 @@
             }
           } else {
             keyInp.removeAttribute('aria-invalid');
-            keyInp.removeAttribute('aria-describedby');
+            if (hasKeySpaceWarn) {
+              keyInp.setAttribute('aria-describedby', keyWarnId);
+            } else {
+              keyInp.removeAttribute('aria-describedby');
+            }
             if (errP) errP.remove();
           }
         }
@@ -6500,16 +6587,21 @@
             const shouldHaveSug = r.type === 'string' && !r.hasCarriageReturn && !r.hasLoneSurrogate && !r.value.includes('\n') && r.value.trim() !== '' && isValidJsonNumberLexeme(r.value.trim());
             let sugBtn = adornWrap.querySelector('[data-kv-act="suggest-number"]');
             adornWrap.classList.toggle('has-suggest', shouldHaveSug);
+            const sugAriaLabel = `${ctxPrefixVi}Đổi dòng ${rowNum} sang kiểu Số · ${ctxPrefixEn}Switch row ${rowNum} to Number`;
             if (shouldHaveSug && !sugBtn) {
               sugBtn = document.createElement('button');
               sugBtn.type = 'button';
               sugBtn.className = 'kv-num-suggest';
               sugBtn.dataset.kvAct = 'suggest-number';
               sugBtn.dataset.rowId = rId;
-              sugBtn.setAttribute('aria-label', `Đổi sang kiểu Số · Switch to Number`);
+              sugBtn.setAttribute('aria-label', sugAriaLabel);
               sugBtn.title = 'Giá trị khớp số JSON — bấm để đổi sang kiểu Số · Value parses as a number — click to switch to Number';
               sugBtn.textContent = 'Số?';
               adornWrap.appendChild(sugBtn);
+            } else if (shouldHaveSug && sugBtn) {
+              if (sugBtn.getAttribute('aria-label') !== sugAriaLabel) {
+                sugBtn.setAttribute('aria-label', sugAriaLabel);
+              }
             } else if (!shouldHaveSug && sugBtn) {
               sugBtn.remove();
             }
@@ -6560,10 +6652,10 @@
       const rowId = targetInp.dataset.kvKeyInput || targetInp.dataset.kvValInput;
       const found = findRowAndParent(rows, rowId, rootKind, null);
       if (!found) return;
-      /* On value input, only intercept multi-field paste when value input is empty */
-      if (targetInp.dataset.kvValInput && targetInp.value !== '') return;
+      const isValueInput = !!targetInp.dataset.kvValInput;
+      if (isValueInput && targetInp.value !== '') return;
 
-      const parsedPaste = parseMultiLineKeyValuePaste(text, found.parentKind);
+      const parsedPaste = parseMultiLineKeyValuePaste(text, found.parentKind, isValueInput);
       if (!parsedPaste) return;
 
       const prevSnap = captureEditorSnapshot();
@@ -6608,7 +6700,7 @@
           return;
         }
 
-        /* Shape mismatch on non-empty editor: ask inline instead of clobbering */
+        /* Shape mismatch on non-empty editor: ask inline instead of clobbering (RFD-25, RFD-27) */
         const shapeLabelVi = pastedRoot.kind === 'array' ? 'mảng JSON ([...])' : 'object JSON ({...})';
         const shapeLabelEn = pastedRoot.kind === 'array' ? 'JSON array ([...])' : 'JSON object ({...})';
         inlinePromptState = {
@@ -6616,15 +6708,16 @@
           pastedRawText: parsedPaste.rawText,
           pastedRoot,
           targetRowId: found.row.id,
+          restoreFocusDesc: { kind: isValueInput ? 'val' : 'key', rowId: found.row.id },
           titleHtml: `Nội dung dán là ${shapeLabelVi}, khác với khung hiện tại · <span lang="en" class="font-normal text-muted">Pasted ${shapeLabelEn} differs from current container</span>`,
           descHtml: `Chọn cách xử lý để không làm mất các trường đã nhập. · <span lang="en">Choose how to apply without losing existing rows.</span>`,
           actionsHtml: `
-            <button type="button" class="btn btn-secondary btn-sm" data-kv-prompt-act="paste-nest">Lồng vào dòng này · <span lang="en">Nest in this row</span></button>
+            <button type="button" class="btn btn-secondary btn-sm" data-kv-prompt-act="paste-nest">Thay giá trị dòng này · <span lang="en">Replace this row's value</span></button>
             <button type="button" class="btn btn-danger btn-sm" data-kv-prompt-act="paste-replace">Thay toàn bộ · <span lang="en">Replace all</span></button>
             <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Huỷ · <span lang="en">Cancel</span></button>
           `
         };
-        syncInlinePromptBanner();
+        syncInlinePromptBanner(true);
         return;
       }
 
@@ -6691,7 +6784,8 @@
         return true;
       }
       if (e.key === 'Tab') {
-        closeAndRestoreFn(false);
+        /* RFD-26: Focus the trigger synchronously before native Tab runs so sequential focus continues from the trigger */
+        closeAndRestoreFn(true);
         return true;
       }
       if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -6761,6 +6855,19 @@
 
         if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
           e.preventDefault();
+          /* RFD-28: On an untouched blank placeholder row in a nested container, Enter outdents to a new row after the parent */
+          if (found.index === found.list.length - 1 && isRowCompletelyBlank(found.row, 'object') && found.parentRow) {
+            const parentFound = findRowAndParent(rows, found.parentRow.id, rootKind, null);
+            if (parentFound) {
+              if (found.list.length > 1) {
+                found.list.splice(found.index, 1);
+              }
+              const outdentedRow = makeRow({ key: '', value: '', type: 'string', placeholder: true });
+              parentFound.list.splice(parentFound.index + 1, 0, outdentedRow);
+              paint({ kind: parentFound.parentKind === 'array' ? 'val' : 'key', rowId: outdentedRow.id });
+              return;
+            }
+          }
           paint({ kind: 'val', rowId: rId, select: true });
           return;
         }
@@ -6787,6 +6894,21 @@
           if (found.index < found.list.length - 1) {
             const nextRow = found.list[found.index + 1];
             paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nextRow.id, select: true });
+          } else if (isRowCompletelyBlank(found.row, found.parentKind) && !found.row.fromRaw) {
+            /* RFD-28: Do not pile up extra blank placeholder rows on repeated Enter; outdent if inside a nested container */
+            if (found.parentRow) {
+              const parentFound = findRowAndParent(rows, found.parentRow.id, rootKind, null);
+              if (parentFound) {
+                if (found.list.length > 1) {
+                  found.list.splice(found.index, 1);
+                }
+                const outdentedRow = makeRow({ key: '', value: '', type: 'string', placeholder: true });
+                parentFound.list.splice(parentFound.index + 1, 0, outdentedRow);
+                paint({ kind: parentFound.parentKind === 'array' ? 'val' : 'key', rowId: outdentedRow.id });
+                return;
+              }
+            }
+            paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: found.row.id });
           } else {
             const created = makeRow({ key: '', value: '', type: 'string', placeholder: true });
             found.list.push(created);
@@ -6804,6 +6926,51 @@
         }
       }
     });
+
+    function applyRowTypeChange(r, prevType, nextType, withUndoToast) {
+      const prevSnap = withUndoToast ? captureEditorSnapshot() : null;
+      if (prevType !== nextType) {
+        markTableMutated(r, 'type');
+      }
+      r.type = nextType;
+      if (nextType === 'boolean') {
+        if (r.value !== 'true' && r.value !== 'false') r.value = 'true';
+        r.children = [];
+      } else if (nextType === 'null') {
+        r.value = 'null';
+        r.children = [];
+      } else if (nextType === 'number') {
+        if (!isValidJsonNumberLexeme(r.value.trim())) {
+          r.value = r.value.trim() || '0';
+        }
+        r.children = [];
+      } else if (nextType === 'object' || nextType === 'array') {
+        r.expanded = true;
+        if (!Array.isArray(r.children) || r.children.length === 0) {
+          r.children = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
+        } else {
+          /* RFD-20: Clear fromRaw and rawKeyLiteral on direct children when container kind changes */
+          r.children.forEach((c) => {
+            c.fromRaw = false;
+            c.rawKeyLiteral = null;
+            if (nextType === 'array') c.key = '';
+          });
+        }
+      } else if (nextType === 'string') {
+        if (prevType === 'null' && r.value === 'null') r.value = '';
+        r.children = [];
+      }
+      const focusTarget = (nextType === 'object' || nextType === 'array') && r.children && r.children[0]
+        ? { kind: nextType === 'array' ? 'val' : 'key', rowId: r.children[0].id }
+        : { kind: 'val', rowId: r.id };
+      paint(focusTarget);
+      if (withUndoToast && prevSnap) {
+        toast('Đã đổi kiểu dòng · Changed row type', 'Hoàn tác', {
+          originEl: kvHost,
+          onAction: () => restoreEditorSnapshot(prevSnap)
+        });
+      }
+    }
 
     kvHost.addEventListener('click', (e) => {
       const actBtn = e.target.closest('[data-kv-act]');
@@ -6837,31 +7004,79 @@
         if (!found) return;
         const r = found.row;
         const prevType = r.type;
-        if (prevType !== nextType) {
-          markTableMutated(r, 'type');
+        if (prevType === nextType) {
+          paint({ kind: 'type', rowId: r.id });
+          return;
         }
-        r.type = nextType;
-        if (nextType === 'boolean') {
-          if (r.value !== 'true' && r.value !== 'false') r.value = 'true';
-        } else if (nextType === 'null') {
-          r.value = 'null';
-        } else if (nextType === 'number') {
-          if (!isValidJsonNumberLexeme(r.value.trim())) {
-            r.value = r.value.trim() || '0';
-          }
-        } else if (nextType === 'object' || nextType === 'array') {
-          r.expanded = true;
-          if (!Array.isArray(r.children) || r.children.length === 0) {
-            r.children = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
-          }
-        } else if (nextType === 'string') {
-          /* RFD-14: Only clear 'null' if coming from type 'null' */
-          if (prevType === 'null' && r.value === 'null') r.value = '';
+        const prevChildren = Array.isArray(r.children) ? r.children : [];
+        const committedChildren = (prevType === 'object' || prevType === 'array')
+          ? prevChildren.filter((c, cIdx) => !isEffectivePlaceholderRow(c, cIdx, prevChildren, prevType))
+          : [];
+
+        /* RFD-23: Confirm when changing a container row with >=1 committed child to a scalar type */
+        if ((prevType === 'object' || prevType === 'array') && nextType !== 'object' && nextType !== 'array' && committedChildren.length > 0) {
+          const unitVi = prevType === 'object' ? 'trường con' : 'phần tử con';
+          const unitEn = prevType === 'object' ? 'nested fields' : 'nested items';
+          inlinePromptState = {
+            kind: 'switch-row-type',
+            rowId: r.id,
+            prevType,
+            nextType,
+            restoreFocusDesc: { kind: 'type', rowId: r.id },
+            titleHtml: `${committedChildren.length} ${unitVi} sẽ bị xoá khi đổi sang kiểu đơn · <span lang="en" class="font-normal text-muted">${committedChildren.length} ${unitEn} will be removed</span>`,
+            descHtml: `Đổi sang kiểu ${typeChipLabel(nextType)} sẽ bỏ danh sách con hiện tại của dòng này. · <span lang="en">Switching to a scalar type drops nested children.</span>`,
+            actionsHtml: `
+              <button type="button" class="btn btn-danger btn-sm" data-kv-prompt-act="confirm-row-type">Đổi kiểu &amp; xoá con · <span lang="en">Switch &amp; remove</span></button>
+              <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Huỷ · <span lang="en">Cancel</span></button>
+            `
+          };
+          paint({ kind: 'type', rowId: r.id });
+          syncInlinePromptBanner(true);
+          return;
         }
-        const focusTarget = (nextType === 'object' || nextType === 'array') && r.children && r.children[0]
-          ? { kind: nextType === 'array' ? 'val' : 'key', rowId: r.children[0].id }
-          : { kind: 'val', rowId: r.id };
-        paint(focusTarget);
+
+        /* RFD-20 / RFD-13: Confirm when switching a nested container between Object and Array with committed children */
+        if ((prevType === 'object' && nextType === 'array') || (prevType === 'array' && nextType === 'object')) {
+          const keysWithNames = prevType === 'object' ? committedChildren.filter((c) => c.key !== '') : [];
+          if (prevType === 'object' && nextType === 'array' && keysWithNames.length > 0) {
+            inlinePromptState = {
+              kind: 'switch-row-type',
+              rowId: r.id,
+              prevType,
+              nextType,
+              restoreFocusDesc: { kind: 'type', rowId: r.id },
+              titleHtml: `${keysWithNames.length} trường con sẽ mất tên khi chuyển sang Mảng · <span lang="en" class="font-normal text-muted">${keysWithNames.length} nested keys will be dropped</span>`,
+              descHtml: `Mảng chỉ lưu danh sách giá trị theo thứ tự chỉ mục (#1, #2…). · <span lang="en">Arrays store ordered values by index only.</span>`,
+              actionsHtml: `
+                <button type="button" class="btn btn-danger btn-sm" data-kv-prompt-act="confirm-row-type">Chuyển sang Mảng · <span lang="en">Switch to Array</span></button>
+                <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Giữ Object · <span lang="en">Keep Object</span></button>
+              `
+            };
+            paint({ kind: 'type', rowId: r.id });
+            syncInlinePromptBanner(true);
+            return;
+          }
+          if (prevType === 'array' && nextType === 'object' && committedChildren.length > 0) {
+            inlinePromptState = {
+              kind: 'switch-row-type',
+              rowId: r.id,
+              prevType,
+              nextType,
+              restoreFocusDesc: { kind: 'type', rowId: r.id },
+              titleHtml: `${committedChildren.length} phần tử cần đặt tên trường khi chuyển sang Object · <span lang="en" class="font-normal text-muted">${committedChildren.length} items need key names</span>`,
+              descHtml: `Mỗi trường trong Object cần có tên khoá trước khi lưu. · <span lang="en">Each Object field requires a key name before saving.</span>`,
+              actionsHtml: `
+                <button type="button" class="btn btn-secondary btn-sm" data-kv-prompt-act="confirm-row-type">Chuyển &amp; đặt tên · <span lang="en">Switch &amp; name keys</span></button>
+                <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Giữ Mảng · <span lang="en">Keep Array</span></button>
+              `
+            };
+            paint({ kind: 'type', rowId: r.id });
+            syncInlinePromptBanner(true);
+            return;
+          }
+        }
+
+        applyRowTypeChange(r, prevType, nextType, false);
         return;
       }
       if (act === 'suggest-number') {
@@ -7012,6 +7227,7 @@
 
       if (ta) {
         ta.addEventListener('input', () => {
+          rawEditedSinceSwitch = true;
           if (formatMsgEl) formatMsgEl.hidden = true;
           validateRawEditor();
         });
@@ -7037,6 +7253,7 @@
             return;
           }
           ta.value = fmtRes.text;
+          rawEditedSinceSwitch = true;
           if (formatMsgEl) formatMsgEl.hidden = true;
           validateRawEditor();
           toast('Đã định dạng JSON gốc · Formatted Raw JSON');
@@ -7053,9 +7270,14 @@
         const prevSnap = captureEditorSnapshot();
         canonicalRawText = null;
         rootKind = nextKind;
-        if (nextKind === 'array') {
-          rows.forEach((r) => { r.key = ''; r.rawKeyLiteral = null; });
-        }
+        /* RFD-20: Clear fromRaw and rawKeyLiteral on direct children when root container kind changes */
+        rows.forEach((r) => {
+          r.fromRaw = false;
+          r.rawKeyLiteral = null;
+          if (nextKind === 'array') {
+            r.key = '';
+          }
+        });
         if (rows.length === 0) {
           rows = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
         }
@@ -7112,13 +7334,14 @@
             if (rootMenuBtn) rootMenuBtn.focus();
             return;
           }
-          /* RFD-13: Confirm inline if switching Object -> Array would drop non-empty keys */
+          /* RFD-13 & RFD-20: Confirm inline in both directions when switching root container kind with committed items */
           if (rootKind === 'object' && nextKind === 'array') {
             const keysWithNames = rows.filter((r, idx) => !isEffectivePlaceholderRow(r, idx, rows, 'object') && r.key !== '');
             if (keysWithNames.length > 0) {
               inlinePromptState = {
                 kind: 'switch-root',
                 nextKind: 'array',
+                restoreFocusEl: rootMenuBtn,
                 titleHtml: `${keysWithNames.length} trường sẽ mất tên khi chuyển sang Mảng · <span lang="en" class="font-normal text-muted">${keysWithNames.length} keys will be dropped when switching to Array</span>`,
                 descHtml: `Mảng chỉ lưu danh sách giá trị theo thứ tự chỉ mục (#1, #2…). · <span lang="en">Arrays store ordered values by index only.</span>`,
                 actionsHtml: `
@@ -7126,7 +7349,24 @@
                   <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Giữ Object · <span lang="en">Keep Object</span></button>
                 `
               };
-              syncInlinePromptBanner();
+              syncInlinePromptBanner(true);
+              return;
+            }
+          } else if (rootKind === 'array' && nextKind === 'object') {
+            const committedItems = rows.filter((r, idx) => !isEffectivePlaceholderRow(r, idx, rows, 'array'));
+            if (committedItems.length > 0) {
+              inlinePromptState = {
+                kind: 'switch-root',
+                nextKind: 'object',
+                restoreFocusEl: rootMenuBtn,
+                titleHtml: `${committedItems.length} phần tử cần đặt tên trường khi chuyển sang Object · <span lang="en" class="font-normal text-muted">${committedItems.length} items need key names</span>`,
+                descHtml: `Mỗi trường trong Object cần có tên khoá trước khi lưu. · <span lang="en">Each Object field requires a key name before saving.</span>`,
+                actionsHtml: `
+                  <button type="button" class="btn btn-secondary btn-sm" data-kv-prompt-act="confirm-root-switch">Chuyển &amp; đặt tên · <span lang="en">Switch &amp; name keys</span></button>
+                  <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Giữ Mảng · <span lang="en">Keep Array</span></button>
+                `
+              };
+              syncInlinePromptBanner(true);
               return;
             }
           }
@@ -7145,6 +7385,11 @@
 
           if (act === 'confirm-root-switch') {
             applyRootKindSwitch(st.nextKind || 'array');
+          } else if (act === 'confirm-row-type' && st.rowId) {
+            const found = findRowAndParent(rows, st.rowId, rootKind, null);
+            if (found) {
+              applyRowTypeChange(found.row, st.prevType, st.nextType, true);
+            }
           } else if (act === 'paste-replace' && st.pastedRawText) {
             const prevSnap = captureEditorSnapshot();
             loadFromJsonString(st.pastedRawText, { preserveRawSource: false });
@@ -7159,14 +7404,27 @@
             const found = findRowAndParent(rows, st.targetRowId, rootKind, null);
             if (found) {
               canonicalRawText = null;
-              const nestedRow = astNodeToRow(st.pastedRoot, found.parentKind === 'object' ? (found.row.key || 'data') : '');
+              /* RFD-27: Preserve the row's existing key verbatim (even if empty, so EMPTY_KEY flags it instead of inventing 'data') */
+              const preservedKey = found.parentKind === 'object' ? found.row.key : '';
+              const nestedRow = astNodeToRow(st.pastedRoot, preservedKey);
               nestedRow.fromRaw = false;
+              nestedRow.rawKeyLiteral = null;
+              if (Array.isArray(nestedRow.children)) {
+                nestedRow.children.forEach((c) => { c.fromRaw = false; });
+              }
               found.list.splice(found.index, 1, nestedRow);
-              paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nestedRow.id });
-              toast('Đã lồng JSON vào dòng hiện tại · Nested JSON into current row', 'Hoàn tác', {
+              const focusKind = found.parentKind === 'object' && preservedKey === '' ? 'key' : (found.parentKind === 'array' ? 'val' : 'key');
+              paint({ kind: focusKind, rowId: nestedRow.id });
+              toast('Đã thay giá trị dòng bằng JSON vừa dán · Replaced row value with pasted JSON', 'Hoàn tác', {
                 originEl: kvHost,
                 onAction: () => restoreEditorSnapshot(prevSnap)
               });
+            }
+          } else if (act === 'dismiss') {
+            if (st.restoreFocusEl && typeof st.restoreFocusEl.focus === 'function') {
+              st.restoreFocusEl.focus();
+            } else if (st.restoreFocusDesc) {
+              paint(st.restoreFocusDesc);
             }
           }
         });
@@ -7180,13 +7438,23 @@
           if (!b) return;
           const target = b.dataset.target;
           if (target === kvHost.dataset.view) {
-            if (rawSyntaxIssue) {
+            /* RFD-22: Only block Raw -> Table on syntax error if the user actually edited Raw since switching from Table */
+            if (rawSyntaxIssue && rawEditedSinceSwitch) {
               e.stopPropagation();
               switchBlockedMsg = 'Chưa thể chuyển sang Bảng khi JSON gốc đang có lỗi cú pháp. · <span lang="en">Cannot switch to Table while Raw JSON has syntax errors.</span>';
               const errorsMap = new Map();
               validateRows(rows, rootKind, errorsMap);
               syncFooterAndRaw(errorsMap);
               return;
+            }
+            if (rawSyntaxIssue && !rawEditedSinceSwitch) {
+              rawSyntaxIssue = null;
+              if (rawHost) {
+                const ta = rawHost.querySelector('[data-json-raw-textarea]');
+                const errBox = rawHost.querySelector('[data-json-raw-error]');
+                if (ta) ta.removeAttribute('aria-invalid');
+                if (errBox) errBox.hidden = true;
+              }
             }
             if (rawHost) {
               const ta = rawHost.querySelector('[data-json-raw-textarea]');
@@ -7217,6 +7485,7 @@
             if (ta) {
               const textToShow = toJsonString();
               ta.value = textToShow;
+              rawEditedSinceSwitch = false;
               if (byteEl) byteEl.textContent = `${formatByteCountVi(measureUtf8Bytes(textToShow))} / 262.144 B`;
               const res = parseJsonStrict(textToShow);
               if (!res.ok) {
@@ -7314,8 +7583,14 @@
           if (inlinePromptState) {
             e.preventDefault();
             e.stopPropagation();
+            const st = inlinePromptState;
             inlinePromptState = null;
             syncInlinePromptBanner();
+            if (st.restoreFocusEl && typeof st.restoreFocusEl.focus === 'function') {
+              st.restoreFocusEl.focus();
+            } else if (st.restoreFocusDesc) {
+              paint(st.restoreFocusDesc);
+            }
             return;
           }
           e.preventDefault();
@@ -7353,6 +7628,7 @@
         switchBlockedMsg = null;
         rawSyntaxIssue = null;
         canonicalRawText = null;
+        rawEditedSinceSwitch = false;
         inlinePromptState = null;
 
         const showTab = (tabName) => {
