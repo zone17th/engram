@@ -5095,4 +5095,76 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       expect(h.qc.getQueryState(recentItemsKey)?.isInvalidated).toBe(true);
     });
   });
+
+  it('P05-entryux Stage F (D1, D2/D6, D15): breadcrumb wraps long unbroken item names, shortcuts panel aligns 5 kbd chips on grid tracks, text editor footer uses kbd chips without parens, and locked empty state points to Unlock', async () => {
+    const longUnbrokenName = 'x'.repeat(200);
+    const h = await setupItemPageHarness({
+      initialItem: makeItemSummary({
+        name: longUnbrokenName,
+        entry_count: 0,
+      }),
+      initialPlaintexts: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('item-name-input')).toHaveValue(longUnbrokenName);
+    });
+
+    // D6: breadcrumb nav and item name span prevent horizontal page overflow on 200-char unbroken names
+    const breadcrumbName = screen.getByTestId('breadcrumb-item-name');
+    expect(breadcrumbName).toHaveTextContent(longUnbrokenName);
+    expect(breadcrumbName).toHaveClass('min-w-0', 'break-all');
+    const breadcrumbNav = screen.getByRole('navigation', {
+      name: viMessages.content.item.breadcrumbLabel,
+    });
+    expect(breadcrumbNav).toHaveClass('flex', 'min-w-0', 'flex-wrap');
+
+    // D2 / RFD-31: Shortcuts sidebar has 5 rows (incl. Alt+↓) with grid-cols-[minmax(0,1fr)_auto]
+    const shortcutsPanel = screen.getByTestId('item-shortcuts-panel');
+    expect(shortcutsPanel).toHaveTextContent(viMessages.content.item.shortcutRowType);
+    expect(shortcutsPanel).toHaveTextContent('Alt+↓');
+    const shortcutItems = shortcutsPanel.querySelectorAll('li');
+    expect(shortcutItems).toHaveLength(5);
+    shortcutItems.forEach((li) => {
+      expect(li).toHaveClass('grid', 'min-w-0', 'grid-cols-[minmax(0,1fr)_auto]');
+    });
+
+    // Unlocked empty state shows emptyBody and add buttons
+    const emptyBox = screen.getByTestId('item-entries-empty');
+    expect(emptyBox).toHaveTextContent(viMessages.content.item.emptyBody);
+    expect(within(emptyBox).getByTestId('empty-add-text-btn')).toBeInTheDocument();
+    expect(within(emptyBox).queryByTestId('empty-unlock-cta')).toBeNull();
+
+    // D1: New text composer footer buttons render <kbd class="kbd"> without parentheses
+    fireEvent.click(screen.getByTestId('btn-add-text'));
+    const cancelBtn = screen.getByTestId('new-entry-cancel-btn');
+    const saveBtn = screen.getByTestId('new-entry-save-btn');
+    expect(cancelBtn.querySelector('kbd.kbd')).toHaveTextContent('Esc');
+    expect(cancelBtn.textContent).not.toContain('(');
+    expect(saveBtn.querySelector('kbd.kbd')).toHaveTextContent('Ctrl+S');
+    expect(saveBtn.textContent).not.toContain('(');
+    fireEvent.click(cancelBtn);
+
+    // D15: Lock vault on an empty item -> empty state switches to emptyLockedBody + Unlock CTA, and disabled toolbar buttons stay legible
+    await h.lock();
+    const lockedEmptyBox = screen.getByTestId('item-entries-empty');
+    expect(lockedEmptyBox).toHaveTextContent(viMessages.content.item.emptyLockedBody);
+    expect(lockedEmptyBox).not.toHaveTextContent(viMessages.content.item.emptyBody);
+    expect(within(lockedEmptyBox).queryByTestId('empty-add-text-btn')).toBeNull();
+    const emptyUnlockCta = within(lockedEmptyBox).getByTestId('empty-unlock-cta');
+    expect(emptyUnlockCta).toHaveTextContent(viMessages.vault.locked.unlockCta);
+    expect(emptyUnlockCta).toHaveAttribute(
+      'href',
+      `/app/unlock?returnTo=${encodeURIComponent(routerMocks.pathname)}`,
+    );
+    expect(screen.getByTestId('btn-add-json')).toBeDisabled();
+    expect(screen.getByTestId('btn-add-json')).toHaveClass('disabled:opacity-65');
+    expect(screen.getByTestId('btn-import-json')).toBeDisabled();
+    expect(screen.getByTestId('btn-import-json')).toHaveClass(
+      'disabled:border-lineStrong',
+      'disabled:bg-surface',
+      'disabled:text-muted',
+      'disabled:opacity-75',
+    );
+  });
 });

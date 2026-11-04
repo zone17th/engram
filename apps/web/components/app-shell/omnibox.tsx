@@ -2565,7 +2565,7 @@ export function Omnibox({
       id={baseId}
       data-omnibox=""
       onBlur={handleRootBlur}
-      className={cn('relative', compact ? 'flex-1 md:block' : 'w-full', className)}
+      className={cn('relative', compact ? 'min-w-0 flex-1 md:block' : 'w-full', className)}
     >
       <label
         className={cn(

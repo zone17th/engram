@@ -1445,7 +1445,8 @@ export function TextEntryCard({
                 disabled={savingInFlight}
                 onClick={requestCancelEdit}
               >
-                {tEntry('cancel')} (<span className="mono">Esc</span>)
+                <span>{tEntry('cancel')}</span>
+                <kbd className="kbd">Esc</kbd>
               </button>
               <button
                 type="button"
@@ -1462,7 +1463,8 @@ export function TextEntryCard({
                   tEntry('savingButton')
                 ) : (
                   <>
-                    {tEntry('save')} (<span className="mono">Ctrl+S</span>)
+                    <span>{tEntry('save')}</span>
+                    <kbd className="kbd">Ctrl+S</kbd>
                   </>
                 )}
               </button>
@@ -1985,7 +1987,8 @@ export function NewTextEntryComposer({
             disabled={savingInFlight}
             onClick={requestCancel}
           >
-            {tEntry('cancel')} (<span className="mono">Esc</span>)
+            <span>{tEntry('cancel')}</span>
+            <kbd className="kbd">Esc</kbd>
           </button>
           <button
             type="button"
@@ -2001,7 +2004,8 @@ export function NewTextEntryComposer({
               tEntry('savingButton')
             ) : (
               <>
-                {tEntry('save')} (<span className="mono">Ctrl+S</span>)
+                <span>{tEntry('save')}</span>
+                <kbd className="kbd">Ctrl+S</kbd>
               </>
             )}
           </button>
