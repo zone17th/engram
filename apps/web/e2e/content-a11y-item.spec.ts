@@ -272,11 +272,21 @@ async function runItemGroup(
         }
         expect(deleteTargetTextEntryId).toMatch(/^[0-9a-f-]{36}$/);
 
-        // Add JSON entry via `btn-add-json` composer (switch to Raw JSON in composer, write rich JSON, Save)
+        // Add JSON entry via `btn-add-json` KV composer (opens directly in Table view with 1 placeholder row focused on Key;
+        // switch to Raw JSON in composer, write rich JSON, Save)
         const addJsonBtn = page.getByTestId('btn-add-json');
         await addJsonBtn.click();
         const jsonComposer = page.getByTestId('new-json-entry-composer');
         await expect(jsonComposer).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+        await expect(jsonComposer.getByTestId('new-json-tab-table')).toHaveAttribute(
+          'aria-pressed',
+          'true',
+        );
+        await expect(jsonComposer.getByTestId('json-table-host-new-json')).toBeVisible({
+          timeout: CONTENT_A11Y_UI_WAIT_MS,
+        });
+        await expect(jsonComposer.getByTestId('json-new-key-input-root')).toBeFocused();
+        await expect(jsonComposer.getByTestId('new-json-save-btn')).toBeDisabled();
         await page.getByTestId('new-json-tab-raw').click();
         const newJsonRawTextarea = page.getByTestId('json-raw-textarea-new-json');
         await expect(newJsonRawTextarea).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
@@ -908,6 +918,23 @@ async function runItemGroup(
             ]);
             await coarsePage.getByTestId(`json-tab-table-${jsonEntryId}`).click();
 
+            // 5b. Open new JSON KV entry composer (`btn-add-json`) and sweep KV editor controls under coarse pointer
+            await coarsePage.getByTestId('btn-add-json').click();
+            const coarseComposer = coarsePage.getByTestId('new-json-entry-composer');
+            await expect(coarseComposer).toBeVisible({ timeout: CONTENT_A11Y_UI_WAIT_MS });
+            await expectCoarseTouchTargetsAtLeast44(coarsePage, 'new-json-kv-composer-controls', [
+              '[data-testid="new-json-tab-table"]',
+              '[data-testid="new-json-tab-raw"]',
+              '[data-testid="new-json-root-menu-btn"]',
+              '[data-testid="json-new-key-input-root"]',
+              '[data-testid="json-new-val-input-root"]',
+              '[data-testid="json-new-type-select-root"]',
+              '[data-testid^="kv-row-menu-btn-"]',
+              '[data-testid="json-open-add-field-root"]',
+              '[data-testid="new-json-cancel-btn"]',
+            ]);
+            await coarseComposer.getByTestId('new-json-cancel-btn').click();
+            await expect(coarseComposer).toBeHidden({ timeout: CONTENT_A11Y_UI_WAIT_MS });
 
             // 6. Open Import JSON dialog (`U14`) on coarsePage and sweep `import-empty`, `import-valid`, and `import-invalid` controls
             await coarsePage.getByTestId('btn-import-json').click();
