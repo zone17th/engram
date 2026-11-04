@@ -5,6 +5,8 @@ import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppHeader } from '@/components/app-shell/app-header';
 import { ThemeProvider } from '@/components/theme-provider';
+import { LockedBanner } from '@/features/items/locked-banner';
+import { CRED_A, PRF_OUTPUT, fakeCredential, unlockOptionsResponse } from '@/features/vault/passkey/test-helpers';
 import { VaultUnlockFlow } from '@/features/vault/unlock/unlock-flow';
 import enMessages from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
@@ -52,6 +54,7 @@ const mocks = vi.hoisted(() => ({
     refetchMe: async () => undefined,
   },
   fetchVault: vi.fn(),
+  fetchPasskeyUnlockOptions: vi.fn(),
   router: {
     pathname: '/app',
     searchParams: new URLSearchParams(),
@@ -72,6 +75,7 @@ vi.mock('@/features/auth/session-provider', () => ({
 vi.mock('@/lib/api/vault', async (importOriginal) => ({
   ...(await importOriginal<typeof VaultApi>()),
   fetchVault: (...args: unknown[]) => mocks.fetchVault(...args),
+  fetchPasskeyUnlockOptions: (...args: unknown[]) => mocks.fetchPasskeyUnlockOptions(...args),
 }));
 
 const USER_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -160,6 +164,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     mocks.router.replace.mockReset();
     mocks.router.push.mockReset();
     mocks.fetchVault.mockReset();
+    mocks.fetchPasskeyUnlockOptions.mockReset();
     mocks.fetchVault.mockImplementation(async () => {
       if (serverKeyId === null) throw vaultAbsentError();
       return vaultState(serverKeyId);
@@ -2016,6 +2021,57 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     );
   });
 
+  it('H2 regression guard: clicking locked pill or locked-banner CTA when vault state is error navigates to /app/unlock instead of no-oping', async () => {
+    const first = await openUnlockedTab();
+    await act(async () => {
+      await first.remember().remember();
+    });
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim);
+    const qc = new QueryClient();
+    mocks.router.pathname = '/app/items/err-item';
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={qc}>
+            <VaultProvider
+              createWorker={() => shim.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={false}
+            >
+              <AppHeader showLogout={false} />
+              <LockedBanner />
+            </VaultProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const unlockBtn = await screen.findByTestId('vault-unlock-button');
+    const bannerCta = await screen.findByTestId('vault-locked-unlock-cta');
+    expect(bannerCta).toHaveClass('btn', 'btn-primary', 'btn-sm', 'ml-auto', 'no-underline');
+
+    // Transition worker to error state
+    await act(async () => {
+      shim.simulateCrash();
+    });
+
+    await act(async () => {
+      fireEvent.click(unlockBtn);
+    });
+    expect(mocks.router.push).toHaveBeenCalledWith('/app/unlock?returnTo=%2Fapp%2Fitems%2Ferr-item');
+
+    mocks.router.push.mockReset();
+    await act(async () => {
+      fireEvent.click(bannerCta);
+    });
+    expect(mocks.router.push).toHaveBeenCalledWith('/app/unlock?returnTo=%2Fapp%2Fitems%2Ferr-item');
+  });
+
   it('B2 /app/unlock: shows primary device unlock button when remembered, unlocks via silentUnlock() on click, and falls back with short notice on failure', async () => {
     const first = await openUnlockedTab();
     await act(async () => {
@@ -2095,22 +2151,27 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     expect(mocks.router.replace).not.toHaveBeenCalled();
   });
 
-  it('B3 /app/unlock: "Remember this device" checkbox defaults off and calls remember() after successful passphrase unlock when checked', async () => {
-    await openUnlockedTab();
+  it('B3 /app/unlock: "Remember this device" checkbox defaults off (unchecked unlock writes no DevKey) and calls remember() after passphrase or passkey unlock when checked', async () => {
+    const first = await openUnlockedTab();
+    const pwkWrap = await first.vault().getClient().wrapForPasskey({
+      pwk: PRF_OUTPUT.slice(),
+      opGeneration: first.vault().captureOpGeneration(),
+    });
     cleanup();
     shims.splice(0).forEach((s) => s.close());
     expect(devkeys().size).toBe(0);
 
+    // 1. Unchecked (default off) -> passphrase unlock writes NO DevKey record
     mocks.router.pathname = '/app/unlock';
-    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
-    shims.push(shim);
-    const qc = new QueryClient();
+    const shim1 = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim1);
+    const qc1 = new QueryClient();
     render(
       <NextIntlClientProvider locale="vi" messages={viMessages}>
         <ThemeProvider>
-          <QueryClientProvider client={qc}>
+          <QueryClientProvider client={qc1}>
             <VaultProvider
-              createWorker={() => shim.port}
+              createWorker={() => shim1.port}
               lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
               deviceStoreEnv={{ idbFactory: idb.createFactory() }}
               silentUnlockOnLoad={false}
@@ -2122,17 +2183,99 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
       </NextIntlClientProvider>,
     );
 
-    const checkbox = (await screen.findByTestId('unlock-remember-device-checkbox')) as HTMLInputElement;
-    expect(checkbox.checked).toBe(false);
-    fireEvent.click(checkbox);
-    expect(checkbox.checked).toBe(true);
-
-    const passInput = screen.getByTestId('unlock-passphrase-input');
-    fireEvent.change(passInput, { target: { value: PASSPHRASE } });
+    const checkbox1 = (await screen.findByTestId('unlock-remember-device-checkbox')) as HTMLInputElement;
+    expect(checkbox1.checked).toBe(false);
+    fireEvent.change(screen.getByTestId('unlock-passphrase-input'), { target: { value: PASSPHRASE } });
     await act(async () => {
       fireEvent.click(screen.getByTestId('unlock-submit-button'));
     });
+    await waitFor(() => expect(mocks.router.replace).toHaveBeenCalledWith('/app'), { timeout: 10_000 });
+    expect(devkeys().size).toBe(0);
+    cleanup();
 
+    // 2. Checked -> passphrase unlock writes DevKey record
+    mocks.router.replace.mockReset();
+    const shim2 = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim2);
+    const qc2 = new QueryClient();
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={qc2}>
+            <VaultProvider
+              createWorker={() => shim2.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={false}
+            >
+              <VaultUnlockFlow />
+            </VaultProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const checkbox2 = (await screen.findByTestId('unlock-remember-device-checkbox')) as HTMLInputElement;
+    expect(checkbox2.checked).toBe(false);
+    fireEvent.click(checkbox2);
+    expect(checkbox2.checked).toBe(true);
+    fireEvent.change(screen.getByTestId('unlock-passphrase-input'), { target: { value: PASSPHRASE } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unlock-submit-button'));
+    });
+    await waitFor(() => expect(mocks.router.replace).toHaveBeenCalledWith('/app'), { timeout: 10_000 });
+    expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true);
+    cleanup();
+
+    // 3. Checked -> passkey unlock calls remember() and writes DevKey record
+    devkeys().clear();
+    mocks.router.replace.mockReset();
+    const baseUnlockOpts = unlockOptionsResponse();
+    mocks.fetchPasskeyUnlockOptions.mockResolvedValue({
+      ...baseUnlockOpts,
+      credentials: [{ ...baseUnlockOpts.credentials[0], vk_wrap: pwkWrap.vk_wrap }],
+    });
+    mocks.fetchVault.mockImplementation(async () => ({
+      ...vaultState(VAULT_K),
+      passkeys: [{ id: 'pk-1', name: 'Key 1', aaguid: null, created_at: '2026-01-01T00:00:00Z' }],
+    }));
+    const credentialsGet = vi
+      .fn()
+      .mockResolvedValue(fakeCredential({ rawId: CRED_A.id, prf: { enabled: true, first: PRF_OUTPUT } }).credential);
+    vi.stubGlobal('PublicKeyCredential', class {});
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      locks: locks.createLockManager(),
+      credentials: { get: credentialsGet },
+    });
+
+    const shim3 = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim3);
+    const qc3 = new QueryClient();
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={qc3}>
+            <VaultProvider
+              createWorker={() => shim3.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={false}
+            >
+              <VaultUnlockFlow />
+            </VaultProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const passkeyBtn = await screen.findByTestId('unlock-passkey-button');
+    const checkbox3 = (await screen.findByTestId('unlock-remember-device-checkbox')) as HTMLInputElement;
+    fireEvent.click(checkbox3);
+    expect(checkbox3.checked).toBe(true);
+    await act(async () => {
+      fireEvent.click(passkeyBtn);
+    });
     await waitFor(() => expect(mocks.router.replace).toHaveBeenCalledWith('/app'), { timeout: 10_000 });
     expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true);
   });
@@ -2172,5 +2315,27 @@ describe('P03-T18 DevKey: toggle store wake re-reads', () => {
       await waitFor(() => expect(store.getState().remembered).toBe(false));
     }
     stop();
+  });
+
+  it('L2: refresh() reports remembered from entries[0] when vaultKeyId is null (metadata not yet loaded)', async () => {
+    const locks = new FakeWebLocks();
+    const idb = new FakeDeviceIdb(locks);
+    const env: DeviceEnvironment = { idbFactory: idb.createFactory(), locksManager: locks.createLockManager() };
+    const record = { user_id: USER_A, vault_key_id: VAULT_K, dev_key: {}, wrapped_vk: new Uint8Array(60), created_at: 'x' };
+    idb.store(DEVKEY_STORE_NAME).set(formatDevKeyRecordKey(USER_A, VAULT_K), record);
+    const store = createRememberDeviceStore({
+      env,
+      getContext: () => ({
+        userId: USER_A,
+        vaultKeyId: null,
+        captureOp: () => {
+          throw new Error('unused');
+        },
+        reloadVaultMeta: async () => null,
+      }),
+    });
+    await store.refresh();
+    expect(store.getState().status).toBe('ready');
+    expect(store.getState().remembered).toBe(true);
   });
 });

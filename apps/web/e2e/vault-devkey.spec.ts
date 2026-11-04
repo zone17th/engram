@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-
+import { installItemPageContentMocks, LOCKED_ITEM_FIXTURE } from './content-itempage-support';
 /**
  * ADR 0003 "Hệ quả" two-page / two-Worker test for Remember (plan Task 18, FE R3-5).
  *
@@ -561,11 +561,24 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
     expect(afterControlSnap.meta?.incarnation).toBe(afterCancelSnap.meta?.incarnation);
   });
 
-  test('P05-FIX B1/B2/B3: remember device via unlock checkbox, manual lock + click locked pill unlocks without passphrase; auto-lock re-opens via next interaction; unremembered navigates to /app/unlock', async ({
+  test('P05-FIX B1/B2/B3 + M1: remember device via unlock checkbox, manual lock + keyboard/click locked pill or opening an entry unlocks without passphrase; auto-lock re-opens via next interaction; unremembered navigates to /app/unlock', async ({
     context,
   }) => {
     test.setTimeout(120_000);
     await installAuthenticatedVaultApiMocks(context);
+    await installItemPageContentMocks(context, LOCKED_ITEM_FIXTURE);
+    await context.route('**/api/v1/items*', async (route) => {
+      const url = new URL(route.request().url());
+      if (route.request().method() === 'GET' && url.pathname === '/api/v1/items') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ items: [LOCKED_ITEM_FIXTURE.item], next_cursor: null }),
+        });
+        return;
+      }
+      await route.fallback();
+    });
     const page = await context.newPage();
 
     // 1. Unremembered device on /app -> click locked pill -> navigates to /app/unlock
@@ -589,18 +602,31 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
     await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
     expect(await rawDevKeyCount(page)).toBe(1);
 
-    // 3. B1 + B2: Manual lock via header pill -> stays locked -> click locked pill -> unlocks in place without passphrase
+    // 3. B1 + B2 + M3(e): Manual lock via header pill -> stays locked -> keyboard Enter on locked pill -> unlocks in place without passphrase and restores focus to lock button
     await page.getByTestId('vault-lock-button').click();
     await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
     await page.waitForTimeout(200);
     // Manual lock never re-opens by itself
     await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
 
-    await page.getByTestId('vault-unlock-button').click();
+    const lockedPill = page.getByTestId('vault-unlock-button');
+    await lockedPill.focus();
+    await page.keyboard.press('Enter');
     await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
+    await expect(page.getByTestId('vault-lock-button')).toBeFocused();
     await expect(page).toHaveURL(/\/app$/);
 
-    // 4. B2 Auto-lock path: simulate auto-lock, then click the locked banner CTA -> unlocks in place without passphrase prompt
+    // 4. M1 (Advisor ruling): Remembered device, manual lock, open an entry -> vault shows normal unlocked state (pill unlocked, entry content visible)
+    await page.getByTestId('vault-lock-button').click();
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
+    await page.getByTestId('item-card').first().click();
+    await expect(page).toHaveURL(new RegExp(`/app/items/${LOCKED_ITEM_FIXTURE.item.id}$`));
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
+    await expect(page.getByTestId('entry-body').first()).toContainText(LOCKED_ITEM_FIXTURE.entries[0].plaintext, {
+      timeout: CRYPTO_WAIT_MS,
+    });
+
+    // 5. B2 Auto-lock path (banner CTA + opening an entry): simulate auto-lock, then click banner CTA -> unlocks; auto-lock again on /app, open an entry -> unlocks and shows entry content
     await page.evaluate(async () => {
       const win: DeviceWindow = window;
       await win.__engramVaultTestBridge!.lock({ broadcast: false, reason: 'auto_lock' });
@@ -608,6 +634,18 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
     await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
     await page.getByTestId('vault-locked-unlock-cta').click();
     await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
-    await expect(page).toHaveURL(/\/app$/);
+
+    await page.goto('/app');
+    await page.evaluate(async () => {
+      const win: DeviceWindow = window;
+      await win.__engramVaultTestBridge!.lock({ broadcast: false, reason: 'auto_lock' });
+    });
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
+    await page.getByTestId('item-card').first().click();
+    await expect(page).toHaveURL(new RegExp(`/app/items/${LOCKED_ITEM_FIXTURE.item.id}$`));
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
+    await expect(page.getByTestId('entry-body').first()).toContainText(LOCKED_ITEM_FIXTURE.entries[0].plaintext, {
+      timeout: CRYPTO_WAIT_MS,
+    });
   });
 });
