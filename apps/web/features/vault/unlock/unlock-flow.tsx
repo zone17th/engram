@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppHeader } from '@/components/app-shell/app-header';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
+import { useOptionalUndoToast } from '@/components/ui/undo-toast';
 import { useSession } from '@/features/auth/session-provider';
 import {
   classifyCryptoError,
@@ -43,6 +44,9 @@ export type UnlockErrorState =
 
 export function VaultUnlockFlow() {
   const t = useTranslations('unlock');
+  const tVaultDevice = useTranslations('vault.device');
+  const tUndoDismiss = useTranslations('vault.b.settings.rememberDevice');
+  const undoToast = useOptionalUndoToast();
   const router = useRouter();
   const searchParams = useSearchParams();
   const { me } = useSession();
@@ -136,7 +140,9 @@ export function VaultUnlockFlow() {
       }
       await rememberDeviceState.refresh();
       if (!isMountedRef.current) return;
-      setDeviceFallbackNotice(true);
+      if (res.status === 'fallback' || res.reason === 'not_remembered') {
+        setDeviceFallbackNotice(true);
+      }
     } finally {
       if (isMountedRef.current) {
         setDeviceUnlocking(false);
@@ -215,9 +221,19 @@ export function VaultUnlockFlow() {
         }
 
         if (rememberOnUnlock) {
-          await rememberDeviceState.remember();
+          const rememberedState = await rememberDeviceState.remember();
           if (!isMountedRef.current || unlockIntentSeqRef.current !== intentSeq) {
             return;
+          }
+          if (!rememberedState.remembered) {
+            undoToast?.pushUndoToast({
+              message:
+                rememberedState.status === 'unavailable'
+                  ? tVaultDevice('unavailable')
+                  : tVaultDevice('notice.stateChanged'),
+              actionLabel: tUndoDismiss('dismiss'),
+              onUndo: () => {},
+            });
           }
         }
         completedNavigationRef.current = true;
@@ -305,6 +321,9 @@ export function VaultUnlockFlow() {
       rememberOnUnlock,
       router,
       submitting,
+      tUndoDismiss,
+      tVaultDevice,
+      undoToast,
       vault,
     ],
   );
@@ -424,8 +443,18 @@ export function VaultUnlockFlow() {
         <PasskeyUnlockButton
           onUnlocked={async () => {
             if (rememberOnUnlock) {
-              await rememberDeviceState.remember();
+              const rememberedState = await rememberDeviceState.remember();
               if (!isMountedRef.current) return;
+              if (!rememberedState.remembered) {
+                undoToast?.pushUndoToast({
+                  message:
+                    rememberedState.status === 'unavailable'
+                      ? tVaultDevice('unavailable')
+                      : tVaultDevice('notice.stateChanged'),
+                  actionLabel: tUndoDismiss('dismiss'),
+                  onUndo: () => {},
+                });
+              }
             }
             completedNavigationRef.current = true;
             clearRecoveryCompletedNotice();
@@ -461,7 +490,7 @@ export function VaultUnlockFlow() {
                   data-testid="unlock-passphrase-input"
                 />
               </div>
-              {rememberDeviceState.status !== 'unavailable' ? (
+              {rememberDeviceState.status !== 'unavailable' && !rememberDeviceState.remembered ? (
                 <label
                   htmlFor="unlock-remember-device"
                   className="mb-5 flex cursor-pointer items-start gap-3"

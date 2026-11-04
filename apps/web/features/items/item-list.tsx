@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import type { MouseEvent } from 'react';
 import { BadgeType } from '@/components/ui/badge-type';
 import { loadDemoEntryBody } from '@/features/items/demo-body-loader';
 import { EntryBody, type EntryBodyLoader } from '@/features/items/entry-body';
@@ -28,7 +29,8 @@ export function ItemList({
   openLabel: string;
 }) {
   const vault = useOptionalVault();
-  const handleCardClick = () => {
+  const handleCardClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
     if (vault && vault.state === 'locked' && !vault.inFlight) {
       void vault.silentUnlock();
     }

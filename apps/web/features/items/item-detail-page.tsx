@@ -34,11 +34,7 @@ import {
 } from '@/features/entries/changes-sync';
 import { type EntryBodyLoader } from '@/features/items/entry-body';
 import { ItemHeader } from '@/features/items/item-header';
-import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
-import {
-  appendDeviceFallbackNoticeParam,
-  rememberDeviceUnlockFallbackNotice,
-} from '@/features/vault/unlock/recovery-notice';
+import { unlockOrNavigate } from '@/features/vault/unlock/recovery-notice';
 import { LockedBanner } from '@/features/items/locked-banner';
 import { contentQueryKeys } from '@/features/items/query-keys';
 import {
@@ -1156,17 +1152,7 @@ export function ItemDetailPage({
                             if (!vault || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                             e.preventDefault();
                             const targetUrl = unlockUrl(pathname ?? `/app/items/${encodeURIComponent(itemId)}`);
-                            void (async () => {
-                              const res = await vault.silentUnlock();
-                              if (res.status === 'unlocked') return;
-                              if (res.status === 'fallback') {
-                                rememberDeviceUnlockFallbackNotice(getKnownDeviceSessionUserId());
-                                router.push(appendDeviceFallbackNoticeParam(targetUrl));
-                                return;
-                              }
-                              if (res.reason === 'busy' || res.reason === 'stale' || res.reason === 'not_locked') return;
-                              router.push(targetUrl);
-                            })();
+                            void unlockOrNavigate(vault, targetUrl, (url) => router.push(url));
                           }}
                           data-testid="empty-unlock-cta"
                           className="btn btn-primary btn-sm no-underline"

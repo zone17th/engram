@@ -9,12 +9,9 @@ import { Button } from '@/components/ui/button';
 import { AuthStatus } from '@/components/ui/field';
 import { Toast } from '@/components/ui/toast';
 import { useSession } from '@/features/auth/session-provider';
-import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
-import {
-  appendDeviceFallbackNoticeParam,
-  rememberDeviceUnlockFallbackNotice,
-} from '@/features/vault/unlock/recovery-notice';
+import { unlockOrNavigate } from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault, useVault } from '@/features/vault/vault-provider';
+import { fetchRecoveryKeysStatus } from '@/lib/api/vault';
 import { ChangePassphraseDialog } from './change-passphrase-dialog';
 import { RecoveryKeysDialog, type RecoveryKeysDialogMode } from './recovery-keys-dialogs';
 import { ResetVaultDialog } from './reset-vault-dialog';
@@ -57,7 +54,8 @@ function VaultSecurityPanelInner({
   const queryClient = useQueryClient();
   const { me, sessionEpoch, refetchMe } = useSession();
   const router = useRouter();
-  const { workerState, inFlight, vaultMeta, reloadVaultMeta, silentUnlock } = useVault();
+  const vault = useVault();
+  const { workerState, inFlight, vaultMeta, reloadVaultMeta } = vault;
 
   const [passDialogOpen, setPassDialogOpen] = useState(false);
   const [rkDialogMode, setRkDialogMode] = useState<RecoveryKeysDialogMode | null>(null);
@@ -189,18 +187,7 @@ function VaultSecurityPanelInner({
               onClick={(e: MouseEvent<HTMLAnchorElement>) => {
                 if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                 e.preventDefault();
-                const targetUrl = '/app/unlock?returnTo=%2Fapp%2Fsettings';
-                void (async () => {
-                  const res = await silentUnlock();
-                  if (res.status === 'unlocked') return;
-                  if (res.status === 'fallback') {
-                    rememberDeviceUnlockFallbackNotice(getKnownDeviceSessionUserId());
-                    router.push(appendDeviceFallbackNoticeParam(targetUrl));
-                    return;
-                  }
-                  if (res.reason === 'busy' || res.reason === 'stale' || res.reason === 'not_locked') return;
-                  router.push(targetUrl);
-                })();
+                void unlockOrNavigate(vault, '/app/unlock?returnTo=%2Fapp%2Fsettings', (url) => router.push(url));
               }}
               className="btn btn-secondary btn-sm ml-auto no-underline"
             >

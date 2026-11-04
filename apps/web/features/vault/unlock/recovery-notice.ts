@@ -1,3 +1,7 @@
+import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
+import type { VaultStateMachineMode } from '@/features/vault/vault-provider';
+import type { SilentUnlockResult } from '@/lib/crypto/device';
+
 /**
  * Non-secret hand-off between the recovery flow and the unlock page (FE1-7): when a recovery commits on the server while
  * this tab locked, the recovery route navigates to `/app/unlock`. The notice must outlive that real route change, so it
@@ -106,4 +110,37 @@ export function clearDeviceUnlockFallbackNotice(): void {
 /** Appends the short notice query flag (`notice=device_unlock_failed`) to an unlock URL when silentUnlock fell back. */
 export function appendDeviceFallbackNoticeParam(url: string): string {
   return url.includes('?') ? `${url}&notice=device_unlock_failed` : `${url}?notice=device_unlock_failed`;
+}
+
+export interface UnlockOrNavigateVault {
+  readonly state: VaultStateMachineMode;
+  readonly inFlight: boolean;
+  readonly silentUnlock: () => Promise<SilentUnlockResult>;
+}
+
+/**
+ * Attempts `silentUnlock()` in place only when `vault.state === 'locked'` and not `inFlight`;
+ * otherwise (or when not remembered / fallback) navigates to `targetUrl` (appending the short
+ * fallback notice flag when a saved DevKey could not unlock).
+ */
+export async function unlockOrNavigate(
+  vault: UnlockOrNavigateVault | null | undefined,
+  targetUrl: string,
+  navigate: (url: string) => void,
+): Promise<SilentUnlockResult | null> {
+  if (!vault || vault.state !== 'locked' || vault.inFlight) {
+    navigate(targetUrl);
+    return null;
+  }
+  const res = await vault.silentUnlock();
+  if (res.status === 'unlocked' || res.reason === 'stale') {
+    return res;
+  }
+  if (res.status === 'fallback') {
+    rememberDeviceUnlockFallbackNotice(getKnownDeviceSessionUserId());
+    navigate(appendDeviceFallbackNoticeParam(targetUrl));
+    return res;
+  }
+  navigate(targetUrl);
+  return res;
 }

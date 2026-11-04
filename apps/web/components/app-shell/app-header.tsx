@@ -6,16 +6,12 @@ import { Logo } from '@/components/landing/logo';
 import { useVaultPillLabel, VaultPill, type VaultPillState, vaultModeToPillState } from '@/components/ui/vault-pill';
 import { AppShellLogoutButton } from '@/features/auth/route-guard';
 import { unlockUrl } from '@/features/auth/guard-redirect';
-import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
-import {
-  appendDeviceFallbackNoticeParam,
-  rememberDeviceUnlockFallbackNotice,
-} from '@/features/vault/unlock/recovery-notice';
+import { unlockOrNavigate } from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-
+import { useEffect, useRef } from 'react';
 /**
  * Header dính, nền mờ, cao 68px — chép từ mockups/index.html.
  *
@@ -55,28 +51,39 @@ export function AppHeader({
   const lockNowName = tHeader('lockNowNamed', { state: pillLabel });
   const unlockNowName = tHeader('unlockVaultNamed', { state: pillLabel });
 
+  const lockButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileLockButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusTargetRef = useRef<'desktop' | 'mobile' | null>(null);
+
+  useEffect(() => {
+    if (!canLockNow || restoreFocusTargetRef.current === null) return;
+    const target = restoreFocusTargetRef.current;
+    restoreFocusTargetRef.current = null;
+    const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+    if (
+      activeEl === null ||
+      activeEl === document.body ||
+      activeEl === document.documentElement
+    ) {
+      if (target === 'mobile') {
+        mobileLockButtonRef.current?.focus();
+      } else {
+        lockButtonRef.current?.focus();
+      }
+    }
+  }, [canLockNow]);
+
   const handleLockClick = () => {
     if (!vaultCtx) return;
     void vaultCtx.lockNow();
   };
 
-  const handleUnlockClick = async () => {
-    const targetUrl = unlockUrl(pathname);
-    if (vaultCtx) {
-      const res = await vaultCtx.silentUnlock();
-      if (res.status === 'unlocked') {
-        return;
-      }
-      if (res.status === 'fallback') {
-        rememberDeviceUnlockFallbackNotice(getKnownDeviceSessionUserId());
-        router.push(appendDeviceFallbackNoticeParam(targetUrl));
-        return;
-      }
-      if (res.reason === 'busy' || res.reason === 'stale' || res.reason === 'not_locked') {
-        return;
-      }
+  const handleUnlockClick = async (variant: 'desktop' | 'mobile') => {
+    restoreFocusTargetRef.current = variant;
+    const res = await unlockOrNavigate(vaultCtx, unlockUrl(pathname), (url) => router.push(url));
+    if (res?.status !== 'unlocked') {
+      restoreFocusTargetRef.current = null;
     }
-    router.push(targetUrl);
   };
   const mobilePillLabel =
     effectivePillState === 'open'
@@ -95,6 +102,7 @@ export function AppHeader({
         <div className="ml-auto flex min-w-0 max-w-full shrink-0 items-center justify-end gap-1 sm:gap-2">
           {canLockNow ? (
             <button
+              ref={lockButtonRef}
               type="button"
               data-vault=""
               data-testid="vault-lock-button"
@@ -111,7 +119,7 @@ export function AppHeader({
               type="button"
               data-vault=""
               data-testid="vault-unlock-button"
-              onClick={() => void handleUnlockClick()}
+              onClick={() => void handleUnlockClick('desktop')}
               disabled={vaultCtx?.inFlight}
               aria-label={unlockNowName}
               title={tHeader('unlockVault')}
@@ -128,6 +136,7 @@ export function AppHeader({
           )}
           {canLockNow ? (
             <button
+              ref={mobileLockButtonRef}
               type="button"
               data-testid="vault-lock-button-mobile"
               onClick={handleLockClick}
@@ -141,7 +150,7 @@ export function AppHeader({
             <button
               type="button"
               data-testid="vault-unlock-button-mobile"
-              onClick={() => void handleUnlockClick()}
+              onClick={() => void handleUnlockClick('mobile')}
               disabled={vaultCtx?.inFlight}
               className="touch-target grid h-[38px] w-[38px] cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden [@media(pointer:coarse)]:h-[44px] [@media(pointer:coarse)]:w-[44px]"
               aria-label={tHeader('lockedAndUnlock')}

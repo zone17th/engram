@@ -101,10 +101,7 @@ import {
   subscribeLockClearedNotice,
 } from '@/features/omnibox/unconfirmed-save-store';
 import { getKnownDeviceSessionUserId, subscribeDevicePurge } from '@/features/vault/device-store';
-import {
-  appendDeviceFallbackNoticeParam,
-  rememberDeviceUnlockFallbackNotice,
-} from '@/features/vault/unlock/recovery-notice';
+import { unlockOrNavigate } from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import {
   createIdempotencyKey,
@@ -2804,22 +2801,7 @@ export function Omnibox({
                   data-omni-unlock-save="1"
                   data-testid="omnibox-unlock-to-save-btn"
                   onClick={() => {
-                    const targetUrl = unlockUrl(pathname);
-                    if (vault) {
-                      void (async () => {
-                        const res = await vault.silentUnlock();
-                        if (res.status === 'unlocked') return;
-                        if (res.status === 'fallback') {
-                          rememberDeviceUnlockFallbackNotice(getKnownDeviceSessionUserId());
-                          router?.push(appendDeviceFallbackNoticeParam(targetUrl));
-                          return;
-                        }
-                        if (res.reason === 'busy' || res.reason === 'stale' || res.reason === 'not_locked') return;
-                        router?.push(targetUrl);
-                      })();
-                      return;
-                    }
-                    router?.push(targetUrl);
+                    void unlockOrNavigate(vault, unlockUrl(pathname), (url) => router?.push(url));
                   }}
                   className="btn btn-primary btn-sm"
                 >
