@@ -69,13 +69,12 @@ type CalibrationEntry struct {
 // calEntries is the compiled calibration table (plan P05 mục 2.20, Task 7;
 // SPEC §6.7; ADR 0007 §10).
 //
-// In W1 only the CI fake model entry is registered here so that E2E profile
-// semantic-fake can bootstrap g1 in development/staging while failing closed in
-// production. Real production model entries are added by lane rollout in Task 24
-// (FS-16) after running worker semeval on the deploy host: fill
-// calProductionPending (below), check it with calValidateProductionEntry, and
-// append it here. Until then no production entry exists, so CalibrationLookupFor
-// never serves a real identity and generation create/bootstrap fail closed.
+// The CI fake model entry lets E2E profile semantic-fake bootstrap g1 in
+// development/staging while failing closed in production. Real production
+// model entries are added by lane rollout (FS-16) after running worker semeval
+// on the deploy host; calProductionEntry (below) is the stage 24-2 entry. Any
+// real identity without a valid entry is never served, so generation
+// create/bootstrap fail closed for it.
 var calEntries = []CalibrationEntry{
 	{
 		Provider:          FakeEmbedProvider,
@@ -85,6 +84,7 @@ var calEntries = []CalibrationEntry{
 		ReportPath:        FakeEmbedReportPath,
 		NonProductionOnly: true,
 	},
+	calProductionEntry,
 }
 
 // CalibrationEntries returns a shallow copy of the registered calibration
@@ -275,33 +275,22 @@ var (
 	calReportPathRE = regexp.MustCompile(`^docs/benchmarks/semantic-eval/report-[a-z0-9][a-z0-9._-]*\.json$`)
 )
 
-// calProductionPending is the unfilled slot for the production model entry.
-//
-// TODO(T24-host): stage 24-2 (small PR by lane rollout, FS-16) fills this on the
-// deploy host after `worker semeval` returned decision "ok" and the Advisor
-// recorded the threshold (gate 5), then moves it into calEntries:
-//
-//	Provider:     "openai_compat"
-//	Model:        "openai_compat/<EMBEDDING_MODEL>"  (the client's Model())
-//	ModelVersion: "dims=<d>;instr=<sha8>"            (OpenAIModelVersion(d, instruction))
-//	MinCos:       the report's threshold, on the 0.30..0.90 grid
-//	ReportPath:   "docs/benchmarks/semantic-eval/report-<slug>-<dims>-<yyyymmdd>.json"
-//	NonProductionOnly: false
-//
-// While every field is empty the guard below rejects it. It is deliberately NOT
-// in calEntries: moving it there unfilled makes TestCalibrationEntriesHaveReports
-// and the lookup reject it, and TestCalibrationProductionPendingFailsClosed pins
-// that.
-//
-// TODO(T24-host) test delta for the stage 24-2 PR: TestCalibrationProductionPendingFailsClosed
-// WILL go red once the real entry is registered, by design (it is the guard
-// test, not a guard rejection; do not weaken the guard to make it pass). In
-// that same PR replace its two "nothing real is served" assertions (the
-// "calEntries holds only fake entries" loop and the "real openai_compat identity
-// is not served in any env" loop) with "the registered real entry is served in
-// production and passes calValidateProductionEntry", and keep the placeholder
-// and malformed-entry sub-cases unchanged.
-var calProductionPending = CalibrationEntry{}
+// calProductionEntry is the production model entry, filled in stage 24-2
+// (lane rollout, FS-16; advisor-dec-362) from `worker semeval` on the deploy
+// host bro through the 9router openai_compat endpoint (ADR 0004): report
+// synthetic=false, decision "ok", threshold 0.48 (precision 0.9608, recall
+// 0.6622, FPR 0.0400 over 124 pairs). It passes calValidateProductionEntry and
+// is registered in calEntries; TestCalibrationEntriesHaveReports checks it
+// against its report in CI. A new model or instruction needs a new semeval
+// run, report and entry (never edit MinCos by hand).
+var calProductionEntry = CalibrationEntry{
+	Provider:          ProviderOpenAICompat,
+	Model:             "openai_compat/openrouter/qwen/qwen3-embedding-8b",
+	ModelVersion:      "dims=1024;instr=97581580",
+	MinCos:            0.48,
+	ReportPath:        "docs/benchmarks/semantic-eval/report-qwen3-embedding-8b-1024-20261104.json",
+	NonProductionOnly: false,
+}
 
 // calValidateProductionEntry reports why e is not an acceptable real
 // (non-fake) calibration entry, or nil when it is. The CI fake entry is out of
