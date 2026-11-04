@@ -1,7 +1,13 @@
 import { ProblemError } from '@engram/shared-types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AppHeader } from '@/components/app-shell/app-header';
+import { ThemeProvider } from '@/components/theme-provider';
+import { VaultUnlockFlow } from '@/features/vault/unlock/unlock-flow';
+import enMessages from '@/messages/en.json';
+import viMessages from '@/messages/vi.json';
 import {
   type DeviceStoreEnvironment,
   formatDevKeyRecordKey,
@@ -1888,6 +1894,247 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     });
     await waitFor(() => expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(false));
     expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K2))).toBe(true);
+  });
+
+  // ------------------------------------------------------------------------------------------------------------
+  // P05-FIX (advisor-dec-377): B1 lock pill, B2 /app/unlock device button & fallback, B3 remember checkbox
+  // ------------------------------------------------------------------------------------------------------------
+
+  it('B1 lock pill: clicking locked pill on a remembered device unlocks in place via silentUnlock() without navigating to /app/unlock', async () => {
+    const first = await openUnlockedTab();
+    await act(async () => {
+      await first.remember().remember();
+    });
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim);
+    const queryClient = new QueryClient();
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={queryClient}>
+            <VaultProvider
+              createWorker={() => shim.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={false}
+            >
+              <AppHeader showLogout={false} />
+            </VaultProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const unlockBtn = await screen.findByTestId('vault-unlock-button');
+    expect(unlockBtn).toHaveAttribute('type', 'button');
+    expect(unlockBtn).toHaveAccessibleName(/Vault đang khoá.*Mở khoá vault/);
+
+    await act(async () => {
+      fireEvent.click(unlockBtn);
+    });
+
+    await waitFor(() => expect(screen.getByTestId('vault-lock-button')).toBeInTheDocument(), { timeout: 10_000 });
+    expect(mocks.router.push).not.toHaveBeenCalled();
+  });
+
+  it('B1 lock pill: clicking locked pill when not remembered navigates to /app/unlock; on DevKey fallback navigates with short notice flag', async () => {
+    await openUnlockedTab();
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    // 1. Not remembered -> navigates to /app/unlock
+    const shim1 = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim1);
+    const qc1 = new QueryClient();
+    mocks.router.pathname = '/app/items/123';
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={qc1}>
+            <VaultProvider
+              createWorker={() => shim1.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={false}
+            >
+              <AppHeader showLogout={false} />
+            </VaultProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const unlockBtn1 = await screen.findByTestId('vault-unlock-button');
+    await act(async () => {
+      fireEvent.click(unlockBtn1);
+    });
+    await waitFor(() =>
+      expect(mocks.router.push).toHaveBeenCalledWith('/app/unlock?returnTo=%2Fapp%2Fitems%2F123'),
+    );
+    cleanup();
+
+    // 2. Corrupted DevKey record -> silentUnlock returns fallback -> navigates with notice=device_unlock_failed
+    const realKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    devkeys().set(formatDevKeyRecordKey(USER_A, VAULT_K), {
+      user_id: USER_A,
+      vault_key_id: VAULT_K,
+      dev_key: realKey,
+      wrapped_vk: new Uint8Array(60),
+      created_at: '2026-01-01T00:00:00Z',
+    });
+    mocks.router.push.mockReset();
+    mocks.router.pathname = '/app';
+    const shim2 = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim2);
+    const qc2 = new QueryClient();
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={qc2}>
+            <VaultProvider
+              createWorker={() => shim2.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={false}
+            >
+              <AppHeader showLogout={false} />
+            </VaultProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const unlockBtn2 = await screen.findByTestId('vault-unlock-button');
+    await act(async () => {
+      fireEvent.click(unlockBtn2);
+    });
+    await waitFor(() =>
+      expect(mocks.router.push).toHaveBeenCalledWith('/app/unlock?notice=device_unlock_failed'),
+    );
+  });
+
+  it('B2 /app/unlock: shows primary device unlock button when remembered, unlocks via silentUnlock() on click, and falls back with short notice on failure', async () => {
+    const first = await openUnlockedTab();
+    await act(async () => {
+      await first.remember().remember();
+    });
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+
+    // 1. Success via device button on /app/unlock
+    mocks.router.pathname = '/app/unlock';
+    mocks.router.searchParams = new URLSearchParams('returnTo=%2Fapp%2Fsettings');
+    const shim1 = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim1);
+    const qc1 = new QueryClient();
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={qc1}>
+            <VaultProvider
+              createWorker={() => shim1.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={false}
+            >
+              <VaultUnlockFlow />
+            </VaultProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const deviceBtn = await screen.findByTestId('unlock-device-button');
+    expect(deviceBtn).toHaveTextContent('Mở khoá trên thiết bị này');
+    await act(async () => {
+      fireEvent.click(deviceBtn);
+    });
+    await waitFor(() => expect(mocks.router.replace).toHaveBeenCalledWith('/app/settings'), { timeout: 10_000 });
+    cleanup();
+
+    // 2. Failure fallback -> shows notice and hides device section, keeping passphrase form usable without looping
+    const realKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    devkeys().set(formatDevKeyRecordKey(USER_A, VAULT_K), {
+      user_id: USER_A,
+      vault_key_id: VAULT_K,
+      dev_key: realKey,
+      wrapped_vk: new Uint8Array(60),
+      created_at: '2026-01-01T00:00:00Z',
+    });
+    mocks.router.replace.mockReset();
+    const shim2 = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim2);
+    const qc2 = new QueryClient();
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={qc2}>
+            <VaultProvider
+              createWorker={() => shim2.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={false}
+            >
+              <VaultUnlockFlow />
+            </VaultProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const deviceBtn2 = await screen.findByTestId('unlock-device-button');
+    await act(async () => {
+      fireEvent.click(deviceBtn2);
+    });
+    await waitFor(() => expect(screen.getByTestId('unlock-device-fallback-notice')).toBeInTheDocument());
+    expect(screen.queryByTestId('unlock-device-section')).not.toBeInTheDocument();
+    expect(screen.getByTestId('unlock-passphrase-input')).toBeEnabled();
+    expect(mocks.router.replace).not.toHaveBeenCalled();
+  });
+
+  it('B3 /app/unlock: "Remember this device" checkbox defaults off and calls remember() after successful passphrase unlock when checked', async () => {
+    await openUnlockedTab();
+    cleanup();
+    shims.splice(0).forEach((s) => s.close());
+    expect(devkeys().size).toBe(0);
+
+    mocks.router.pathname = '/app/unlock';
+    const shim = createWorkerShim({ deriveKek: fastTestDeriveKek });
+    shims.push(shim);
+    const qc = new QueryClient();
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <ThemeProvider>
+          <QueryClientProvider client={qc}>
+            <VaultProvider
+              createWorker={() => shim.port}
+              lockEpochEnv={{ idbFactory: idb.createFactory(), locksManager: locks.createLockManager() }}
+              deviceStoreEnv={{ idbFactory: idb.createFactory() }}
+              silentUnlockOnLoad={false}
+            >
+              <VaultUnlockFlow />
+            </VaultProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const checkbox = (await screen.findByTestId('unlock-remember-device-checkbox')) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+
+    const passInput = screen.getByTestId('unlock-passphrase-input');
+    fireEvent.change(passInput, { target: { value: PASSPHRASE } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unlock-submit-button'));
+    });
+
+    await waitFor(() => expect(mocks.router.replace).toHaveBeenCalledWith('/app'), { timeout: 10_000 });
+    expect(devkeys().has(formatDevKeyRecordKey(USER_A, VAULT_K))).toBe(true);
   });
 });
 

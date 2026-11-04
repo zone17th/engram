@@ -560,4 +560,54 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
     expect(afterControlSnap.meta?.deviceRevision).toBe(2);
     expect(afterControlSnap.meta?.incarnation).toBe(afterCancelSnap.meta?.incarnation);
   });
+
+  test('P05-FIX B1/B2/B3: remember device via unlock checkbox, manual lock + click locked pill unlocks without passphrase; auto-lock re-opens via next interaction; unremembered navigates to /app/unlock', async ({
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    await installAuthenticatedVaultApiMocks(context);
+    const page = await context.newPage();
+
+    // 1. Unremembered device on /app -> click locked pill -> navigates to /app/unlock
+    await page.goto('/app');
+    await waitForBridges(page);
+    const unlockPillBtn = page.getByTestId('vault-unlock-button');
+    await expect(unlockPillBtn).toBeVisible();
+    await unlockPillBtn.click();
+    await expect(page).toHaveURL(/\/app\/unlock/);
+
+    // 2. B3: On /app/unlock, check "Remember this device" and unlock with passphrase
+    const rememberCheckbox = page.getByTestId('unlock-remember-device-checkbox');
+    await expect(rememberCheckbox).toBeVisible();
+    await expect(rememberCheckbox).not.toBeChecked();
+    await rememberCheckbox.check();
+    await expect(rememberCheckbox).toBeChecked();
+
+    await page.getByTestId('unlock-passphrase-input').fill(TEST_VECTOR_PASSPHRASE);
+    await page.getByTestId('unlock-submit-button').click();
+    await expect(page).toHaveURL(/\/app$/, { timeout: CRYPTO_WAIT_MS });
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
+    expect(await rawDevKeyCount(page)).toBe(1);
+
+    // 3. B1 + B2: Manual lock via header pill -> stays locked -> click locked pill -> unlocks in place without passphrase
+    await page.getByTestId('vault-lock-button').click();
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
+    await page.waitForTimeout(200);
+    // Manual lock never re-opens by itself
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
+
+    await page.getByTestId('vault-unlock-button').click();
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
+    await expect(page).toHaveURL(/\/app$/);
+
+    // 4. B2 Auto-lock path: simulate auto-lock, then click the locked banner CTA -> unlocks in place without passphrase prompt
+    await page.evaluate(async () => {
+      const win: DeviceWindow = window;
+      await win.__engramVaultTestBridge!.lock({ broadcast: false, reason: 'auto_lock' });
+    });
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-shut/);
+    await page.getByTestId('vault-locked-unlock-cta').click();
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
+    await expect(page).toHaveURL(/\/app$/);
+  });
 });
