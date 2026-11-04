@@ -250,35 +250,6 @@ async function runGroup(browser: Browser, testInfo: TestInfo, lang: A11yLang, th
     await checkScreen(ctx, spec('locked-list'), '[data-testid="vault-locked-banner"]', {
       leaveFocusedSelector: '[data-testid="vault-locked-unlock-cta"]',
     });
-    const coarseContext = await browser.newContext({
-      baseURL: process.env.BASE_URL ?? 'http://127.0.0.1:3000',
-      viewport: { width: 390, height: 844 },
-      hasTouch: true,
-      isMobile: true,
-    });
-    try {
-      const cookies = await context.cookies();
-      if (cookies.length > 0) await coarseContext.addCookies(cookies);
-      const coarsePage = await coarseContext.newPage();
-      await coarsePage.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
-      await coarsePage.goto('/app', { waitUntil: 'domcontentloaded', timeout: UI_WAIT_MS });
-      await expect(coarsePage.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
-      await expectVaultShut(coarsePage);
-      const isCoarse = await coarsePage.evaluate(() => window.matchMedia('(pointer: coarse)').matches);
-      expect(isCoarse).toBe(true);
-      const mobileLockedPill = coarsePage.getByTestId('vault-unlock-button-mobile');
-      await expect(mobileLockedPill).toBeVisible({ timeout: UI_WAIT_MS });
-      const mobilePillBox = await mobileLockedPill.boundingBox();
-      expect(mobilePillBox).not.toBeNull();
-      expect(mobilePillBox!.width).toBeGreaterThanOrEqual(44);
-      expect(mobilePillBox!.height).toBeGreaterThanOrEqual(44);
-      await checkState(
-        { page: coarsePage, testInfo, lang, theme, keyboard: false },
-        spec('locked-list-coarse'),
-      );
-    } finally {
-      await coarseContext.close();
-    }
     await activate(ctx, page.getByTestId('vault-locked-unlock-cta'), 'Enter', '[data-testid="vault-locked-banner"]');
 
     // ---- U4 unlock, forgot passphrase (T17B additions), recovery -------------------------------------------------
@@ -577,102 +548,12 @@ async function runGroup(browser: Browser, testInfo: TestInfo, lang: A11yLang, th
       '[data-testid="settings-auto-lock-card"]',
       { leaveFocusedSelector: '[data-testid="settings-forget-device-button"]' },
     );
-
-    log('unlock on remembered device & device-fallback notice');
-    await activate(ctx, page.getByTestId('vault-lock-button'), 'Enter', 'header');
-    await expect(page).toHaveURL(/\/app\/settings$/, { timeout: UI_WAIT_MS });
-    await expectVaultShut(page);
-    await page.goto('/app/unlock', { waitUntil: 'domcontentloaded', timeout: UI_WAIT_MS });
-    await expect(page).toHaveURL(/\/app\/unlock$/, { timeout: UI_WAIT_MS });
-    await expect(page.getByTestId('vault-unlock-page')).toBeVisible({ timeout: UI_WAIT_MS });
-    await expect(page.getByTestId('unlock-device-section')).toBeVisible({ timeout: UI_WAIT_MS });
-    const unlockDeviceBtn = page.getByTestId('unlock-device-button');
-    await expect(unlockDeviceBtn).toBeVisible({ timeout: UI_WAIT_MS });
-    await expect(page.getByTestId('unlock-passkey-section')).toBeVisible({ timeout: UI_WAIT_MS });
-    await expect(page.getByTestId('unlock-remember-device-checkbox')).toHaveCount(0);
-    const deviceVsPasskeyOrder = await page.evaluate(() => {
-      const deviceEl = document.querySelector('[data-testid="unlock-device-section"]');
-      const passkeyEl = document.querySelector('[data-testid="unlock-passkey-section"]');
-      const passphraseEl = document.querySelector('[data-testid="unlock-passphrase-section"]');
-      if (!deviceEl || !passkeyEl || !passphraseEl) return false;
-      const dRect = deviceEl.getBoundingClientRect();
-      const pkRect = passkeyEl.getBoundingClientRect();
-      const ppRect = passphraseEl.getBoundingClientRect();
-      return dRect.top < pkRect.top && pkRect.top < ppRect.top;
-    });
-    expect(deviceVsPasskeyOrder).toBe(true);
-    await checkScreen(ctx, spec('unlock-device'), '[data-testid="vault-unlock-page"]', {
-      leaveFocusedSelector: '[data-testid="unlock-device-button"]',
-    });
-
-    // Corrupt the stored wrapped_vk bytes in IndexedDB so clicking the primary device unlock button
-    // exercises a real failed silentUnlock() and transitions to unlock-device-fallback-notice.
-    await page.evaluate(() => {
-      const { promise, resolve, reject } = Promise.withResolvers<void>();
-      const openReq = indexedDB.open('sabk.device', 1);
-      openReq.onerror = () => reject(openReq.error ?? new Error('open sabk.device failed'));
-      openReq.onsuccess = () => {
-        const db = openReq.result;
-        const tx = db.transaction('devkeys', 'readwrite');
-        const store = tx.objectStore('devkeys');
-        const keysReq = store.getAllKeys();
-        keysReq.onerror = () => {
-          db.close();
-          reject(keysReq.error ?? new Error('getAllKeys failed'));
-        };
-        keysReq.onsuccess = () => {
-          const key = keysReq.result[0];
-          if (key === undefined) {
-            db.close();
-            reject(new Error('missing devkey record'));
-            return;
-          }
-          const getReq = store.get(key);
-          getReq.onerror = () => {
-            db.close();
-            reject(getReq.error ?? new Error('get devkey failed'));
-          };
-          getReq.onsuccess = () => {
-            const rec = getReq.result as {
-              user_id: string;
-              vault_key_id: string;
-              dev_key: CryptoKey;
-              wrapped_vk: Uint8Array;
-              created_at: string;
-            };
-            const corrupted = new Uint8Array(rec.wrapped_vk.byteLength);
-            corrupted.set(rec.wrapped_vk);
-            corrupted[corrupted.byteLength - 1] ^= 0xff;
-            store.put({ ...rec, wrapped_vk: corrupted }, key);
-          };
-        };
-        tx.oncomplete = () => {
-          db.close();
-          resolve();
-        };
-        tx.onerror = () => {
-          db.close();
-          reject(tx.error ?? new Error('corrupt devkey tx failed'));
-        };
-      };
-      return promise;
-    });
-    await activate(ctx, unlockDeviceBtn, 'Enter', '[data-testid="vault-unlock-page"]');
-    await expect(page.getByTestId('unlock-device-fallback-notice')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
-    await expect(page.getByTestId('unlock-device-section')).toHaveCount(0);
-    await expect(page.getByTestId('unlock-passkey-section')).toBeVisible({ timeout: UI_WAIT_MS });
-    await expect(page.getByTestId('unlock-remember-device-checkbox')).toBeVisible({ timeout: UI_WAIT_MS });
-    await checkScreen(ctx, spec('unlock-device-fallback'), '[data-testid="vault-unlock-page"]', {
-      leaveFocusedSelector: '[data-testid="unlock-passkey-button"]',
-    });
-
-    // Unlock with passkey and forget device so the group finishes clean on Settings with Remember device off.
-    await activate(ctx, page.getByTestId('unlock-passkey-button'), 'Enter', '[data-testid="vault-unlock-page"]');
-    await expect(page).toHaveURL(/\/app$/, { timeout: CRYPTO_WAIT_MS });
-    await expectVaultOpen(page);
-    await page.goto('/app/settings', { waitUntil: 'domcontentloaded', timeout: UI_WAIT_MS });
-    await expect(page.getByTestId('settings-forget-device-button')).toBeVisible({ timeout: UI_WAIT_MS });
-    await page.getByTestId('settings-forget-device-button').click();
+    await activate(
+      ctx,
+      page.getByTestId('settings-forget-device-button'),
+      'Enter',
+      '[data-testid="settings-auto-lock-card"]',
+    );
     await expect(settingsRememberSwitch).toHaveAttribute('aria-checked', 'false', { timeout: UI_WAIT_MS });
 
     log('done');

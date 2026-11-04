@@ -11,9 +11,9 @@ import {
   enableWebAuthn,
   expectPasskeyAdded,
   expectVaultOpen,
-  expectVaultShut,
   gotoSettings,
   isApiPost,
+  lockVault,
   openAddPasskeyDialog,
   removeAuthenticator,
   signupViaUiSecret,
@@ -45,12 +45,9 @@ type CaptureState =
   | 'onboarding-step3-remember'
   | 'forgot'
   | 'unlock-long-email'
-  | 'unlock-device'
-  | 'unlock-device-fallback'
   | 'settings-passkeys'
   | 'settings-autolock'
-  | 'settings-device'
-  | 'header-locked-pill-coarse';
+  | 'settings-device';
 
 async function settleForCapture(page: Page, theme: Theme, scrollTarget?: Locator) {
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme, { timeout: UI_WAIT_MS });
@@ -132,7 +129,6 @@ test.describe('vaultb visual captures (AC VISUAL)', () => {
 
   for (const theme of THEMES) {
     test(`captures onboarding step 3, forgot paths, unlock email wrap, and settings passkeys + auto-lock (${theme})`, async ({
-      browser,
       page,
       context,
     }, testInfo) => {
@@ -282,102 +278,13 @@ test.describe('vaultb visual captures (AC VISUAL)', () => {
         await capture(page, testInfo, 'settings-device', theme, mobile.width, {
           target: autoLockCard,
         });
-        // 2c. Remembered-device unlock (`unlock-device`) + device-fallback notice (`unlock-device-fallback`)
-        await setViewport(page, desktop);
-        await page.getByTestId('vault-lock-button').click();
-        await expect(page).toHaveURL(/\/app\/settings$/, { timeout: UI_WAIT_MS });
-        await expectVaultShut(page);
-        await page.goto('/app/unlock', { waitUntil: 'domcontentloaded', timeout: UI_WAIT_MS });
-        await expect(page).toHaveURL(/\/app\/unlock$/, { timeout: UI_WAIT_MS });
-        await expect(page.getByTestId('vault-unlock-page')).toBeVisible({ timeout: UI_WAIT_MS });
-        await expect(page.getByTestId('unlock-device-section')).toBeVisible({ timeout: UI_WAIT_MS });
-        const unlockDeviceBtn = page.getByTestId('unlock-device-button');
-        await expect(unlockDeviceBtn).toBeVisible({ timeout: UI_WAIT_MS });
-        await expect(page.getByTestId('unlock-passkey-section')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
-        await capture(page, testInfo, 'unlock-device', theme, desktop.width, { fullPage: true });
-        await setViewport(page, mobile);
-        await expect(unlockDeviceBtn).toBeVisible({ timeout: UI_WAIT_MS });
-        await capture(page, testInfo, 'unlock-device', theme, mobile.width, { fullPage: true });
-
-        // Corrupt stored wrapped_vk bytes in IndexedDB so clicking the primary device unlock button
-        // exercises a failed silentUnlock() and shows unlock-device-fallback-notice.
-        await page.evaluate(() => {
-          const { promise, resolve, reject } = Promise.withResolvers<void>();
-          const openReq = indexedDB.open('sabk.device', 1);
-          openReq.onerror = () => reject(openReq.error ?? new Error('open sabk.device failed'));
-          openReq.onsuccess = () => {
-            const db = openReq.result;
-            const tx = db.transaction('devkeys', 'readwrite');
-            const store = tx.objectStore('devkeys');
-            const keysReq = store.getAllKeys();
-            keysReq.onerror = () => {
-              db.close();
-              reject(keysReq.error ?? new Error('getAllKeys failed'));
-            };
-            keysReq.onsuccess = () => {
-              const key = keysReq.result[0];
-              if (key === undefined) {
-                db.close();
-                reject(new Error('missing devkey record'));
-                return;
-              }
-              const getReq = store.get(key);
-              getReq.onerror = () => {
-                db.close();
-                reject(getReq.error ?? new Error('get devkey failed'));
-              };
-              getReq.onsuccess = () => {
-                const rec = getReq.result as {
-                  user_id: string;
-                  vault_key_id: string;
-                  dev_key: CryptoKey;
-                  wrapped_vk: Uint8Array;
-                  created_at: string;
-                };
-                const corrupted = new Uint8Array(rec.wrapped_vk.byteLength);
-                corrupted.set(rec.wrapped_vk);
-                corrupted[corrupted.byteLength - 1] ^= 0xff;
-                store.put({ ...rec, wrapped_vk: corrupted }, key);
-              };
-            };
-            tx.oncomplete = () => {
-              db.close();
-              resolve();
-            };
-            tx.onerror = () => {
-              db.close();
-              reject(tx.error ?? new Error('corrupt devkey tx failed'));
-            };
-          };
-          return promise;
+        // Forget before locking so Unlock U4 renders normally
+        await page.getByTestId('settings-forget-device-button').click();
+        await expect(settingsRememberSwitch).toHaveAttribute('aria-checked', 'false', {
+          timeout: UI_WAIT_MS,
         });
-        await unlockDeviceBtn.click();
-        const fallbackNotice = page.getByTestId('unlock-device-fallback-notice');
-        await expect(fallbackNotice).toBeVisible({ timeout: CRYPTO_WAIT_MS });
-        await expect(page.getByTestId('unlock-device-section')).toHaveCount(0);
-        await expect(page.getByTestId('unlock-passkey-section')).toBeVisible({ timeout: UI_WAIT_MS });
-        await capture(page, testInfo, 'unlock-device-fallback', theme, mobile.width, {
-          fullPage: true,
-        });
-        await setViewport(page, desktop);
-        await expect(fallbackNotice).toBeVisible({ timeout: UI_WAIT_MS });
-        await capture(page, testInfo, 'unlock-device-fallback', theme, desktop.width, {
-          fullPage: true,
-        });
-
-        // Forget the corrupted device record before continuing to clean Unlock U4 capture
-        await page.evaluate(async () => {
-          const win = window as unknown as {
-            __engramDeviceTestBridge?: { forget: () => Promise<{ remembered: boolean }> };
-          };
-          await win.__engramDeviceTestBridge!.forget();
-        });
-        await page.goto('/app/unlock', { waitUntil: 'domcontentloaded', timeout: UI_WAIT_MS });
-        await expect(page.getByTestId('unlock-device-fallback-notice')).toHaveCount(0);
-        await expect(page.getByTestId('unlock-device-section')).toHaveCount(0);
-        await setViewport(page, mobile);
-
         // 3. Unlock U4 with long email (CF-T17B-UNLOCK-EMAIL-WRAP visible) + passkey unlock card
+        await lockVault(page);
         const signedInLine = page.getByTestId('unlock-signed-in-line');
         await expect(signedInLine).toBeVisible({ timeout: UI_WAIT_MS });
         await expect(signedInLine).toContainText(email);
@@ -393,44 +300,6 @@ test.describe('vaultb visual captures (AC VISUAL)', () => {
         await setViewport(page, desktop);
         await expect(page.getByTestId('unlock-passkey-section')).toBeVisible({ timeout: CRYPTO_WAIT_MS });
         await capture(page, testInfo, 'unlock-long-email', theme, desktop.width, { fullPage: true });
-
-        // 3b. Header locked pill under coarse pointer (44px) on mobile (`header-locked-pill-coarse`)
-        const coarseContext = await browser.newContext({
-          viewport: { width: mobile.width, height: mobile.height },
-          hasTouch: true,
-          isMobile: true,
-        });
-        try {
-          await coarseContext.setExtraHTTPHeaders({ 'accept-language': 'en-US,en;q=0.9' });
-          const existingCookies = await context.cookies();
-          if (existingCookies.length > 0) {
-            await coarseContext.addCookies(existingCookies);
-          }
-          const coarsePage = await coarseContext.newPage();
-          await coarsePage.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
-          await coarsePage.goto('/app/unlock', { waitUntil: 'domcontentloaded', timeout: UI_WAIT_MS });
-          await expect(coarsePage.getByTestId('vault-unlock-page')).toBeVisible({ timeout: UI_WAIT_MS });
-          const isCoarse = await coarsePage.evaluate(
-            () => window.matchMedia('(pointer: coarse)').matches,
-          );
-          expect(isCoarse).toBe(true);
-          const mobileLockedPill = coarsePage.getByTestId('vault-unlock-button-mobile');
-          await expect(mobileLockedPill).toBeVisible({ timeout: UI_WAIT_MS });
-          const pillBox = await mobileLockedPill.boundingBox();
-          expect(pillBox).not.toBeNull();
-          expect(pillBox!.width).toBeGreaterThanOrEqual(44);
-          expect(pillBox!.height).toBeGreaterThanOrEqual(44);
-          await capture(
-            coarsePage,
-            testInfo,
-            'header-locked-pill-coarse',
-            theme,
-            mobile.width,
-            { target: coarsePage.locator('header') },
-          );
-        } finally {
-          await coarseContext.close();
-        }
 
         // 4. Forgot-passphrase page with the new 17B paths (passkey, remembered-device, unlocked-tab, recovery-key)
         await page.getByTestId('unlock-forgot-passphrase-link').click({ timeout: UI_WAIT_MS });

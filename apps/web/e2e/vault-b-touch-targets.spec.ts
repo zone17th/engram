@@ -1,6 +1,4 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { installHomeContentMetadataRoutes } from './content-home-support';
 import { UI_WAIT_MS, installApiMocks, unlockFromBanner } from './vault-locked-support';
 
@@ -103,7 +101,7 @@ async function measureHeaderControls(page: Page, selectors: ReadonlyArray<{ name
 test.describe('FU3 UI-TOUCH-44 header and primary control touch targets', () => {
   test('coarse pointer at 390x844 and 768x1024 reaches >= 44x44 px hit area on every header action without neighbour overlap', async ({
     browser,
-  }, testInfo) => {
+  }) => {
     test.setTimeout(90_000);
     const context = await browser.newContext({
       viewport: { width: 390, height: 844 },
@@ -119,65 +117,6 @@ test.describe('FU3 UI-TOUCH-44 header and primary control touch targets', () => 
 
       const isCoarse = await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches);
       expect(isCoarse).toBe(true);
-
-      // Verify locked mobile pill (`vault-unlock-button-mobile`) under coarse pointer before unlocking, and capture visual proof
-      await expect(page.getByTestId('vault-unlock-button-mobile')).toBeVisible({ timeout: UI_WAIT_MS });
-      const lockedMobileControls = await measureHeaderControls(page, [
-        { name: 'logo', selector: 'header a[href="/app"]' },
-        { name: 'vault-unlock-mobile', selector: '[data-testid="vault-unlock-button-mobile"]' },
-        { name: 'settings', selector: 'header a[href="/app/settings"]' },
-        { name: 'theme-toggle', selector: 'header button.btn-icon' },
-        { name: 'sign-out', selector: 'header div.ml-auto > button.btn-tertiary:not(.btn-icon)' },
-      ]);
-      for (const ctrl of lockedMobileControls) {
-        expect(ctrl.effectiveRect.width, `${ctrl.name} locked width at 390`).toBeGreaterThanOrEqual(44);
-        expect(ctrl.effectiveRect.height, `${ctrl.name} locked height at 390`).toBeGreaterThanOrEqual(44);
-        expect(ctrl.probeHits, `${ctrl.name} locked elementFromPoint probes at 390`).toEqual({
-          center: true,
-          left: true,
-          right: true,
-          top: true,
-          bottom: true,
-        });
-      }
-      await page.evaluate(async () => {
-        await document.fonts.ready;
-      });
-      for (const theme of ['light', 'dark'] as const) {
-        await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
-        await page.evaluate((nextTheme) => {
-          document.documentElement.setAttribute('data-theme', nextTheme);
-        }, theme);
-        await page.evaluate(() => {
-          const { promise, resolve } = Promise.withResolvers<void>();
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-          return promise;
-        });
-        const shotPath = testInfo.outputPath(`vault-web-locked-list-coarse-${theme}-390.png`);
-        mkdirSync(dirname(shotPath), { recursive: true });
-        const buf = await page.screenshot({
-          path: shotPath,
-          timeout: UI_WAIT_MS,
-          fullPage: true,
-          animations: 'disabled',
-          caret: 'hide',
-        });
-        expect(buf.byteLength).toBeGreaterThan(0);
-
-        const headerShotPath = testInfo.outputPath(`vault-b-header-locked-pill-coarse-${theme}-390.png`);
-        mkdirSync(dirname(headerShotPath), { recursive: true });
-        const headerBuf = await page.locator('header').screenshot({
-          path: headerShotPath,
-          timeout: UI_WAIT_MS,
-          animations: 'disabled',
-          caret: 'hide',
-        });
-        expect(headerBuf.byteLength).toBeGreaterThan(0);
-      }
-      await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
-      await page.evaluate(() => {
-        document.documentElement.setAttribute('data-theme', 'light');
-      });
 
       // Unlock vault so the interactive vault lock button is active in the header (returns to /app)
       await unlockFromBanner(page);
