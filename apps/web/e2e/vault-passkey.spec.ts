@@ -144,13 +144,21 @@ test.describe('passkey against the real API', () => {
       // holding saved credential A for the downstream unlock steps.
       await removeAuthenticator(cdp, authenticatorA);
       const cancelAuth = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
-      const onCredentialAdded = () => {
-        void setUserVerified(cdp, cancelAuth, false);
-      };
-      cdp.on('WebAuthn.credentialAdded', onCredentialAdded);
+      const { promise: getBlocked, resolve: markGetBlocked } = Promise.withResolvers<void>();
+      const { promise: getReleased, resolve: releaseGet } = Promise.withResolvers<void>();
+      await page.exposeFunction('__notifyPasskeyBeforeGet', () => {
+        markGetBlocked();
+        return getReleased;
+      });
+      await page.evaluate(() => {
+        window.__passkeyBeforeGet = () => window.__notifyPasskeyBeforeGet?.() ?? Promise.resolve();
+      });
       try {
         const cancelDialog = await openAddPasskeyDialog(page);
         await submitPasskeyName(page, 'Cancel follow-up get key');
+        await getBlocked;
+        await setUserVerified(cdp, cancelAuth, false);
+        releaseGet();
         await expect(cancelDialog.getByRole('alert')).toHaveText(COPY.registerCancelled, {
           timeout: CRYPTO_WAIT_MS,
         });
@@ -162,7 +170,10 @@ test.describe('passkey against the real API', () => {
         await cancelDialog.getByRole('button', { name: 'Cancel' }).click();
         await expect(cancelDialog).toBeHidden({ timeout: UI_WAIT_MS });
       } finally {
-        cdp.off('WebAuthn.credentialAdded', onCredentialAdded);
+        releaseGet();
+        await page.evaluate(() => {
+          window.__passkeyBeforeGet = null;
+        });
         await removeAuthenticator(cdp, cancelAuth);
       }
       // Re-create a fresh verified authenticator and register E2E passkey A for the unlock steps below (step 9 then

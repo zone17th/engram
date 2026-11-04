@@ -240,7 +240,10 @@ describe('T19 bullet 1 - register flow (plan 2.5 steps 1-6)', () => {
     expect(atCreate.client.wrapForPasskey).not.toHaveBeenCalled();
     expect(atCreate.posts).toHaveLength(0);
 
-    const atGet = makeHarness({ createPrf: { enabled: true }, getPrf: { enabled: true, first: PRF_OUTPUT } });
+    const atGet = makeHarness({
+      createPrf: { enabled: true, first: PRF_OUTPUT },
+      getPrf: { enabled: true, first: PRF_OUTPUT },
+    });
     atGet.credentials.get.mockImplementationOnce(async () => {
       atGet.state.generation += 1;
       return atGet.assertion.credential as Credential;
@@ -250,6 +253,7 @@ describe('T19 bullet 1 - register flow (plan 2.5 steps 1-6)', () => {
       error: 'stale',
       orphan: true,
     });
+    expect(isAllZero(atGet.created.prfSource!)).toBe(true);
     expect(isAllZero(atGet.assertion.prfSource!)).toBe(true);
     expect(atGet.client.wrapForPasskey).not.toHaveBeenCalled();
     expect(atGet.posts).toHaveLength(0);

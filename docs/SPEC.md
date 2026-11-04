@@ -954,7 +954,7 @@ Passkey là **phương thức mở vault** ở MVP, ngang hàng passphrase — *
 |-----|------------|
 | MVP (P01–P06) | **Vault unlock** qua `get()` + **PRF**. Login vẫn email/password hoặc OAuth |
 | P07 | Login-with-passkey (discoverable credential). `pubkey` **đã lưu từ MVP** để khỏi migrate. Dùng lại credential nếu authenticator thực sự tạo discoverable credential; `residentKey: preferred` không đảm bảo điều đó |
-| PRF | Bắt buộc (`prf` / CTAP2 `hmac-secret`). `create()` có thể chỉ trả `enabled=true`; gọi `get()` tiếp với challenge ngẫu nhiên 32 B do client tự sinh để lấy output khi cần (assertion `get()` cục bộ chỉ để lấy PRF, không gửi server, không dùng để xác thực; điểm lệch gate 3 — **đã được chủ repo ký duyệt 2026-10-29 (decisions batch-1, plan mục 5)**). 32 B → `PWK` → wrap `VK` (73 B, AAD `UTF8("sabk.vk.prf.v1") ‖ 0x00 ‖ 0x01` theo [ADR 0002](adr/0002-vault-crypto-layout.md)). Salt ngẫu nhiên 32 B / credential lưu `prf_salt`; nhiều credential dùng `evalByCredential` |
+| PRF | Bắt buộc (`prf` / CTAP2 `hmac-secret`). Khi `create()` trả `enabled=true` (dù có hay chưa có `results.first`), client luôn gọi `get()` tiếp với challenge ngẫu nhiên 32 B do client tự sinh để xác minh và lấy đầu ra PRF từ `get()` (nếu `create()` cũng trả `results.first` thì đối chiếu khớp; assertion `get()` cục bộ chỉ để lấy PRF, không gửi server, không dùng để xác thực; điểm lệch gate 3 — **đã được chủ repo ký duyệt 2026-10-29 (decisions batch-1, plan mục 5)**). 32 B → `PWK` → wrap `VK` (73 B, AAD `UTF8("sabk.vk.prf.v1") ‖ 0x00 ‖ 0x01` theo [ADR 0002](adr/0002-vault-crypto-layout.md)). Salt ngẫu nhiên 32 B / credential lưu `prf_salt`; nhiều credential dùng `evalByCredential` |
 | Không PRF | **Từ chối** đăng ký. Không fallback server-held secret, không largeBlob (non-goal) |
 | Nhiều máy | N credential / user (Hello, điện thoại, YubiKey) |
 | Origin / RP ID | Production origin `https://engram.zone17.click`, RP ID `engram.zone17.click`. Dev: `http://localhost` / `localhost` |
@@ -966,12 +966,12 @@ Passkey là **phương thức mở vault** ở MVP, ngang hàng passphrase — *
 
 | Key | en | vi |
 |-----|----|----|
-| `passkey.prf_unsupported` | This browser or authenticator does not support the WebAuthn PRF extension. You cannot register a passkey. Keep using your passphrase and recovery keys. | Trình duyệt hoặc khoá bảo mật không hỗ trợ phần mở rộng PRF của WebAuthn. Không thể đăng ký passkey. Hãy tiếp tục dùng passphrase và recovery key. |
+| `passkey.prf_unsupported` | This browser or authenticator does not support the WebAuthn PRF extension. Use Windows Hello, a security key, or a phone, or keep using your passphrase and recovery keys. | Trình duyệt hoặc khoá bảo mật không hỗ trợ phần mở rộng PRF của WebAuthn. Hãy dùng Windows Hello, khoá bảo mật hoặc điện thoại, hoặc tiếp tục dùng passphrase và recovery key. |
 | `passkey.register_cancelled` | Passkey registration was cancelled. | Đã huỷ đăng ký passkey. |
 | `passkey.register_failed` | Could not register this passkey. Try another authenticator. | Không đăng ký được passkey này. Thử khoá hoặc thiết bị khác. |
 | `passkey.unlock_cancelled` | Passkey prompt was cancelled. | Đã huỷ mở khoá bằng passkey. |
 | `passkey.unlock_failed` | Could not unlock with this passkey. Use your passphrase or a recovery key. | Không mở vault bằng passkey này. Dùng passphrase hoặc recovery key. |
-| `passkey.unlock_prf_missing` | Authenticator did not return PRF. Cannot unlock with passkey. | Authenticator không trả PRF. Không mở vault bằng passkey. |
+| `passkey.unlock_prf_missing` | This authenticator did not return PRF. Unlock with your passphrase, remove this passkey in Settings, and add one from an authenticator that supports PRF (Windows Hello, security key, or phone). | Thiết bị xác thực này không trả PRF. Hãy mở khoá bằng passphrase, gỡ passkey này trong Settings và thêm passkey từ thiết bị hỗ trợ PRF (Windows Hello, khoá bảo mật hoặc điện thoại). |
 | `passkey.none_registered` | No passkeys yet. Add one in Settings after unlock. | Chưa có passkey. Thêm trong Settings sau khi mở vault. |
 | `passkey.revoked` | Passkey removed. | Đã gỡ passkey. |
 

@@ -94,7 +94,7 @@ function renderDialog(
 
 function stubRegistration(prf: { enabled?: boolean; first?: Uint8Array } | null) {
   mocks.fetchPasskeyRegisterOptions.mockResolvedValue(registerOptionsResponse());
-  mocks.credentialsCreate.mockResolvedValue(fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf }).credential);
+  mocks.credentialsCreate.mockImplementation(async () => fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf }).credential);
   Object.defineProperty(navigator, 'credentials', {
     value: {
       create: mocks.credentialsCreate,
