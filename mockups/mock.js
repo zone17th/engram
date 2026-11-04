@@ -4460,7 +4460,7 @@
 
     function makePositionalAriaLabel(rowNum, colNum, fieldName, isKey) {
       const r = Number.isFinite(rowNum) && rowNum >= 1 ? rowNum : 1;
-      const c = Number.isFinite(colNum) && Number.isFinite(colNum) >= 1 ? colNum : 1;
+      const c = Number.isFinite(colNum) && colNum >= 1 ? colNum : 1;
       if (fieldName) {
         return isKey
           ? `Trường ${fieldName} (hàng ${r}) · Key ${fieldName} (row ${r})`
@@ -5581,107 +5581,238 @@
     let switchBlockedMsg = null;
     let rawSyntaxIssue = null;
     let lastRawErrorOffset = 0;
+    let canonicalRawText = null;
+    let inlinePromptState = null;
+    let lastErrorSignature = '';
+    let liveAnnounceTimer = null;
+
+    function hasLoneSurrogateInStr(str) {
+      const s = String(str || '');
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c >= 0xd800 && c <= 0xdbff) {
+          if (i + 1 < s.length) {
+            const lo = s.charCodeAt(i + 1);
+            if (lo >= 0xdc00 && lo <= 0xdfff) { i++; continue; }
+          }
+          return true;
+        } else if (c >= 0xdc00 && c <= 0xdfff) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function formatReadOnlyStringSafe(str) {
+      return Array.from(String(str || '')).map((ch) => {
+        const c = ch.charCodeAt(0);
+        if (c === 0x0d) return '\\r';
+        if (c === 0x0a) return '\\n';
+        if (c >= 0xd800 && c <= 0xdfff) return `\\u${c.toString(16).padStart(4, '0')}`;
+        return ch;
+      }).join('');
+    }
 
     function makeRow(partial) {
       const p = partial || {};
       const type = p.type || 'string';
+      const val = p.value != null ? String(p.value) : (type === 'boolean' ? 'true' : type === 'null' ? 'null' : '');
+      const k = p.key != null ? String(p.key) : '';
       return {
         id: 'r' + (nextRowId++),
-        key: p.key != null ? String(p.key) : '',
-        value: p.value != null ? String(p.value) : (type === 'boolean' ? 'true' : type === 'null' ? 'null' : ''),
+        key: k,
+        value: val,
         type,
+        placeholder: !!p.placeholder,
+        fromRaw: !!p.fromRaw,
+        occurrenceIndex: p.occurrenceIndex != null ? p.occurrenceIndex : 0,
+        rawKeyLiteral: p.rawKeyLiteral || null,
+        rawValueLiteral: p.rawValueLiteral || null,
+        hasCarriageReturn: !!p.hasCarriageReturn || val.includes('\r'),
+        hasLoneSurrogate: !!p.hasLoneSurrogate || hasLoneSurrogateInStr(val),
+        keyHasUnsafeChars: !!p.keyHasUnsafeChars || k.includes('\r') || k.includes('\n') || hasLoneSurrogateInStr(k),
         expanded: p.expanded !== undefined ? !!p.expanded : true,
-        children: Array.isArray(p.children) ? p.children : (type === 'object' || type === 'array' ? [makeRow({ type: 'string' })] : [])
+        children: Array.isArray(p.children)
+          ? p.children
+          : (type === 'object' || type === 'array' ? [makeRow({ type: 'string', placeholder: true })] : [])
       };
     }
 
-    let rows = [makeRow({ key: '', value: '', type: 'string' })];
+    let rows = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
 
-    function astNodeToRow(node, keyStr) {
-      if (!node) return makeRow({ key: keyStr || '', value: '', type: 'string' });
-      if (node.kind === 'string') {
-        return makeRow({ key: keyStr || '', value: node.value, type: 'string' });
-      }
-      if (node.kind === 'number') {
-        return makeRow({ key: keyStr || '', value: node.lexeme, type: 'number' });
-      }
-      if (node.kind === 'boolean') {
-        return makeRow({ key: keyStr || '', value: node.value ? 'true' : 'false', type: 'boolean' });
-      }
-      if (node.kind === 'null') {
-        return makeRow({ key: keyStr || '', value: 'null', type: 'null' });
-      }
-      if (node.kind === 'object') {
-        const children = node.properties.length
-          ? node.properties.map((p) => astNodeToRow(p.valueNode, p.key))
-          : [makeRow({ key: '', value: '', type: 'string' })];
-        return makeRow({ key: keyStr || '', value: '', type: 'object', expanded: true, children });
-      }
-      if (node.kind === 'array') {
-        const children = node.elements.length
-          ? node.elements.map((el) => astNodeToRow(el, ''))
-          : [makeRow({ key: '', value: '', type: 'string' })];
-        return makeRow({ key: keyStr || '', value: '', type: 'array', expanded: true, children });
-      }
-      return makeRow({ key: keyStr || '', value: '', type: 'string' });
+    function cloneRowTree(list) {
+      return list.map((r) => ({
+        ...r,
+        children: Array.isArray(r.children) ? cloneRowTree(r.children) : []
+      }));
     }
 
-    function loadFromJsonString(jsonStr) {
+    function captureEditorSnapshot() {
+      return {
+        rootKind,
+        rows: cloneRowTree(rows),
+        canonicalRawText,
+        rawSyntaxIssue,
+        switchBlockedMsg
+      };
+    }
+
+    function restoreEditorSnapshot(snap) {
+      if (!snap) return;
+      rootKind = snap.rootKind;
+      rows = cloneRowTree(snap.rows);
+      canonicalRawText = snap.canonicalRawText;
+      rawSyntaxIssue = snap.rawSyntaxIssue;
+      switchBlockedMsg = snap.switchBlockedMsg;
+      inlinePromptState = null;
+      paint();
+    }
+
+    function markTableMutated(row, field) {
+      canonicalRawText = null;
+      switchBlockedMsg = null;
+      discardPromptOpen = false;
+      if (row) {
+        row.placeholder = false;
+        if (field === 'key') {
+          row.fromRaw = false;
+          row.rawKeyLiteral = null;
+        } else if (field === 'value') {
+          row.rawValueLiteral = null;
+        } else {
+          row.fromRaw = false;
+          row.rawKeyLiteral = null;
+          row.rawValueLiteral = null;
+        }
+      }
+    }
+
+    function astNodeToRow(node, keyStr, propMeta) {
+      const meta = propMeta || {};
+      const k = keyStr != null ? String(keyStr) : '';
+      const base = {
+        key: k,
+        placeholder: false,
+        fromRaw: true,
+        occurrenceIndex: meta.occurrenceIndex || 0,
+        rawKeyLiteral: meta.rawKeyLiteral || null,
+        keyHasUnsafeChars: k.includes('\r') || k.includes('\n') || hasLoneSurrogateInStr(k)
+      };
+      if (!node) return makeRow({ ...base, value: '', type: 'string' });
+      if (node.kind === 'string') {
+        return makeRow({
+          ...base,
+          value: node.value,
+          type: 'string',
+          rawValueLiteral: node.raw || null,
+          hasCarriageReturn: !!node.hasCarriageReturn,
+          hasLoneSurrogate: !!node.hasLoneSurrogate
+        });
+      }
+      if (node.kind === 'number') {
+        return makeRow({ ...base, value: node.lexeme, type: 'number', rawValueLiteral: node.lexeme });
+      }
+      if (node.kind === 'boolean') {
+        return makeRow({ ...base, value: node.value ? 'true' : 'false', type: 'boolean', rawValueLiteral: node.raw });
+      }
+      if (node.kind === 'null') {
+        return makeRow({ ...base, value: 'null', type: 'null', rawValueLiteral: 'null' });
+      }
+      if (node.kind === 'object') {
+        const children = node.properties.map((p) => astNodeToRow(p.valueNode, p.key, {
+          occurrenceIndex: p.occurrenceIndex || 0,
+          rawKeyLiteral: p.keyNode ? p.keyNode.raw : null
+        }));
+        return makeRow({ ...base, value: '', type: 'object', expanded: true, children });
+      }
+      if (node.kind === 'array') {
+        const children = node.elements.map((el) => astNodeToRow(el, ''));
+        return makeRow({ ...base, value: '', type: 'array', expanded: true, children });
+      }
+      return makeRow({ ...base, value: '', type: 'string' });
+    }
+
+    function loadFromJsonString(jsonStr, opts) {
+      const options = opts || {};
       const parsed = parseJsonStrict(jsonStr);
-      if (!parsed.ok) return false;
+      if (!parsed.ok) return { ok: false, reason: 'parse', error: parsed.error };
       const root = parsed.document.root;
+      if (root.kind !== 'object' && root.kind !== 'array') {
+        return { ok: false, reason: 'scalar', kind: root.kind };
+      }
       if (root.kind === 'array') {
         rootKind = 'array';
-        rows = root.elements.length
-          ? root.elements.map((el) => astNodeToRow(el, ''))
-          : [makeRow({ key: '', value: '', type: 'string' })];
-      } else if (root.kind === 'object') {
-        rootKind = 'object';
-        rows = root.properties.length
-          ? root.properties.map((p) => astNodeToRow(p.valueNode, p.key))
-          : [makeRow({ key: '', value: '', type: 'string' })];
+        rows = root.elements.map((el) => astNodeToRow(el, ''));
       } else {
         rootKind = 'object';
-        rows = [astNodeToRow(root, 'value')];
+        rows = root.properties.map((p) => astNodeToRow(p.valueNode, p.key, {
+          occurrenceIndex: p.occurrenceIndex || 0,
+          rawKeyLiteral: p.keyNode ? p.keyNode.raw : null
+        }));
       }
-      return true;
+      if (options.preserveRawSource) {
+        canonicalRawText = String(jsonStr);
+      } else {
+        canonicalRawText = null;
+      }
+      return { ok: true };
     }
 
     function isRowCompletelyBlank(r, parentKind) {
       if (r.type !== 'string') return false;
-      if (parentKind === 'object') return r.key.trim() === '' && r.value === '';
+      if (parentKind === 'object') return r.key === '' && r.value === '';
       return r.value === '';
+    }
+
+    function isEffectivePlaceholderRow(r, idx, list, parentKind) {
+      if (r.placeholder) return true;
+      if (r.fromRaw) return false;
+      if (idx === list.length - 1 && isRowCompletelyBlank(r, parentKind)) {
+        return true;
+      }
+      return false;
     }
 
     function validateRows(list, parentKind, errorsMap) {
       const keyCounts = new Map();
+      const keySeenSoFar = new Map();
       if (parentKind === 'object') {
-        list.forEach((r) => {
-          const k = r.key.trim();
-          if (k !== '') keyCounts.set(k, (keyCounts.get(k) || 0) + 1);
+        list.forEach((r, idx) => {
+          if (isEffectivePlaceholderRow(r, idx, list, 'object')) return;
+          const k = r.key;
+          keyCounts.set(k, (keyCounts.get(k) || 0) + 1);
         });
       }
 
-      const multipleRows = list.length > 1;
-
-      list.forEach((r) => {
+      list.forEach((r, idx) => {
+        const isPh = isEffectivePlaceholderRow(r, idx, list, parentKind);
+        if (isPh) {
+          r.occurrenceIndex = 0;
+          return;
+        }
         const rowErrs = {};
         if (parentKind === 'object') {
-          const k = r.key.trim();
-          const hasNonDefaultContent = r.value !== '' || r.type !== 'string' || multipleRows;
-          if (k === '' && hasNonDefaultContent) {
+          const k = r.key;
+          const occ = keySeenSoFar.get(k) || 0;
+          keySeenSoFar.set(k, occ + 1);
+          r.occurrenceIndex = (keyCounts.get(k) || 0) > 1 ? occ : 0;
+
+          const hasNonDefaultContent = r.value !== '' || r.type !== 'string';
+          if (k === '' && !r.fromRaw && hasNonDefaultContent) {
             rowErrs.key = {
               code: 'EMPTY_KEY',
               vi: 'Nhập tên trường hoặc xoá dòng trống.',
               en: 'Enter a field name or remove the empty row.'
             };
-          } else if (k !== '' && (keyCounts.get(k) || 0) > 1) {
+          } else if ((keyCounts.get(k) || 0) > 1 && !r.fromRaw) {
             rowErrs.key = {
               code: 'DUPLICATE_KEY',
               vi: `Trường “${k}” bị trùng trong cùng object.`,
               en: `Duplicate key “${k}” in the same object.`
             };
           }
+        } else {
+          r.occurrenceIndex = 0;
         }
 
         if (r.type === 'number') {
@@ -5706,20 +5837,22 @@
     }
 
     function hasAnyCommittedRow(list, parentKind) {
+      if (canonicalRawText !== null) return true;
       for (let i = 0; i < list.length; i++) {
         const r = list[i];
-        if (!isRowCompletelyBlank(r, parentKind)) return true;
+        if (!isEffectivePlaceholderRow(r, i, list, parentKind)) return true;
       }
       return false;
     }
 
     function serializeNodeValue(r, indent) {
       if (r.type === 'string') {
+        if (r.rawValueLiteral) return r.rawValueLiteral;
         return escapeJsonStringMinimal(r.value);
       }
       if (r.type === 'number') {
         const v = r.value.trim();
-        return isValidJsonNumberLexeme(v) ? v : '0';
+        return v;
       }
       if (r.type === 'boolean') {
         return r.value === 'false' ? 'false' : 'true';
@@ -5739,18 +5872,24 @@
     function serializeContainer(list, kind, indent) {
       const childIndent = indent + '  ';
       if (kind === 'object') {
-        const active = list.filter((r) => !(list.length === 1 && isRowCompletelyBlank(r, 'object')));
+        const active = list.filter((r, idx) => !isEffectivePlaceholderRow(r, idx, list, 'object'));
         if (active.length === 0) return '{}';
-        const lines = active.map((r) => `${childIndent}${escapeJsonStringMinimal(r.key.trim())}: ${serializeNodeValue(r, childIndent)}`);
+        const lines = active.map((r) => {
+          const keyJson = r.rawKeyLiteral || escapeJsonStringMinimal(r.key);
+          return `${childIndent}${keyJson}: ${serializeNodeValue(r, childIndent)}`;
+        });
         return `{\n${lines.join(',\n')}\n${indent}}`;
       }
-      const active = list.filter((r) => !(list.length === 1 && isRowCompletelyBlank(r, 'array')));
+      const active = list.filter((r, idx) => !isEffectivePlaceholderRow(r, idx, list, 'array'));
       if (active.length === 0) return '[]';
       const lines = active.map((r) => `${childIndent}${serializeNodeValue(r, childIndent)}`);
       return `[\n${lines.join(',\n')}\n${indent}]`;
     }
 
     function toJsonString() {
+      if (canonicalRawText !== null) {
+        return canonicalRawText;
+      }
       return serializeContainer(rows, rootKind, '');
     }
 
@@ -5785,40 +5924,67 @@
       }
     }
 
-    function parseMultiLineKeyValuePaste(text) {
-      const raw = String(text || '').trim();
-      if (!raw) return null;
-      if (raw.startsWith('{') || raw.startsWith('[')) {
-        const parsed = parseJsonStrict(raw);
+    function parseMultiLineKeyValuePaste(text, targetParentKind) {
+      const raw = String(text || '');
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        const parsed = parseJsonStrict(trimmed);
         if (parsed.ok && (parsed.document.root.kind === 'object' || parsed.document.root.kind === 'array')) {
-          return { kind: 'json', root: parsed.document.root };
+          return { kind: 'json', root: parsed.document.root, rawText: trimmed };
         }
       }
-      const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-      if (lines.length < 1) return null;
+      const rawLines = raw.split(/\r?\n/);
+      const nonEmptyLines = rawLines.filter((l) => l.trim() !== '');
+      if (nonEmptyLines.length < 1) return null;
+
+      /* In array containers, support multi-line plain item paste if lines aren't key:value */
       const pairs = [];
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const m = /^([^:=]+?)\s*[:=]\s*(.*)$/.exec(line);
-        if (!m) return null;
-        const k = m[1].trim();
-        const v = m[2].trim();
-        if (!k) return null;
-        pairs.push({ key: k, value: v });
+      let allPairs = true;
+      for (let i = 0; i < nonEmptyLines.length; i++) {
+        const line = nonEmptyLines[i];
+        const m = /^([^:=]+?)\s*[:=]\s?(.*)$/.exec(line);
+        if (!m || !m[1].trim()) {
+          allPairs = false;
+          break;
+        }
+        pairs.push({ key: m[1].trim(), value: m[2] });
       }
-      if (pairs.length === 1 && !raw.includes('\n') && !raw.includes(':') && !raw.includes('=')) {
-        return null;
+      if (allPairs) {
+        if (pairs.length === 1 && !raw.includes('\n') && !raw.includes(':') && !raw.includes('=')) {
+          return null;
+        }
+        return { kind: 'pairs', pairs };
       }
-      return { kind: 'pairs', pairs };
+      if (targetParentKind === 'array' && nonEmptyLines.length > 1) {
+        return { kind: 'lines', items: nonEmptyLines };
+      }
+      return null;
     }
 
-    function renderRowsListHtml(list, parentKind, errorsMap, depth, parentRowId) {
+    function renderRowsListHtml(list, parentKind, errorsMap, depth, parentRowId, pathPrefix) {
       const isArr = parentKind === 'array';
+      const prefix = pathPrefix || '';
       const colHeadHtml = depth === 0 ? `<div class="kv-col-head ${isArr ? 'kv-col-head-arr' : ''}" aria-hidden="true">
         <span>${isArr ? '#' : 'Trường · <span lang="en">Key</span>'}</span>
         <span>Giá trị · <span lang="en">Value</span></span>
         <span>Kiểu · <span lang="en">Type</span></span>
+        <span class="sr-only">Menu</span>
       </div>` : '';
+
+      if (list.length === 0) {
+        const emptyVi = isArr ? 'Mảng rỗng [] (0 phần tử)' : 'Object rỗng {} (0 trường)';
+        const emptyEn = isArr ? 'Empty array [] (0 items)' : 'Empty object {} (0 fields)';
+        const addBtnLabel = depth > 0
+          ? (isArr ? '+ dòng · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add nested row</span>')
+          : (isArr ? '+ Thêm hàng · <span lang="en">Add row</span>' : '+ Thêm dòng · <span lang="en">Add row</span>');
+        return `${colHeadHtml}<div class="kv-empty-container">
+          <span class="mono">${emptyVi} · <span lang="en">${emptyEn}</span></span>
+          <button type="button" class="btn btn-tertiary btn-sm" data-kv-act="add-row" data-parent-id="${esc(parentRowId || 'root')}">
+            ${addBtnLabel}
+          </button>
+        </div>`;
+      }
 
       const itemsHtml = list.map((r, idx) => {
         const rowNum = idx + 1;
@@ -5829,96 +5995,148 @@
         const valErrId = valErr ? `kv-err-val-${r.id}` : '';
         const isInvalid = !!(keyErr || valErr);
 
-        const keyCellHtml = isArr
-          ? `<div class="kv-idx" aria-hidden="true">${rowNum}</div>`
-          : `<div class="kv-cell">
-              <label for="kv-key-${r.id}" class="kv-field-caption">Trường ${rowNum} · <span lang="en">Key ${rowNum}</span></label>
+        const ctxPrefixVi = prefix ? `${prefix} › ` : '';
+        const ctxPrefixEn = prefix ? `${prefix} › ` : '';
+        const rowLabelText = isArr
+          ? `${ctxPrefixVi}Phần tử #${rowNum} · ${ctxPrefixEn}Item #${rowNum}`
+          : `${ctxPrefixVi}Dòng ${rowNum}${r.key ? `: ${r.key}` : ''} · ${ctxPrefixEn}Row ${rowNum}${r.key ? `: ${r.key}` : ''}`;
+
+        const occBadgeHtml = !isArr && r.occurrenceIndex >= 1
+          ? `<span class="kv-occ-badge" aria-label="Lần xuất hiện thứ ${r.occurrenceIndex + 1} · Occurrence ${r.occurrenceIndex + 1}" title="Khoá trùng lần ${r.occurrenceIndex + 1} · Duplicate key occurrence #${r.occurrenceIndex + 1}">⁽${toSuperscriptNum(r.occurrenceIndex + 1)}⁾</span>`
+          : '';
+
+        const keySpaceWarnHtml = !isArr && !keyErr && r.key !== '' && r.key !== r.key.trim()
+          ? `<p class="text-[11px] text-warning-ink m-0 mt-0.5">Khoá có khoảng trắng đầu/cuối (được giữ nguyên) · <span lang="en">Key has leading/trailing spaces (preserved verbatim)</span></p>`
+          : '';
+
+        let keyCellHtml = '';
+        if (isArr) {
+          keyCellHtml = `<div class="kv-idx" aria-hidden="true">${rowNum}</div>`;
+        } else if (r.keyHasUnsafeChars) {
+          const safeKeyDisplay = formatReadOnlyStringSafe(r.key);
+          keyCellHtml = `<div class="kv-cell kv-cell-key">
+            <div class="kv-readonly-cell" tabindex="0" role="textbox" aria-readonly="true"
+                 aria-label="${esc(ctxPrefixVi)}Trường hàng ${rowNum} (chỉ đọc ở Bảng) · ${esc(ctxPrefixEn)}Key row ${rowNum} (read-only in Table)">
+              <span>${esc(safeKeyDisplay)}</span>
+              <span class="badge-type badge-ok text-[10px]">chỉ đọc · <span lang="en">read-only</span></span>
+            </div>
+          </div>`;
+        } else {
+          keyCellHtml = `<div class="kv-cell kv-cell-key">
+            <div class="kv-key-wrap ${occBadgeHtml ? 'has-occ' : ''}">
               <input id="kv-key-${r.id}" type="text" class="kv-input kv-input-key"
                 data-kv-key-input="${esc(r.id)}"
                 value="${esc(r.key)}"
                 placeholder="Tên trường (vd: ssid) · Key"
-                aria-label="Trường hàng ${rowNum} · Key row ${rowNum}"
+                aria-label="${esc(ctxPrefixVi)}Trường hàng ${rowNum} · ${esc(ctxPrefixEn)}Key row ${rowNum}"
                 ${keyErr ? `aria-invalid="true" aria-describedby="${esc(keyErrId)}"` : ''}
                 data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
-              ${keyErr ? `<p id="${esc(keyErrId)}" role="alert" class="kv-row-err">${esc(keyErr.vi)} · <span lang="en">${esc(keyErr.en)}</span></p>` : ''}
-            </div>`;
+              ${occBadgeHtml}
+            </div>
+            ${keySpaceWarnHtml}
+            ${keyErr ? `<p id="${esc(keyErrId)}" class="kv-row-err">${esc(keyErr.vi)} · <span lang="en">${esc(keyErr.en)}</span></p>` : ''}
+          </div>`;
+        }
 
-        const suggestNumberChip = r.type === 'string' && r.value.trim() !== '' && isValidJsonNumberLexeme(r.value.trim())
-          ? `<button type="button" class="kv-num-suggest" data-kv-act="suggest-number" data-row-id="${esc(r.id)}" aria-label="Đổi dòng ${rowNum} sang kiểu Số · Switch row ${rowNum} to Number" title="Giá trị khớp số JSON — bấm để đổi sang kiểu Số · Value parses as a number — click to switch to Number">Số? · <span lang="en">Number?</span></button>`
+        const hasNumberSuggest = r.type === 'string' && !r.hasCarriageReturn && !r.hasLoneSurrogate && !r.value.includes('\n') && r.value.trim() !== '' && isValidJsonNumberLexeme(r.value.trim());
+        const suggestNumberChip = hasNumberSuggest
+          ? `<button type="button" class="kv-num-suggest" data-kv-act="suggest-number" data-row-id="${esc(r.id)}" aria-label="${esc(ctxPrefixVi)}Đổi dòng ${rowNum} sang kiểu Số · ${esc(ctxPrefixEn)}Switch row ${rowNum} to Number" title="Giá trị khớp số JSON — bấm để đổi sang kiểu Số · Value parses as a number — click to switch to Number">Số?</button>`
           : '';
 
         let valueControlHtml = '';
-        if (r.type === 'string' || r.type === 'number') {
+        if (r.type === 'string' && (r.hasCarriageReturn || r.hasLoneSurrogate)) {
+          const safeVal = formatReadOnlyStringSafe(r.value);
+          const roReasonId = `kv-ro-note-${r.id}`;
+          valueControlHtml = `<div class="kv-readonly-cell" tabindex="0" role="textbox" aria-readonly="true"
+            aria-label="${esc(ctxPrefixVi)}Giá trị hàng ${rowNum} (chỉ đọc) · ${esc(ctxPrefixEn)}Value row ${rowNum} (read-only)"
+            aria-describedby="${esc(roReasonId)}">
+            <span>${esc(safeVal)}</span>
+            <span id="${esc(roReasonId)}" class="badge-type badge-ok text-[10px]">chỉ đọc ở Bảng (\\r / surrogate) · <span lang="en">read-only in Table</span></span>
+          </div>`;
+        } else if (r.type === 'string' || r.type === 'number') {
           const ph = r.type === 'number'
             ? 'Giá trị số (vd: 36) · Number value'
             : (isArr ? `Giá trị mục #${rowNum} · Item #${rowNum} value` : 'Giá trị · Value');
-          valueControlHtml = `<div class="flex items-center gap-1.5 min-w-0">
-            <input id="kv-val-${r.id}" type="text"
-              class="kv-input ${r.type === 'number' ? 'kv-input-num' : ''}"
-              data-kv-val-input="${esc(r.id)}"
-              value="${esc(r.value)}"
-              placeholder="${esc(ph)}"
-              aria-label="Giá trị hàng ${rowNum} · Value row ${rowNum}"
-              ${valErr ? `aria-invalid="true" aria-describedby="${esc(valErrId)}"` : ''}
-              data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+          const isMultiline = r.type === 'string' && r.value.includes('\n');
+          const rowsCount = isMultiline ? Math.min(6, Math.max(2, r.value.split('\n').length)) : 1;
+          const inputHtml = isMultiline
+            ? `<textarea id="kv-val-${r.id}" rows="${rowsCount}"
+                class="kv-input"
+                data-kv-val-input="${esc(r.id)}"
+                placeholder="${esc(ph)}"
+                aria-label="${esc(ctxPrefixVi)}Giá trị hàng ${rowNum} · ${esc(ctxPrefixEn)}Value row ${rowNum}"
+                ${valErr ? `aria-invalid="true" aria-describedby="${esc(valErrId)}"` : ''}
+                data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">${esc(r.value)}</textarea>`
+            : `<input id="kv-val-${r.id}" type="text"
+                class="kv-input ${r.type === 'number' ? 'kv-input-num' : ''}"
+                data-kv-val-input="${esc(r.id)}"
+                value="${esc(r.value)}"
+                placeholder="${esc(ph)}"
+                aria-label="${esc(ctxPrefixVi)}Giá trị hàng ${rowNum} · ${esc(ctxPrefixEn)}Value row ${rowNum}"
+                ${valErr ? `aria-invalid="true" aria-describedby="${esc(valErrId)}"` : ''}
+                data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">`;
+          valueControlHtml = `<div class="kv-val-adorn-wrap ${hasNumberSuggest ? 'has-suggest' : ''}">
+            ${inputHtml}
             ${suggestNumberChip}
           </div>`;
         } else if (r.type === 'boolean') {
           const isTrue = r.value !== 'false';
-          valueControlHtml = `<div class="kv-bool-seg" role="group" aria-label="Giá trị true/false hàng ${rowNum} · Boolean value row ${rowNum}">
+          valueControlHtml = `<div class="kv-bool-seg" role="group" aria-label="${esc(ctxPrefixVi)}Giá trị true/false hàng ${rowNum} · ${esc(ctxPrefixEn)}Boolean value row ${rowNum}">
             <button type="button" data-kv-act="set-bool" data-row-id="${esc(r.id)}" data-bool-val="true" aria-pressed="${isTrue ? 'true' : 'false'}">true</button>
             <button type="button" data-kv-act="set-bool" data-row-id="${esc(r.id)}" data-bool-val="false" aria-pressed="${!isTrue ? 'true' : 'false'}">false</button>
           </div>`;
         } else if (r.type === 'null') {
-          valueControlHtml = `<div class="kv-null-pill" aria-label="Giá trị null hàng ${rowNum} · Null value row ${rowNum}">null</div>`;
+          valueControlHtml = `<div class="kv-null-pill" role="note">
+            <span aria-hidden="true">null</span>
+            <span class="sr-only">${esc(ctxPrefixVi)}Giá trị null hàng ${rowNum} · ${esc(ctxPrefixEn)}Null value row ${rowNum}</span>
+          </div>`;
         } else if (r.type === 'object' || r.type === 'array') {
           const childList = r.children || [];
-          const nonBlankCount = childList.filter((c) => !isRowCompletelyBlank(c, r.type)).length;
+          const nonBlankCount = childList.filter((c, cIdx) => !isEffectivePlaceholderRow(c, cIdx, childList, r.type)).length;
           const summaryVi = r.type === 'object' ? `${nonBlankCount} trường con` : `${nonBlankCount} phần tử`;
           const summaryEn = r.type === 'object' ? `${nonBlankCount} nested fields` : `${nonBlankCount} items`;
-          valueControlHtml = `<button type="button" class="kv-container-pill" data-kv-act="toggle-expand" data-row-id="${esc(r.id)}" aria-expanded="${r.expanded ? 'true' : 'false'}">
+          valueControlHtml = `<button type="button" class="kv-container-pill" data-kv-act="toggle-expand" data-row-id="${esc(r.id)}" aria-expanded="${r.expanded ? 'true' : 'false'}" aria-label="${esc(ctxPrefixVi)}${r.type === 'object' ? 'Object' : 'Mảng'} hàng ${rowNum} (${summaryVi}) · ${esc(ctxPrefixEn)}${r.type === 'object' ? 'Object' : 'Array'} row ${rowNum} (${summaryEn})">
             <span class="caret" aria-hidden="true">›</span>
             <span>${r.type === 'object' ? 'Object' : 'Mảng · Array'} (${summaryVi} · <span lang="en" class="text-muted">${summaryEn}</span>)</span>
           </button>`;
         }
 
-        const valueCellHtml = `<div class="kv-cell">
-          <label for="kv-val-${r.id}" class="kv-field-caption">Giá trị ${rowNum} · <span lang="en">Value ${rowNum}</span></label>
+        const valueCellHtml = `<div class="kv-cell kv-cell-val">
           ${valueControlHtml}
-          ${valErr ? `<p id="${esc(valErrId)}" role="alert" class="kv-row-err">${esc(valErr.vi)} · <span lang="en">${esc(valErr.en)}</span></p>` : ''}
+          ${valErr ? `<p id="${esc(valErrId)}" class="kv-row-err">${esc(valErr.vi)} · <span lang="en">${esc(valErr.en)}</span></p>` : ''}
         </div>`;
 
         const isTypeOpen = openTypeMenuRowId === r.id;
         const isRowMenuOpen = openMenuRowId === r.id;
 
-        const typePopHtml = isTypeOpen ? `<div role="menu" aria-label="Chọn kiểu dữ liệu hàng ${rowNum} · Select type row ${rowNum}" class="popover menu-pop menu-pop-right">
-          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="string">
+        const typePopHtml = isTypeOpen ? `<div role="menu" data-kv-menu-pop="type" data-row-id="${esc(r.id)}" aria-label="${esc(ctxPrefixVi)}Chọn kiểu dữ liệu hàng ${rowNum} · ${esc(ctxPrefixEn)}Select type row ${rowNum}" class="popover menu-pop menu-pop-right">
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'string' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="string">
             <span>Văn bản · <span lang="en" class="text-muted">Text</span></span>
-            ${r.type === 'string' ? '<span class="mono text-accent">✓</span>' : ''}
+            ${r.type === 'string' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
           </button>
-          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="number">
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'number' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="number">
             <span>Số · <span lang="en" class="text-muted">Number</span></span>
-            ${r.type === 'number' ? '<span class="mono text-accent">✓</span>' : ''}
+            ${r.type === 'number' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
           </button>
-          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="boolean">
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'boolean' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="boolean">
             <span>true / false · <span lang="en" class="text-muted">Boolean</span></span>
-            ${r.type === 'boolean' ? '<span class="mono text-accent">✓</span>' : ''}
+            ${r.type === 'boolean' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
           </button>
-          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="null">
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'null' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="null">
             <span>null</span>
-            ${r.type === 'null' ? '<span class="mono text-accent">✓</span>' : ''}
+            ${r.type === 'null' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
           </button>
-          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="object">
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'object' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="object">
             <span>Object · <span lang="en" class="text-muted">Nested fields</span></span>
-            ${r.type === 'object' ? '<span class="mono text-accent">✓</span>' : ''}
+            ${r.type === 'object' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
           </button>
-          <button type="button" role="menuitem" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="array">
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'array' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="array">
             <span>Mảng · <span lang="en" class="text-muted">Array</span></span>
-            ${r.type === 'array' ? '<span class="mono text-accent">✓</span>' : ''}
+            ${r.type === 'array' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
           </button>
         </div>` : '';
 
-        const rowMenuPopHtml = isRowMenuOpen ? `<div role="menu" aria-label="Thao tác dòng ${rowNum} · Row ${rowNum} actions" class="popover menu-pop menu-pop-right">
+        const rowMenuPopHtml = isRowMenuOpen ? `<div role="menu" data-kv-menu-pop="row" data-row-id="${esc(r.id)}" aria-label="${esc(ctxPrefixVi)}Thao tác dòng ${rowNum} · ${esc(ctxPrefixEn)}Row ${rowNum} actions" class="popover menu-pop menu-pop-right">
           <button type="button" role="menuitem" class="menu-item" data-kv-act="insert-below" data-row-id="${esc(r.id)}">
             <span>Chèn dòng bên dưới · <span lang="en" class="text-muted">Insert row below</span></span>
           </button>
@@ -5935,50 +6153,62 @@
           </button>
         </div>` : '';
 
-        const controlsHtml = `<div class="kv-controls">
+        const typeColHtml = `<div class="kv-type-col">
           <button type="button" class="kv-type-chip"
             data-kv-act="toggle-type-menu"
             data-row-id="${esc(r.id)}"
             data-kv-type="${esc(r.type)}"
             aria-haspopup="menu"
             aria-expanded="${isTypeOpen ? 'true' : 'false'}"
-            aria-label="Kiểu dữ liệu hàng ${rowNum} · Type row ${rowNum}">
-            <span>${typeChipLabel(r.type)}</span>
-            <span class="text-muted text-[11px]" aria-hidden="true">▾</span>
+            aria-label="${esc(ctxPrefixVi)}Kiểu dữ liệu hàng ${rowNum} · ${esc(ctxPrefixEn)}Type row ${rowNum}"
+            title="Đổi kiểu dữ liệu (Alt+↓) · Change type (Alt+↓)">
+            <span class="truncate">${typeChipLabel(r.type)}</span>
+            <span class="text-muted text-[11px] shrink-0" aria-hidden="true">▾</span>
           </button>
+          ${typePopHtml}
+        </div>`;
+
+        const actColHtml = `<div class="kv-act-col">
           <button type="button" class="kv-menu-btn"
             data-kv-act="toggle-row-menu"
             data-row-id="${esc(r.id)}"
             aria-haspopup="menu"
             aria-expanded="${isRowMenuOpen ? 'true' : 'false'}"
-            aria-label="Menu dòng ${rowNum} · Row ${rowNum} menu">⋯</button>
-          ${typePopHtml}
+            aria-label="${esc(ctxPrefixVi)}Menu dòng ${rowNum} · ${esc(ctxPrefixEn)}Row ${rowNum} menu">⋯</button>
           ${rowMenuPopHtml}
         </div>`;
 
         let nestedHtml = '';
         if ((r.type === 'object' || r.type === 'array') && r.expanded) {
-          nestedHtml = `<div class="kv-nest" role="group" aria-label="${r.type === 'object' ? `Object con của ${esc(r.key || `hàng ${rowNum}`)}` : `Mảng con của ${esc(r.key || `hàng ${rowNum}`)}`}">
-            ${renderRowsListHtml(r.children || [], r.type, errorsMap, depth + 1, r.id)}
+          const childName = r.key || (isArr ? `#${rowNum}` : `hàng ${rowNum}`);
+          const childPath = prefix ? `${prefix} › ${childName}` : childName;
+          const nestLabel = r.type === 'object'
+            ? `Object con của ${childName} · Nested object for ${childName}`
+            : `Mảng con của ${childName} · Nested array for ${childName}`;
+          nestedHtml = `<div class="kv-nest" role="group" aria-label="${esc(nestLabel)}">
+            ${renderRowsListHtml(r.children || [], r.type, errorsMap, depth + 1, r.id, childPath)}
           </div>`;
         }
 
-        return `<li class="kv-row ${isInvalid ? 'is-invalid' : ''}" data-kv-row="${esc(r.id)}">
+        return `<li class="kv-row ${isInvalid ? 'is-invalid' : ''}" data-kv-row="${esc(r.id)}" role="group" aria-label="${esc(rowLabelText)}">
           <div class="kv-row-grid ${isArr ? 'kv-row-grid-arr' : ''}">
             ${keyCellHtml}
             ${valueCellHtml}
-            ${controlsHtml}
+            ${typeColHtml}
+            ${actColHtml}
           </div>
           ${nestedHtml}
         </li>`;
       }).join('');
 
       const addBtnLabel = depth > 0
-        ? (isArr ? '+ dòng mảng · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add nested row</span>')
+        ? (isArr ? '+ dòng · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add nested row</span>')
         : (isArr ? '+ Thêm hàng · <span lang="en">Add row</span>' : '+ Thêm dòng · <span lang="en">Add row</span>');
 
       const pasteHintHtml = depth === 0
-        ? `<span class="text-[12px] text-muted">Mẹo: dán nhiều dòng <span class="mono">key: value</span> hoặc JSON để điền nhanh · <span lang="en">Tip: paste <span class="mono">key: value</span> lines or JSON</span></span>`
+        ? (isArr
+          ? `<span class="text-[12px] text-muted">Mẹo: dán mỗi dòng một giá trị hoặc mảng JSON · <span lang="en">Tip: paste one value per line or JSON array</span></span>`
+          : `<span class="text-[12px] text-muted">Mẹo: dán nhiều dòng <span class="mono">key: value</span> hoặc JSON · <span class="kbd">Alt+↓</span> đổi kiểu · <span lang="en">Tip: paste <span class="mono">key: value</span> lines or JSON</span></span>`)
         : '';
 
       return `${colHeadHtml}<ul class="kv-rows" role="list" aria-label="${depth === 0 ? (isArr ? 'Danh sách phần tử mảng · Array items' : 'Danh sách trường khoá-giá trị · Key-value fields') : 'Danh sách dòng con · Nested rows'}">${itemsHtml}</ul>
@@ -5995,8 +6225,8 @@
       const rootBadge = cardEl.querySelector('[data-kv-root-badge]');
       if (rootBadge) {
         rootBadge.innerHTML = rootKind === 'array'
-          ? 'Gốc: Mảng · <span lang="en">Array root</span>'
-          : 'Gốc: Object · <span lang="en">Object root</span>';
+          ? 'Gốc: Mảng · <span lang="en">Root: Array</span>'
+          : 'Gốc: Object · <span lang="en">Root: Object</span>';
       }
       const rootMenuBtn = cardEl.querySelector('[data-kv-root-menu-btn]');
       const rootMenuPop = cardEl.querySelector('[data-kv-root-menu-pop]');
@@ -6005,10 +6235,60 @@
         rootMenuPop.hidden = !openRootMenu;
         rootMenuPop.querySelectorAll('[data-kv-root-choice]').forEach((b) => {
           const k = b.dataset.kvRootChoice;
+          b.setAttribute('role', 'menuitemradio');
+          b.setAttribute('aria-checked', k === rootKind ? 'true' : 'false');
           const check = b.querySelector('[data-kv-root-check]');
           if (check) check.hidden = k !== rootKind;
         });
       }
+    }
+
+    function syncInlinePromptBanner() {
+      if (!cardEl) return;
+      const promptEl = cardEl.querySelector('[data-kv-inline-prompt]');
+      if (!promptEl) return;
+      if (!inlinePromptState) {
+        promptEl.hidden = true;
+        promptEl.innerHTML = '';
+        return;
+      }
+      promptEl.hidden = false;
+      promptEl.innerHTML = `<div class="min-w-0">
+        <p class="font-semibold m-0 text-[13px] text-body">${inlinePromptState.titleHtml}</p>
+        ${inlinePromptState.descHtml ? `<p class="m-0 mt-0.5 text-[12px] text-muted">${inlinePromptState.descHtml}</p>` : ''}
+      </div>
+      <div class="flex flex-wrap items-center gap-2 shrink-0">
+        ${inlinePromptState.actionsHtml}
+      </div>`;
+    }
+
+    function scheduleLiveErrorAnnouncement(errorsMap) {
+      if (!cardEl) return;
+      const liveEl = cardEl.querySelector('[data-kv-live-region]');
+      if (!liveEl) return;
+      const entries = [];
+      errorsMap.forEach((err, rowId) => {
+        const msg = err.key || err.value;
+        if (msg) entries.push(`${rowId}:${msg.code}`);
+      });
+      const sig = entries.join('|');
+      if (sig === lastErrorSignature) return;
+      lastErrorSignature = sig;
+      clearTimeout(liveAnnounceTimer);
+      if (!sig) {
+        liveEl.textContent = '';
+        return;
+      }
+      liveAnnounceTimer = setTimeout(() => {
+        const firstErr = errorsMap.values().next().value;
+        const msg = firstErr ? (firstErr.key || firstErr.value) : null;
+        const count = errorsMap.size;
+        if (msg) {
+          liveEl.textContent = count > 1
+            ? `Có ${count} lỗi cần sửa: ${msg.vi} · ${count} errors: ${msg.en}`
+            : `${msg.vi} · ${msg.en}`;
+        }
+      }, 300);
     }
 
     function syncFooterAndRaw(errorsMap) {
@@ -6020,7 +6300,7 @@
 
       if (rawHost) {
         const ta = rawHost.querySelector('[data-json-raw-textarea]');
-        if (ta && document.activeElement !== ta && !rawSyntaxIssue) {
+        if (ta && document.activeElement !== ta && !rawSyntaxIssue && canonicalRawText === null) {
           ta.value = jsonText;
         }
         const byteEl = rawHost.querySelector('[data-json-raw-bytes]');
@@ -6049,6 +6329,8 @@
         }
       }
 
+      syncInlinePromptBanner();
+
       if (discardBox) {
         discardBox.hidden = !discardPromptOpen;
       }
@@ -6065,11 +6347,14 @@
           en: 'Cannot save: Entry exceeds 256 KiB (262,144 UTF-8 bytes).'
         };
       } else if (hasRowErrors) {
+        const errCount = errorsMap.size;
         const firstErr = errorsMap.values().next().value;
         const msg = firstErr.key || firstErr.value;
+        const countPrefixVi = errCount > 1 ? `${errCount} lỗi — ` : '';
+        const countPrefixEn = errCount > 1 ? `${errCount} errors — ` : '';
         disableReason = {
-          vi: `Chưa thể lưu: ${msg.vi}`,
-          en: `Cannot save: ${msg.en}`
+          vi: `Chưa thể lưu (${countPrefixVi}${msg.vi})`,
+          en: `Cannot save (${countPrefixEn}${msg.en})`
         };
       } else if (isBlank) {
         disableReason = {
@@ -6090,7 +6375,7 @@
         } else {
           reasonEl.hidden = false;
           reasonEl.className = 'text-[12px] text-muted';
-          reasonEl.innerHTML = `Mã hoá đầu-cuối · <span class="kbd">Enter</span>/<span class="kbd">Tab</span> chuyển ô · <span lang="en">End-to-end encrypted</span>`;
+          reasonEl.innerHTML = `Mã hoá đầu-cuối · <span class="kbd">Enter</span>/<span class="kbd">Tab</span> chuyển ô · <span class="kbd">Alt+↓</span> đổi kiểu · <span lang="en">End-to-end encrypted</span>`;
         }
       }
 
@@ -6100,6 +6385,8 @@
           saveBtn.setAttribute('aria-describedby', reasonEl.id);
         }
       }
+
+      scheduleLiveErrorAnnouncement(errorsMap);
     }
 
     function paint(focusDesc) {
@@ -6109,7 +6396,7 @@
       }
       const errorsMap = new Map();
       validateRows(rows, rootKind, errorsMap);
-      kvHost.innerHTML = `<div class="kv-editor">${renderRowsListHtml(rows, rootKind, errorsMap, 0, 'root')}</div>`;
+      kvHost.innerHTML = `<div class="kv-editor">${renderRowsListHtml(rows, rootKind, errorsMap, 0, 'root', '')}</div>`;
       syncHeaderControls();
       syncFooterAndRaw(errorsMap);
 
@@ -6124,6 +6411,16 @@
           targetEl = kvHost.querySelector(`[data-kv-act="toggle-type-menu"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
         } else if (focusDesc.kind === 'menu' && focusDesc.rowId) {
           targetEl = kvHost.querySelector(`[data-kv-act="toggle-row-menu"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+        } else if (focusDesc.kind === 'type-menu-item' && focusDesc.rowId) {
+          const pop = kvHost.querySelector(`[data-kv-menu-pop="type"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+          if (pop) {
+            targetEl = pop.querySelector('[aria-checked="true"]') || pop.querySelector('[role^="menuitem"]');
+          }
+        } else if (focusDesc.kind === 'row-menu-item' && focusDesc.rowId) {
+          const pop = kvHost.querySelector(`[data-kv-menu-pop="row"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+          if (pop) {
+            targetEl = Array.from(pop.querySelectorAll('[role^="menuitem"]')).find((el) => !el.disabled) || null;
+          }
         }
         if (targetEl && typeof targetEl.focus === 'function') {
           targetEl.focus();
@@ -6132,48 +6429,95 @@
       }
     }
 
-    /* Update inline validation & footer without destroying focused input DOM */
+    /* Update inline validation & DOM in-place without destroying focused input DOM (preserves IME composition & stops SR re-announcements) */
     function refreshValidationInPlace() {
       const errorsMap = new Map();
       validateRows(rows, rootKind, errorsMap);
-      let needsFullPaint = false;
+
       kvHost.querySelectorAll('[data-kv-row]').forEach((li) => {
         const rId = li.dataset.kvRow;
         const found = findRowAndParent(rows, rId, rootKind, null);
         if (!found) return;
         const r = found.row;
         const err = errorsMap.get(rId) || {};
-        const hasErrNow = !!(err.key || err.value);
-        const hadErrDom = li.classList.contains('is-invalid');
-        const existingSug = li.querySelector('[data-kv-act="suggest-number"]');
-        const shouldHaveSug = r.type === 'string' && r.value.trim() !== '' && isValidJsonNumberLexeme(r.value.trim());
-        if (hasErrNow !== hadErrDom || !!existingSug !== shouldHaveSug || hasErrNow) {
-          needsFullPaint = true;
-        }
-      });
-      if (needsFullPaint) {
-        const active = document.activeElement;
-        let fDesc = null;
-        let selStart = null;
-        let selEnd = null;
-        if (active && kvHost.contains(active)) {
-          if (active.dataset.kvKeyInput) fDesc = { kind: 'key', rowId: active.dataset.kvKeyInput };
-          else if (active.dataset.kvValInput) fDesc = { kind: 'val', rowId: active.dataset.kvValInput };
-          selStart = active.selectionStart;
-          selEnd = active.selectionEnd;
-        }
-        paint(fDesc);
-        if (fDesc) {
-          const restored = fDesc.kind === 'key'
-            ? kvHost.querySelector(`[data-kv-key-input="${CSS.escape(fDesc.rowId)}"]`)
-            : kvHost.querySelector(`[data-kv-val-input="${CSS.escape(fDesc.rowId)}"]`);
-          if (restored && selStart != null && typeof restored.setSelectionRange === 'function') {
-            try { restored.setSelectionRange(selStart, selEnd); } catch (_) {}
+        const keyErr = err.key || null;
+        const valErr = err.value || null;
+        const hasErrNow = !!(keyErr || valErr);
+
+        li.classList.toggle('is-invalid', hasErrNow);
+
+        const keyInp = li.querySelector(`[data-kv-key-input="${CSS.escape(rId)}"]`);
+        const keyCell = keyInp ? keyInp.closest('.kv-cell-key') : null;
+        if (keyInp && keyCell) {
+          const keyErrId = `kv-err-key-${rId}`;
+          let errP = keyCell.querySelector(`#${CSS.escape(keyErrId)}`);
+          if (keyErr) {
+            keyInp.setAttribute('aria-invalid', 'true');
+            keyInp.setAttribute('aria-describedby', keyErrId);
+            const errHtml = `${esc(keyErr.vi)} · <span lang="en">${esc(keyErr.en)}</span>`;
+            if (!errP) {
+              errP = document.createElement('p');
+              errP.id = keyErrId;
+              errP.className = 'kv-row-err';
+              errP.innerHTML = errHtml;
+              keyCell.appendChild(errP);
+            } else if (errP.innerHTML !== errHtml) {
+              errP.innerHTML = errHtml;
+            }
+          } else {
+            keyInp.removeAttribute('aria-invalid');
+            keyInp.removeAttribute('aria-describedby');
+            if (errP) errP.remove();
           }
         }
-      } else {
-        syncFooterAndRaw(errorsMap);
-      }
+
+        const valInp = li.querySelector(`[data-kv-val-input="${CSS.escape(rId)}"]`);
+        const valCell = valInp ? valInp.closest('.kv-cell-val') : null;
+        if (valInp && valCell) {
+          const valErrId = `kv-err-val-${rId}`;
+          let errP = valCell.querySelector(`#${CSS.escape(valErrId)}`);
+          if (valErr) {
+            valInp.setAttribute('aria-invalid', 'true');
+            valInp.setAttribute('aria-describedby', valErrId);
+            const errHtml = `${esc(valErr.vi)} · <span lang="en">${esc(valErr.en)}</span>`;
+            if (!errP) {
+              errP = document.createElement('p');
+              errP.id = valErrId;
+              errP.className = 'kv-row-err';
+              errP.innerHTML = errHtml;
+              valCell.appendChild(errP);
+            } else if (errP.innerHTML !== errHtml) {
+              errP.innerHTML = errHtml;
+            }
+          } else {
+            valInp.removeAttribute('aria-invalid');
+            valInp.removeAttribute('aria-describedby');
+            if (errP) errP.remove();
+          }
+
+          const adornWrap = valInp.closest('.kv-val-adorn-wrap');
+          if (adornWrap) {
+            const shouldHaveSug = r.type === 'string' && !r.hasCarriageReturn && !r.hasLoneSurrogate && !r.value.includes('\n') && r.value.trim() !== '' && isValidJsonNumberLexeme(r.value.trim());
+            let sugBtn = adornWrap.querySelector('[data-kv-act="suggest-number"]');
+            adornWrap.classList.toggle('has-suggest', shouldHaveSug);
+            if (shouldHaveSug && !sugBtn) {
+              sugBtn = document.createElement('button');
+              sugBtn.type = 'button';
+              sugBtn.className = 'kv-num-suggest';
+              sugBtn.dataset.kvAct = 'suggest-number';
+              sugBtn.dataset.rowId = rId;
+              sugBtn.setAttribute('aria-label', `Đổi sang kiểu Số · Switch to Number`);
+              sugBtn.title = 'Giá trị khớp số JSON — bấm để đổi sang kiểu Số · Value parses as a number — click to switch to Number';
+              sugBtn.textContent = 'Số?';
+              adornWrap.appendChild(sugBtn);
+            } else if (!shouldHaveSug && sugBtn) {
+              sugBtn.remove();
+            }
+          }
+        }
+      });
+
+      syncFooterAndRaw(errorsMap);
     }
 
     kvHost.addEventListener('input', (e) => {
@@ -6182,7 +6526,7 @@
         const found = findRowAndParent(rows, keyInp.dataset.kvKeyInput, rootKind, null);
         if (found) {
           found.row.key = keyInp.value;
-          discardPromptOpen = false;
+          markTableMutated(found.row, 'key');
           refreshValidationInPlace();
         }
         return;
@@ -6192,59 +6536,221 @@
         const found = findRowAndParent(rows, valInp.dataset.kvValInput, rootKind, null);
         if (found) {
           found.row.value = valInp.value;
-          discardPromptOpen = false;
+          markTableMutated(found.row, 'value');
           refreshValidationInPlace();
         }
       }
     });
 
+    function insertRowsAtFound(found, newRows) {
+      if (isEffectivePlaceholderRow(found.row, found.index, found.list, found.parentKind) && isRowCompletelyBlank(found.row, found.parentKind)) {
+        found.list.splice(found.index, 1, ...newRows);
+      } else {
+        found.list.splice(found.index + 1, 0, ...newRows);
+      }
+    }
+
     kvHost.addEventListener('paste', (e) => {
       const targetInp = e.target.closest('[data-kv-key-input], [data-kv-val-input]');
       if (!targetInp || !e.clipboardData) return;
       const text = e.clipboardData.getData('text/plain');
-      if (!text || (!text.includes('\n') && !text.includes(':') && !text.includes('=') && !text.trim().startsWith('{'))) return;
+      if (!text) return;
+      const trimmed = text.trim();
+      if (!text.includes('\n') && !text.includes(':') && !text.includes('=') && !trimmed.startsWith('{') && !trimmed.startsWith('[')) return;
       const rowId = targetInp.dataset.kvKeyInput || targetInp.dataset.kvValInput;
       const found = findRowAndParent(rows, rowId, rootKind, null);
       if (!found) return;
-      /* Only intercept multi-field paste on key input or when value input is empty and multi-line */
-      if (targetInp.dataset.kvValInput && (targetInp.value !== '' || !text.includes('\n'))) return;
+      /* On value input, only intercept multi-field paste when value input is empty */
+      if (targetInp.dataset.kvValInput && targetInp.value !== '') return;
 
-      const parsedPaste = parseMultiLineKeyValuePaste(text);
+      const parsedPaste = parseMultiLineKeyValuePaste(text, found.parentKind);
       if (!parsedPaste) return;
+
+      const prevSnap = captureEditorSnapshot();
+      const isEditorBlank = !hasAnyCommittedRow(rows, rootKind);
 
       if (parsedPaste.kind === 'json') {
         e.preventDefault();
-        loadFromJsonString(text.trim());
-        paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: rows[0].id });
-        toast('Đã điền các trường từ JSON vừa dán · Filled fields from pasted JSON');
+        const pastedRoot = parsedPaste.root;
+        if (isEditorBlank) {
+          loadFromJsonString(parsedPaste.rawText, { preserveRawSource: false });
+          rows.forEach((r) => { r.fromRaw = false; });
+          const firstRow = rows[0];
+          paint(firstRow ? { kind: rootKind === 'array' ? 'val' : 'key', rowId: firstRow.id } : null);
+          toast('Đã điền các trường từ JSON vừa dán · Filled fields from pasted JSON', 'Hoàn tác', {
+            originEl: kvHost,
+            onAction: () => restoreEditorSnapshot(prevSnap)
+          });
+          return;
+        }
+
+        if (pastedRoot.kind === found.parentKind) {
+          const newRows = pastedRoot.kind === 'object'
+            ? pastedRoot.properties.map((p) => {
+                const r = astNodeToRow(p.valueNode, p.key);
+                r.fromRaw = false;
+                return r;
+              })
+            : pastedRoot.elements.map((el) => {
+                const r = astNodeToRow(el, '');
+                r.fromRaw = false;
+                return r;
+              });
+          if (newRows.length === 0) return;
+          canonicalRawText = null;
+          insertRowsAtFound(found, newRows);
+          const lastInserted = newRows[newRows.length - 1];
+          paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: lastInserted.id });
+          toast(`Đã chèn ${newRows.length} dòng từ JSON vừa dán · Inserted ${newRows.length} rows from pasted JSON`, 'Hoàn tác', {
+            originEl: kvHost,
+            onAction: () => restoreEditorSnapshot(prevSnap)
+          });
+          return;
+        }
+
+        /* Shape mismatch on non-empty editor: ask inline instead of clobbering */
+        const shapeLabelVi = pastedRoot.kind === 'array' ? 'mảng JSON ([...])' : 'object JSON ({...})';
+        const shapeLabelEn = pastedRoot.kind === 'array' ? 'JSON array ([...])' : 'JSON object ({...})';
+        inlinePromptState = {
+          kind: 'paste-mismatch',
+          pastedRawText: parsedPaste.rawText,
+          pastedRoot,
+          targetRowId: found.row.id,
+          titleHtml: `Nội dung dán là ${shapeLabelVi}, khác với khung hiện tại · <span lang="en" class="font-normal text-muted">Pasted ${shapeLabelEn} differs from current container</span>`,
+          descHtml: `Chọn cách xử lý để không làm mất các trường đã nhập. · <span lang="en">Choose how to apply without losing existing rows.</span>`,
+          actionsHtml: `
+            <button type="button" class="btn btn-secondary btn-sm" data-kv-prompt-act="paste-nest">Lồng vào dòng này · <span lang="en">Nest in this row</span></button>
+            <button type="button" class="btn btn-danger btn-sm" data-kv-prompt-act="paste-replace">Thay toàn bộ · <span lang="en">Replace all</span></button>
+            <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Huỷ · <span lang="en">Cancel</span></button>
+          `
+        };
+        syncInlinePromptBanner();
         return;
       }
+
       if (parsedPaste.kind === 'pairs' && found.parentKind === 'object') {
         e.preventDefault();
-        const newRows = parsedPaste.pairs.map((pair) => makeRow({ key: pair.key, value: pair.value, type: 'string' }));
-        if (isRowCompletelyBlank(found.row, 'object')) {
-          found.list.splice(found.index, 1, ...newRows);
-        } else {
-          found.list.splice(found.index + 1, 0, ...newRows);
-        }
+        canonicalRawText = null;
+        const newRows = parsedPaste.pairs.map((pair) => makeRow({ key: pair.key, value: pair.value, type: 'string', placeholder: false }));
+        insertRowsAtFound(found, newRows);
         const lastInserted = newRows[newRows.length - 1];
         paint({ kind: 'val', rowId: lastInserted.id });
-        toast(`Đã điền ${newRows.length} dòng từ nội dung dán · Filled ${newRows.length} rows from paste`);
+        toast(`Đã điền ${newRows.length} dòng từ nội dung dán · Filled ${newRows.length} rows from paste`, 'Hoàn tác', {
+          originEl: kvHost,
+          onAction: () => restoreEditorSnapshot(prevSnap)
+        });
+        return;
+      }
+
+      if (parsedPaste.kind === 'lines' && found.parentKind === 'array') {
+        e.preventDefault();
+        canonicalRawText = null;
+        const newRows = parsedPaste.items.map((item) => makeRow({ key: '', value: item, type: 'string', placeholder: false }));
+        insertRowsAtFound(found, newRows);
+        const lastInserted = newRows[newRows.length - 1];
+        paint({ kind: 'val', rowId: lastInserted.id });
+        toast(`Đã điền ${newRows.length} phần tử từ nội dung dán · Filled ${newRows.length} items from paste`, 'Hoàn tác', {
+          originEl: kvHost,
+          onAction: () => restoreEditorSnapshot(prevSnap)
+        });
       }
     });
 
-    kvHost.addEventListener('keydown', (e) => {
-      const keyInp = e.target.closest('[data-kv-key-input]');
-      const valInp = e.target.closest('[data-kv-val-input]');
-
-      if (e.key === 'Escape' && (openMenuRowId || openTypeMenuRowId)) {
+    function handleMenuKeydown(e, popEl, closeAndRestoreFn) {
+      const items = Array.from(popEl.querySelectorAll('[role^="menuitem"]')).filter((el) => !el.disabled);
+      if (!items.length) return false;
+      const cur = items.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') {
         e.preventDefault();
         e.stopPropagation();
-        const restoreTypeId = openTypeMenuRowId;
-        const restoreMenuId = openMenuRowId;
-        openTypeMenuRowId = null;
+        items[(cur + 1) % items.length].focus();
+        return true;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        items[(cur - 1 + items.length) % items.length].focus();
+        return true;
+      }
+      if (e.key === 'Home') {
+        e.preventDefault();
+        e.stopPropagation();
+        items[0].focus();
+        return true;
+      }
+      if (e.key === 'End') {
+        e.preventDefault();
+        e.stopPropagation();
+        items[items.length - 1].focus();
+        return true;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAndRestoreFn(true);
+        return true;
+      }
+      if (e.key === 'Tab') {
+        closeAndRestoreFn(false);
+        return true;
+      }
+      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const ch = e.key.toLowerCase();
+        const match = items.find((item, idx) => idx > cur && (item.textContent || '').trim().toLowerCase().startsWith(ch)) ||
+                      items.find((item) => (item.textContent || '').trim().toLowerCase().startsWith(ch));
+        if (match) {
+          e.preventDefault();
+          e.stopPropagation();
+          match.focus();
+          return true;
+        }
+      }
+      return false;
+    }
+
+    kvHost.addEventListener('keydown', (e) => {
+      const openPop = kvHost.querySelector('[data-kv-menu-pop]');
+      if (openPop && (openTypeMenuRowId || openMenuRowId)) {
+        const isType = !!openTypeMenuRowId;
+        const rId = openTypeMenuRowId || openMenuRowId;
+        const handled = handleMenuKeydown(e, openPop, (restoreFocus) => {
+          openTypeMenuRowId = null;
+          openMenuRowId = null;
+          paint(restoreFocus ? { kind: isType ? 'type' : 'menu', rowId: rId } : null);
+        });
+        if (handled) return;
+      }
+
+      const keyInp = e.target.closest('[data-kv-key-input]');
+      const valInp = e.target.closest('[data-kv-val-input]');
+      const typeTrigger = e.target.closest('[data-kv-act="toggle-type-menu"]');
+      const rowMenuTrigger = e.target.closest('[data-kv-act="toggle-row-menu"]');
+
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.altKey && (typeTrigger || rowMenuTrigger)) {
+        e.preventDefault();
+        const rId = (typeTrigger || rowMenuTrigger).dataset.rowId;
+        if (typeTrigger) {
+          openMenuRowId = null;
+          openRootMenu = false;
+          openTypeMenuRowId = rId;
+          paint({ kind: 'type-menu-item', rowId: rId });
+        } else {
+          openTypeMenuRowId = null;
+          openRootMenu = false;
+          openMenuRowId = rId;
+          paint({ kind: 'row-menu-item', rowId: rId });
+        }
+        return;
+      }
+
+      /* Alt+ArrowDown from key or value input opens the row's Type menu directly (RFD-6) */
+      if (e.altKey && e.key === 'ArrowDown' && (keyInp || valInp)) {
+        e.preventDefault();
+        const rId = keyInp ? keyInp.dataset.kvKeyInput : valInp.dataset.kvValInput;
         openMenuRowId = null;
-        paint(restoreTypeId ? { kind: 'type', rowId: restoreTypeId } : { kind: 'menu', rowId: restoreMenuId });
+        openRootMenu = false;
+        openTypeMenuRowId = rId;
+        paint({ kind: 'type-menu-item', rowId: rId });
         return;
       }
 
@@ -6258,7 +6764,8 @@
           paint({ kind: 'val', rowId: rId, select: true });
           return;
         }
-        if (e.key === 'Backspace' && keyInp.value === '' && found.row.value === '' && found.list.length > 1) {
+        /* RFD-11: Only delete row on Backspace when the entire row is a blank string row */
+        if (e.key === 'Backspace' && keyInp.value === '' && isRowCompletelyBlank(found.row, 'object') && found.list.length > 1) {
           e.preventDefault();
           const prevIdx = Math.max(0, found.index - 1);
           found.list.splice(found.index, 1);
@@ -6272,28 +6779,23 @@
         const rId = valInp.dataset.kvValInput;
         const found = findRowAndParent(rows, rId, rootKind, null);
         if (!found) return;
+        const isTextarea = valInp.tagName === 'TEXTAREA';
 
-        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && (!isTextarea || !e.shiftKey)) {
+          if (isTextarea && e.shiftKey) return;
           e.preventDefault();
           if (found.index < found.list.length - 1) {
             const nextRow = found.list[found.index + 1];
             paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nextRow.id, select: true });
           } else {
-            const created = makeRow({ key: '', value: '', type: 'string' });
+            const created = makeRow({ key: '', value: '', type: 'string', placeholder: true });
             found.list.push(created);
             paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: created.id });
           }
           return;
         }
-        if (e.key === 'Tab' && !e.shiftKey) {
-          if (found.index < found.list.length - 1) {
-            e.preventDefault();
-            const nextRow = found.list[found.index + 1];
-            paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nextRow.id, select: true });
-            return;
-          }
-        }
-        if (e.key === 'Backspace' && valInp.value === '' && (found.parentKind === 'array' || found.row.key === '') && found.list.length > 1) {
+        /* RFD-6: Leave Tab native so focus visits Số? -> Type chip -> Row menu -> next row */
+        if (e.key === 'Backspace' && valInp.value === '' && isRowCompletelyBlank(found.row, found.parentKind) && found.list.length > 1) {
           e.preventDefault();
           const prevIdx = Math.max(0, found.index - 1);
           found.list.splice(found.index, 1);
@@ -6313,16 +6815,18 @@
         e.stopPropagation();
         openMenuRowId = null;
         openRootMenu = false;
-        openTypeMenuRowId = openTypeMenuRowId === rowId ? null : rowId;
-        paint({ kind: 'type', rowId });
+        const willOpen = openTypeMenuRowId !== rowId;
+        openTypeMenuRowId = willOpen ? rowId : null;
+        paint({ kind: willOpen ? 'type-menu-item' : 'type', rowId });
         return;
       }
       if (act === 'toggle-row-menu') {
         e.stopPropagation();
         openTypeMenuRowId = null;
         openRootMenu = false;
-        openMenuRowId = openMenuRowId === rowId ? null : rowId;
-        paint({ kind: 'menu', rowId });
+        const willOpen = openMenuRowId !== rowId;
+        openMenuRowId = willOpen ? rowId : null;
+        paint({ kind: willOpen ? 'row-menu-item' : 'menu', rowId });
         return;
       }
       if (act === 'pick-type') {
@@ -6332,6 +6836,10 @@
         openTypeMenuRowId = null;
         if (!found) return;
         const r = found.row;
+        const prevType = r.type;
+        if (prevType !== nextType) {
+          markTableMutated(r, 'type');
+        }
         r.type = nextType;
         if (nextType === 'boolean') {
           if (r.value !== 'true' && r.value !== 'false') r.value = 'true';
@@ -6344,10 +6852,11 @@
         } else if (nextType === 'object' || nextType === 'array') {
           r.expanded = true;
           if (!Array.isArray(r.children) || r.children.length === 0) {
-            r.children = [makeRow({ key: '', value: '', type: 'string' })];
+            r.children = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
           }
         } else if (nextType === 'string') {
-          if (r.value === 'null') r.value = '';
+          /* RFD-14: Only clear 'null' if coming from type 'null' */
+          if (prevType === 'null' && r.value === 'null') r.value = '';
         }
         const focusTarget = (nextType === 'object' || nextType === 'array') && r.children && r.children[0]
           ? { kind: nextType === 'array' ? 'val' : 'key', rowId: r.children[0].id }
@@ -6358,6 +6867,7 @@
       if (act === 'suggest-number') {
         const found = findRowAndParent(rows, rowId, rootKind, null);
         if (!found) return;
+        markTableMutated(found.row, 'type');
         found.row.type = 'number';
         found.row.value = found.row.value.trim();
         paint({ kind: 'val', rowId });
@@ -6367,6 +6877,7 @@
       if (act === 'set-bool') {
         const found = findRowAndParent(rows, rowId, rootKind, null);
         if (!found) return;
+        markTableMutated(found.row, 'value');
         found.row.value = actBtn.dataset.boolVal === 'false' ? 'false' : 'true';
         paint();
         return;
@@ -6382,8 +6893,9 @@
         const parentId = actBtn.dataset.parentId;
         openTypeMenuRowId = null;
         openMenuRowId = null;
+        canonicalRawText = null;
         if (!parentId || parentId === 'root') {
-          const created = makeRow({ key: '', value: '', type: 'string' });
+          const created = makeRow({ key: '', value: '', type: 'string', placeholder: true });
           rows.push(created);
           paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: created.id });
         } else {
@@ -6391,7 +6903,7 @@
           if (found && (found.row.type === 'object' || found.row.type === 'array')) {
             found.row.expanded = true;
             found.row.children = found.row.children || [];
-            const created = makeRow({ key: '', value: '', type: 'string' });
+            const created = makeRow({ key: '', value: '', type: 'string', placeholder: true });
             found.row.children.push(created);
             paint({ kind: found.row.type === 'array' ? 'val' : 'key', rowId: created.id });
           }
@@ -6402,7 +6914,8 @@
         openMenuRowId = null;
         const found = findRowAndParent(rows, rowId, rootKind, null);
         if (!found) return;
-        const created = makeRow({ key: '', value: '', type: 'string' });
+        canonicalRawText = null;
+        const created = makeRow({ key: '', value: '', type: 'string', placeholder: true });
         found.list.splice(found.index + 1, 0, created);
         paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: created.id });
         return;
@@ -6411,6 +6924,7 @@
         openMenuRowId = null;
         const found = findRowAndParent(rows, rowId, rootKind, null);
         if (!found || found.index <= 0) return;
+        canonicalRawText = null;
         const item = found.list.splice(found.index, 1)[0];
         found.list.splice(found.index - 1, 0, item);
         paint({ kind: 'menu', rowId });
@@ -6420,6 +6934,7 @@
         openMenuRowId = null;
         const found = findRowAndParent(rows, rowId, rootKind, null);
         if (!found || found.index >= found.list.length - 1) return;
+        canonicalRawText = null;
         const item = found.list.splice(found.index, 1)[0];
         found.list.splice(found.index + 1, 0, item);
         paint({ kind: 'menu', rowId });
@@ -6429,8 +6944,9 @@
         openMenuRowId = null;
         const found = findRowAndParent(rows, rowId, rootKind, null);
         if (!found) return;
+        canonicalRawText = null;
         if (found.list.length <= 1) {
-          const replacement = makeRow({ key: '', value: '', type: 'string' });
+          const replacement = makeRow({ key: '', value: '', type: 'string', placeholder: true });
           found.list.splice(0, 1, replacement);
           paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: replacement.id });
         } else {
@@ -6478,10 +6994,15 @@
           return false;
         }
         rawSyntaxIssue = null;
-        switchBlockedMsg = null;
         ta.removeAttribute('aria-invalid');
         if (errBox) errBox.hidden = true;
-        loadFromJsonString(draft);
+        const loadRes = loadFromJsonString(draft, { preserveRawSource: true });
+        if (!loadRes.ok && loadRes.reason === 'scalar') {
+          /* Scalar root is valid JSON in Raw, so canonicalRawText is preserved for Save, but Table view is blocked */
+          canonicalRawText = draft;
+        } else {
+          switchBlockedMsg = null;
+        }
         const errorsMap = new Map();
         validateRows(rows, rootKind, errorsMap);
         syncHeaderControls();
@@ -6526,6 +7047,27 @@
     if (cardEl) {
       const rootMenuBtn = cardEl.querySelector('[data-kv-root-menu-btn]');
       const rootMenuPop = cardEl.querySelector('[data-kv-root-menu-pop]');
+      const inlinePromptEl = cardEl.querySelector('[data-kv-inline-prompt]');
+
+      function applyRootKindSwitch(nextKind) {
+        const prevSnap = captureEditorSnapshot();
+        canonicalRawText = null;
+        rootKind = nextKind;
+        if (nextKind === 'array') {
+          rows.forEach((r) => { r.key = ''; r.rawKeyLiteral = null; });
+        }
+        if (rows.length === 0) {
+          rows = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
+        }
+        paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: rows[0]?.id });
+        toast(rootKind === 'array'
+          ? 'Đã chuyển gốc sang Mảng · Switched root to Array'
+          : 'Đã chuyển gốc sang Object · Switched root to Object', 'Hoàn tác', {
+          originEl: rootMenuBtn,
+          onAction: () => restoreEditorSnapshot(prevSnap)
+        });
+      }
+
       if (rootMenuBtn) {
         rootMenuBtn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -6533,22 +7075,99 @@
           openMenuRowId = null;
           openRootMenu = !openRootMenu;
           syncHeaderControls();
+          if (openRootMenu && rootMenuPop) {
+            const checkedItem = rootMenuPop.querySelector('[aria-checked="true"]') || rootMenuPop.querySelector('[role^="menuitem"]');
+            if (checkedItem && typeof checkedItem.focus === 'function') checkedItem.focus();
+          }
+        });
+        rootMenuBtn.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            openTypeMenuRowId = null;
+            openMenuRowId = null;
+            openRootMenu = true;
+            syncHeaderControls();
+            if (rootMenuPop) {
+              const checkedItem = rootMenuPop.querySelector('[aria-checked="true"]') || rootMenuPop.querySelector('[role^="menuitem"]');
+              if (checkedItem && typeof checkedItem.focus === 'function') checkedItem.focus();
+            }
+          }
         });
       }
       if (rootMenuPop) {
+        rootMenuPop.addEventListener('keydown', (e) => {
+          handleMenuKeydown(e, rootMenuPop, (restoreFocus) => {
+            openRootMenu = false;
+            syncHeaderControls();
+            if (restoreFocus && rootMenuBtn) rootMenuBtn.focus();
+          });
+        });
         rootMenuPop.addEventListener('click', (e) => {
           const choiceBtn = e.target.closest('[data-kv-root-choice]');
           if (!choiceBtn) return;
           const nextKind = choiceBtn.dataset.kvRootChoice === 'array' ? 'array' : 'object';
           openRootMenu = false;
-          if (nextKind !== rootKind) {
-            rootKind = nextKind;
+          syncHeaderControls();
+          if (nextKind === rootKind) {
+            if (rootMenuBtn) rootMenuBtn.focus();
+            return;
+          }
+          /* RFD-13: Confirm inline if switching Object -> Array would drop non-empty keys */
+          if (rootKind === 'object' && nextKind === 'array') {
+            const keysWithNames = rows.filter((r, idx) => !isEffectivePlaceholderRow(r, idx, rows, 'object') && r.key !== '');
+            if (keysWithNames.length > 0) {
+              inlinePromptState = {
+                kind: 'switch-root',
+                nextKind: 'array',
+                titleHtml: `${keysWithNames.length} trường sẽ mất tên khi chuyển sang Mảng · <span lang="en" class="font-normal text-muted">${keysWithNames.length} keys will be dropped when switching to Array</span>`,
+                descHtml: `Mảng chỉ lưu danh sách giá trị theo thứ tự chỉ mục (#1, #2…). · <span lang="en">Arrays store ordered values by index only.</span>`,
+                actionsHtml: `
+                  <button type="button" class="btn btn-danger btn-sm" data-kv-prompt-act="confirm-root-switch">Chuyển sang Mảng · <span lang="en">Switch to Array</span></button>
+                  <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Giữ Object · <span lang="en">Keep Object</span></button>
+                `
+              };
+              syncInlinePromptBanner();
+              return;
+            }
+          }
+          applyRootKindSwitch(nextKind);
+        });
+      }
+
+      if (inlinePromptEl) {
+        inlinePromptEl.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-kv-prompt-act]');
+          if (!btn || !inlinePromptState) return;
+          const act = btn.dataset.kvPromptAct;
+          const st = inlinePromptState;
+          inlinePromptState = null;
+          syncInlinePromptBanner();
+
+          if (act === 'confirm-root-switch') {
+            applyRootKindSwitch(st.nextKind || 'array');
+          } else if (act === 'paste-replace' && st.pastedRawText) {
+            const prevSnap = captureEditorSnapshot();
+            loadFromJsonString(st.pastedRawText, { preserveRawSource: false });
+            rows.forEach((r) => { r.fromRaw = false; });
             paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: rows[0]?.id });
-            toast(rootKind === 'array'
-              ? 'Đã chuyển gốc sang Mảng · Switched root to Array'
-              : 'Đã chuyển gốc sang Object · Switched root to Object');
-          } else {
-            syncHeaderControls();
+            toast('Đã thay bằng JSON vừa dán · Replaced with pasted JSON', 'Hoàn tác', {
+              originEl: kvHost,
+              onAction: () => restoreEditorSnapshot(prevSnap)
+            });
+          } else if (act === 'paste-nest' && st.pastedRoot && st.targetRowId) {
+            const prevSnap = captureEditorSnapshot();
+            const found = findRowAndParent(rows, st.targetRowId, rootKind, null);
+            if (found) {
+              canonicalRawText = null;
+              const nestedRow = astNodeToRow(st.pastedRoot, found.parentKind === 'object' ? (found.row.key || 'data') : '');
+              nestedRow.fromRaw = false;
+              found.list.splice(found.index, 1, nestedRow);
+              paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nestedRow.id });
+              toast('Đã lồng JSON vào dòng hiện tại · Nested JSON into current row', 'Hoàn tác', {
+                originEl: kvHost,
+                onAction: () => restoreEditorSnapshot(prevSnap)
+              });
+            }
           }
         });
       }
@@ -6560,13 +7179,29 @@
           const b = e.target.closest('button[data-target]');
           if (!b) return;
           const target = b.dataset.target;
-          if (target === kvHost.dataset.view && rawSyntaxIssue) {
-            e.stopPropagation();
-            switchBlockedMsg = 'Chưa thể chuyển sang Bảng khi JSON gốc đang có lỗi cú pháp. · <span lang="en">Cannot switch to Table while Raw JSON has syntax errors.</span>';
-            const errorsMap = new Map();
-            validateRows(rows, rootKind, errorsMap);
-            syncFooterAndRaw(errorsMap);
-            return;
+          if (target === kvHost.dataset.view) {
+            if (rawSyntaxIssue) {
+              e.stopPropagation();
+              switchBlockedMsg = 'Chưa thể chuyển sang Bảng khi JSON gốc đang có lỗi cú pháp. · <span lang="en">Cannot switch to Table while Raw JSON has syntax errors.</span>';
+              const errorsMap = new Map();
+              validateRows(rows, rootKind, errorsMap);
+              syncFooterAndRaw(errorsMap);
+              return;
+            }
+            if (rawHost) {
+              const ta = rawHost.querySelector('[data-json-raw-textarea]');
+              if (ta) {
+                const parsed = parseJsonStrict(ta.value);
+                if (parsed.ok && parsed.document.root.kind !== 'object' && parsed.document.root.kind !== 'array') {
+                  e.stopPropagation();
+                  switchBlockedMsg = `Giá trị gốc là kiểu đơn (${esc(parsed.document.root.kind)}). Chế độ Bảng chỉ áp dụng cho Object {} hoặc Mảng []; hãy sửa hoặc lưu trực tiếp ở tab JSON gốc. · <span lang="en">Root is a scalar (${esc(parsed.document.root.kind)}). Table view supports Object {} or Array [] roots; edit or save directly in Raw JSON.</span>`;
+                  const errorsMap = new Map();
+                  validateRows(rows, rootKind, errorsMap);
+                  syncFooterAndRaw(errorsMap);
+                  return;
+                }
+              }
+            }
           }
           switchBlockedMsg = null;
           modeSeg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
@@ -6577,7 +7212,37 @@
             paint();
           } else if (rawHost) {
             const ta = rawHost.querySelector('[data-json-raw-textarea]');
-            if (ta) ta.value = toJsonString();
+            const errBox = rawHost.querySelector('[data-json-raw-error]');
+            const byteEl = rawHost.querySelector('[data-json-raw-bytes]');
+            if (ta) {
+              const textToShow = toJsonString();
+              ta.value = textToShow;
+              if (byteEl) byteEl.textContent = `${formatByteCountVi(measureUtf8Bytes(textToShow))} / 262.144 B`;
+              const res = parseJsonStrict(textToShow);
+              if (!res.ok) {
+                rawSyntaxIssue = res.error;
+                lastRawErrorOffset = res.error.offset || 0;
+                ta.setAttribute('aria-invalid', 'true');
+                if (errBox) {
+                  errBox.hidden = false;
+                  if (errBox.id) ta.setAttribute('aria-describedby', errBox.id);
+                  errBox.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p class="font-semibold m-0 mb-0.5">JSON không hợp lệ — Dòng ${res.error.line}, cột ${res.error.column}</p>
+                      <p class="m-0">${esc(res.error.messageVi)} · <span lang="en">${esc(res.error.messageEn)}</span></p>
+                    </div>
+                    <button type="button" class="btn btn-tertiary btn-sm" data-json-raw-goto>Đi tới lỗi · <span lang="en">Go to error</span></button>
+                  </div>`;
+                }
+              } else {
+                rawSyntaxIssue = null;
+                ta.removeAttribute('aria-invalid');
+                if (errBox) errBox.hidden = true;
+              }
+              const errorsMap = new Map();
+              validateRows(rows, rootKind, errorsMap);
+              syncFooterAndRaw(errorsMap);
+            }
           }
         });
       }
@@ -6627,7 +7292,32 @@
         if (k === 's' && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
           triggerSave();
-        } else if (e.key === 'escape' && !openMenuRowId && !openTypeMenuRowId && !openRootMenu) {
+        } else if (k === 'escape') {
+          if (openRootMenu) {
+            e.preventDefault();
+            e.stopPropagation();
+            openRootMenu = false;
+            syncHeaderControls();
+            if (rootMenuBtn) rootMenuBtn.focus();
+            return;
+          }
+          if (openMenuRowId || openTypeMenuRowId) {
+            e.preventDefault();
+            e.stopPropagation();
+            const restoreTypeId = openTypeMenuRowId;
+            const restoreMenuId = openMenuRowId;
+            openTypeMenuRowId = null;
+            openMenuRowId = null;
+            paint(restoreTypeId ? { kind: 'type', rowId: restoreTypeId } : { kind: 'menu', rowId: restoreMenuId });
+            return;
+          }
+          if (inlinePromptState) {
+            e.preventDefault();
+            e.stopPropagation();
+            inlinePromptState = null;
+            syncInlinePromptBanner();
+            return;
+          }
           e.preventDefault();
           triggerCancel();
         }
@@ -6662,6 +7352,8 @@
         discardPromptOpen = false;
         switchBlockedMsg = null;
         rawSyntaxIssue = null;
+        canonicalRawText = null;
+        inlinePromptState = null;
 
         const showTab = (tabName) => {
           if (!cardEl) return;
@@ -6678,7 +7370,7 @@
 
         if (presetName === 'empty') {
           rootKind = 'object';
-          rows = [makeRow({ key: '', value: '', type: 'string' })];
+          rows = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
           showTab(kvHost.dataset.view || 'ntbl');
           paint({ kind: 'key', rowId: rows[0].id });
         } else if (presetName === 'filled-3') {
@@ -6744,6 +7436,40 @@
           ];
           showTab(kvHost.dataset.view || 'ntbl');
           paint();
+        } else if (presetName === 'deep-nesting') {
+          rootKind = 'object';
+          rows = [
+            makeRow({ key: 'site', value: 'Hanoi-HQ', type: 'string' }),
+            makeRow({
+              key: 'network',
+              value: '',
+              type: 'object',
+              expanded: true,
+              children: [
+                makeRow({
+                  key: ' firewall_rules_v6_production ',
+                  value: '',
+                  type: 'object',
+                  expanded: true,
+                  children: [
+                    makeRow({
+                      key: 'allow_cidrs',
+                      value: '',
+                      type: 'array',
+                      expanded: true,
+                      children: [
+                        makeRow({ key: '', value: '2001:db8:85a3::/48', type: 'string' }),
+                        makeRow({ key: '', value: 'fe80::1ff:fe23:4567:890a/64', type: 'string' })
+                      ]
+                    }),
+                    makeRow({ key: 'max_hops', value: '64', type: 'number' })
+                  ]
+                })
+              ]
+            })
+          ];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint();
         }
       },
       onVaultStateChange(isLocked) {
@@ -6751,8 +7477,10 @@
         openTypeMenuRowId = null;
         openRootMenu = false;
         discardPromptOpen = false;
+        inlinePromptState = null;
         if (isLocked) {
-          rows = [makeRow({ key: '', value: '', type: 'string' })];
+          canonicalRawText = null;
+          rows = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
           if (kvHost.closest('[data-secret]')) kvHost.innerHTML = '';
           if (rawHost) {
             const ta = rawHost.querySelector('[data-json-raw-textarea]');

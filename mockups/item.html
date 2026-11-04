@@ -333,6 +333,8 @@
 
           <div data-secret>
             <div data-kv-switch-error hidden role="alert" class="field-error m-0 px-4 py-2.5 bg-surface rule-top-line"></div>
+            <div data-kv-inline-prompt hidden role="region" aria-label="Xác nhận thao tác · Confirm action" class="kv-inline-prompt"></div>
+            <div data-kv-live-region aria-live="polite" aria-atomic="true" class="sr-only"></div>
             <div data-view="ntbl" id="newJsonTable" class="min-w-0"></div>
             <div data-view="nraw" hidden id="newJsonRaw" data-json-raw-interactive="1" class="p-4 bg-surface">
               <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
@@ -629,21 +631,25 @@
         <div class="card p-4">
           <p class="t-label text-body mb-2">Phím tắt · <span lang="en" class="text-muted">Shortcuts</span></p>
           <ul class="m-0 p-0 list-none flex flex-col gap-2 text-[13px] text-body">
-            <li class="flex items-center justify-between gap-2">
-              <span>Lưu khi đang sửa · <span lang="en" class="text-muted">Save edit</span></span>
-              <span class="kbd">Ctrl+S</span>
+            <li class="flex flex-wrap items-center justify-between gap-1.5 min-w-0">
+              <span class="min-w-0">Lưu khi đang sửa · <span lang="en" class="text-muted">Save edit</span></span>
+              <span class="kbd shrink-0">Ctrl+S</span>
             </li>
-            <li class="flex items-center justify-between gap-2">
-              <span>Đóng ô sửa · <span lang="en" class="text-muted">Cancel edit</span></span>
-              <span class="kbd">Esc</span>
+            <li class="flex flex-wrap items-center justify-between gap-1.5 min-w-0">
+              <span class="min-w-0">Đóng ô sửa · <span lang="en" class="text-muted">Cancel edit</span></span>
+              <span class="kbd shrink-0">Esc</span>
             </li>
-            <li class="flex items-center justify-between gap-2">
-              <span>Hoàn tác xoá · <span lang="en" class="text-muted">Undo delete</span></span>
-              <span class="kbd">Ctrl+Z</span>
+            <li class="flex flex-wrap items-center justify-between gap-1.5 min-w-0">
+              <span class="min-w-0">Đổi kiểu dòng JSON · <span lang="en" class="text-muted">Row type menu</span></span>
+              <span class="kbd shrink-0">Alt+↓</span>
             </li>
-            <li class="flex items-center justify-between gap-2">
-              <span>Khoá vault · <span lang="en" class="text-muted">Lock vault</span></span>
-              <span class="kbd">L</span>
+            <li class="flex flex-wrap items-center justify-between gap-1.5 min-w-0">
+              <span class="min-w-0">Hoàn tác xoá · <span lang="en" class="text-muted">Undo delete</span></span>
+              <span class="kbd shrink-0">Ctrl+Z</span>
+            </li>
+            <li class="flex flex-wrap items-center justify-between gap-1.5 min-w-0">
+              <span class="min-w-0">Khoá vault · <span lang="en" class="text-muted">Lock vault</span></span>
+              <span class="kbd shrink-0">L</span>
             </li>
           </ul>
         </div>
