@@ -681,12 +681,9 @@ test.describe('P05-entryux Stage T visual captures (390/768/1440 x light/dark, b
         // 10. State `import-over-cap` (D8): > 256 KiB file rejected with styled error callout and no raw 413 code
         await importDialog.getByTestId('import-json-file-input').evaluate((el) => {
           const input = el as HTMLInputElement;
-          const file = new File([new Uint8Array([0x7b, 0x7d])], 'over-cap.json', {
+          const overCapJson = `{"k":"${'a'.repeat(270_000)}"}`;
+          const file = new File([new TextEncoder().encode(overCapJson)], 'over-cap.json', {
             type: 'application/json',
-          });
-          Object.defineProperty(file, 'size', {
-            configurable: true,
-            value: 270_008,
           });
           const dt = new DataTransfer();
           dt.items.add(file);
@@ -1266,12 +1263,9 @@ test.describe('P05-entryux Stage T item page no-horizontal-overflow at 390/768/1
     await expect(importDialog).toBeVisible({ timeout: UI_WAIT_MS });
     await importDialog.getByTestId('import-json-file-input').evaluate((el) => {
       const input = el as HTMLInputElement;
-      const file = new File([new Uint8Array([0x7b, 0x7d])], 'over-cap-vi.json', {
+      const overCapJson = `{"k":"${'a'.repeat(270_000)}"}`;
+      const file = new File([new TextEncoder().encode(overCapJson)], 'over-cap-vi.json', {
         type: 'application/json',
-      });
-      Object.defineProperty(file, 'size', {
-        configurable: true,
-        value: 270_008,
       });
       const dt = new DataTransfer();
       dt.items.add(file);
