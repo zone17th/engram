@@ -319,7 +319,7 @@ describe('T19 bullet 2 - PasskeyUnlockButton', () => {
     renderButton();
     fireEvent.click(await screen.findByRole('button', { name: 'Unlock with passkey' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Authenticator did not return PRF. Cannot unlock with passkey.',
+      enMessages.vault.passkey.unlock_prf_missing,
     );
   });
 

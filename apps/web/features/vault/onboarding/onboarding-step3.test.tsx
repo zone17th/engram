@@ -321,7 +321,12 @@ describe('P03-T16B — Onboarding Step 3 (Optional Add Passkey & Skip)', () => {
     const savedPasskeys: Array<{ id: string; name: string; aaguid: string | null; created_at: string }> = [];
     const credentialsCreate = vi.fn();
     Object.defineProperty(navigator, 'credentials', {
-      value: { create: credentialsCreate, get: vi.fn() },
+      value: {
+        create: credentialsCreate,
+        get: vi.fn().mockImplementation(
+          async () => fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
+        ),
+      },
       configurable: true,
     });
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {

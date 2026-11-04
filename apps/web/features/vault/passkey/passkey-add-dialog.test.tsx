@@ -95,6 +95,13 @@ function renderDialog(
 function stubRegistration(prf: { enabled?: boolean; first?: Uint8Array } | null) {
   mocks.fetchPasskeyRegisterOptions.mockResolvedValue(registerOptionsResponse());
   mocks.credentialsCreate.mockResolvedValue(fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf }).credential);
+  Object.defineProperty(navigator, 'credentials', {
+    value: {
+      create: mocks.credentialsCreate,
+      get: vi.fn().mockImplementation(async () => fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf }).credential),
+    },
+    configurable: true,
+  });
 }
 
 describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', () => {
