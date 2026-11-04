@@ -5158,13 +5158,16 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
       `/app/unlock?returnTo=${encodeURIComponent(routerMocks.pathname)}`,
     );
     expect(screen.getByTestId('btn-add-json')).toBeDisabled();
-    expect(screen.getByTestId('btn-add-json')).toHaveClass('disabled:opacity-65');
+    expect(screen.getByTestId('btn-add-json')).toHaveClass(
+      'disabled:!border-lineStrong',
+      'disabled:!opacity-80',
+    );
     expect(screen.getByTestId('btn-import-json')).toBeDisabled();
     expect(screen.getByTestId('btn-import-json')).toHaveClass(
-      'disabled:border-lineStrong',
-      'disabled:bg-surface',
-      'disabled:text-muted',
-      'disabled:opacity-75',
+      'disabled:!border-lineStrong',
+      'disabled:!bg-surface',
+      'disabled:!text-body',
+      'disabled:!opacity-80',
     );
   });
 });

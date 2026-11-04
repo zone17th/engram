@@ -3464,6 +3464,8 @@ export function NewJsonEntryComposer({
             hasBlockingState={unconfirmedCreate !== null}
             externalError={switchBlockedError}
             parseDebounceMs={rawParseDebounceMs}
+            showSaveActions={false}
+            rawLabelText={tJson('kvRawSyncedLabel')}
             onValidationSettled={setRawSettledIssue}
             onDraftChange={(nextVal: string) => {
               composerHolderRef.current.candidateSource = nextVal;

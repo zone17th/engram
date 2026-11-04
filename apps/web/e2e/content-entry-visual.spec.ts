@@ -79,7 +79,7 @@ const OVERFLOW_WIDTHS = [
   { width: 1440, height: 900 },
 ] as const;
 
-type EntryVisualWidth = (typeof ENTRY_VIEWPORTS)[number]['width'];
+type EntryVisualWidth = 390 | 768 | 1250 | 1440;
 
 type EntryVisualState =
   | 'empty-kv'
@@ -89,28 +89,19 @@ type EntryVisualState =
   | 'array-root'
   | 'multiline-value'
   | 'import-dialog'
+  | 'import-over-cap'
   | 'saved-json-card'
-  | 'locked-state';
+  | 'saved-add-field'
+  | 'composer-focus'
+  | 'locked-state'
+  | 'locked-empty'
+  | 'long-name'
+  | 'vi-filled-rows'
+  | 'vi-raw-json'
+  | 'vi-import-over-cap'
+  | 'vi-settings-locale';
 
-const MASK_SELECTORS = [
-  '[data-testid="item-meta-summary"]',
-  '[data-visual-mask]',
-  'p[data-testid="entry-body"]',
-  'pre[data-testid="entry-body"]',
-  'textarea[data-vault-secret]',
-  'input[data-vault-secret]',
-  '[data-testid^="json-cell-btn-"]',
-  '[data-testid^="json-cell-input-"]',
-  '[data-testid^="json-readonly-cell-"]',
-  '[data-testid^="json-raw-textarea-"]',
-  '[data-testid="import-json-preview-raw"]',
-  '[data-testid="import-json-source-textarea"]',
-  '[data-testid="json-table-host-import-preview"] [role="gridcell"]',
-  '[data-testid="json-table-host-import-preview"] td',
-] as const;
-
-function buildMaskAndFreezeCss(): string {
-  const transparentTextSelectors = MASK_SELECTORS.flatMap((sel) => [sel, `${sel} *`]).join(',\n');
+function buildFreezeCss(): string {
   return `
 *,*::before,*::after {
   animation: none !important;
@@ -119,12 +110,6 @@ function buildMaskAndFreezeCss(): string {
 }
 .toast, [data-testid="undo-toast-stack"] {
   display: none !important;
-}
-${transparentTextSelectors} {
-  color: transparent !important;
-  -webkit-text-fill-color: transparent !important;
-  text-shadow: none !important;
-  caret-color: transparent !important;
 }
 `;
 }
@@ -412,32 +397,20 @@ async function captureDeterministicEntryState(
   state: EntryVisualState,
   theme: Theme,
   width: EntryVisualWidth,
+  options?: { preserveFocus?: boolean },
 ): Promise<void> {
   await page.evaluate(async () => {
     await document.fonts.ready;
   });
 
-  // Blur any active element so focus rings/carets are deterministic, and tag non-empty inputs for masking
-  await page.evaluate(() => {
-    if (document.activeElement instanceof HTMLElement) {
+  await page.evaluate((preserveFocus) => {
+    if (!preserveFocus && document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
-    }
-    for (const input of Array.from(
-      document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea'),
-    )) {
-      if (input instanceof HTMLInputElement && (input.type === 'checkbox' || input.type === 'radio' || input.type === 'hidden')) {
-        continue;
-      }
-      if (input.value !== '' || input.hasAttribute('data-vault-secret')) {
-        input.setAttribute('data-visual-mask', 'true');
-      } else {
-        input.removeAttribute('data-visual-mask');
-      }
     }
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
-  });
+  }, Boolean(options?.preserveFocus));
 
   await page.evaluate(() => {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -460,8 +433,7 @@ async function captureDeterministicEntryState(
   const outputPath = testInfo.outputPath(fileName);
   mkdirSync(dirname(outputPath), { recursive: true });
 
-  const maskLocators = MASK_SELECTORS.map((sel) => page.locator(sel));
-  const styleCss = buildMaskAndFreezeCss();
+  const styleCss = buildFreezeCss();
 
   const shot = await page.screenshot({
     path: outputPath,
@@ -470,7 +442,6 @@ async function captureDeterministicEntryState(
     animations: 'disabled',
     caret: 'hide',
     style: styleCss,
-    mask: maskLocators,
   });
 
   expect(shot.byteLength).toBeGreaterThan(0);
@@ -533,19 +504,52 @@ test.describe('P05-entryux Stage T visual captures (390/768/1440 x light/dark, b
           viewport.width,
         );
 
-        // 3. State `empty-kv`: click `+ JSON / table` (`btn-add-json`) -> opens KV editor with 1 placeholder row
+        // 2b. State `saved-add-field` (D0 / D10): saved JSON card with dec-370 `+ Add field` inline toolbar open + empty-string `(empty)` affordance
+        const savedTableHost = savedCard.getByTestId(`json-table-host-${jsonEntryId}`);
+        await savedTableHost.getByTestId('json-open-add-field-root').click();
+        await setFieldValue(savedTableHost.getByTestId('json-new-key-input-root'), 'empty_note');
+        await setFieldValue(savedTableHost.getByTestId('json-new-val-input-root'), '');
+        await savedTableHost.getByTestId('json-confirm-add-field-root').click();
+        await expect(savedTableHost.getByTestId('json-cell-btn-root.p4')).toContainText('(empty)', {
+          timeout: UI_WAIT_MS,
+        });
+        await savedTableHost.getByTestId('json-open-add-field-root').click();
+        await setFieldValue(savedTableHost.getByTestId('json-new-key-input-root'), 'region');
+        await setFieldValue(savedTableHost.getByTestId('json-new-val-input-root'), 'ap-southeast-1');
+        await captureDeterministicEntryState(
+          page,
+          testInfo,
+          'saved-add-field',
+          theme,
+          viewport.width,
+        );
+        await savedTableHost.getByTestId('json-cancel-add-field-root').click();
+        await savedCard.getByTestId(`entry-cancel-edit-btn-${jsonEntryId}`).click();
+
+        // 3. State `empty-kv` & `composer-focus` (D12): open composer via keyboard Enter on `+ JSON / table` -> first Key input focused
         const addJsonBtn = page.getByTestId('btn-add-json');
-        await addJsonBtn.click();
+        await addJsonBtn.focus();
+        await expect(addJsonBtn).toBeFocused();
+        await addJsonBtn.press('Enter');
         const composer = page.getByTestId('new-json-entry-composer');
         await expect(composer).toBeVisible({ timeout: UI_WAIT_MS });
         await expect(composer.getByTestId('json-table-host-new-json')).toBeVisible({
           timeout: UI_WAIT_MS,
         });
+        await expect(composer.getByTestId('json-new-key-input-root')).toBeFocused();
         await expect(composer.getByTestId('new-json-save-btn')).toBeDisabled();
         await expect(composer.getByTestId('new-json-root-menu-btn')).toContainText('Root: Object');
         await expect(composer.getByTestId('json-new-type-select-root')).toContainText('Text');
         await expect(composer.getByTestId('new-json-save-reason')).toContainText(
           'Enter at least one field to save.',
+        );
+        await captureDeterministicEntryState(
+          page,
+          testInfo,
+          'composer-focus',
+          theme,
+          viewport.width,
+          { preserveFocus: true },
         );
         await captureDeterministicEntryState(page, testInfo, 'empty-kv', theme, viewport.width);
 
@@ -673,28 +677,56 @@ test.describe('P05-entryux Stage T visual captures (390/768/1440 x light/dark, b
           theme,
           viewport.width,
         );
+
+        // 10. State `import-over-cap` (D8): > 256 KiB file rejected with styled error callout and no raw 413 code
+        await importDialog.getByTestId('import-json-file-input').evaluate((el) => {
+          const input = el as HTMLInputElement;
+          const file = new File([new Uint8Array([0x7b, 0x7d])], 'over-cap.json', {
+            type: 'application/json',
+          });
+          Object.defineProperty(file, 'size', {
+            configurable: true,
+            value: 270_008,
+          });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          input.files = dt.files;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        const overCapAlert = importDialog.getByTestId('import-json-over-cap-error');
+        await expect(overCapAlert).toBeVisible({ timeout: UI_WAIT_MS });
+        await expect(overCapAlert).not.toContainText('413');
+        await expect(overCapAlert).not.toContainText('entry_too_large');
+        await captureDeterministicEntryState(
+          page,
+          testInfo,
+          'import-over-cap',
+          theme,
+          viewport.width,
+        );
       });
     }
   }
 });
 
 test.describe('P05-entryux Stage T item page no-horizontal-overflow at 390/768/1250/1440 & E2E behaviour cases', () => {
-  test('item page has no horizontal overflow at 390/768/1250/1440 with a 200-rune item name and long keys/values', async ({
+  test('item page has no horizontal overflow at 390/768/1250/1440 with an unbreakable 260-char item name and long keys/values', async ({
     context,
     page,
-  }) => {
+  }, testInfo) => {
     test.setTimeout(120_000);
 
-    const longItemName200 = `${' very-long-item-title-segment-without-overflow-'.repeat(4)}end200`
-      .trim()
-      .padEnd(200, 'x')
-      .slice(0, 200);
-    expect(Array.from(longItemName200).length).toBe(200);
+    const longItemName260 = `unbroken_item_name_${'a1b2c3d4e5f6g7h8i9j0'.repeat(13)}`.slice(
+      0,
+      260,
+    );
+    expect(Array.from(longItemName260).length).toBe(260);
+    expect(longItemName260).not.toMatch(/[\s-]/);
 
     const longFixture: LockedItemEntriesFixture = {
       item: {
         ...ITEM,
-        name: longItemName200,
+        name: longItemName260,
       },
       entries: ENTRIES,
     };
@@ -742,6 +774,7 @@ test.describe('P05-entryux Stage T item page no-horizontal-overflow at 390/768/1
         metrics.scrollWidth,
         `document.documentElement.scrollWidth (${metrics.scrollWidth}) <= innerWidth (${metrics.innerWidth}) at ${vp.width}px`,
       ).toBeLessThanOrEqual(metrics.innerWidth);
+      await captureDeterministicEntryState(page, testInfo, 'long-name', 'light', vp.width);
     }
   });
 
@@ -1155,11 +1188,11 @@ test.describe('P05-entryux Stage T item page no-horizontal-overflow at 390/768/1
     );
   });
 
-  test('RF-5: Vietnamese (/vi) KV editor renders localized root badge, type chip, save-disabled reason, and validation error without unresolved content.json.* key paths', async ({
+  test('RF-5 & Stage T visual pass: Vietnamese (/vi) KV editor, raw JSON, over-cap import, locked empty item (D15), and settings language radio (D16)', async ({
     context,
     page,
-  }) => {
-    test.setTimeout(120_000);
+  }, testInfo) => {
+    test.setTimeout(150_000);
 
     await installApiMocks(context);
     await applyThemeMocks(context, 'light', 'vi');
@@ -1203,6 +1236,107 @@ test.describe('P05-entryux Stage T item page no-horizontal-overflow at 390/768/1
     await expect(composer.getByTestId('new-json-save-reason')).toContainText(
       'Chưa thể lưu (Nhập tên trường hoặc xoá dòng trống.)',
     );
+
+    // Fill valid Vietnamese KV rows and capture `vi-filled-rows` and `vi-raw-json`
+    await setFieldValue(row1Key, 'dich_vu');
+    await setFieldValue(composer.getByTestId('json-new-val-input-root'), 'cong-api');
+    await composer.getByTestId('json-open-add-field-root').click();
+    const viKeys = composer.locator('[data-kv-key-input]');
+    await expect(viKeys).toHaveCount(2, { timeout: UI_WAIT_MS });
+    const viRow2Id = (await viKeys.nth(1).getAttribute('data-kv-key-input'))!;
+    await setFieldValue(viKeys.nth(1), 'cong');
+    await composer.getByTestId(`kv-type-chip-${viRow2Id}`).click();
+    await composer.getByTestId(`kv-pick-type-${viRow2Id}-number`).click();
+    await setFieldValue(composer.getByTestId(`kv-val-input-${viRow2Id}`), '8443');
+    await captureDeterministicEntryState(page, testInfo, 'vi-filled-rows', 'light', 1440);
+
+    await composer.getByTestId('new-json-tab-raw').click();
+    await expect(composer.getByTestId('json-raw-textarea-new-json')).toBeVisible({
+      timeout: UI_WAIT_MS,
+    });
+    await captureDeterministicEntryState(page, testInfo, 'vi-raw-json', 'light', 1440);
+
+    await composer.getByTestId('new-json-cancel-btn').click();
+    await composer.getByTestId('new-json-discard-btn').click();
+    await expect(composer).toBeHidden({ timeout: UI_WAIT_MS });
+
+    // Capture Vietnamese Import JSON over-cap state (D8 + D11)
+    await page.getByTestId('btn-import-json').click();
+    const importDialog = page.getByTestId('import-json-dialog');
+    await expect(importDialog).toBeVisible({ timeout: UI_WAIT_MS });
+    await importDialog.getByTestId('import-json-file-input').evaluate((el) => {
+      const input = el as HTMLInputElement;
+      const file = new File([new Uint8Array([0x7b, 0x7d])], 'over-cap-vi.json', {
+        type: 'application/json',
+      });
+      Object.defineProperty(file, 'size', {
+        configurable: true,
+        value: 270_008,
+      });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect(importDialog.getByTestId('import-json-over-cap-error')).toBeVisible({
+      timeout: UI_WAIT_MS,
+    });
+    await captureDeterministicEntryState(page, testInfo, 'vi-import-over-cap', 'light', 1440);
+    await importDialog.getByTestId('import-json-cancel-btn').click();
+    await expect(importDialog).toBeHidden({ timeout: UI_WAIT_MS });
+
+    // D15: Capture locked empty-item state (`locked-empty`)
+    await installItemPageContentMocks(context, {
+      item: { ...ITEM, entry_count: 0 },
+      entries: [],
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(page.getByTestId('vault-locked-banner')).toBeVisible({ timeout: UI_WAIT_MS });
+    await expect(page.getByTestId('item-entries-empty')).toBeVisible({ timeout: UI_WAIT_MS });
+    await expect(page.getByTestId('empty-unlock-cta')).toBeVisible({ timeout: UI_WAIT_MS });
+    await captureDeterministicEntryState(page, testInfo, 'locked-empty', 'light', 1440);
+
+    // D16: Capture Settings -> Account language radio with sabk_locale=vi (`Tiếng Việt` checked)
+    await context.route('**/api/v1/auth/sessions', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'sess-1',
+              current: true,
+              user_agent: 'Mozilla/5.0 Chrome/130.0',
+              device_label: 'Chrome on Windows',
+              ip: '127.0.0.1',
+              created_at: '2026-10-30T00:00:00Z',
+              last_seen_at: '2026-11-01T00:00:00Z',
+            },
+          ],
+        }),
+      });
+    });
+    await context.route('**/api/v1/auth/audit*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [], next_cursor: null }),
+      });
+    });
+    await context.route('**/api/v1/auth/notifications*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [] }),
+      });
+    });
+    await page.goto('/app/settings', {
+      waitUntil: 'domcontentloaded',
+      timeout: STEP_TIMEOUT,
+    });
+    const viLocaleRadio = page.getByRole('radio', { name: 'Tiếng Việt' });
+    await expect(viLocaleRadio).toHaveAttribute('aria-checked', 'true', { timeout: UI_WAIT_MS });
+    await captureDeterministicEntryState(page, testInfo, 'vi-settings-locale', 'light', 1440);
 
     const pageText = (await page.locator('body').textContent()) ?? '';
     expect(pageText).not.toContain('content.json.');

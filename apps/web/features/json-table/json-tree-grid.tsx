@@ -2048,7 +2048,7 @@ export function JsonTreeGrid({
     <div
       ref={hostRef}
       data-testid={`json-table-host-${entryId}`}
-      className="overflow-x-auto"
+      className="overflow-x-auto rounded-b-[calc(var(--r-xl)-1px)]"
       onKeyDown={handleHostKeyDown}
     >
       {renderedTree}

@@ -2569,8 +2569,8 @@ export function Omnibox({
     >
       <label
         className={cn(
-          'omnibox-shell',
-          compact && '!px-3.5 !py-2.5',
+          'omnibox-shell min-w-0',
+          compact && '!gap-2 !px-3.5 !py-2.5 lg:!gap-3',
           isAddLike && 'is-add',
         )}
       >
@@ -2618,7 +2618,7 @@ export function Omnibox({
             <span aria-hidden="true">≈</span>
           </button>
         ) : null}
-        <Kbd>Ctrl K</Kbd>
+        <Kbd className={compact ? 'hidden lg:inline' : undefined}>Ctrl K</Kbd>
       </label>
 
       <div

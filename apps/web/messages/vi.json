@@ -1681,7 +1681,7 @@
       "goToErrorBtn": "Đi tới lỗi",
       "rawInvalidHeader": "Dòng {line}, cột {column}: {detail}",
       "rawInvalidUnicode": "Chuỗi chứa surrogate lẻ (UTF-16 không hợp lệ) — không thể mã hoá UTF-8.",
-      "rawOverCap": "Nội dung vượt quá 256 KiB (262.144 B UTF-8; 413 entry_too_large). Hãy rút gọn trước khi lưu.",
+      "rawOverCap": "Nội dung vượt quá 256 KiB (262.144 B UTF-8). Hãy rút gọn trước khi lưu.",
       "formatRefusedDepth": "Từ chối định dạng: độ sâu lồng nhau vượt quá {maxDepth} cấp. Nội dung gốc được giữ nguyên.",
       "formatRefusedBytes": "Từ chối định dạng: kết quả sau khi thêm khoảng trắng sẽ vượt quá 256 KiB ({bytes} / 262.144 B). Nội dung gốc được giữ nguyên.",
       "formatRefusedInvalid": "Không thể định dạng khi JSON đang lỗi cú pháp.",
@@ -1713,7 +1713,7 @@
       "importLimitBody": "Không thể nhập thêm entry mới vào “{name}”. Hãy xoá bớt một entry cũ hoặc tạo mục mới trước khi nhập JSON.",
       "importUtf8ErrorTitle": "Tệp không phải UTF-8 hợp lệ",
       "importUtf8ErrorBody": "Phát hiện chuỗi byte không hợp lệ khi đọc tệp .json. Ứng dụng từ chối nhận thay vì âm thầm thay bằng ký tự thay thế U+FFFD làm hỏng dữ liệu. Hãy lưu lại tệp ở bảng mã UTF-8 rồi chọn lại.",
-      "importOverCapTitle": "Nội dung vượt quá 256 KiB (262.144 B UTF-8; 413 entry_too_large)",
+      "importOverCapTitle": "Nội dung vượt quá 256 KiB (262.144 B UTF-8)",
       "importOverCapBody": "Một entry tối đa 262.144 byte UTF-8. Hãy rút gọn trước khi nhập.",
       "importParseErrorTitle": "JSON không hợp lệ — Dòng {line}, cột {column}",
       "importParseErrorBody": "{detail}. Bạn có thể sửa lại JSON bên dưới hoặc lưu nguyên văn nội dung này thành entry văn bản (text).",
@@ -1969,7 +1969,8 @@
       "kvPromptKeepArrayBtn": "Giữ Mảng",
       "kvPromptSwitchRemoveChildrenBtn": "Đổi kiểu & xoá con",
       "kvPromptPasteReplaceRowBtn": "Thay giá trị dòng này",
-      "kvPromptPasteReplaceAllBtn": "Thay toàn bộ"
+      "kvPromptPasteReplaceAllBtn": "Thay toàn bộ",
+      "kvRawSyncedLabel": "JSON gốc (đồng bộ hai chiều với Bảng)"
     }
   },
   "search": {

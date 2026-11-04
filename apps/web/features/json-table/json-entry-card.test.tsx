@@ -2964,7 +2964,14 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
       expect(rawTa.value).toBe(
         '{\n  "API_TOKEN": "sec_live_123",\n  "pem_cert": "-----BEGIN KEY-----\\nMIIEvgIBADANBgkqhkiG9w0BAQE\\n-----END KEY-----"\n}',
       );
-
+      // D9 & N1: composer Raw JSON view has monospace json-raw-editor class (no .field-input override),
+      // visible synced label, Format button, and NO duplicate toolbar Save/Cancel buttons (uses footer Save/Cancel with <kbd class="kbd"> chips)
+      expect(rawTa).toHaveClass('json-raw-editor', 'mono');
+      expect(rawTa).not.toHaveClass('field-input');
+      expect(within(composer).queryByTestId('json-raw-save-btn-new-json')).toBeNull();
+      expect(within(composer).queryByTestId('json-raw-cancel-btn-new-json')).toBeNull();
+      expect(within(composer).getByTestId('new-json-save-btn').querySelector('kbd.kbd')).toHaveTextContent('Ctrl+S');
+      expect(within(composer).getByTestId('new-json-cancel-btn').querySelector('kbd.kbd')).toHaveTextContent('Esc');
       // RFD-1 / RFD-2: Lossless Raw -> Table -> Raw round-trip (duplicate keys, \u escapes, CRLF / \r read-only cell)
       const losslessRaw = '{\n  "dup": "\\u0041",\n  "dup": "second",\n  "cr": "line1\\rline2"\n}';
       fireEvent.change(rawTa, { target: { value: losslessRaw } });

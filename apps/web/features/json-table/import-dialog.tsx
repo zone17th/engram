@@ -1496,19 +1496,19 @@ export function ImportJsonDialog({
   let statusLineClass = 'text-muted';
   if (atEntryLimit) {
     statusLineText = tJson('importStatusLimit200');
-    statusLineClass = 'font-medium text-warning';
+    statusLineClass = 'font-medium text-warning-ink';
   } else if (utf8FileError) {
     statusLineText = tJson('importStatusUtf8Error');
-    statusLineClass = 'font-medium text-danger';
+    statusLineClass = 'font-medium text-error-ink';
   } else if (isOverCap) {
     statusLineText = tJson('importStatusOverCap', { bytes: formattedByteCount });
-    statusLineClass = 'font-medium text-danger';
+    statusLineClass = 'font-medium text-error-ink';
   } else if (parseError) {
     statusLineText = tJson('importStatusParseError', {
       line: parseError.line,
       column: parseError.column,
     });
-    statusLineClass = 'font-medium text-danger';
+    statusLineClass = 'font-medium text-error-ink';
   } else if (validDoc) {
     statusLineClass = 'font-medium text-success-ink';
     if (validDoc.root.kind === 'object') {
@@ -1548,20 +1548,10 @@ export function ImportJsonDialog({
           <div className="min-h-0 flex-1 overflow-y-auto p-5 pb-4 sm:p-6 sm:pb-4">
             {/* Header */}
           <div className="mb-1 flex items-start justify-between gap-2">
-            <h2 id="importTitle" className="t-title-sm m-0">
+            <h2 id="importTitle" className="t-title-sm m-0 tracking-[-.015em]">
               {tJson('importTitle', { name: effectiveItemName })}
-              <span className="phase-badge">{tJson('importBadge')}</span>
             </h2>
-            <button
-              ref={closeBtnRef}
-              type="button"
-              data-testid="import-json-close-btn"
-              className="btn btn-tertiary btn-sm"
-              disabled={savingInFlight}
-              onClick={() => handleClose()}
-            >
-              {tEntry('cancel')}
-            </button>
+            <span className="badge-type badge-json shrink-0">{tJson('importBadge')}</span>
           </div>
 
           <p id="importSubtitle" className="t-body mb-1.5 text-muted">
@@ -1583,7 +1573,7 @@ export function ImportJsonDialog({
               id="importLimit200Notice"
               role="alert"
               data-testid="import-json-limit-notice"
-              className="card-warn mb-3 rounded-md p-3.5"
+              className="card card-warning mb-3 rounded-md p-3.5"
             >
               <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                 <p className="m-0 text-[13px] font-semibold text-body">
@@ -1605,9 +1595,9 @@ export function ImportJsonDialog({
               id="importUtf8Error"
               role="alert"
               data-testid="import-json-utf8-error"
-              className="card-error mb-3 rounded-md p-3.5"
+              className="card card-error mb-3 rounded-md p-3.5"
             >
-              <p className="m-0 mb-1 text-[13px] font-semibold text-danger">
+              <p className="m-0 mb-1 text-[13px] font-semibold text-error-ink">
                 {tJson('importUtf8ErrorTitle')}
               </p>
               <p className="m-0 text-[13px] text-body">{tJson('importUtf8ErrorBody')}</p>
@@ -1619,9 +1609,9 @@ export function ImportJsonDialog({
             <div
               role="alert"
               data-testid="import-json-over-cap-error"
-              className="card-error mb-3 rounded-md p-3.5"
+              className="card card-error mb-3 rounded-md p-3.5"
             >
-              <p className="m-0 mb-1 text-[13px] font-semibold text-danger">
+              <p className="m-0 mb-1 text-[13px] font-semibold text-error-ink">
                 {tJson('importOverCapTitle')}
               </p>
               <p className="m-0 text-[13px] text-body">{tJson('importOverCapBody')}</p>
@@ -1634,14 +1624,14 @@ export function ImportJsonDialog({
               id="importParseError"
               role="alert"
               data-testid="import-json-parse-error"
-              className="card-error mb-3 rounded-md p-3.5"
+              className="card card-error mb-3 rounded-md p-3.5"
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-[200px] flex-1">
                   <button
                     type="button"
                     data-testid="import-json-parse-error-jump"
-                    className="m-0 mb-1 cursor-pointer border-0 bg-transparent p-0 text-left text-[13px] font-semibold text-danger underline [@media(pointer:coarse)]:min-h-[44px]"
+                    className="m-0 mb-1 cursor-pointer border-0 bg-transparent p-0 text-left text-[13px] font-semibold text-error-ink underline [@media(pointer:coarse)]:min-h-[44px]"
                     onClick={handleFocusErrorLine}
                   >
                     {tJson('importParseErrorTitle', {
@@ -1768,9 +1758,9 @@ export function ImportJsonDialog({
                   data-testid="import-json-source-badge"
                   className={
                     isOverCap || utf8FileError
-                      ? 'mono text-[12px] font-semibold text-danger'
+                      ? 'mono text-[12px] font-semibold text-error-ink'
                       : isNearCap
-                        ? 'mono text-[12px] font-semibold text-warning'
+                        ? 'mono text-[12px] font-semibold text-warning-ink'
                         : 'mono text-[12px] text-muted'
                   }
                 >
@@ -1789,7 +1779,7 @@ export function ImportJsonDialog({
               readOnly={unconfirmedSaveState !== null}
               aria-invalid={utf8FileError || isOverCap || parseError !== null}
               placeholder={tJson('importSourcePlaceholder')}
-              className="field-input raw-json-editor"
+              className="json-raw-editor mono resize-y text-[13px] leading-relaxed"
               onChange={handleTextareaChange}
               onPaste={handlePaste}
               {...VAULT_SECRET_INPUT_PROPS}
@@ -1924,13 +1914,15 @@ export function ImportJsonDialog({
             </span>
             <div className="flex gap-2">
               <button
+                ref={closeBtnRef}
                 type="button"
                 data-testid="import-json-cancel-btn"
                 className="btn btn-tertiary btn-sm"
                 disabled={savingInFlight}
                 onClick={() => handleClose()}
               >
-                {tEntry('cancel')}
+                <span>{tEntry('cancel')}</span>
+                <kbd className="kbd">Esc</kbd>
               </button>
               <button
                 type="button"

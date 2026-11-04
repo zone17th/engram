@@ -1005,7 +1005,7 @@ export function ItemDetailPage({
                 type="button"
                 id="btn-add-text"
                 data-testid="btn-add-text"
-                className="btn btn-primary btn-sm disabled:opacity-55"
+                className="btn btn-primary btn-sm disabled:!opacity-70"
                 disabled={atEntryLimit || !unlocked || !entriesQuery.isSuccess}
                 title={atEntryLimit ? tItem('entryLimitHint') : undefined}
                 aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}
@@ -1023,7 +1023,7 @@ export function ItemDetailPage({
                 type="button"
                 id="btn-add-json"
                 data-testid="btn-add-json"
-                className="btn btn-secondary btn-sm disabled:border-line disabled:opacity-65"
+                className="btn btn-secondary btn-sm disabled:!border-lineStrong disabled:!opacity-80"
                 disabled={atEntryLimit || !unlocked || !entriesQuery.isSuccess}
                 title={atEntryLimit ? tItem('entryLimitHint') : undefined}
                 aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}
@@ -1041,7 +1041,7 @@ export function ItemDetailPage({
                 type="button"
                 id="btn-import-json"
                 data-testid="btn-import-json"
-                className="btn btn-tertiary btn-sm disabled:border-lineStrong disabled:bg-surface disabled:text-muted disabled:opacity-75"
+                className="btn btn-tertiary btn-sm disabled:!border-lineStrong disabled:!bg-surface disabled:!text-body disabled:!opacity-80"
                 disabled={atEntryLimit || !unlocked || !entriesQuery.isSuccess}
                 title={atEntryLimit ? tItem('entryLimitHint') : undefined}
                 aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}

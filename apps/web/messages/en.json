@@ -1681,7 +1681,7 @@
       "goToErrorBtn": "Go to error",
       "rawInvalidHeader": "Line {line}, column {column}: {detail}",
       "rawInvalidUnicode": "Input contains an unpaired UTF-16 surrogate and cannot be encoded as UTF-8.",
-      "rawOverCap": "Entry exceeds 256 KiB (262,144 UTF-8 bytes; 413 entry_too_large). Shorten before saving.",
+      "rawOverCap": "Entry exceeds 256 KiB (262,144 UTF-8 bytes). Shorten before saving.",
       "formatRefusedDepth": "Formatting refused: nesting depth exceeds {maxDepth} levels. Original text kept intact.",
       "formatRefusedBytes": "Formatting refused: formatted output would exceed 256 KiB ({bytes} / 262,144 B). Original text kept intact.",
       "formatRefusedInvalid": "Cannot format invalid JSON.",
@@ -1713,7 +1713,7 @@
       "importLimitBody": "Cannot import a new entry into “{name}”. Delete an existing entry or create a new item before importing JSON.",
       "importUtf8ErrorTitle": "File is not valid UTF-8",
       "importUtf8ErrorBody": "Invalid UTF-8 byte sequence detected. Strict UTF-8 decoding rejects invalid bytes instead of silently inserting U+FFFD replacement characters. Re-save the file as UTF-8 and try again.",
-      "importOverCapTitle": "Entry exceeds 256 KiB (262,144 UTF-8 bytes; 413 entry_too_large)",
+      "importOverCapTitle": "Entry exceeds 256 KiB (262,144 UTF-8 bytes)",
       "importOverCapBody": "An entry can be at most 262,144 UTF-8 bytes. Shorten the content before importing.",
       "importParseErrorTitle": "Invalid JSON — Line {line}, column {column}",
       "importParseErrorBody": "{detail}. You can fix the JSON below or save the raw text verbatim as a plain text entry.",
@@ -1969,7 +1969,8 @@
       "kvPromptKeepArrayBtn": "Keep Array",
       "kvPromptSwitchRemoveChildrenBtn": "Switch & remove",
       "kvPromptPasteReplaceRowBtn": "Replace this row's value",
-      "kvPromptPasteReplaceAllBtn": "Replace all"
+      "kvPromptPasteReplaceAllBtn": "Replace all",
+      "kvRawSyncedLabel": "Raw JSON (two-way synced with Table)"
     }
   },
   "search": {

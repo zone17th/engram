@@ -384,7 +384,12 @@ textarea.omnibox-input::placeholder {
   background: var(--surface); color: var(--body); margin: 0;
   border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
 }
-.json-raw-editor { font-family: var(--font-mono); }
+.json-raw-editor {
+  width: 100%; border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 12px 14px; background: var(--surface); color: var(--body);
+  font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
+  resize: vertical; outline: none;
+}
 .json-raw-editor:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--pale-accent);

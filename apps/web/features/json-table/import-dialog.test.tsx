@@ -1176,7 +1176,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
 
     // IP17-R1-10c: When the dialog opens for an item already at 200 entries (via handoff entryCount or cache),
     // it renders the 200-entry notice (`import-json-limit-notice`) and disables controls
-    fireEvent.click(within(dialog).getByTestId('import-json-close-btn'));
+    fireEvent.click(within(dialog).getByTestId('import-json-cancel-btn'));
     act(() => {
       openJsonImportFromHandoff({
         name: 'wifi',
@@ -1348,7 +1348,7 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
     const holderRef = snapshotBeforeClose!.bodyHolder;
     expect(holderRef.text).toContain(handoffSecret);
 
-    fireEvent.click(within(dialog).getByTestId('import-json-close-btn'));
+    fireEvent.click(within(dialog).getByTestId('import-json-cancel-btn'));
     expect(screen.queryByTestId('import-json-dialog')).toBeNull();
     expect(getJsonImportHandoffSnapshot()).toBeNull();
     expect(holderRef.text).toBe('');

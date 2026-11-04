@@ -70,8 +70,9 @@ export interface JsonRawEditorProps {
   readonly onSave: () => void;
   readonly onRequestCancel?: () => void;
   readonly parseDebounceMs?: number;
+  readonly showSaveActions?: boolean;
+  readonly rawLabelText?: string;
 }
-
 export function JsonRawEditor({
   entryId,
   positionNumber,
@@ -88,6 +89,8 @@ export function JsonRawEditor({
   onSave,
   onRequestCancel,
   parseDebounceMs = RAW_PARSE_DEBOUNCE_MS,
+  showSaveActions = true,
+  rawLabelText,
 }: JsonRawEditorProps) {
   const tJson = useTranslations('content.json');
   const tEntry = useTranslations('content.entry');
@@ -292,7 +295,7 @@ export function JsonRawEditor({
       id={`json-raw-panel-${entryId}`}
       data-testid={`json-raw-panel-${entryId}`}
       data-json-raw-interactive="1"
-      className="bg-surface p-4"
+      className="rounded-b-[calc(var(--r-xl)-1px)] bg-surface p-4"
     >
       <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
@@ -307,39 +310,52 @@ export function JsonRawEditor({
           >
             {tJson('formatBtn')}
           </button>
-          <button
-            type="button"
-            id={`json-raw-save-btn-${entryId}`}
-            data-testid={`json-raw-save-btn-${entryId}`}
-            data-json-raw-save=""
-            disabled={saveDisabled}
-            aria-busy={savingInFlight || undefined}
-            className="btn btn-primary btn-sm"
-            onClick={() => {
-              const immediateIssue = flushValidationImmediate();
-              if (immediateIssue !== null || isOverCap || savingInFlight || hasBlockingState || draftValue.length === 0) return;
-              onSave();
-            }}
-          >
-            {savingInFlight ? (
-              tEntry('savingButton')
-            ) : (
-              <>
-                {tJson('saveBtn')} (<span className="mono">Ctrl+S</span>)
-              </>
-            )}
-          </button>
-          {isDirty && onRequestCancel ? (
-            <button
-              type="button"
-              id={`json-raw-cancel-btn-${entryId}`}
-              data-testid={`json-raw-cancel-btn-${entryId}`}
-              disabled={savingInFlight}
-              className="btn btn-tertiary btn-sm"
-              onClick={onRequestCancel}
-            >
-              {tJson('cancelBtn')} (<span className="mono">Esc</span>)
-            </button>
+          {showSaveActions ? (
+            <>
+              <button
+                type="button"
+                id={`json-raw-save-btn-${entryId}`}
+                data-testid={`json-raw-save-btn-${entryId}`}
+                data-json-raw-save=""
+                disabled={saveDisabled}
+                aria-busy={savingInFlight || undefined}
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  const immediateIssue = flushValidationImmediate();
+                  if (
+                    immediateIssue !== null ||
+                    isOverCap ||
+                    savingInFlight ||
+                    hasBlockingState ||
+                    draftValue.length === 0
+                  )
+                    return;
+                  onSave();
+                }}
+              >
+                {savingInFlight ? (
+                  tEntry('savingButton')
+                ) : (
+                  <>
+                    <span>{tJson('saveBtn')}</span>
+                    <kbd className="kbd">Ctrl+S</kbd>
+                  </>
+                )}
+              </button>
+              {isDirty && onRequestCancel ? (
+                <button
+                  type="button"
+                  id={`json-raw-cancel-btn-${entryId}`}
+                  data-testid={`json-raw-cancel-btn-${entryId}`}
+                  disabled={savingInFlight}
+                  className="btn btn-tertiary btn-sm"
+                  onClick={onRequestCancel}
+                >
+                  <span>{tJson('cancelBtn')}</span>
+                  <kbd className="kbd">Esc</kbd>
+                </button>
+              ) : null}
+            </>
           ) : null}
         </div>
 
@@ -395,21 +411,24 @@ export function JsonRawEditor({
         </div>
       ) : null}
 
-      <label htmlFor={`json-raw-textarea-${entryId}`} className="sr-only">
-        {tJson('rawEditorLabel', { pos: positionNumber })}
+      <label
+        htmlFor={`json-raw-textarea-${entryId}`}
+        className={rawLabelText ? 'field-label' : 'sr-only'}
+      >
+        {rawLabelText ?? tJson('rawEditorLabel', { pos: positionNumber })}
       </label>
       <textarea
         ref={textareaRef}
         id={`json-raw-textarea-${entryId}`}
         data-testid={`json-raw-textarea-${entryId}`}
         data-json-raw-textarea=""
-        rows={10}
+        rows={rawLabelText ? 7 : 10}
         value={draftValue}
         aria-invalid={displayedIssue !== null || undefined}
         aria-describedby={
           displayedIssue !== null ? `${bytesCounterId} ${errorBoxId}` : bytesCounterId
         }
-        className="field-input json-raw-editor resize-y text-[13px] leading-relaxed"
+        className="json-raw-editor mono resize-y text-[13px] leading-relaxed"
         {...VAULT_SECRET_INPUT_PROPS}
         onChange={(e) => {
           if (formatErrorMsg) setFormatErrorMsg(null);
