@@ -711,11 +711,14 @@ describe('P03-T20B Settings passkey list, rename, revoke and auto-lock (Task 20 
       aaguid: 'ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4',
       created_at: '2026-10-30T00:00:00Z',
     };
-    const credentialsCreate = vi.fn().mockResolvedValue(
-      fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
+    const credentialsCreate = vi.fn().mockImplementation(
+      async () => fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
+    );
+    const credentialsGet = vi.fn().mockImplementation(
+      async () => fakeCredential({ rawId: NEW_CREDENTIAL_ID, prf: { enabled: true, first: PRF_OUTPUT } }).credential,
     );
     Object.defineProperty(navigator, 'credentials', {
-      value: { create: credentialsCreate, get: vi.fn() },
+      value: { create: credentialsCreate, get: credentialsGet },
       configurable: true,
     });
     const registerGrant = {

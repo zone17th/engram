@@ -842,12 +842,12 @@
       "unavailable": "Trình duyệt này hiện không lưu được khoá thiết bị (chế độ riêng tư hoặc bộ nhớ bị chặn). Hãy dùng passphrase."
     },
     "passkey": {
-      "prf_unsupported": "Trình duyệt hoặc khoá bảo mật không hỗ trợ phần mở rộng PRF của WebAuthn. Không thể đăng ký passkey. Hãy tiếp tục dùng passphrase và recovery key.",
+      "prf_unsupported": "Trình duyệt hoặc khoá bảo mật không hỗ trợ phần mở rộng PRF của WebAuthn. Hãy dùng Windows Hello, khoá bảo mật hoặc điện thoại, hoặc tiếp tục dùng passphrase và recovery key.",
       "register_cancelled": "Đã huỷ đăng ký passkey.",
       "register_failed": "Không đăng ký được passkey này. Thử khoá hoặc thiết bị khác.",
       "unlock_cancelled": "Đã huỷ mở khoá bằng passkey.",
       "unlock_failed": "Không mở vault bằng passkey này. Dùng passphrase hoặc recovery key.",
-      "unlock_prf_missing": "Authenticator không trả PRF. Không mở vault bằng passkey.",
+      "unlock_prf_missing": "Thiết bị xác thực này không trả PRF. Hãy mở khoá bằng passphrase, gỡ passkey này trong Settings và thêm passkey từ thiết bị hỗ trợ PRF (Windows Hello, khoá bảo mật hoặc điện thoại).",
       "none_registered": "Chưa có passkey nào.",
       "revoked": "Đã gỡ passkey.",
       "register": {

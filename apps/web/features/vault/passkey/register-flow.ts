@@ -89,6 +89,15 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  let diff = 0;
+  for (let i = 0; i < a.byteLength; i += 1) {
+    diff |= a[i]! ^ b[i]!;
+  }
+  return diff === 0;
+}
+
 type PostResult =
   | { kind: 'saved'; passkey: VaultPasskeyItem }
   | { kind: 'rejected' }
@@ -165,6 +174,7 @@ export async function runPasskeyRegistration(
   const nameCheck = validatePasskeyName(input.name);
   if (!nameCheck.ok) return fail('name_invalid', { nameReason: nameCheck.reason });
 
+  let createPrf: Uint8Array | null = null;
   let pwk: Uint8Array | null = null;
   try {
     // Step 1: the grant is taken first, before any secret or WebAuthn call.
@@ -187,7 +197,7 @@ export async function runPasskeyRegistration(
     if (!isCurrent()) return fail('stale');
     const { options, prfSalt } = decodeCreationOptions(registerOptions);
 
-    // Step 3: create(). PRF enabled !== true stops here; results.first is used as-is.
+    // Step 3: create(), then ALWAYS run a follow-up get() on the new credential to verify PRF output.
     let credential: PublicKeyCredential;
     try {
       const created = await deps.credentials.create({ publicKey: options });
@@ -198,49 +208,51 @@ export async function runPasskeyRegistration(
     }
     credentialCreated = true;
 
-    // The browser-owned PRF buffer is read (copied) and wiped BEFORE any early return: a stale result must not leave
-    // it alive. `pwk` then belongs to the finalizer below.
+    // The browser-owned PRF buffers are read (copied) and wiped BEFORE any early return: a stale result must not leave
+    // them alive. `createPrf` and `pwk` then belong to the finalizer below.
     let created: PrfExtensionResult | null = null;
     try {
       created = readPrfResult(credential);
     } catch {
       /* malformed length: the source buffer was wiped before the throw */
     }
-    pwk = created?.first ?? null;
+    createPrf = created?.first ?? null;
     if (!isCurrent()) return fail('stale');
     if (!created) return fail('register_failed');
     if (!created.enabled) return fail('prf_unsupported');
 
-    if (!pwk) {
-      // enabled=true without output: follow-up get() on the new credential, same opGeneration, client-made challenge
-      // that never reaches the server (ADR 0003 §4).
-      let assertion: PublicKeyCredential;
-      try {
-        const got = await deps.credentials.get({
-          publicKey: {
-            challenge: randomClientChallenge(),
-            rpId: options.rp.id,
-            timeout: options.timeout,
-            allowCredentials: [{ type: 'public-key', id: credential.rawId }],
-            userVerification: 'required',
-            extensions: { prf: { eval: { first: prfSalt } } },
-          } as unknown as PublicKeyCredentialRequestOptions,
-        });
-        if (!got) return fail('register_failed');
-        assertion = got as PublicKeyCredential;
-      } catch (err) {
-        // The credential exists already, so `fail` still reports it as an orphan.
-        return fail(isWebAuthnCancellation(err) ? 'register_cancelled' : 'register_failed');
-      }
-      let readFailed = false;
-      try {
-        pwk = readPrfResult(assertion).first;
-      } catch {
-        readFailed = true;
-      }
-      if (!isCurrent()) return fail('stale');
-      if (readFailed || !pwk) return fail('register_failed');
+    // Always run a follow-up get() on the new credential (same opGeneration, client-made challenge that never reaches
+    // the server, ADR 0003 §4) and use the get() output as PWK. Some providers (e.g. synced passkey managers) return
+    // PRF at create() but omit or change it at get(), which would otherwise register a passkey that can never unlock.
+    let assertion: PublicKeyCredential;
+    try {
+      const got = await deps.credentials.get({
+        publicKey: {
+          challenge: randomClientChallenge(),
+          rpId: options.rp.id,
+          timeout: options.timeout,
+          allowCredentials: [{ type: 'public-key', id: credential.rawId }],
+          userVerification: 'required',
+          extensions: { prf: { eval: { first: prfSalt } } },
+        } as unknown as PublicKeyCredentialRequestOptions,
+      });
+      if (!got) return fail('register_failed');
+      assertion = got as PublicKeyCredential;
+    } catch (err) {
+      // The credential exists already, so `fail` still reports it as an orphan.
+      return fail(isWebAuthnCancellation(err) ? 'register_cancelled' : 'register_failed');
     }
+    let readFailed = false;
+    try {
+      pwk = readPrfResult(assertion).first;
+    } catch {
+      readFailed = true;
+    }
+    if (!isCurrent()) return fail('stale');
+    if (readFailed) return fail('register_failed');
+    if (!pwk || (createPrf && !bytesEqual(createPrf, pwk))) return fail('prf_unsupported');
+    zeroize(createPrf);
+    createPrf = null;
 
     // Step 4: the Worker seals VK with PWK (transferable) and re-opens it; the PWK is wiped client-side as well.
     let vkWrap: string;
@@ -289,6 +301,7 @@ export async function runPasskeyRegistration(
   } catch {
     return fail('register_failed');
   } finally {
+    zeroize(createPrf);
     zeroize(pwk);
   }
 }

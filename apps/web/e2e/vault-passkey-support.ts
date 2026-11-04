@@ -208,13 +208,16 @@ export interface PasskeyProbe {
 declare global {
   interface Window {
     __passkeyProbe?: PasskeyProbe;
+    __passkeyBeforeGet?: (() => Promise<void>) | null;
+    __notifyPasskeyBeforeGet?: () => Promise<void>;
   }
 }
 
 /**
  * Wraps navigator.credentials.create/get in every page of the context to record the SHAPE of each call's outcome
  * (error name, prf.enabled, whether prf.results.first exists). It passes the original result through untouched and
- * never reads the PRF bytes, so the specs can tell "PRF output directly at create()" from "enabled, then get()".
+ * never reads the PRF bytes, so the specs can verify that create() reports prf.enabled and the follow-up get()
+ * returns prf.results.first (plus whether create() also returned prf.results.first).
  */
 export async function installPasskeyProbe(context: BrowserContext) {
   await context.addInitScript(() => {
@@ -246,6 +249,9 @@ export async function installPasskeyProbe(context: BrowserContext) {
       }
     };
     container.get = async (options?: CredentialRequestOptions) => {
+      if (typeof window.__passkeyBeforeGet === 'function') {
+        await window.__passkeyBeforeGet();
+      }
       try {
         const credential = await originalGet(options);
         probe.gets.push(shape(credential));

@@ -209,16 +209,19 @@ describe('T19 bullet 1 - register flow (plan 2.5 steps 1-6)', () => {
     expect(decodeBase64UrlStrict(body.prf_salt as string, 32)).toHaveLength(32);
   });
 
-  it('wipes the PWK copy and the browser PRF buffer, on success and when the Worker rejects', async () => {
+  it('wipes the PWK copy and the browser PRF buffers, on success and when the Worker rejects', async () => {
     const ok = makeHarness();
     await runPasskeyRegistration(ok.deps, { name: 'Work laptop' });
     expect(isAllZero(ok.wrapped[0]!.pwk)).toBe(true);
     expect(isAllZero(ok.created.prfSource!)).toBe(true);
+    expect(isAllZero(ok.assertion.prfSource!)).toBe(true);
 
     const failing = makeHarness({ wrapError: { code: 'VAULT_LOCKED' } });
     const outcome = await runPasskeyRegistration(failing.deps, { name: 'Work laptop' });
     expect(outcome).toEqual({ ok: false, error: 'register_failed', orphan: true });
     expect(isAllZero(failing.wrapped[0]!.pwk)).toBe(true);
+    expect(isAllZero(failing.created.prfSource!)).toBe(true);
+    expect(isAllZero(failing.assertion.prfSource!)).toBe(true);
     expect(failing.posts).toHaveLength(0);
   });
 
@@ -237,7 +240,10 @@ describe('T19 bullet 1 - register flow (plan 2.5 steps 1-6)', () => {
     expect(atCreate.client.wrapForPasskey).not.toHaveBeenCalled();
     expect(atCreate.posts).toHaveLength(0);
 
-    const atGet = makeHarness({ createPrf: { enabled: true }, getPrf: { enabled: true, first: PRF_OUTPUT } });
+    const atGet = makeHarness({
+      createPrf: { enabled: true, first: PRF_OUTPUT },
+      getPrf: { enabled: true, first: PRF_OUTPUT },
+    });
     atGet.credentials.get.mockImplementationOnce(async () => {
       atGet.state.generation += 1;
       return atGet.assertion.credential as Credential;
@@ -247,6 +253,7 @@ describe('T19 bullet 1 - register flow (plan 2.5 steps 1-6)', () => {
       error: 'stale',
       orphan: true,
     });
+    expect(isAllZero(atGet.created.prfSource!)).toBe(true);
     expect(isAllZero(atGet.assertion.prfSource!)).toBe(true);
     expect(atGet.client.wrapForPasskey).not.toHaveBeenCalled();
     expect(atGet.posts).toHaveLength(0);
@@ -343,14 +350,47 @@ describe('T19 bullet 1 - credential naming', () => {
 });
 
 describe('T19 bullet 4 - PRF matrix at registration', () => {
-  it('PRF output directly at create(): results.first is used, no get()', async () => {
-    const h = makeHarness({ createPrf: { enabled: true, first: PRF_OUTPUT } });
+  it('create() output + matching follow-up get() output: always runs get(), uses get() output as PWK, wipes both buffers', async () => {
+    const h = makeHarness({
+      createPrf: { enabled: true, first: PRF_OUTPUT },
+      getPrf: { enabled: true, first: PRF_OUTPUT },
+    });
     const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
     expect(outcome.ok).toBe(true);
-    expect(h.credentials.get).not.toHaveBeenCalled();
+    expect(h.credentials.get).toHaveBeenCalledTimes(1);
     expect(h.wrapped[0]?.bytes).toEqual(Array.from(PRF_OUTPUT));
+    expect(isAllZero(h.created.prfSource!)).toBe(true);
+    expect(isAllZero(h.assertion.prfSource!)).toBe(true);
   });
 
+  it('create() output + follow-up get() without PRF output -> prf_unsupported, both buffers wiped, nothing sent to server', async () => {
+    for (const getPrf of [{ enabled: true }, { enabled: false }, null] as const) {
+      const h = makeHarness({
+        createPrf: { enabled: true, first: PRF_OUTPUT },
+        getPrf,
+      });
+      const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+      expect(outcome).toEqual({ ok: false, error: 'prf_unsupported', orphan: true });
+      expect(h.credentials.get).toHaveBeenCalledTimes(1);
+      expect(isAllZero(h.created.prfSource!)).toBe(true);
+      expect(h.client.wrapForPasskey).not.toHaveBeenCalled();
+      expect(h.posts).toHaveLength(0);
+    }
+  });
+
+  it('create() output != follow-up get() output -> prf_unsupported, both buffers wiped, nothing sent to server', async () => {
+    const h = makeHarness({
+      createPrf: { enabled: true, first: PRF_OUTPUT },
+      getPrf: { enabled: true, first: filled(32, 0x99) },
+    });
+    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
+    expect(outcome).toEqual({ ok: false, error: 'prf_unsupported', orphan: true });
+    expect(h.credentials.get).toHaveBeenCalledTimes(1);
+    expect(isAllZero(h.created.prfSource!)).toBe(true);
+    expect(isAllZero(h.assertion.prfSource!)).toBe(true);
+    expect(h.client.wrapForPasskey).not.toHaveBeenCalled();
+    expect(h.posts).toHaveLength(0);
+  });
   it('only prf.enabled at create(), then get() with UV required, the salt, a client-made challenge and the same opGeneration', async () => {
     const getOutput = filled(32, 0x77);
     const h = makeHarness({
@@ -445,22 +485,34 @@ describe('T19 bullet 4 - PRF matrix at registration', () => {
     });
   });
 
-  it('get() without results.first: register error, orphan, no wrap, no POST', async () => {
+  it('get() without results.first when create() had only enabled: prf_unsupported, orphan, no wrap, no POST', async () => {
     const h = makeHarness({ createPrf: { enabled: true }, getPrf: { enabled: true } });
     const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
-    expect(outcome).toEqual({ ok: false, error: 'register_failed', orphan: true });
+    expect(outcome).toEqual({ ok: false, error: 'prf_unsupported', orphan: true });
     expect(h.client.wrapForPasskey).not.toHaveBeenCalled();
     expect(h.posts).toHaveLength(0);
   });
 
-  it('a PRF output that is not 32 bytes is never wrapped', async () => {
+  it('a PRF output that is not 32 bytes at create() or get() is never wrapped', async () => {
     // 16 bytes at create(): malformed, must not reach the Worker.
-    const h = makeHarness({ createPrf: { enabled: true, first: filled(16, 0x01) } });
-    const outcome = await runPasskeyRegistration(h.deps, { name: 'Work laptop' });
-    expect(outcome).toMatchObject({ ok: false, error: 'register_failed' });
-    expect(h.client.wrapForPasskey).not.toHaveBeenCalled();
-  });
+    const badCreate = makeHarness({ createPrf: { enabled: true, first: filled(16, 0x01) } });
+    const createOutcome = await runPasskeyRegistration(badCreate.deps, { name: 'Work laptop' });
+    expect(createOutcome).toMatchObject({ ok: false, error: 'register_failed' });
+    expect(badCreate.credentials.get).not.toHaveBeenCalled();
+    expect(badCreate.client.wrapForPasskey).not.toHaveBeenCalled();
 
+    // 16 bytes at get(): malformed, must not reach the Worker, both buffers wiped.
+    const badGet = makeHarness({
+      createPrf: { enabled: true, first: PRF_OUTPUT },
+      getPrf: { enabled: true, first: filled(16, 0x01) },
+    });
+    const getOutcome = await runPasskeyRegistration(badGet.deps, { name: 'Work laptop' });
+    expect(getOutcome).toEqual({ ok: false, error: 'register_failed', orphan: true });
+    expect(isAllZero(badGet.created.prfSource!)).toBe(true);
+    expect(isAllZero(badGet.assertion.prfSource!)).toBe(true);
+    expect(badGet.client.wrapForPasskey).not.toHaveBeenCalled();
+    expect(badGet.posts).toHaveLength(0);
+  });
   it('grant near expiry before POST: password user re-authenticates in place, then the POST succeeds with the new grant', async () => {
     const h = makeHarness({
       grant: makeGrant('grant-near-expiry', GRANT_MIN_REMAINING_MS - 1_000),

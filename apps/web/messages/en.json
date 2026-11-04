@@ -842,12 +842,12 @@
       "unavailable": "This browser cannot store a device key right now (private mode or blocked storage). Use your passphrase instead."
     },
     "passkey": {
-      "prf_unsupported": "This browser or authenticator does not support the WebAuthn PRF extension. You cannot register a passkey. Keep using your passphrase and recovery keys.",
+      "prf_unsupported": "This browser or authenticator does not support the WebAuthn PRF extension. Use Windows Hello, a security key, or a phone, or keep using your passphrase and recovery keys.",
       "register_cancelled": "Passkey registration was cancelled.",
       "register_failed": "Could not register this passkey. Try another authenticator.",
       "unlock_cancelled": "Passkey prompt was cancelled.",
       "unlock_failed": "Could not unlock with this passkey. Use your passphrase or a recovery key.",
-      "unlock_prf_missing": "Authenticator did not return PRF. Cannot unlock with passkey.",
+      "unlock_prf_missing": "This authenticator did not return PRF. Unlock with your passphrase, remove this passkey in Settings, and add one from an authenticator that supports PRF (Windows Hello, security key, or phone).",
       "none_registered": "No passkeys yet.",
       "revoked": "Passkey removed.",
       "register": {

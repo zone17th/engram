@@ -40,7 +40,7 @@ import {
 
 const COPY = {
   prfUnsupported:
-    'This browser or authenticator does not support the WebAuthn PRF extension. You cannot register a passkey. Keep using your passphrase and recovery keys.',
+    'This browser or authenticator does not support the WebAuthn PRF extension. Use Windows Hello, a security key, or a phone, or keep using your passphrase and recovery keys.',
   registerCancelled: 'Passkey registration was cancelled.',
   reauthRestart: 'Your confirmation expired before the passkey could be saved. Start again to add it.',
   unlockCancelled: 'Passkey prompt was cancelled.',
@@ -115,7 +115,7 @@ test.describe('passkey against the real API', () => {
     await removeAuthenticator(cdp, unverifiedAuth);
     let authenticatorA = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
 
-    await test.step('5. PRF matrix: register with PRF; the flow follows whichever PRF path Chrome takes', async () => {
+    await test.step('5. PRF matrix: register with PRF; follow-up get() is always run on the new credential', async () => {
       const before = await readProbe(page);
       const dialog = addDialog(page);
       await dialog.getByRole('button', { name: 'Continue' }).click();
@@ -126,56 +126,62 @@ test.describe('passkey against the real API', () => {
       expect(created?.error).toBeNull();
       expect(created?.prfEnabled).toBe(true);
       const followUpGets = after.gets.slice(before.gets.length);
+      expect(followUpGets).toHaveLength(1);
+      expect(followUpGets[0]?.error).toBeNull();
+      expect(followUpGets[0]?.prfFirst).toBe(true);
       if (created?.prfFirst) {
-        // PRF output directly at create(): no follow-up get().
-        expect(followUpGets).toHaveLength(0);
-        console.log('prf-path: direct');
-        test.info().annotations.push({ type: 'prf-path', description: 'output directly at create()' });
+        console.log('prf-path: direct-verified-with-get');
+        test.info().annotations.push({ type: 'prf-path', description: 'output at create() verified by follow-up get()' });
       } else {
-        // prf.enabled at create() without output: exactly one follow-up get() returns the output.
-        expect(followUpGets).toHaveLength(1);
-        expect(followUpGets[0]?.error).toBeNull();
-        expect(followUpGets[0]?.prfFirst).toBe(true);
         console.log('prf-path: enabled-then-get');
         test.info().annotations.push({ type: 'prf-path', description: 'enabled at create(), then get()' });
-
-        // advisor-dec-059, PKW-R5-1: when Chrome's virtual authenticator takes the enabled-then-get branch, also
-        // exercise cancel at the registration follow-up get() (user verification off for that get(), no tampering) and
-        // assert passkey.register_cancelled + orphan notice. Because register/options sends excludeCredentials with
-        // saved credential A (passkey_register.go:173-179,218), detach authenticatorA while running the cancel
-        // attempt on a fresh verified authenticator, then re-attach a fresh authenticator holding saved credential A
-        // for the downstream unlock steps.
-        await removeAuthenticator(cdp, authenticatorA);
-        const cancelAuth = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
-        const onCredentialAdded = () => {
-          void setUserVerified(cdp, cancelAuth, false);
-        };
-        cdp.on('WebAuthn.credentialAdded', onCredentialAdded);
-        try {
-          const cancelDialog = await openAddPasskeyDialog(page);
-          await submitPasskeyName(page, 'Cancel follow-up get key');
-          await expect(cancelDialog.getByRole('alert')).toHaveText(COPY.registerCancelled, {
-            timeout: CRYPTO_WAIT_MS,
-          });
-          await expect(cancelDialog.getByText(COPY.orphanNotice)).toBeVisible();
-          const cancelProbe = await readProbe(page);
-          expect(cancelProbe.creates.at(-1)?.error).toBeNull();
-          expect(cancelProbe.creates.at(-1)?.prfEnabled).toBe(true);
-          expect(cancelProbe.creates.at(-1)?.prfFirst).toBe(false);
-          expect(cancelProbe.gets.at(-1)?.error).toBe('NotAllowedError');
-          await cancelDialog.getByRole('button', { name: 'Cancel' }).click();
-          await expect(cancelDialog).toBeHidden({ timeout: UI_WAIT_MS });
-        } finally {
-          cdp.off('WebAuthn.credentialAdded', onCredentialAdded);
-          await removeAuthenticator(cdp, cancelAuth);
-        }
-        // Re-create a fresh verified authenticator and register E2E passkey A for the unlock steps below (step 9 then
-        // adds the 2nd).
-        authenticatorA = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
-        await openAddPasskeyDialog(page);
-        await submitPasskeyName(page, 'E2E passkey A');
-        await expectPasskeyAdded(page);
       }
+
+      // advisor-dec-059, PKW-R5-1: exercise cancel at the registration follow-up get() (user verification off for
+      // that get(), no tampering) and assert passkey.register_cancelled + orphan notice. Because register/options
+      // sends excludeCredentials with saved credential A (passkey_register.go:173-179,218), detach authenticatorA
+      // while running the cancel attempt on a fresh verified authenticator, then re-attach a fresh authenticator
+      // holding saved credential A for the downstream unlock steps.
+      await removeAuthenticator(cdp, authenticatorA);
+      const cancelAuth = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
+      const { promise: getBlocked, resolve: markGetBlocked } = Promise.withResolvers<void>();
+      const { promise: getReleased, resolve: releaseGet } = Promise.withResolvers<void>();
+      await page.exposeFunction('__notifyPasskeyBeforeGet', () => {
+        markGetBlocked();
+        return getReleased;
+      });
+      await page.evaluate(() => {
+        window.__passkeyBeforeGet = () => window.__notifyPasskeyBeforeGet?.() ?? Promise.resolve();
+      });
+      try {
+        const cancelDialog = await openAddPasskeyDialog(page);
+        await submitPasskeyName(page, 'Cancel follow-up get key');
+        await getBlocked;
+        await setUserVerified(cdp, cancelAuth, false);
+        releaseGet();
+        await expect(cancelDialog.getByRole('alert')).toHaveText(COPY.registerCancelled, {
+          timeout: CRYPTO_WAIT_MS,
+        });
+        await expect(cancelDialog.getByText(COPY.orphanNotice)).toBeVisible();
+        const cancelProbe = await readProbe(page);
+        expect(cancelProbe.creates.at(-1)?.error).toBeNull();
+        expect(cancelProbe.creates.at(-1)?.prfEnabled).toBe(true);
+        expect(cancelProbe.gets.at(-1)?.error).toBe('NotAllowedError');
+        await cancelDialog.getByRole('button', { name: 'Cancel' }).click();
+        await expect(cancelDialog).toBeHidden({ timeout: UI_WAIT_MS });
+      } finally {
+        releaseGet();
+        await page.evaluate(() => {
+          window.__passkeyBeforeGet = null;
+        });
+        await removeAuthenticator(cdp, cancelAuth);
+      }
+      // Re-create a fresh verified authenticator and register E2E passkey A for the unlock steps below (step 9 then
+      // adds the 2nd).
+      authenticatorA = await addAuthenticator(cdp, { hasPrf: true, isUserVerified: true });
+      await openAddPasskeyDialog(page);
+      await submitPasskeyName(page, 'E2E passkey A');
+      await expectPasskeyAdded(page);
     });
 
     await test.step('6. lock, then unlock with the passkey button on /app/unlock', async () => {

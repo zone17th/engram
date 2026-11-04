@@ -259,15 +259,15 @@ test.describe('vault journey against the real API', () => {
         expect(created?.error).toBeNull();
         expect(created?.prfEnabled).toBe(true);
         const followUpGets = after.gets.slice(before.gets.length);
-        // advisor-dec-059: the raw Actions log records which PRF path Chrome's virtual authenticator takes.
+        // advisor-dec-059, advisor-dec-368: follow-up get() always runs on the new credential; the raw Actions log
+        // records whether create() also included prf.results.first.
+        expect(followUpGets).toHaveLength(1);
+        expect(followUpGets[0]?.error).toBeNull();
+        expect(followUpGets[0]?.prfFirst).toBe(true);
         if (created?.prfFirst) {
-          expect(followUpGets).toHaveLength(0);
-          console.log('prf-path: direct');
-          test.info().annotations.push({ type: 'prf-path', description: 'output directly at create()' });
+          console.log('prf-path: direct-verified-with-get');
+          test.info().annotations.push({ type: 'prf-path', description: 'output at create() verified by follow-up get()' });
         } else {
-          expect(followUpGets).toHaveLength(1);
-          expect(followUpGets[0]?.error).toBeNull();
-          expect(followUpGets[0]?.prfFirst).toBe(true);
           console.log('prf-path: enabled-then-get');
           test.info().annotations.push({ type: 'prf-path', description: 'enabled at create(), then get()' });
         }
