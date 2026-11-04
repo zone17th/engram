@@ -2,14 +2,13 @@
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { AuthStatus } from '@/components/ui/field';
 import { Toast } from '@/components/ui/toast';
 import { useSession } from '@/features/auth/session-provider';
-import { unlockOrNavigate } from '@/features/vault/unlock/recovery-notice';
+import { unlockOrNavigate, useOptionalRouterPush } from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault, useVault } from '@/features/vault/vault-provider';
 import { fetchRecoveryKeysStatus } from '@/lib/api/vault';
 import { ChangePassphraseDialog } from './change-passphrase-dialog';
@@ -53,7 +52,7 @@ function VaultSecurityPanelInner({
   const t = useTranslations('settings.vaultSecurity');
   const queryClient = useQueryClient();
   const { me, sessionEpoch, refetchMe } = useSession();
-  const router = useRouter();
+  const routerPush = useOptionalRouterPush();
   const vault = useVault();
   const { workerState, inFlight, vaultMeta, reloadVaultMeta } = vault;
 
@@ -187,7 +186,7 @@ function VaultSecurityPanelInner({
               onClick={(e: MouseEvent<HTMLAnchorElement>) => {
                 if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                 e.preventDefault();
-                void unlockOrNavigate(vault, '/app/unlock?returnTo=%2Fapp%2Fsettings', (url) => router.push(url));
+                void unlockOrNavigate(vault, '/app/unlock?returnTo=%2Fapp%2Fsettings', routerPush);
               }}
               className="btn btn-secondary btn-sm ml-auto no-underline"
             >

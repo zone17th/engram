@@ -1,11 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import type { MouseEvent } from 'react';
 import { unlockUrl } from '@/features/auth/guard-redirect';
-import { unlockOrNavigate } from '@/features/vault/unlock/recovery-notice';
+import { unlockOrNavigate, useOptionalRouterPush } from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 
 /**
@@ -17,7 +17,7 @@ export function LockedBanner() {
   const tItem = useTranslations('content.item');
   const vault = useOptionalVault();
   const pathname = usePathname();
-  const router = useRouter();
+  const routerPush = useOptionalRouterPush();
   const mode = vault?.state;
   if (mode !== 'locked' && mode !== 'error') return null;
 
@@ -26,7 +26,7 @@ export function LockedBanner() {
   const handleUnlockCtaClick = (e: MouseEvent<HTMLAnchorElement>) => {
     if (!vault || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
     e.preventDefault();
-    void unlockOrNavigate(vault, targetUrl, (url) => router.push(url));
+    void unlockOrNavigate(vault, targetUrl, routerPush);
   };
 
   return (

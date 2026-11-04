@@ -2033,6 +2033,11 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     shims.push(shim);
     const qc = new QueryClient();
     mocks.router.pathname = '/app/items/err-item';
+    let vaultCtx!: VaultContextValue;
+    function Probe() {
+      vaultCtx = useVault();
+      return null;
+    }
     render(
       <NextIntlClientProvider locale="en" messages={enMessages}>
         <ThemeProvider>
@@ -2043,6 +2048,7 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
               deviceStoreEnv={{ idbFactory: idb.createFactory() }}
               silentUnlockOnLoad={false}
             >
+              <Probe />
               <AppHeader showLogout={false} />
               <LockedBanner />
             </VaultProvider>
@@ -2055,11 +2061,12 @@ describe('P03-T18 DevKey: provider + toggle flows', () => {
     const bannerCta = await screen.findByTestId('vault-locked-unlock-cta');
     expect(bannerCta).toHaveClass('btn', 'btn-primary', 'btn-sm', 'ml-auto', 'no-underline');
 
-    // Transition worker to error state
+    // Initialize the lazy CryptoClient Worker and transition it to error state
     await act(async () => {
+      vaultCtx.getClient();
       shim.simulateCrash();
     });
-
+    expect(vaultCtx.state).toBe('error');
     await act(async () => {
       fireEvent.click(unlockBtn);
     });

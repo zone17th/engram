@@ -1092,6 +1092,9 @@
       "button": "Mở khoá trên thiết bị này",
       "pending": "Đang mở khoá bằng thiết bị đã nhớ…",
       "caption": "Khoá của máy này nằm trong trình duyệt và không rời khỏi đây. Không cần gõ gì.",
+      "rememberedTitle": "Đã nhớ thiết bị này",
+      "rememberedBody": "Đăng xuất không xoá khoá thiết bị, nhưng lần sau vẫn phải đăng nhập tài khoản trước khi máy tự mở vault.",
+      "forgetButton": "Quên thiết bị này",
       "fallbackNoticeTitle": "Không mở được bằng khoá thiết bị",
       "fallbackNoticeBody": "Khoá đã lưu trên trình duyệt này không còn dùng được. Hãy mở khoá bằng passphrase hoặc passkey bên dưới."
     },

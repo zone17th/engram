@@ -1092,6 +1092,9 @@
       "button": "Unlock on this device",
       "pending": "Unlocking with remembered device…",
       "caption": "This device’s key stays in this browser and never leaves here. No typing needed.",
+      "rememberedTitle": "This device is remembered",
+      "rememberedBody": "Signing out does not delete the device key, so you still sign in to your account before this browser opens the vault.",
+      "forgetButton": "Forget this device",
       "fallbackNoticeTitle": "Could not unlock with the saved device key",
       "fallbackNoticeBody": "The saved device key on this browser is no longer available. Unlock with your passphrase or passkey below."
     },

@@ -1,6 +1,24 @@
+import { useRouter } from 'next/navigation';
 import { getKnownDeviceSessionUserId } from '@/features/vault/device-store';
 import type { VaultStateMachineMode } from '@/features/vault/vault-provider';
 import type { SilentUnlockResult } from '@/lib/crypto/device';
+
+/**
+ * Safe wrapper around `useRouter()` for shared chrome components (`AppHeader`, `VaultSecurityPanel`, `LockedBanner`)
+ * that may also be rendered in isolated unit tests without the Next.js App Router mounted.
+ */
+export function useOptionalRouterPush(): (url: string) => void {
+  try {
+    const router = useRouter();
+    return (url: string) => router.push(url);
+  } catch {
+    return (url: string) => {
+      if (typeof window !== 'undefined' && typeof window.location?.assign === 'function') {
+        window.location.assign(url);
+      }
+    };
+  }
+}
 
 /**
  * Non-secret hand-off between the recovery flow and the unlock page (FE1-7): when a recovery commits on the server while

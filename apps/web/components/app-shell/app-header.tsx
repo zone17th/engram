@@ -6,10 +6,10 @@ import { Logo } from '@/components/landing/logo';
 import { useVaultPillLabel, VaultPill, type VaultPillState, vaultModeToPillState } from '@/components/ui/vault-pill';
 import { AppShellLogoutButton } from '@/features/auth/route-guard';
 import { unlockUrl } from '@/features/auth/guard-redirect';
-import { unlockOrNavigate } from '@/features/vault/unlock/recovery-notice';
+import { unlockOrNavigate, useOptionalRouterPush } from '@/features/vault/unlock/recovery-notice';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef } from 'react';
 /**
@@ -39,7 +39,7 @@ export function AppHeader({
   const tVault = useTranslations('vault.state');
   const vaultCtx = useOptionalVault();
   const pathname = usePathname() ?? '/app';
-  const router = useRouter();
+  const routerPush = useOptionalRouterPush();
   const effectivePillState: VaultPillState = vaultCtx
     ? vaultModeToPillState(vaultCtx.state)
     : (vault?.state ?? 'locked');
@@ -80,7 +80,7 @@ export function AppHeader({
 
   const handleUnlockClick = async (variant: 'desktop' | 'mobile') => {
     restoreFocusTargetRef.current = variant;
-    const res = await unlockOrNavigate(vaultCtx, unlockUrl(pathname), (url) => router.push(url));
+    const res = await unlockOrNavigate(vaultCtx, unlockUrl(pathname), routerPush);
     if (res?.status !== 'unlocked') {
       restoreFocusTargetRef.current = null;
     }
