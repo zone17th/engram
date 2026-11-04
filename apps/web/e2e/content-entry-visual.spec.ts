@@ -130,11 +130,17 @@ ${transparentTextSelectors} {
 `;
 }
 
-async function applyThemeMocks(context: BrowserContext, theme: Theme): Promise<void> {
+async function applyThemeMocks(
+  context: BrowserContext,
+  theme: Theme,
+  locale: 'en' | 'vi' = 'en',
+): Promise<void> {
   const origin = new URL(process.env.BASE_URL ?? 'http://127.0.0.1:3000').origin;
-  await context.setExtraHTTPHeaders({ 'accept-language': 'en-US,en;q=0.9' });
+  await context.setExtraHTTPHeaders({
+    'accept-language': locale === 'vi' ? 'vi-VN,vi;q=0.9' : 'en-US,en;q=0.9',
+  });
   await context.addCookies([
-    { name: 'sabk_locale', value: 'en', url: `${origin}/` },
+    { name: 'sabk_locale', value: locale, url: `${origin}/` },
     { name: 'sabk_theme', value: theme, url: `${origin}/` },
     { name: 'sabk_csrf', value: 'test-csrf-token', url: `${origin}/` },
   ]);
@@ -150,7 +156,7 @@ async function applyThemeMocks(context: BrowserContext, theme: Theme): Promise<v
           email_verified: true,
           created_at: '2026-10-30T00:00:00Z',
         },
-        settings: { locale: 'en', theme, auto_lock_minutes: 15, semantic_suggest: false },
+        settings: { locale, theme, auto_lock_minutes: 15, semantic_suggest: false },
         identities: [{ provider: 'password', linked_at: '2026-10-30T00:00:00Z' }],
         features: {
           semantic_available: false,
@@ -449,6 +455,8 @@ async function captureDeterministicEntryState(
     scrollWidth,
     `no horizontal overflow in state ${state} (${theme}, ${width}px)`,
   ).toBeLessThanOrEqual(innerWidth);
+  const bodyText = (await page.locator('body').textContent()) ?? '';
+  expect(bodyText, `no unresolved i18n key path in state ${state}`).not.toContain('content.json.');
 
   const fileName = `content-entry-${state}-${theme}-${width}.png`;
   const outputPath = testInfo.outputPath(fileName);
@@ -549,6 +557,11 @@ test.describe('P05-entryux Stage T visual captures (390/768/1440 x light/dark, b
           timeout: UI_WAIT_MS,
         });
         await expect(composer.getByTestId('new-json-save-btn')).toBeDisabled();
+        await expect(composer.getByTestId('new-json-root-menu-btn')).toContainText('Root: Object');
+        await expect(composer.getByTestId('json-new-type-select-root')).toContainText('Text');
+        await expect(composer.getByTestId('new-json-save-reason')).toContainText(
+          'Enter at least one field to save.',
+        );
         await captureDeterministicEntryState(page, testInfo, 'empty-kv', theme, viewport.width);
 
         // 4. State `filled-rows`: 3 filled rows (string, number via type chip, nested object)
@@ -625,6 +638,12 @@ test.describe('P05-entryux Stage T visual captures (390/768/1440 x light/dark, b
           timeout: UI_WAIT_MS,
         });
         await expect(composer.getByTestId('new-json-save-btn')).toBeDisabled();
+        await expect(composer.getByTestId(`kv-err-key-${row2Id}`)).toContainText(
+          'Duplicate key “service” in the same object.',
+        );
+        await expect(composer.getByTestId(`kv-err-val-${row2Id}`)).toContainText(
+          'Invalid JSON number',
+        );
         await captureDeterministicEntryState(
           page,
           testInfo,
@@ -1149,5 +1168,45 @@ test.describe('P05-entryux Stage T item page no-horizontal-overflow at 390/768/1
       '{\n  "primary": "alpha-node",\n  "secondary": "beta-node"\n}',
       { timeout: UI_WAIT_MS },
     );
+  });
+
+  test('RF-5: Vietnamese (/vi) KV editor renders localized root badge, type chip, save-disabled reason, and validation error without unresolved content.json.* key paths', async ({
+    context,
+    page,
+  }) => {
+    test.setTimeout(120_000);
+
+    await installApiMocks(context);
+    await applyThemeMocks(context, 'light', 'vi');
+    await installItemPageContentMocks(context);
+
+    await prepare(page, 'light', 1440, 900);
+    await gotoLocked(page, `/vi/app/items/${ITEM.id}`, 'light');
+    await unlockFromBanner(page);
+    await expect(page).toHaveURL(new RegExp(`/vi/app/items/${ITEM.id}$`), { timeout: UI_WAIT_MS });
+
+    await page.getByTestId('btn-add-json').click();
+    const composer = page.getByTestId('new-json-entry-composer');
+    await expect(composer).toBeVisible({ timeout: UI_WAIT_MS });
+
+    await expect(composer.getByTestId('new-json-root-menu-btn')).toContainText('Gốc: Object');
+    await expect(composer.getByTestId('json-new-type-select-root')).toContainText('Văn bản');
+    await expect(composer.getByTestId('new-json-save-reason')).toContainText(
+      'Nhập ít nhất một trường để lưu entry.',
+    );
+
+    // Trigger EMPTY_KEY validation by entering a value while leaving key blank
+    await setFieldValue(composer.getByTestId('json-new-val-input-root'), 'val-without-key');
+    const row1Key = composer.getByTestId('json-new-key-input-root');
+    const row1Id = (await row1Key.getAttribute('data-kv-key-input'))!;
+    await expect(composer.getByTestId(`kv-err-key-${row1Id}`)).toContainText(
+      'Nhập tên trường hoặc xoá dòng trống.',
+    );
+    await expect(composer.getByTestId('new-json-save-reason')).toContainText(
+      'Chưa thể lưu (Nhập tên trường hoặc xoá dòng trống.)',
+    );
+
+    const pageText = (await page.locator('body').textContent()) ?? '';
+    expect(pageText).not.toContain('content.json.');
   });
 });

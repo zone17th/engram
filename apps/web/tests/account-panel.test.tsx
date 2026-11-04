@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AccountPanel } from '@/features/settings/account/account-panel';
@@ -6,10 +6,16 @@ import type { Me } from '@/lib/api/auth';
 import en from '@/messages/en.json';
 import viMessages from '@/messages/vi.json';
 
-const mocks = vi.hoisted(() => ({ me: null as Me | null }));
+const mocks = vi.hoisted(() => ({
+  me: null as Me | null,
+  refresh: vi.fn(),
+  refetchMe: vi.fn(async () => undefined),
+  patchSettings: vi.fn(),
+  setPreferenceCookies: vi.fn(),
+}));
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn(), refresh: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), refresh: mocks.refresh, replace: vi.fn() }),
 }));
 
 vi.mock('@/components/theme-provider', () => ({
@@ -17,7 +23,15 @@ vi.mock('@/components/theme-provider', () => ({
 }));
 
 vi.mock('@/features/auth/session-provider', () => ({
-  useSession: () => ({ me: mocks.me, refetchMe: vi.fn(async () => undefined) }),
+  useSession: () => ({ me: mocks.me, refetchMe: mocks.refetchMe }),
+}));
+
+vi.mock('@/lib/api/auth', () => ({
+  patchSettings: (...args: unknown[]) => mocks.patchSettings(...args),
+}));
+
+vi.mock('@/lib/preferences/cookies', () => ({
+  setPreferenceCookies: (...args: unknown[]) => mocks.setPreferenceCookies(...args),
 }));
 
 function makeMe(serverLocale: 'en' | 'vi'): Me {
@@ -51,6 +65,10 @@ describe('AccountPanel locale radio (D16)', () => {
   afterEach(() => {
     cleanup();
     mocks.me = null;
+    mocks.refresh.mockReset();
+    mocks.refetchMe.mockClear();
+    mocks.patchSettings.mockReset();
+    mocks.setPreferenceCookies.mockReset();
   });
 
   it('selects Tiếng Việt when the active UI locale is vi even if me.settings.locale is still en', () => {
@@ -97,5 +115,30 @@ describe('AccountPanel locale radio (D16)', () => {
       'aria-checked',
       'false',
     );
+  });
+
+  it('patches locale, updates preference cookies, refetches me, and triggers router.refresh()', async () => {
+    mocks.me = makeMe('vi');
+    const updatedMe = makeMe('en');
+    mocks.patchSettings.mockResolvedValueOnce(updatedMe);
+    const dialogs = { open: vi.fn() } as unknown as Parameters<typeof AccountPanel>[0]['dialogs'];
+
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <AccountPanel dialogs={dialogs} />
+      </NextIntlClientProvider>,
+    );
+
+    const localeGroup = screen.getByRole('radiogroup', {
+      name: viMessages.settings.account.localeTitle,
+    });
+    fireEvent.click(within(localeGroup).getByRole('radio', { name: 'English' }));
+
+    await waitFor(() => {
+      expect(mocks.patchSettings).toHaveBeenCalledWith({ locale: 'en' });
+      expect(mocks.setPreferenceCookies).toHaveBeenCalledWith('en', 'light');
+      expect(mocks.refetchMe).toHaveBeenCalledTimes(1);
+      expect(mocks.refresh).toHaveBeenCalledTimes(1);
+    });
   });
 });

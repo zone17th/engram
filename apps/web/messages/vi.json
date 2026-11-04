@@ -1,7 +1,23 @@
 {
-  "brand": { "name": "engram", "tagline": "Gõ một từ bạn còn nhớ." },
-  "nav": { "how": "Cách dùng", "privacy": "Riêng tư", "recovery": "Khôi phục", "openApp": "Mở engram", "signIn": "Đăng nhập", "signUp": "Tạo tài khoản" },
-  "localeSwitch": { "label": "Ngôn ngữ", "en": "EN", "vi": "VI", "enAria": "English (EN)", "viAria": "Tiếng Việt (VI)" },
+  "brand": {
+    "name": "engram",
+    "tagline": "Gõ một từ bạn còn nhớ."
+  },
+  "nav": {
+    "how": "Cách dùng",
+    "privacy": "Riêng tư",
+    "recovery": "Khôi phục",
+    "openApp": "Mở engram",
+    "signIn": "Đăng nhập",
+    "signUp": "Tạo tài khoản"
+  },
+  "localeSwitch": {
+    "label": "Ngôn ngữ",
+    "en": "EN",
+    "vi": "VI",
+    "enAria": "English (EN)",
+    "viAria": "Tiếng Việt (VI)"
+  },
   "landing": {
     "heroTitle": "Gõ một từ bạn còn nhớ.",
     "heroTitleSecond": "Thấy lại thứ bạn đã quên.",
@@ -29,7 +45,26 @@
     "cta": "Bắt đầu bằng một từ khoá",
     "wallTitle": "Người ta lưu gì ở đây",
     "wallSub": "Toàn thứ nhỏ, hay cần, và luôn nằm ở chỗ không nhớ nổi.",
-    "wallTags": ["wifi", "mã số thuế", "docker compose", "api key", "hợp đồng thuê nhà", "số tài khoản", "vlan", "biển số xe", "mã bảo hành", "dns nội bộ", "thẻ bảo hiểm", "ssh key", "lịch tiêm của bé", "wifi khách", "mã pin thẻ", "cấu hình k8s", "seri điều hoà", "mật khẩu wifi bố mẹ"],
+    "wallTags": [
+      "wifi",
+      "mã số thuế",
+      "docker compose",
+      "api key",
+      "hợp đồng thuê nhà",
+      "số tài khoản",
+      "vlan",
+      "biển số xe",
+      "mã bảo hành",
+      "dns nội bộ",
+      "thẻ bảo hiểm",
+      "ssh key",
+      "lịch tiêm của bé",
+      "wifi khách",
+      "mã pin thẻ",
+      "cấu hình k8s",
+      "seri điều hoà",
+      "mật khẩu wifi bố mẹ"
+    ],
     "jsonTitle": "Dán JSON vào, đọc như bảng",
     "jsonBody": "Cấu hình router, response API, file export — dán nguyên si. Mục lồng nhau mở ra từng tầng, mảng thành bảng có cột.",
     "jsonNote": "Sửa một ô thì chỉ ô đó đổi. Số dài như 9007199254740993 giữ nguyên từng chữ số, không bị làm tròn sau lưng bạn.",
@@ -80,7 +115,9 @@
     "errorBody": "Thử lại sau giây lát.",
     "retry": "Thử lại"
   },
-  "footer": { "legal": "engram — lưu theo từ khoá." },
+  "footer": {
+    "legal": "engram — lưu theo từ khoá."
+  },
   "legal": {
     "backToLogin": "Về đăng nhập",
     "updatedLabel": "Pháp lý & bảo mật · Cập nhật 01/11/2026",
@@ -252,7 +289,10 @@
     }
   },
   "auth": {
-    "nav": { "login": "Đăng nhập", "signup": "Tạo tài khoản" },
+    "nav": {
+      "login": "Đăng nhập",
+      "signup": "Tạo tài khoản"
+    },
     "theme": {
       "toggle": "Đổi giao diện sáng/tối",
       "switchToLight": "Chuyển sang giao diện sáng",
@@ -269,7 +309,10 @@
       "hidePassword": "Ẩn"
     },
     "validation": {
-      "email": { "required": "Nhập email.", "invalid": "Nhập địa chỉ email hợp lệ." },
+      "email": {
+        "required": "Nhập email.",
+        "invalid": "Nhập địa chỉ email hợp lệ."
+      },
       "password": {
         "short": "Mật khẩu phải có ít nhất 12 ký tự.",
         "tooLong": "Mật khẩu không được vượt quá 1024 byte UTF-8.",
@@ -387,7 +430,10 @@
       "requestNewLink": "Yêu cầu liên kết mới",
       "backToLogin": "Về đăng nhập"
     },
-    "oauth": { "google": "Tiếp tục với Google", "github": "Tiếp tục với GitHub" },
+    "oauth": {
+      "google": "Tiếp tục với Google",
+      "github": "Tiếp tục với GitHub"
+    },
     "guard": {
       "loading": "Đang tải…",
       "unavailableTitle": "Không kiểm tra được phiên",
@@ -476,13 +522,21 @@
       "rateLimited": "Thử quá nhiều lần. Thử lại sau {seconds} giây.",
       "captchaWidget": "Ô xác minh Turnstile (hiện khi máy chủ yêu cầu)."
     },
-    "common": { "cancel": "Huỷ", "logout": "Đăng xuất" }
+    "common": {
+      "cancel": "Huỷ",
+      "logout": "Đăng xuất"
+    }
   },
   "settings": {
     "page": {
       "title": "Cài đặt",
       "navLabel": "Mục cài đặt",
-      "nav": { "account": "Tài khoản", "security": "Bảo mật", "search": "Tìm kiếm", "data": "Dữ liệu" },
+      "nav": {
+        "account": "Tài khoản",
+        "security": "Bảo mật",
+        "search": "Tìm kiếm",
+        "data": "Dữ liệu"
+      },
       "searchHeading": "Tìm kiếm",
       "searchTitle": "Tìm kiếm thấy được gì",
       "searchBody": "Tên mục, gợi ý và tag không được mã hoá, và chữ gõ trong ô tìm được gửi tới máy chủ, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá.",
@@ -490,9 +544,19 @@
       "dataTitle": "Dữ liệu của bạn",
       "dataBody": "Nội dung entry được mã hoá ngay trên trình duyệt trước khi gửi lên máy chủ. Tên mục, gợi ý và tag được lưu không mã hoá."
     },
-    "reauth": { "resume": "Đã xác nhận. Lặp lại thao tác bên dưới để hoàn tất." },
-    "common": { "cancel": "Huỷ", "continue": "Tiếp tục", "loading": "Đang tải…", "empty": "Chưa có mục nào.", "loadMore": "Tải thêm" },
-    "errors": { "generic": "Có lỗi xảy ra. Thử lại." },
+    "reauth": {
+      "resume": "Đã xác nhận. Lặp lại thao tác bên dưới để hoàn tất."
+    },
+    "common": {
+      "cancel": "Huỷ",
+      "continue": "Tiếp tục",
+      "loading": "Đang tải…",
+      "empty": "Chưa có mục nào.",
+      "loadMore": "Tải thêm"
+    },
+    "errors": {
+      "generic": "Có lỗi xảy ra. Thử lại."
+    },
     "account": {
       "heading": "Tài khoản",
       "verified": "Đã xác minh",
@@ -571,8 +635,15 @@
         "passkey_revoke": "Gỡ passkey",
         "unknown": "Sự kiện bảo mật"
       },
-      "results": { "success": "thành công", "failure": "thất bại" },
-      "providers": { "password": "mật khẩu", "google": "Google", "github": "GitHub" },
+      "results": {
+        "success": "thành công",
+        "failure": "thất bại"
+      },
+      "providers": {
+        "password": "mật khẩu",
+        "google": "Google",
+        "github": "GitHub"
+      },
       "reasons": {
         "reuse": "dùng lại token",
         "invalid": "không hợp lệ",
@@ -592,15 +663,47 @@
     "notifications": {
       "empty": "Chưa có thông báo bảo mật.",
       "markRead": "Đánh dấu đã đọc",
-      "kinds": { "security": "Cảnh báo bảo mật", "unknown": "Thông báo" }
+      "kinds": {
+        "security": "Cảnh báo bảo mật",
+        "unknown": "Thông báo"
+      }
     },
     "dialogs": {
-      "email": { "title": "Đổi email", "description": "Email hiện tại giữ nguyên đến khi bạn xác minh địa chỉ mới.", "label": "Email mới", "submit": "Gửi xác minh" },
-      "password": { "title": "Đổi mật khẩu đăng nhập", "description": "Không phải passphrase vault. Các phiên khác sẽ bị đăng xuất.", "new": "Mật khẩu mới", "confirm": "Nhập lại", "submit": "Đổi mật khẩu" },
-      "link": { "title": "Liên kết {provider}", "description": "Cần xác thực lại trước khi redirect." },
-      "unlink": { "title": "Gỡ {provider}?", "description": "Không thể gỡ phương thức đăng nhập cuối cùng.", "submit": "Gỡ liên kết" },
-      "reauth": { "title": "Xác nhận đây là bạn", "description": "Nhập mật khẩu đăng nhập hoặc dùng Google nếu có.", "password": "Mật khẩu đăng nhập", "google": "Xác nhận bằng Google", "submit": "Xác nhận", "submitting": "Đang xác nhận…" },
-      "revoke": { "title": "Đăng xuất nơi khác?", "description": "Giữ phiên trên thiết bị này. Cần xác thực lại để thu hồi.", "submit": "Đăng xuất nơi khác" }
+      "email": {
+        "title": "Đổi email",
+        "description": "Email hiện tại giữ nguyên đến khi bạn xác minh địa chỉ mới.",
+        "label": "Email mới",
+        "submit": "Gửi xác minh"
+      },
+      "password": {
+        "title": "Đổi mật khẩu đăng nhập",
+        "description": "Không phải passphrase vault. Các phiên khác sẽ bị đăng xuất.",
+        "new": "Mật khẩu mới",
+        "confirm": "Nhập lại",
+        "submit": "Đổi mật khẩu"
+      },
+      "link": {
+        "title": "Liên kết {provider}",
+        "description": "Cần xác thực lại trước khi redirect."
+      },
+      "unlink": {
+        "title": "Gỡ {provider}?",
+        "description": "Không thể gỡ phương thức đăng nhập cuối cùng.",
+        "submit": "Gỡ liên kết"
+      },
+      "reauth": {
+        "title": "Xác nhận đây là bạn",
+        "description": "Nhập mật khẩu đăng nhập hoặc dùng Google nếu có.",
+        "password": "Mật khẩu đăng nhập",
+        "google": "Xác nhận bằng Google",
+        "submit": "Xác nhận",
+        "submitting": "Đang xác nhận…"
+      },
+      "revoke": {
+        "title": "Đăng xuất nơi khác?",
+        "description": "Giữ phiên trên thiết bị này. Cần xác thực lại để thu hồi.",
+        "submit": "Đăng xuất nơi khác"
+      }
     },
     "vaultSecurity": {
       "common": {
@@ -1766,7 +1869,107 @@
         "toastSwitchedToNumber": "Đã chuyển kiểu sang Số",
         "toastSwitchedRootArray": "Đã chuyển gốc sang Mảng",
         "toastSwitchedRootObject": "Đã chuyển gốc sang Object"
-      }
+      },
+      "kvErrEmptyKey": "Nhập tên trường hoặc xoá dòng trống.",
+      "kvErrDuplicateKey": "Trường “{key}” bị trùng trong cùng object.",
+      "kvErrInvalidNumber": "Số không đúng định dạng JSON (ví dụ: 36, -1.5, 1e4; không có số 0 đứng đầu).",
+      "kvLiveErrorsMulti": "Có {count} lỗi cần sửa: {message}",
+      "kvCannotSaveRawSyntax": "Chưa thể lưu: JSON gốc đang lỗi cú pháp (dòng {line}, cột {column}).",
+      "kvCannotSaveOverCap": "Chưa thể lưu: Nội dung vượt quá 256 KiB (262.144 B UTF-8).",
+      "kvCannotSaveRowErrorsMulti": "Chưa thể lưu ({count} lỗi — {message})",
+      "kvCannotSaveRowErrorSingle": "Chưa thể lưu ({message})",
+      "kvSaveReasonEmptyArray": "Nhập ít nhất một giá trị để lưu entry.",
+      "kvSaveReasonEmptyObject": "Nhập ít nhất một trường để lưu entry.",
+      "kvFooterReadyHint": "Mã hoá đầu-cuối · Enter/Tab chuyển ô · Alt+↓ đổi kiểu",
+      "toastSwitchedRootArray": "Đã chuyển gốc sang Mảng",
+      "toastSwitchedRootObject": "Đã chuyển gốc sang Object",
+      "toastChangedRowType": "Đã đổi kiểu dòng",
+      "toastSwitchedToNumber": "Đã chuyển kiểu sang Số",
+      "toastFilledFromJson": "Đã điền các trường từ JSON vừa dán",
+      "toastInsertedRowsFromJson": "Đã chèn {count} dòng từ JSON vừa dán",
+      "toastFilledRowsFromPaste": "Đã điền {count} dòng từ nội dung dán",
+      "toastFilledItemsFromPaste": "Đã điền {count} phần tử từ nội dung dán",
+      "toastReplacedWithJson": "Đã thay bằng JSON vừa dán",
+      "toastReplacedRowWithJson": "Đã thay giá trị dòng bằng JSON vừa dán",
+      "kvScalarRootBlocked": "Giá trị gốc là kiểu đơn ({kind}). Chế độ Bảng chỉ áp dụng cho Object '{}' hoặc Mảng []; hãy sửa hoặc lưu trực tiếp ở tab JSON gốc.",
+      "kvTypeChipString": "Văn bản",
+      "kvTypeChipNumber": "Số",
+      "kvTypeChipBoolean": "true / false",
+      "kvTypeChipNull": "null",
+      "kvTypeChipObject": "Object",
+      "kvTypeChipArray": "Mảng",
+      "kvAddObjectRowRootBtn": "+ Thêm dòng",
+      "kvAddArrayItemRootBtn": "+ Thêm phần tử",
+      "kvAddObjectRowNestedBtn": "+ dòng",
+      "kvAddArrayItemNestedBtn": "+ phần tử",
+      "kvColType": "Kiểu",
+      "kvObjectFieldsListAria": "Danh sách trường khoá-giá trị",
+      "kvArrayItemsListAria": "Danh sách phần tử mảng",
+      "kvNestedRowsListAria": "Danh sách dòng con",
+      "kvRowGroupArrayAria": "Phần tử #{row}",
+      "kvRowGroupObjectNamedAria": "Dòng {row}: {key}",
+      "kvRowGroupObjectAria": "Dòng {row}",
+      "kvKeyReadOnlyAria": "Trường hàng {row} (chỉ đọc ở Bảng)",
+      "kvReadOnlyBadge": "chỉ đọc",
+      "kvKeyPlaceholder": "Tên trường (vd: ssid)",
+      "kvKeyInputAria": "Trường hàng {row}",
+      "duplicateKeyAria": "Lần xuất hiện thứ {index}",
+      "duplicateKeyTitle": "Khoá trùng lần {index}",
+      "kvKeySpaceWarning": "Khoá có khoảng trắng đầu/cuối (được giữ nguyên)",
+      "kvValReadOnlyAria": "Giá trị hàng {row} (chỉ đọc)",
+      "kvReadOnlyReasonBadge": "chỉ đọc ở Bảng",
+      "kvValArrayPlaceholder": "Giá trị mục #{row} (trống = \"\")",
+      "kvValPlaceholder": "Giá trị",
+      "kvValNumberPlaceholder": "Giá trị số (vd: 36)",
+      "kvValInputAria": "Giá trị hàng {row}",
+      "kvSuggestNumberAria": "Đổi dòng {row} sang kiểu Số",
+      "kvSuggestNumberTitle": "Giá trị khớp số JSON — bấm để đổi sang kiểu Số",
+      "kvSuggestNumberChip": "Số?",
+      "kvBoolGroupAria": "Giá trị true/false hàng {row}",
+      "kvNullPillSr": "Giá trị null hàng {row}",
+      "kvContainerObjectSummary": "Object ({count} trường con)",
+      "kvContainerArraySummary": "Mảng ({count} phần tử)",
+      "kvContainerObjectCompact": "Object ({count})",
+      "kvContainerArrayCompact": "Mảng ({count})",
+      "kvTypeChipAria": "Kiểu dữ liệu hàng {row}",
+      "kvTypeChipTitle": "Đổi kiểu dữ liệu (Alt+↓)",
+      "kvTypeMenuAria": "Chọn kiểu dữ liệu hàng {row}",
+      "kvRowMenuBtnAria": "Menu dòng {row}",
+      "kvRowMenuAria": "Thao tác dòng {row}",
+      "kvRowInsertBelow": "Chèn dòng bên dưới",
+      "kvRowMoveUp": "Chuyển lên",
+      "kvRowMoveDown": "Chuyển xuống",
+      "kvRowDelete": "Xoá dòng",
+      "kvUnnamedRowLabel": "hàng {row}",
+      "kvNestedObjectAria": "Object con của {name}",
+      "kvNestedArrayAria": "Mảng con của {name}",
+      "kvPasteHintObject": "Mẹo: dán nhiều dòng key: value hoặc JSON · Alt+↓ đổi kiểu",
+      "kvPasteHintArray": "Mẹo: dán mỗi dòng một giá trị hoặc mảng JSON",
+      "kvRootMenuBtnAria": "Kiểu cấu trúc gốc",
+      "kvRootBadgeObject": "Gốc: Object",
+      "kvRootBadgeArray": "Gốc: Mảng",
+      "kvRootMenuAria": "Chọn cấu trúc gốc",
+      "kvRootOptionObject": "Bảng khoá–giá trị (Object)",
+      "kvRootOptionArray": "Mảng danh sách",
+      "kvConfirmRegionAria": "Xác nhận thao tác",
+      "kvPromptObjectToArrayTitle": "{count} trường sẽ mất tên khi chuyển sang Mảng",
+      "kvPromptNestedObjectToArrayTitle": "{count} trường con sẽ mất tên khi chuyển sang Mảng",
+      "kvPromptArrayToObjectTitle": "{count} phần tử cần đặt tên trường khi chuyển sang Object",
+      "kvPromptContainerToScalarObjectTitle": "{count} trường con sẽ bị xoá khi đổi sang kiểu đơn",
+      "kvPromptContainerToScalarArrayTitle": "{count} phần tử con sẽ bị xoá khi đổi sang kiểu đơn",
+      "kvPromptPasteMismatchObjectTitle": "Nội dung dán là object JSON ('{...}'), khác với khung hiện tại",
+      "kvPromptPasteMismatchArrayTitle": "Nội dung dán là mảng JSON ([...]), khác với khung hiện tại",
+      "kvPromptObjectToArrayBody": "Mảng chỉ lưu danh sách giá trị theo thứ tự chỉ mục (#1, #2…).",
+      "kvPromptArrayToObjectBody": "Mỗi trường trong Object cần có tên khoá trước khi lưu.",
+      "kvPromptContainerToScalarBody": "Đổi sang kiểu đơn sẽ bỏ danh sách con hiện tại của dòng này.",
+      "kvPromptPasteMismatchBody": "Chọn cách xử lý để không làm mất các trường đã nhập.",
+      "kvPromptSwitchToArrayBtn": "Chuyển sang Mảng",
+      "kvPromptSwitchToObjectBtn": "Chuyển & đặt tên",
+      "kvPromptKeepObjectBtn": "Giữ Object",
+      "kvPromptKeepArrayBtn": "Giữ Mảng",
+      "kvPromptSwitchRemoveChildrenBtn": "Đổi kiểu & xoá con",
+      "kvPromptPasteReplaceRowBtn": "Thay giá trị dòng này",
+      "kvPromptPasteReplaceAllBtn": "Thay toàn bộ"
     }
   },
   "search": {

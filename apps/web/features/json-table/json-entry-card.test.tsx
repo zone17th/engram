@@ -34,6 +34,7 @@ import { ItemDetailPage } from '@/features/items/item-detail-page';
 import {
   JsonEntryCard,
   NewJsonEntryComposer,
+  parseMultiLineKeyValuePaste,
   __testing as jsonTableTesting,
   type JsonComposerPlaintextHolder,
 } from '@/features/json-table';
@@ -3000,4 +3001,121 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     },
     30_000,
   );
+
+  it('RF-4: RFD-33 live region announces INVALID_NUMBER and DUPLICATE_KEY even when user keeps typing inside the 300ms debounce window', () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    vi.useFakeTimers();
+    try {
+      render(
+        <NextIntlClientProvider locale="vi" messages={viMessages}>
+          <QueryClientProvider client={qc}>
+            <NewJsonEntryComposer
+              itemId={ITEM_ID}
+              itemName="Test"
+              onSaved={vi.fn()}
+              onCancel={vi.fn()}
+            />
+          </QueryClientProvider>
+        </NextIntlClientProvider>,
+      );
+
+      const composer = screen.getByTestId('new-json-entry-composer');
+      const liveRegion = within(composer).getByTestId('new-json-live-region');
+      expect(liveRegion.textContent).toBe('');
+
+      // Switch row 1 to Number
+      fireEvent.click(within(composer).getByTestId('json-new-type-select-root'));
+      fireEvent.click(within(composer).getByTestId('kv-pick-type-r1-number'));
+
+      const keyInp = within(composer).getByTestId('json-new-key-input-root') as HTMLInputElement;
+      const valInp = within(composer).getByTestId('json-new-val-input-root') as HTMLInputElement;
+      fireEvent.change(keyInp, { target: { value: 'port' } });
+
+      // Type '0', then '03', then '036' within 300ms
+      fireEvent.change(valInp, { target: { value: '0' } });
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      fireEvent.change(valInp, { target: { value: '03' } });
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      fireEvent.change(valInp, { target: { value: '036' } });
+      // Still inside 200ms since '03' introduced INVALID_NUMBER
+      expect(liveRegion.textContent).toBe('');
+
+      act(() => {
+        vi.advanceTimersByTime(250);
+      });
+      expect(liveRegion.textContent).toBe(viMessages.content.json.kvErrInvalidNumber);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('RF-6 & RF-7: multi-line paste into a cleared non-trailing array item stays verbatim, and key-field multi-line parser does not split URLs or base64 lines', () => {
+    // RF-7: Multi-line URLs and base64 strings must not be split as key:value or key=value pairs
+    expect(
+      parseMultiLineKeyValuePaste('https://a.example/x\nhttps://b.example/y', 'object', false),
+    ).toBeNull();
+    expect(
+      parseMultiLineKeyValuePaste('dGVzdA==\nbG9uZ2Vy==', 'object', false),
+    ).toBeNull();
+    expect(
+      parseMultiLineKeyValuePaste('https://a.example/x\nhttps://b.example/y', 'array', false),
+    ).toEqual({
+      kind: 'lines',
+      items: ['https://a.example/x', 'https://b.example/y'],
+    });
+
+    // Valid multi-line pairs still parse
+    expect(
+      parseMultiLineKeyValuePaste('HOST: db.internal\nPORT=5432', 'object', false),
+    ).toEqual({
+      kind: 'pairs',
+      pairs: [
+        { key: 'HOST', value: 'db.internal' },
+        { key: 'PORT', value: '5432' },
+      ],
+    });
+
+    // RF-6: Pasting multi-line text into a cleared middle array item stays verbatim (does not split into N items)
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <QueryClientProvider client={qc}>
+          <NewJsonEntryComposer
+            itemId={ITEM_ID}
+            itemName="Test"
+            initialPreset="empty-array"
+            onSaved={vi.fn()}
+            onCancel={vi.fn()}
+          />
+        </QueryClientProvider>
+      </NextIntlClientProvider>,
+    );
+
+    const composer = screen.getByTestId('new-json-entry-composer');
+    const valInp0 = within(composer).getByTestId('json-new-val-input-root') as HTMLTextAreaElement;
+
+    // Pasting multi-line into trailing placeholder splits into 2 items
+    const splitPrevented = !fireEvent.paste(valInp0, {
+      clipboardData: { getData: () => 'item-one\nitem-two' },
+    });
+    expect(splitPrevented).toBe(true);
+    expect(composer.querySelectorAll('[data-kv-row]').length).toBe(2);
+
+    // Clear the first (non-trailing) item and paste a multi-line PEM block -> must NOT split into extra items
+    const firstValInp = within(composer).getByTestId('json-new-val-input-root') as HTMLTextAreaElement;
+    fireEvent.change(firstValInp, { target: { value: '' } });
+    const middlePasteNotIntercepted = fireEvent.paste(firstValInp, {
+      clipboardData: { getData: () => 'line-a\nline-b\nline-c' },
+    });
+    expect(middlePasteNotIntercepted).toBe(true);
+    expect(composer.querySelectorAll('[data-kv-row]').length).toBe(2);
+  });
 });

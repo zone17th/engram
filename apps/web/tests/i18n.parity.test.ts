@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import en from '../messages/en.json';
 import vi from '../messages/vi.json';
@@ -44,6 +46,20 @@ describe('i18n', () => {
       const json = JSON.stringify(messages);
       expect(json).not.toMatch(/Engram|ENGRAM/);
       expect(json).toContain('engram');
+    }
+  });
+  it('mọi literal tJson(...) trong json-new-entry-composer.tsx đều có trong en và vi', () => {
+    const composerSource = readFileSync(
+      join(__dirname, '..', 'features', 'json-table', 'json-new-entry-composer.tsx'),
+      'utf8',
+    );
+    const keys = [...composerSource.matchAll(/tJson\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
+    expect(keys.length).toBeGreaterThan(80);
+    for (const key of new Set(keys)) {
+      const enVal = valueAtPath(en.content.json, key);
+      const viVal = valueAtPath(vi.content.json, key);
+      expect(typeof enVal, `en missing content.json.${key}`).toBe('string');
+      expect(typeof viVal, `vi missing content.json.${key}`).toBe('string');
     }
   });
 });

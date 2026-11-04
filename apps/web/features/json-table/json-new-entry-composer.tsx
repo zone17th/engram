@@ -217,29 +217,34 @@ export function parseMultiLineKeyValuePaste(
   // RFD-19 & L2: On key inputs, single-line pair paste requires explicit 'key: value' (colon + space) or
   // 'key=value' where key is an identifier-like token (`^[A-Za-z_][A-Za-z0-9_.-]*$`) and value does not start
   // with `=` or contain only trailing `=` padding (so base64 `dGVzdA==` is never split into key `dGVzdA`).
-  if (nonEmptyLines.length === 1) {
-    const singleLine = nonEmptyLines[0]!;
-    const mColon = /^([^:=\s][^:=]*?)\s*:\s+(.+)$/.exec(singleLine);
+  function parseSingleKeyValuePairLine(
+    line: string,
+  ): { readonly key: string; readonly value: string } | null {
+    const mColon = /^([^:=\s][^:=]*?)\s*:\s+(.+)$/.exec(line);
     if (mColon && mColon[1]!.trim() && !/^https?$/i.test(mColon[1]!.trim())) {
-      return { kind: 'pairs', pairs: [{ key: mColon[1]!.trim(), value: mColon[2]! }] };
+      return { key: mColon[1]!.trim(), value: mColon[2]! };
     }
-    const mEq = /^([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*([^=].*)$/.exec(singleLine);
+    const mEq = /^([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*([^=].*)$/.exec(line);
     if (mEq && mEq[1]!.trim()) {
-      return { kind: 'pairs', pairs: [{ key: mEq[1]!.trim(), value: mEq[2]! }] };
+      return { key: mEq[1]!.trim(), value: mEq[2]! };
     }
     return null;
+  }
+
+  if (nonEmptyLines.length === 1) {
+    const pair = parseSingleKeyValuePairLine(nonEmptyLines[0]!);
+    return pair ? { kind: 'pairs', pairs: [pair] } : null;
   }
 
   const pairs: Array<{ readonly key: string; readonly value: string }> = [];
   let allPairs = nonEmptyLines.length >= 2;
   for (let i = 0; i < nonEmptyLines.length; i++) {
-    const line = nonEmptyLines[i]!;
-    const m = /^([^:=]+?)\s*[:=]\s?(.*)$/.exec(line);
-    if (!m || !m[1]!.trim()) {
+    const pair = parseSingleKeyValuePairLine(nonEmptyLines[i]!);
+    if (!pair) {
       allPairs = false;
       break;
     }
-    pairs.push({ key: m[1]!.trim(), value: m[2]! });
+    pairs.push(pair);
   }
   if (allPairs && pairs.length >= 2) {
     return { kind: 'pairs', pairs };
@@ -844,6 +849,9 @@ export function NewJsonEntryComposer({
   }, [openRootMenu, openRowMenuRowId, openTypeMenuRowId]);
 
   // RFD-33 (advisor-dec-373): Single polite live region per editor, updated only when error signature changes (debounced 300ms)
+  const latestErrorsMapRef = useRef<Map<string, KvRowError>>(errorsMap);
+  latestErrorsMapRef.current = errorsMap;
+
   useEffect(() => {
     const entries: string[] = [];
     errorsMap.forEach((err, rowId) => {
@@ -866,22 +874,16 @@ export function NewJsonEntryComposer({
 
     liveAnnounceTimerRef.current = window.setTimeout(() => {
       liveAnnounceTimerRef.current = null;
-      const firstErr = errorsMap.values().next().value as KvRowError | undefined;
+      const currentErrors = latestErrorsMapRef.current;
+      const firstErr = currentErrors.values().next().value as KvRowError | undefined;
       const msg = firstErr ? (firstErr.key ?? firstErr.value)?.message : null;
-      const count = errorsMap.size;
+      const count = currentErrors.size;
       if (msg) {
         setLiveErrorAnnouncement(
           count > 1 ? tJson('kvLiveErrorsMulti', { count, message: msg }) : msg,
         );
       }
     }, 300);
-
-    return () => {
-      if (liveAnnounceTimerRef.current !== null) {
-        window.clearTimeout(liveAnnounceTimerRef.current);
-        liveAnnounceTimerRef.current = null;
-      }
-    };
   }, [errorsMap, tJson]);
 
   // Vault lock reset registration
@@ -1928,16 +1930,24 @@ export function NewJsonEntryComposer({
       ) {
         return;
       }
-
-      // For an empty Array item, allow multi-line / JSON array paste when the item is empty
-      const parsedPaste = parseMultiLineKeyValuePaste(text, found.parentKind, false);
-      if (!parsedPaste) return;
-
-      // In an Array container, do not intercept single-line key:value pairs into an item value
-      if (isValueInput && found.parentKind === 'array' && parsedPaste.kind === 'pairs') {
+      // RF-6: In an Array container, only split/intercept paste into an empty value when the editor is blank
+      // or the row is the trailing placeholder row; cleared middle items keep verbatim multi-line paste.
+      const isTrailingArrayPlaceholder =
+        found.parentKind === 'array' &&
+        found.index === found.list.length - 1 &&
+        isEffectivePlaceholderRow(found.row, found.index, found.list, 'array');
+      if (isValueInput && found.parentKind === 'array' && hasAnyCommittedRow && !isTrailingArrayPlaceholder) {
         return;
       }
 
+      // For an empty Array trailing placeholder (or blank editor), allow multi-line / JSON array paste
+      const parsedPaste = parseMultiLineKeyValuePaste(text, found.parentKind, false);
+      if (!parsedPaste) return;
+
+      // In an Array container, do not intercept key:value pairs into an item value
+      if (isValueInput && found.parentKind === 'array' && parsedPaste.kind === 'pairs') {
+        return;
+      }
       const snap = captureSnapshot();
       const isEditorBlank = !hasAnyCommittedRow;
 
@@ -2733,9 +2743,7 @@ export function NewJsonEntryComposer({
                             aria-label={`${ctxPrefix}${tJson('kvValInputAria', { row: rowNum })}`}
                             aria-invalid={valErr ? 'true' : undefined}
                             aria-describedby={valErrId}
-                            className={`kv-input ${
-                              isLongMultiline && !isMultilineExpanded ? 'line-clamp-3' : ''
-                            }`}
+                            className="kv-input"
                             {...VAULT_SECRET_INPUT_PROPS}
                             onChange={(e) => handleRowValueChange(r.id, e.target.value)}
                             onPaste={(e) => handleRowPaste(e, r.id, true)}
