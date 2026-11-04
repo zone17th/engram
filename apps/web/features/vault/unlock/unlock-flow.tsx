@@ -208,13 +208,16 @@ export function VaultUnlockFlow() {
           opGeneration,
         });
 
+        // Worker unlock succeeded; clear activeWorkerUnlockOpGenRef before post-unlock remember() so RouteGuard's
+        // synchronous redirect on vault.state === 'unlocked' does not mistake the unmounting route for an in-flight
+        // worker unlock and lock the newly opened vault.
+        activeWorkerUnlockOpGenRef.current = null;
         if (
           !isMountedRef.current ||
           unlockIntentSeqRef.current !== intentSeq ||
           client.getGeneration() !== opGeneration
         ) {
           if (client.getGeneration() === opGeneration) {
-            activeWorkerUnlockOpGenRef.current = null;
             await vault.lock({ broadcast: false, reason: 'unlock_intent_abandoned' });
           }
           return;
@@ -222,9 +225,6 @@ export function VaultUnlockFlow() {
 
         if (rememberOnUnlock) {
           const rememberedState = await rememberDeviceState.remember();
-          if (!isMountedRef.current || unlockIntentSeqRef.current !== intentSeq) {
-            return;
-          }
           if (!rememberedState.remembered) {
             undoToast?.pushUndoToast({
               message:
@@ -235,9 +235,11 @@ export function VaultUnlockFlow() {
               onUndo: () => {},
             });
           }
+          if (!isMountedRef.current || unlockIntentSeqRef.current !== intentSeq) {
+            return;
+          }
         }
         completedNavigationRef.current = true;
-        activeWorkerUnlockOpGenRef.current = null;
         clearRecoveryCompletedNotice();
         clearDeviceUnlockFallbackNotice();
         router.replace(destinationPath);
@@ -395,7 +397,7 @@ export function VaultUnlockFlow() {
           {t('lead')}
         </p>
 
-        {rememberDeviceState.status === 'ready' && rememberDeviceState.remembered ? (
+        {rememberDeviceState.status === 'ready' && rememberDeviceState.remembered && !deviceFallbackNotice ? (
           <section data-view="known" data-testid="unlock-device-section">
             <div className="card mb-4 p-6">
               <Button
@@ -444,7 +446,6 @@ export function VaultUnlockFlow() {
           onUnlocked={async () => {
             if (rememberOnUnlock) {
               const rememberedState = await rememberDeviceState.remember();
-              if (!isMountedRef.current) return;
               if (!rememberedState.remembered) {
                 undoToast?.pushUndoToast({
                   message:
@@ -455,6 +456,7 @@ export function VaultUnlockFlow() {
                   onUndo: () => {},
                 });
               }
+              if (!isMountedRef.current) return;
             }
             completedNavigationRef.current = true;
             clearRecoveryCompletedNotice();
@@ -490,7 +492,7 @@ export function VaultUnlockFlow() {
                   data-testid="unlock-passphrase-input"
                 />
               </div>
-              {rememberDeviceState.status !== 'unavailable' && !rememberDeviceState.remembered ? (
+              {rememberDeviceState.status !== 'unavailable' && (!rememberDeviceState.remembered || deviceFallbackNotice) ? (
                 <label
                   htmlFor="unlock-remember-device"
                   className="mb-5 flex cursor-pointer items-start gap-3"
