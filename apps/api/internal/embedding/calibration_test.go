@@ -381,7 +381,7 @@ func TestCalibrationLookupFor(t *testing.T) {
 
 // calTestRealEntry is a well-formed real production entry used only to prove the
 // guard and the lookup accept a correctly filled slot. It is a test value, never
-// registered in calEntries (the real one arrives in stage 24-2, TODO(T24-host)).
+// registered in calEntries (the registered real entry is calProductionEntry).
 func calTestRealEntry() CalibrationEntry {
 	return CalibrationEntry{
 		Provider:     ProviderOpenAICompat,
@@ -406,29 +406,46 @@ func calTestRealIdentity(e CalibrationEntry) embedid.Identity {
 	}
 }
 
-// TestCalibrationProductionPendingFailsClosed pins the fail-closed state of
-// stage 24-1: the production slot is unfilled, rejected by the guard, absent
-// from the served table, and the lookup serves no real identity in any env.
-func TestCalibrationProductionPendingFailsClosed(t *testing.T) {
+// TestCalibrationProductionEntryServedAndPlaceholderFailsClosed pins stage
+// 24-2: the registered real entry (calProductionEntry) passes the guard and is
+// served in production for the identity the production worker builds from the
+// documented defaults, while an unfilled placeholder or a malformed real entry
+// is still never served.
+func TestCalibrationProductionEntryServedAndPlaceholderFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	if err := calValidateProductionEntry(calProductionPending); err == nil {
-		t.Fatal("unfilled calProductionPending passed calValidateProductionEntry; it must fail closed")
+	placeholder := CalibrationEntry{}
+	if err := calValidateProductionEntry(placeholder); err == nil {
+		t.Fatal("unfilled placeholder passed calValidateProductionEntry; it must fail closed")
 	}
+	if err := calValidateProductionEntry(calProductionEntry); err != nil {
+		t.Fatalf("calProductionEntry rejected by the production guard: %v", err)
+	}
+	var realCount int
 	for _, e := range CalibrationEntries() {
-		if e == calProductionPending {
-			t.Fatal("calProductionPending is registered in calEntries while still a placeholder")
+		if e == placeholder {
+			t.Fatal("a zero-value placeholder is registered in calEntries")
 		}
 		if !calIsFakeEntry(e) {
-			t.Errorf("calEntries holds a non-fake entry %q before host calibration (TODO(T24-host))", e.Model)
+			realCount++
+			if e != calProductionEntry {
+				t.Errorf("calEntries holds an unexpected real entry %q", e.Model)
+			}
 		}
 	}
+	if realCount != 1 {
+		t.Fatalf("calEntries holds %d real entries, want exactly calProductionEntry", realCount)
+	}
 
-	// The identity the production worker will build from the documented defaults.
-	id := calTestRealIdentity(calTestRealEntry())
-	for _, env := range []string{"production", "staging", "development", "", "prod", "Production"} {
-		if gotMin, rp, ok := CalibrationLookupFor(env)(id); ok || gotMin != 0 || rp != "" {
-			t.Errorf("env %q: real openai_compat identity served (%v, %q, %v) before host calibration", env, gotMin, rp, ok)
+	// The identity the production worker builds from the documented defaults.
+	id := calTestRealIdentity(calProductionEntry)
+	if id.ModelVersion != OpenAIModelVersion(1024, calTestInstruction) {
+		t.Fatalf("calProductionEntry model_version %q != OpenAIModelVersion(1024, default instruction)", id.ModelVersion)
+	}
+	for _, env := range []string{"production", "staging", "development", ""} {
+		gotMin, rp, ok := CalibrationLookupFor(env)(id)
+		if !ok || gotMin != calProductionEntry.MinCos || rp != calProductionEntry.ReportPath {
+			t.Errorf("env %q: production identity = (%v, %q, %v), want (%v, %q, true)", env, gotMin, rp, ok, calProductionEntry.MinCos, calProductionEntry.ReportPath)
 		}
 	}
 
@@ -437,7 +454,7 @@ func TestCalibrationProductionPendingFailsClosed(t *testing.T) {
 	bad := calTestRealEntry()
 	bad.ReportPath = ""
 	for _, env := range []string{"production", "staging", "development", ""} {
-		lookup := calLookup([]CalibrationEntry{calProductionPending, bad}, env)
+		lookup := calLookup([]CalibrationEntry{placeholder, bad}, env)
 		if _, _, ok := lookup(calTestRealIdentity(bad)); ok {
 			t.Errorf("env %q: lookup served an entry that fails the guard", env)
 		}
@@ -454,7 +471,15 @@ func TestCalibrationLookupServesFilledRealEntryInEveryEnv(t *testing.T) {
 	if err := calValidateProductionEntry(realEntry); err != nil {
 		t.Fatalf("well-formed real entry rejected: %v", err)
 	}
-	table := append(CalibrationEntries(), realEntry)
+	// Fake entries only + the test entry, so the registered production entry
+	// (same identity, different MinCos) does not shadow it.
+	var table []CalibrationEntry
+	for _, e := range CalibrationEntries() {
+		if calIsFakeEntry(e) {
+			table = append(table, e)
+		}
+	}
+	table = append(table, realEntry)
 	for _, env := range []string{"production", "staging", "development", ""} {
 		gotMin, rp, ok := calLookup(table, env)(calTestRealIdentity(realEntry))
 		if !ok || gotMin != realEntry.MinCos || rp != realEntry.ReportPath {

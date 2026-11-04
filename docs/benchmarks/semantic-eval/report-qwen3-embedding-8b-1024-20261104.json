@@ -1,0 +1,646 @@
+{
+  "schema": "engram.semeval.report.v1",
+  "provider": "openai_compat",
+  "model": "openai_compat/openrouter/qwen/qwen3-embedding-8b",
+  "model_version": "dims=1024;instr=97581580",
+  "dims": 1024,
+  "pairs_file": "docs/benchmarks/semantic-eval/pairs.v1.jsonl",
+  "pairs_sha256": "9baf6a45763c4b94627bcfb46efafc01d10a407caf10bfd1c2afb1056342554b",
+  "grid": {
+    "min": 0.3,
+    "max": 0.9,
+    "step": 0.01
+  },
+  "max_fpr": 0.05,
+  "min_recall": 0.6,
+  "threshold": 0.48,
+  "precision": 0.9607843137254902,
+  "recall": 0.6621621621621622,
+  "fpr": 0.04,
+  "decision": "ok",
+  "generated_at": "2026-11-04T04:47:05Z",
+  "synthetic": false,
+  "note": "worker semeval",
+  "results": [
+    {
+      "id": "p001",
+      "label": "related",
+      "cos": 0.5858432283937136
+    },
+    {
+      "id": "p002",
+      "label": "related",
+      "cos": 0.36732006637681
+    },
+    {
+      "id": "p003",
+      "label": "related",
+      "cos": 0.4668430790028424
+    },
+    {
+      "id": "p004",
+      "label": "related",
+      "cos": 0.4427700255581674
+    },
+    {
+      "id": "p005",
+      "label": "related",
+      "cos": 0.5348531908369473
+    },
+    {
+      "id": "p006",
+      "label": "related",
+      "cos": 0.6273044642643612
+    },
+    {
+      "id": "p007",
+      "label": "related",
+      "cos": 0.5259266816254126
+    },
+    {
+      "id": "p008",
+      "label": "related",
+      "cos": 0.20751490176179505
+    },
+    {
+      "id": "p009",
+      "label": "related",
+      "cos": 0.3846293224645778
+    },
+    {
+      "id": "p010",
+      "label": "related",
+      "cos": 0.6826002165120836
+    },
+    {
+      "id": "p011",
+      "label": "related",
+      "cos": 0.7020028179558616
+    },
+    {
+      "id": "p012",
+      "label": "related",
+      "cos": 0.6184997792001115
+    },
+    {
+      "id": "p013",
+      "label": "unrelated",
+      "cos": 0.21633068912951403
+    },
+    {
+      "id": "p014",
+      "label": "unrelated",
+      "cos": 0.2125201825258492
+    },
+    {
+      "id": "p015",
+      "label": "unrelated",
+      "cos": 0.14479067468998144
+    },
+    {
+      "id": "p016",
+      "label": "unrelated",
+      "cos": 0.3450977616158209
+    },
+    {
+      "id": "p017",
+      "label": "unrelated",
+      "cos": 0.22998533421168116
+    },
+    {
+      "id": "p018",
+      "label": "unrelated",
+      "cos": 0.3029969687547425
+    },
+    {
+      "id": "p019",
+      "label": "related",
+      "cos": 0.4719950694643666
+    },
+    {
+      "id": "p020",
+      "label": "related",
+      "cos": 0.4635997199429839
+    },
+    {
+      "id": "p021",
+      "label": "related",
+      "cos": 0.4087595375559958
+    },
+    {
+      "id": "p022",
+      "label": "related",
+      "cos": 0.5050764810635756
+    },
+    {
+      "id": "p023",
+      "label": "related",
+      "cos": 0.4436342594972547
+    },
+    {
+      "id": "p024",
+      "label": "related",
+      "cos": 0.48283001738031345
+    },
+    {
+      "id": "p025",
+      "label": "related",
+      "cos": 0.5754924007855061
+    },
+    {
+      "id": "p026",
+      "label": "related",
+      "cos": 0.36225532619498146
+    },
+    {
+      "id": "p027",
+      "label": "related",
+      "cos": 0.47047699842789825
+    },
+    {
+      "id": "p028",
+      "label": "related",
+      "cos": 0.5424397858429283
+    },
+    {
+      "id": "p029",
+      "label": "related",
+      "cos": 0.5948447747500237
+    },
+    {
+      "id": "p030",
+      "label": "related",
+      "cos": 0.5404120354800428
+    },
+    {
+      "id": "p031",
+      "label": "unrelated",
+      "cos": 0.4473813498713625
+    },
+    {
+      "id": "p032",
+      "label": "unrelated",
+      "cos": 0.10930101044433857
+    },
+    {
+      "id": "p033",
+      "label": "unrelated",
+      "cos": 0.2143008819137921
+    },
+    {
+      "id": "p034",
+      "label": "unrelated",
+      "cos": 0.2788379860124771
+    },
+    {
+      "id": "p035",
+      "label": "unrelated",
+      "cos": 0.2769869924609463
+    },
+    {
+      "id": "p036",
+      "label": "unrelated",
+      "cos": 0.3714504141595909
+    },
+    {
+      "id": "p037",
+      "label": "related",
+      "cos": 0.47081777337783925
+    },
+    {
+      "id": "p038",
+      "label": "related",
+      "cos": 0.4293513678917767
+    },
+    {
+      "id": "p039",
+      "label": "related",
+      "cos": 0.5437720099300072
+    },
+    {
+      "id": "p040",
+      "label": "related",
+      "cos": 0.47960433520374796
+    },
+    {
+      "id": "p041",
+      "label": "related",
+      "cos": 0.6794968081607263
+    },
+    {
+      "id": "p042",
+      "label": "related",
+      "cos": 0.308409764182364
+    },
+    {
+      "id": "p043",
+      "label": "related",
+      "cos": 0.6728435964211263
+    },
+    {
+      "id": "p044",
+      "label": "related",
+      "cos": 0.15818081799795933
+    },
+    {
+      "id": "p045",
+      "label": "related",
+      "cos": 0.5185212825424448
+    },
+    {
+      "id": "p046",
+      "label": "related",
+      "cos": 0.5279877060009331
+    },
+    {
+      "id": "p047",
+      "label": "related",
+      "cos": 0.40497587512770306
+    },
+    {
+      "id": "p048",
+      "label": "related",
+      "cos": 0.3150644181115521
+    },
+    {
+      "id": "p049",
+      "label": "unrelated",
+      "cos": 0.24563122118712102
+    },
+    {
+      "id": "p050",
+      "label": "unrelated",
+      "cos": 0.19785582515681988
+    },
+    {
+      "id": "p051",
+      "label": "unrelated",
+      "cos": 0.16166465827591658
+    },
+    {
+      "id": "p052",
+      "label": "unrelated",
+      "cos": 0.15064810698150338
+    },
+    {
+      "id": "p053",
+      "label": "unrelated",
+      "cos": 0.1844441724864325
+    },
+    {
+      "id": "p054",
+      "label": "unrelated",
+      "cos": 0.31798941870314207
+    },
+    {
+      "id": "p055",
+      "label": "related",
+      "cos": 0.5473627792184432
+    },
+    {
+      "id": "p056",
+      "label": "related",
+      "cos": 0.5111043343658247
+    },
+    {
+      "id": "p057",
+      "label": "related",
+      "cos": 0.30832631620335293
+    },
+    {
+      "id": "p058",
+      "label": "related",
+      "cos": 0.5862823427585916
+    },
+    {
+      "id": "p059",
+      "label": "related",
+      "cos": 0.4430532258618052
+    },
+    {
+      "id": "p060",
+      "label": "related",
+      "cos": 0.4499929996519336
+    },
+    {
+      "id": "p061",
+      "label": "related",
+      "cos": 0.5700324426053164
+    },
+    {
+      "id": "p062",
+      "label": "related",
+      "cos": 0.5319477346526967
+    },
+    {
+      "id": "p063",
+      "label": "related",
+      "cos": 0.5836067293496905
+    },
+    {
+      "id": "p064",
+      "label": "related",
+      "cos": 0.5484643351412192
+    },
+    {
+      "id": "p065",
+      "label": "unrelated",
+      "cos": 0.148392084251199
+    },
+    {
+      "id": "p066",
+      "label": "unrelated",
+      "cos": 0.2011797845802931
+    },
+    {
+      "id": "p067",
+      "label": "unrelated",
+      "cos": 0.28286819639276134
+    },
+    {
+      "id": "p068",
+      "label": "unrelated",
+      "cos": 0.4789074659244763
+    },
+    {
+      "id": "p069",
+      "label": "unrelated",
+      "cos": 0.4550570299568522
+    },
+    {
+      "id": "p070",
+      "label": "unrelated",
+      "cos": 0.2296803592172355
+    },
+    {
+      "id": "p071",
+      "label": "related",
+      "cos": 0.6113931874350986
+    },
+    {
+      "id": "p072",
+      "label": "related",
+      "cos": 0.5507866563975705
+    },
+    {
+      "id": "p073",
+      "label": "related",
+      "cos": 0.49972036539712317
+    },
+    {
+      "id": "p074",
+      "label": "related",
+      "cos": 0.6122695839133583
+    },
+    {
+      "id": "p075",
+      "label": "related",
+      "cos": 0.5675116316174805
+    },
+    {
+      "id": "p076",
+      "label": "related",
+      "cos": 0.513797003251137
+    },
+    {
+      "id": "p077",
+      "label": "related",
+      "cos": 0.5695293863589994
+    },
+    {
+      "id": "p078",
+      "label": "related",
+      "cos": 0.5397417420715794
+    },
+    {
+      "id": "p079",
+      "label": "related",
+      "cos": 0.49756633681189616
+    },
+    {
+      "id": "p080",
+      "label": "related",
+      "cos": 0.5874391990800885
+    },
+    {
+      "id": "p081",
+      "label": "related",
+      "cos": 0.6339535708646773
+    },
+    {
+      "id": "p082",
+      "label": "related",
+      "cos": 0.5707672017266462
+    },
+    {
+      "id": "p083",
+      "label": "unrelated",
+      "cos": 0.42759795083980223
+    },
+    {
+      "id": "p084",
+      "label": "unrelated",
+      "cos": 0.47727063611723214
+    },
+    {
+      "id": "p085",
+      "label": "unrelated",
+      "cos": 0.2923248771244464
+    },
+    {
+      "id": "p086",
+      "label": "unrelated",
+      "cos": 0.30120081236334445
+    },
+    {
+      "id": "p087",
+      "label": "unrelated",
+      "cos": 0.07665511612252116
+    },
+    {
+      "id": "p088",
+      "label": "unrelated",
+      "cos": 0.2309542239469387
+    },
+    {
+      "id": "p089",
+      "label": "related",
+      "cos": 0.5920622621732902
+    },
+    {
+      "id": "p090",
+      "label": "related",
+      "cos": 0.5135080721673604
+    },
+    {
+      "id": "p091",
+      "label": "related",
+      "cos": 0.3208751188191591
+    },
+    {
+      "id": "p092",
+      "label": "related",
+      "cos": 0.4823684282181452
+    },
+    {
+      "id": "p093",
+      "label": "related",
+      "cos": 0.5276642608859313
+    },
+    {
+      "id": "p094",
+      "label": "related",
+      "cos": 0.6277264344451923
+    },
+    {
+      "id": "p095",
+      "label": "related",
+      "cos": 0.4375320650355774
+    },
+    {
+      "id": "p096",
+      "label": "related",
+      "cos": 0.5055690828380882
+    },
+    {
+      "id": "p097",
+      "label": "related",
+      "cos": 0.33383615672745626
+    },
+    {
+      "id": "p098",
+      "label": "related",
+      "cos": 0.5471470338324378
+    },
+    {
+      "id": "p099",
+      "label": "related",
+      "cos": 0.348810092202289
+    },
+    {
+      "id": "p100",
+      "label": "related",
+      "cos": 0.543661737338885
+    },
+    {
+      "id": "p101",
+      "label": "unrelated",
+      "cos": 0.5482626362844116
+    },
+    {
+      "id": "p102",
+      "label": "unrelated",
+      "cos": 0.4747308347824169
+    },
+    {
+      "id": "p103",
+      "label": "unrelated",
+      "cos": 0.3681754950613628
+    },
+    {
+      "id": "p104",
+      "label": "unrelated",
+      "cos": 0.47865275998257195
+    },
+    {
+      "id": "p105",
+      "label": "unrelated",
+      "cos": 0.4446597922221105
+    },
+    {
+      "id": "p106",
+      "label": "unrelated",
+      "cos": 0.26516755886722987
+    },
+    {
+      "id": "p107",
+      "label": "unrelated",
+      "cos": 0.3781370027999563
+    },
+    {
+      "id": "p108",
+      "label": "unrelated",
+      "cos": 0.375116209667165
+    },
+    {
+      "id": "p109",
+      "label": "unrelated",
+      "cos": 0.4808294299841921
+    },
+    {
+      "id": "p110",
+      "label": "unrelated",
+      "cos": 0.3977419139770112
+    },
+    {
+      "id": "p111",
+      "label": "unrelated",
+      "cos": 0.4050119640342643
+    },
+    {
+      "id": "p112",
+      "label": "unrelated",
+      "cos": 0.3252542695637248
+    },
+    {
+      "id": "p113",
+      "label": "unrelated",
+      "cos": 0.2427605439084934
+    },
+    {
+      "id": "p114",
+      "label": "unrelated",
+      "cos": 0.43006447080200205
+    },
+    {
+      "id": "p115",
+      "label": "unrelated",
+      "cos": 0.31067040975703486
+    },
+    {
+      "id": "p116",
+      "label": "unrelated",
+      "cos": 0.19553692080976412
+    },
+    {
+      "id": "p117",
+      "label": "unrelated",
+      "cos": 0.34899231821564464
+    },
+    {
+      "id": "p118",
+      "label": "unrelated",
+      "cos": 0.44025574833586045
+    },
+    {
+      "id": "p119",
+      "label": "unrelated",
+      "cos": 0.33475571161644485
+    },
+    {
+      "id": "p120",
+      "label": "unrelated",
+      "cos": 0.24024890348739567
+    },
+    {
+      "id": "p121",
+      "label": "related",
+      "cos": 0.66243377353422
+    },
+    {
+      "id": "p122",
+      "label": "related",
+      "cos": 0.6636155548385919
+    },
+    {
+      "id": "p123",
+      "label": "related",
+      "cos": 0.5581222559040169
+    },
+    {
+      "id": "p124",
+      "label": "related",
+      "cos": 0.5908081193860995
+    }
+  ]
+}
