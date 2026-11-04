@@ -2,7 +2,7 @@
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import {
   useCallback,
@@ -19,6 +19,7 @@ import {
   NewJsonEntryComposer,
 } from '@/features/json-table';
 import { useOptionalUndoToast } from '@/components/ui/undo-toast';
+import { unlockUrl } from '@/features/auth/guard-redirect';
 import { useSession } from '@/features/auth/session-provider';
 import {
   dismissUnconfirmedSave,
@@ -117,6 +118,8 @@ export function ItemDetailPage({
   const tEntry = useTranslations('content.entry');
   const tJson = useTranslations('content.json');
   const tErrors = useTranslations('content.errors');
+  const tLocked = useTranslations('vault.locked');
+  const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
   const undoToast = useOptionalUndoToast();
@@ -1002,7 +1005,7 @@ export function ItemDetailPage({
                 type="button"
                 id="btn-add-text"
                 data-testid="btn-add-text"
-                className="btn btn-primary btn-sm"
+                className="btn btn-primary btn-sm disabled:!opacity-70"
                 disabled={atEntryLimit || !unlocked || !entriesQuery.isSuccess}
                 title={atEntryLimit ? tItem('entryLimitHint') : undefined}
                 aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}
@@ -1020,7 +1023,7 @@ export function ItemDetailPage({
                 type="button"
                 id="btn-add-json"
                 data-testid="btn-add-json"
-                className="btn btn-secondary btn-sm"
+                className="btn btn-secondary btn-sm disabled:!border-lineStrong disabled:!opacity-80"
                 disabled={atEntryLimit || !unlocked || !entriesQuery.isSuccess}
                 title={atEntryLimit ? tItem('entryLimitHint') : undefined}
                 aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}
@@ -1038,7 +1041,7 @@ export function ItemDetailPage({
                 type="button"
                 id="btn-import-json"
                 data-testid="btn-import-json"
-                className="btn btn-tertiary btn-sm"
+                className="btn btn-tertiary btn-sm disabled:!border-lineStrong disabled:!bg-surface disabled:!text-body disabled:!opacity-80"
                 disabled={atEntryLimit || !unlocked || !entriesQuery.isSuccess}
                 title={atEntryLimit ? tItem('entryLimitHint') : undefined}
                 aria-describedby={atEntryLimit ? 'entry-limit-hint' : undefined}
@@ -1136,8 +1139,20 @@ export function ItemDetailPage({
                 entriesQuery.isSuccess ? (
                   <div className="card p-6 text-center" data-testid="item-entries-empty">
                     <h2 className="t-title-sm mb-2 text-ink">{tItem('emptyTitle')}</h2>
-                    <p className="t-body mb-4 text-muted">{tItem('emptyBody')}</p>
-                    {unlocked && !atEntryLimit ? (
+                    <p className="t-body mb-4 text-muted">
+                      {unlocked ? tItem('emptyBody') : tItem('emptyLockedBody')}
+                    </p>
+                    {!unlocked ? (
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <Link
+                          href={unlockUrl(pathname ?? `/app/items/${encodeURIComponent(itemId)}`)}
+                          data-testid="empty-unlock-cta"
+                          className="btn btn-primary btn-sm no-underline"
+                        >
+                          {tLocked('unlockCta')}
+                        </Link>
+                      </div>
+                    ) : !atEntryLimit ? (
                       <div className="flex flex-wrap justify-center gap-2">
                         <button
                           type="button"
@@ -1257,21 +1272,25 @@ export function ItemDetailPage({
                 <div className="card p-4" data-testid="item-shortcuts-panel">
                   <p className="t-label mb-2 text-body">{tItem('shortcutsTitle')}</p>
                   <ul className="m-0 flex list-none flex-col gap-2 p-0 text-[13px] text-body">
-                    <li className="flex items-center justify-between gap-2">
-                      <span>{tItem('shortcutSave')}</span>
-                      <span className="kbd">Ctrl+S</span>
+                    <li className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                      <span className="min-w-0">{tItem('shortcutSave')}</span>
+                      <span className="kbd shrink-0">Ctrl+S</span>
                     </li>
-                    <li className="flex items-center justify-between gap-2">
-                      <span>{tItem('shortcutCancel')}</span>
-                      <span className="kbd">Esc</span>
+                    <li className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                      <span className="min-w-0">{tItem('shortcutCancel')}</span>
+                      <span className="kbd shrink-0">Esc</span>
                     </li>
-                    <li className="flex items-center justify-between gap-2">
-                      <span>{tItem('shortcutUndo')}</span>
-                      <span className="kbd">Ctrl+Z</span>
+                    <li className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                      <span className="min-w-0">{tItem('shortcutRowType')}</span>
+                      <span className="kbd shrink-0">Alt+↓</span>
                     </li>
-                    <li className="flex items-center justify-between gap-2">
-                      <span>{tItem('shortcutLock')}</span>
-                      <span className="kbd">L</span>
+                    <li className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                      <span className="min-w-0">{tItem('shortcutUndo')}</span>
+                      <span className="kbd shrink-0">Ctrl+Z</span>
+                    </li>
+                    <li className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                      <span className="min-w-0">{tItem('shortcutLock')}</span>
+                      <span className="kbd shrink-0">L</span>
                     </li>
                   </ul>
                 </div>

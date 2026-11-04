@@ -508,7 +508,7 @@ test.describe('P04-T21a content real-stack journey (A3, A4, A5, A6, A8, A9, A10)
         await composer.getByTestId('new-json-tab-raw').click();
         const composerRawTextarea = composer.getByTestId('json-raw-textarea-new-json');
         await setQuietInputValue(composerRawTextarea, jsonInitialRaw);
-        await composer.getByTestId('json-raw-save-btn-new-json').click();
+        await composer.getByTestId('new-json-save-btn').click();
         await expect(composer).toBeHidden({ timeout: ACCEPTANCE_UI_WAIT_MS });
 
         const entriesAfterJsonCreate = await pageA.evaluate(async (id) => {

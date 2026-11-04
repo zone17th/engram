@@ -62,8 +62,8 @@ export function AppHeader({
         <Link href="/app" className="touch-target min-w-0 shrink-0 no-underline" aria-label={tHeader('logoLabel')}>
           <Logo wordmarkClassName="hidden min-[480px]:inline" />
         </Link>
-        {showSearch ? <Omnibox compact className="hidden max-w-[420px] md:flex" /> : null}
-        <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-1 sm:gap-2">
+        {showSearch ? <Omnibox compact className="hidden min-w-0 max-w-[420px] md:block" /> : null}
+        <div className="ml-auto flex min-w-0 max-w-full shrink-0 items-center justify-end gap-1 sm:gap-2">
           {canLockNow ? (
             <button
               type="button"

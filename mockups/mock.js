@@ -4458,15 +4458,20 @@
       return { parent, prop: parent.properties[idx], index: idx, parentPath };
     }
 
-    function makePositionalAriaLabel(rowNum, colNum) {
+    function makePositionalAriaLabel(rowNum, colNum, fieldName, isKey) {
       const r = Number.isFinite(rowNum) && rowNum >= 1 ? rowNum : 1;
       const c = Number.isFinite(colNum) && colNum >= 1 ? colNum : 1;
+      if (fieldName) {
+        return isKey
+          ? `Trường ${fieldName} (hàng ${r}) · Key ${fieldName} (row ${r})`
+          : `Giá trị của ${fieldName} (hàng ${r}) · Value for ${fieldName} (row ${r})`;
+      }
       return `Hàng ${r}, cột ${c} · Row ${r}, column ${c}`;
     }
 
     function renderPrimitiveCellHtml(node, path, cellOpts) {
       cellOpts = cellOpts || {};
-      const posLabel = makePositionalAriaLabel(cellOpts.rowNum, cellOpts.colNum);
+      const posLabel = makePositionalAriaLabel(cellOpts.rowNum, cellOpts.colNum, cellOpts.fieldName, cellOpts.isKey);
       if (!node) {
         if (!readOnlyCard && cellOpts.missingObjPath && cellOpts.missingColIndex != null) {
           return `<button type="button" class="json-cell-btn v-null" data-json-act="init-missing" data-obj-path="${esc(cellOpts.missingObjPath)}" data-arr-path="${esc(cellOpts.missingArrPath || 'root')}" data-col-index="${Number(cellOpts.missingColIndex)}" aria-label="${esc(posLabel)}" title="Nhấp để thêm trường · Click to add field">—</button>`;
@@ -4497,13 +4502,13 @@
           <label class="inline-flex items-center gap-1 text-[12px] text-muted">
             <span>Kiểu · <span lang="en">Type</span></span>
             <select class="json-type-btn" data-json-type-select="${esc(path)}" aria-label="Đổi kiểu ô · Change cell type">
-              <option value="string" ${node.kind === 'string' ? 'selected' : ''}>string</option>
-              <option value="number" ${node.kind === 'number' ? 'selected' : ''}>number</option>
+              <option value="string" ${node.kind === 'string' ? 'selected' : ''}>Văn bản · Text</option>
+              <option value="number" ${node.kind === 'number' ? 'selected' : ''}>Số · Number</option>
               <option value="true" ${node.kind === 'boolean' && node.value === true ? 'selected' : ''}>true</option>
               <option value="false" ${node.kind === 'boolean' && node.value === false ? 'selected' : ''}>false</option>
               <option value="null" ${node.kind === 'null' ? 'selected' : ''}>null</option>
-              <option value="object">object ({})</option>
-              <option value="array">array ([])</option>
+              <option value="object">Object</option>
+              <option value="array">Mảng · Array</option>
             </select>
           </label>` : '';
 
@@ -4530,6 +4535,8 @@
         valSpan = `<span class="v-bool">${esc(node.raw)}</span>`;
       } else if (node.kind === 'null') {
         valSpan = `<span class="v-null">null</span>`;
+      } else if (node.value === '') {
+        valSpan = `<span class="text-muted italic text-[13px]">(trống · <span lang="en">empty</span>)</span>`;
       } else {
         valSpan = `<span>${esc(node.value)}</span>`;
       }
@@ -4576,15 +4583,16 @@
         if (activeAddFormPath === path) {
           const errHtml = activeAddKeyError ? `<span role="alert" class="text-[12px] text-error-ink font-medium">${esc(activeAddKeyError)}</span>` : '';
           return `<div class="json-table-toolbar" data-json-add-field-form="${esc(path)}">
-            <input type="text" class="json-cell-input !w-[192px] shrink-0" data-json-new-key="${esc(path)}" placeholder="Tên khoá mới · New key" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+            <input type="text" class="json-cell-input !w-[168px] shrink-0" data-json-new-key="${esc(path)}" aria-label="Tên trường mới · New field key" placeholder="Tên trường · Key" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+            <input type="text" class="json-cell-input !w-[192px] shrink-0" data-json-new-val="${esc(path)}" aria-label="Giá trị mới · New field value" placeholder="Giá trị · Value" data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
             <select class="json-type-btn" data-json-new-type="${esc(path)}" aria-label="Kiểu giá trị mới · New value type">
-              <option value="string">string ("")</option>
-              <option value="number">number (0)</option>
+              <option value="string" selected>Văn bản · Text</option>
+              <option value="number">Số · Number</option>
               <option value="true">true</option>
               <option value="false">false</option>
-              <option value="null" selected>null</option>
-              <option value="object">object ({})</option>
-              <option value="array">array ([])</option>
+              <option value="null">null</option>
+              <option value="object">Object</option>
+              <option value="array">Mảng · Array</option>
             </select>
             <button type="button" class="btn btn-primary btn-sm" data-json-act="confirm-add-field" data-path="${esc(path)}">Thêm · <span lang="en">Add</span></button>
             <button type="button" class="btn btn-tertiary btn-sm" data-json-act="cancel-add-field" data-path="${esc(path)}">Huỷ · <span lang="en">Cancel</span></button>
@@ -4628,8 +4636,8 @@
           ? `<td class="w-[44px] text-right json-col-act"><button type="button" class="btn btn-tertiary btn-sm !px-2 !py-0.5 text-muted" data-json-act="remove-field" data-path="${esc(path)}" data-prop-idx="${i}" aria-label="Xoá hàng ${rowNum} · Remove row ${rowNum}" title="Xoá hàng · Remove row">×</button></td>`
           : '';
         rowsHtml += `<tr>
-          <td class="k">${renderPrimitiveCellHtml(p.keyNode, keyPath, { isKey: true, rowNum, colNum: 1 })}${occBadge}</td>
-          <td>${renderCellHtml(p.valueNode, valPath, { rowNum, colNum: 2 })}</td>
+          <td class="k">${renderPrimitiveCellHtml(p.keyNode, keyPath, { isKey: true, rowNum, colNum: 1, fieldName: p.key })}${occBadge}</td>
+          <td>${renderCellHtml(p.valueNode, valPath, { rowNum, colNum: 2, fieldName: p.key })}</td>
           ${delBtn}
         </tr>`;
       }
@@ -5002,23 +5010,30 @@
 
     function submitAddField(path) {
       const keyInp = tableHost.querySelector(`[data-json-new-key="${CSS.escape(path)}"]`);
+      const valInp = tableHost.querySelector(`[data-json-new-val="${CSS.escape(path)}"]`);
       const typeSel = tableHost.querySelector(`[data-json-new-type="${CSS.escape(path)}"]`);
       const newKey = keyInp ? keyInp.value.trim() : '';
-      const newType = typeSel ? typeSel.value : 'null';
+      const rawVal = valInp ? valInp.value : '';
+      const newType = typeSel ? typeSel.value : 'string';
       const objNode = getNodeByPath(currentDoc.root, path);
       if (!objNode || objNode.kind !== 'object') return false;
       if (!newKey) {
-        activeAddKeyError = 'Nhập tên khoá · Enter a key name';
+        activeAddKeyError = 'Nhập tên trường · Enter a key name';
         paint({ kind: 'new-key', path });
         return false;
       }
       if (objNode.properties.some((p) => p.key === newKey)) {
-        activeAddKeyError = 'Key đã có · Key already exists';
+        activeAddKeyError = 'Trường đã có · Key already exists';
         paint({ kind: 'new-key', path });
         return false;
       }
-      const valLex = newType === 'string' ? '""'
-        : newType === 'number' ? '0'
+      if (newType === 'number' && rawVal.trim() !== '' && !isValidJsonNumberLexeme(rawVal.trim())) {
+        activeAddKeyError = 'Số không đúng cú pháp JSON · Invalid JSON number';
+        paint({ kind: 'new-key', path });
+        return false;
+      }
+      const valLex = newType === 'string' ? escapeJsonStringMinimal(rawVal)
+        : newType === 'number' ? (rawVal.trim() || '0')
         : newType === 'true' ? 'true'
         : newType === 'false' ? 'false'
         : newType === 'object' ? '{}'
@@ -5132,13 +5147,21 @@
       if (act === 'add-row') {
         const arrNode = getNodeByPath(currentDoc.root, path);
         if (!arrNode || arrNode.kind !== 'array') return;
-        let itemLex = 'null';
-        if (classifyArrayNode(arrNode) === 'array-of-objects') {
+        const arrKind = classifyArrayNode(arrNode);
+        let itemLex = '""';
+        if (arrKind === 'array-of-objects') {
           const { columns } = deriveArrayColumns(arrNode);
-          itemLex = columns.length ? `{ ${columns.map((c) => `${escapeJsonStringMinimal(c)}: null`).join(', ')} }` : '{}';
+          itemLex = columns.length ? `{ ${columns.map((c) => `${escapeJsonStringMinimal(c)}: ""`).join(', ')} }` : '{}';
         }
-        const edit = computeInsertionSpan(currentSource, arrNode.span, arrNode.elements, arrNode.elements.length, itemLex);
-        applySourceSplice(edit, 'Đã thêm hàng mới · Added new row', { kind: 'act', act: 'add-row', path });
+        const newElemIdx = arrNode.elements.length;
+        const edit = computeInsertionSpan(currentSource, arrNode.span, arrNode.elements, newElemIdx, itemLex);
+        if (applySourceSplice(edit, 'Đã thêm hàng mới · Added new row')) {
+          const newCellPath = arrKind === 'array-of-objects' ? `${path}.e${newElemIdx}.p0` : `${path}.e${newElemIdx}`;
+          activeEditCellKey = newCellPath;
+          paint({ kind: 'edit-input', path: newCellPath });
+          const inp = tableHost.querySelector(`[data-json-edit-input="${CSS.escape(newCellPath)}"]`);
+          if (inp) { inp.focus(); if (inp.select) inp.select(); }
+        }
         return;
       }
       if (act === 'remove-row') {
@@ -5539,6 +5562,2216 @@
     return cardController;
   }
 
+  /* ---------- Key-Value / JSON Entry Editor (advisor-dec-371 + dec-370) ---------- */
+
+  const kvEditorInstances = [];
+
+  function initKvEntryEditor(config) {
+    const cardEl = typeof config.cardEl === 'string' ? document.getElementById(config.cardEl) : config.cardEl;
+    const kvHost = typeof config.kvHost === 'string' ? document.getElementById(config.kvHost) : config.kvHost;
+    const rawHost = typeof config.rawHost === 'string' ? document.getElementById(config.rawHost) : config.rawHost;
+    if (!kvHost) return null;
+
+    let nextRowId = 1;
+    let rootKind = config.initialRootKind === 'array' ? 'array' : 'object';
+    let openMenuRowId = null;
+    let openTypeMenuRowId = null;
+    let openRootMenu = false;
+    let discardPromptOpen = false;
+    let switchBlockedMsg = null;
+    let rawSyntaxIssue = null;
+    let lastRawErrorOffset = 0;
+    let canonicalRawText = null;
+    let rawEditedSinceSwitch = false;
+    let inlinePromptState = null;
+    let lastErrorSignature = '';
+    let lastReasonHtml = null;
+    let lastReasonClass = null;
+    let liveAnnounceTimer = null;
+
+    function hasLoneSurrogateInStr(str) {
+      const s = String(str || '');
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c >= 0xd800 && c <= 0xdbff) {
+          if (i + 1 < s.length) {
+            const lo = s.charCodeAt(i + 1);
+            if (lo >= 0xdc00 && lo <= 0xdfff) { i++; continue; }
+          }
+          return true;
+        } else if (c >= 0xdc00 && c <= 0xdfff) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function formatReadOnlyStringSafe(str) {
+      return Array.from(String(str || '')).map((ch) => {
+        const c = ch.charCodeAt(0);
+        if (c === 0x0d) return '\\r';
+        if (c === 0x0a) return '\\n';
+        if (c >= 0xd800 && c <= 0xdfff) return `\\u${c.toString(16).padStart(4, '0')}`;
+        return ch;
+      }).join('');
+    }
+
+    function makeRow(partial) {
+      const p = partial || {};
+      const type = p.type || 'string';
+      const val = p.value != null ? String(p.value) : (type === 'boolean' ? 'true' : type === 'null' ? 'null' : '');
+      const k = p.key != null ? String(p.key) : '';
+      return {
+        id: 'r' + (nextRowId++),
+        key: k,
+        value: val,
+        type,
+        placeholder: !!p.placeholder,
+        fromRaw: !!p.fromRaw,
+        occurrenceIndex: p.occurrenceIndex != null ? p.occurrenceIndex : 0,
+        rawKeyLiteral: p.rawKeyLiteral || null,
+        rawValueLiteral: p.rawValueLiteral || null,
+        hasCarriageReturn: !!p.hasCarriageReturn || val.includes('\r'),
+        hasLoneSurrogate: !!p.hasLoneSurrogate || hasLoneSurrogateInStr(val),
+        keyHasUnsafeChars: !!p.keyHasUnsafeChars || k.includes('\r') || k.includes('\n') || hasLoneSurrogateInStr(k),
+        expanded: p.expanded !== undefined ? !!p.expanded : true,
+        children: Array.isArray(p.children)
+          ? p.children
+          : (type === 'object' || type === 'array' ? [makeRow({ type: 'string', placeholder: true })] : [])
+      };
+    }
+
+    let rows = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
+
+    function cloneRowTree(list) {
+      return list.map((r) => ({
+        ...r,
+        children: Array.isArray(r.children) ? cloneRowTree(r.children) : []
+      }));
+    }
+
+    function captureEditorSnapshot() {
+      return {
+        rootKind,
+        rows: cloneRowTree(rows),
+        canonicalRawText,
+        rawEditedSinceSwitch,
+        rawSyntaxIssue,
+        switchBlockedMsg
+      };
+    }
+
+    function restoreEditorSnapshot(snap) {
+      if (!snap) return;
+      rootKind = snap.rootKind;
+      rows = cloneRowTree(snap.rows);
+      canonicalRawText = snap.canonicalRawText;
+      rawEditedSinceSwitch = !!snap.rawEditedSinceSwitch;
+      rawSyntaxIssue = snap.rawSyntaxIssue;
+      switchBlockedMsg = snap.switchBlockedMsg;
+      inlinePromptState = null;
+      paint();
+    }
+
+    function markTableMutated(row, field) {
+      canonicalRawText = null;
+      switchBlockedMsg = null;
+      discardPromptOpen = false;
+      if (row) {
+        row.placeholder = false;
+        if (field === 'key') {
+          row.fromRaw = false;
+          row.rawKeyLiteral = null;
+        } else if (field === 'value') {
+          row.rawValueLiteral = null;
+        } else {
+          row.fromRaw = false;
+          row.rawKeyLiteral = null;
+          row.rawValueLiteral = null;
+        }
+      }
+    }
+
+    function astNodeToRow(node, keyStr, propMeta) {
+      const meta = propMeta || {};
+      const k = keyStr != null ? String(keyStr) : '';
+      const base = {
+        key: k,
+        placeholder: false,
+        fromRaw: true,
+        occurrenceIndex: meta.occurrenceIndex || 0,
+        rawKeyLiteral: meta.rawKeyLiteral || null,
+        keyHasUnsafeChars: k.includes('\r') || k.includes('\n') || hasLoneSurrogateInStr(k)
+      };
+      if (!node) return makeRow({ ...base, value: '', type: 'string' });
+      if (node.kind === 'string') {
+        return makeRow({
+          ...base,
+          value: node.value,
+          type: 'string',
+          rawValueLiteral: node.raw || null,
+          hasCarriageReturn: !!node.hasCarriageReturn,
+          hasLoneSurrogate: !!node.hasLoneSurrogate
+        });
+      }
+      if (node.kind === 'number') {
+        return makeRow({ ...base, value: node.lexeme, type: 'number', rawValueLiteral: node.lexeme });
+      }
+      if (node.kind === 'boolean') {
+        return makeRow({ ...base, value: node.value ? 'true' : 'false', type: 'boolean', rawValueLiteral: node.raw });
+      }
+      if (node.kind === 'null') {
+        return makeRow({ ...base, value: 'null', type: 'null', rawValueLiteral: 'null' });
+      }
+      if (node.kind === 'object') {
+        const children = node.properties.map((p) => astNodeToRow(p.valueNode, p.key, {
+          occurrenceIndex: p.occurrenceIndex || 0,
+          rawKeyLiteral: p.keyNode ? p.keyNode.raw : null
+        }));
+        return makeRow({ ...base, value: '', type: 'object', expanded: true, children });
+      }
+      if (node.kind === 'array') {
+        const children = node.elements.map((el) => astNodeToRow(el, ''));
+        return makeRow({ ...base, value: '', type: 'array', expanded: true, children });
+      }
+      return makeRow({ ...base, value: '', type: 'string' });
+    }
+
+    function loadFromJsonString(jsonStr, opts) {
+      const options = opts || {};
+      const parsed = parseJsonStrict(jsonStr);
+      if (!parsed.ok) return { ok: false, reason: 'parse', error: parsed.error };
+      const root = parsed.document.root;
+      if (root.kind !== 'object' && root.kind !== 'array') {
+        return { ok: false, reason: 'scalar', kind: root.kind };
+      }
+      if (root.kind === 'array') {
+        rootKind = 'array';
+        rows = root.elements.map((el) => astNodeToRow(el, ''));
+      } else {
+        rootKind = 'object';
+        rows = root.properties.map((p) => astNodeToRow(p.valueNode, p.key, {
+          occurrenceIndex: p.occurrenceIndex || 0,
+          rawKeyLiteral: p.keyNode ? p.keyNode.raw : null
+        }));
+      }
+      if (options.preserveRawSource) {
+        canonicalRawText = String(jsonStr);
+      } else {
+        canonicalRawText = null;
+      }
+      return { ok: true };
+    }
+
+    function isRowCompletelyBlank(r, parentKind) {
+      if (r.type !== 'string') return false;
+      if (parentKind === 'object') return r.key === '' && r.value === '';
+      return r.value === '';
+    }
+
+    function isEffectivePlaceholderRow(r, idx, list, parentKind) {
+      if (r.placeholder) return true;
+      if (r.fromRaw) return false;
+      /* RFD-21: In object containers, any table-authored completely blank string row (any position) is a placeholder */
+      if (parentKind === 'object' && isRowCompletelyBlank(r, 'object')) {
+        return true;
+      }
+      if (idx === list.length - 1 && isRowCompletelyBlank(r, parentKind)) {
+        return true;
+      }
+      return false;
+    }
+
+    function validateRows(list, parentKind, errorsMap) {
+      const keyCounts = new Map();
+      const keySeenSoFar = new Map();
+      if (parentKind === 'object') {
+        list.forEach((r, idx) => {
+          if (isEffectivePlaceholderRow(r, idx, list, 'object')) return;
+          const k = r.key;
+          keyCounts.set(k, (keyCounts.get(k) || 0) + 1);
+        });
+      }
+
+      list.forEach((r, idx) => {
+        const isPh = isEffectivePlaceholderRow(r, idx, list, parentKind);
+        if (isPh) {
+          r.occurrenceIndex = 0;
+          return;
+        }
+        const rowErrs = {};
+        if (parentKind === 'object') {
+          const k = r.key;
+          const occ = keySeenSoFar.get(k) || 0;
+          keySeenSoFar.set(k, occ + 1);
+          r.occurrenceIndex = (keyCounts.get(k) || 0) > 1 ? occ : 0;
+
+          const hasNonDefaultContent = r.value !== '' || r.type !== 'string';
+          if (k === '' && !r.fromRaw && hasNonDefaultContent) {
+            rowErrs.key = {
+              code: 'EMPTY_KEY',
+              vi: 'Nhập tên trường hoặc xoá dòng trống.',
+              en: 'Enter a field name or remove the empty row.'
+            };
+          } else if ((keyCounts.get(k) || 0) > 1 && !r.fromRaw) {
+            rowErrs.key = {
+              code: 'DUPLICATE_KEY',
+              vi: `Trường “${k}” bị trùng trong cùng object.`,
+              en: `Duplicate key “${k}” in the same object.`
+            };
+          }
+        } else {
+          r.occurrenceIndex = 0;
+        }
+
+        if (r.type === 'number') {
+          const v = r.value.trim();
+          if (v === '' || !isValidJsonNumberLexeme(v)) {
+            rowErrs.value = {
+              code: 'INVALID_NUMBER',
+              vi: 'Số không đúng định dạng JSON (ví dụ: 36, -1.5, 1e4; không có số 0 đứng đầu).',
+              en: 'Invalid JSON number (e.g. 36, -1.5, 1e4; no leading zeros).'
+            };
+          }
+        }
+
+        if (rowErrs.key || rowErrs.value) {
+          errorsMap.set(r.id, rowErrs);
+        }
+
+        if ((r.type === 'object' || r.type === 'array') && Array.isArray(r.children)) {
+          validateRows(r.children, r.type, errorsMap);
+        }
+      });
+    }
+
+    function hasAnyCommittedRow(list, parentKind) {
+      if (canonicalRawText !== null) return true;
+      for (let i = 0; i < list.length; i++) {
+        const r = list[i];
+        if (!isEffectivePlaceholderRow(r, i, list, parentKind)) return true;
+      }
+      return false;
+    }
+
+    function serializeNodeValue(r, indent) {
+      if (r.type === 'string') {
+        if (r.rawValueLiteral) return r.rawValueLiteral;
+        return escapeJsonStringMinimal(r.value);
+      }
+      if (r.type === 'number') {
+        const v = r.value.trim();
+        return v;
+      }
+      if (r.type === 'boolean') {
+        return r.value === 'false' ? 'false' : 'true';
+      }
+      if (r.type === 'null') {
+        return 'null';
+      }
+      if (r.type === 'object') {
+        return serializeContainer(r.children || [], 'object', indent);
+      }
+      if (r.type === 'array') {
+        return serializeContainer(r.children || [], 'array', indent);
+      }
+      return '""';
+    }
+
+    function serializeContainer(list, kind, indent) {
+      const childIndent = indent + '  ';
+      if (kind === 'object') {
+        const active = list.filter((r, idx) => !isEffectivePlaceholderRow(r, idx, list, 'object'));
+        if (active.length === 0) return '{}';
+        const lines = active.map((r) => {
+          const keyJson = r.rawKeyLiteral || escapeJsonStringMinimal(r.key);
+          return `${childIndent}${keyJson}: ${serializeNodeValue(r, childIndent)}`;
+        });
+        return `{\n${lines.join(',\n')}\n${indent}}`;
+      }
+      const active = list.filter((r, idx) => !isEffectivePlaceholderRow(r, idx, list, 'array'));
+      if (active.length === 0) return '[]';
+      const lines = active.map((r) => `${childIndent}${serializeNodeValue(r, childIndent)}`);
+      return `[\n${lines.join(',\n')}\n${indent}]`;
+    }
+
+    function toJsonString() {
+      if (canonicalRawText !== null) {
+        return canonicalRawText;
+      }
+      return serializeContainer(rows, rootKind, '');
+    }
+
+    function findRowAndParent(list, targetId, parentKind, parentRow) {
+      for (let i = 0; i < list.length; i++) {
+        const r = list[i];
+        if (r.id === targetId) {
+          return { row: r, list, index: i, parentKind, parentRow: parentRow || null };
+        }
+        if ((r.type === 'object' || r.type === 'array') && Array.isArray(r.children)) {
+          const found = findRowAndParent(r.children, targetId, r.type, r);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    function getRowAncestorPath(targetId, list, parentKind, prefix) {
+      const curList = list || rows;
+      const curKind = parentKind || rootKind;
+      const curPrefix = prefix || '';
+      for (let i = 0; i < curList.length; i++) {
+        const r = curList[i];
+        if (r.id === targetId) return curPrefix;
+        if ((r.type === 'object' || r.type === 'array') && Array.isArray(r.children)) {
+          const childName = r.key || (curKind === 'array' ? `#${i + 1}` : `hàng ${i + 1}`);
+          const childPath = curPrefix ? `${curPrefix} › ${childName}` : childName;
+          const found = getRowAncestorPath(targetId, r.children, r.type, childPath);
+          if (found !== null) return found;
+        }
+      }
+      return null;
+    }
+
+    function typeChipLabel(type) {
+      switch (type) {
+        case 'number':
+          return 'Số · <span lang="en">Number</span>';
+        case 'boolean':
+          return 'true / false';
+        case 'null':
+          return 'null';
+        case 'object':
+          return 'Object';
+        case 'array':
+          return 'Mảng · <span lang="en">Array</span>';
+        default:
+          return 'Văn bản · <span lang="en">Text</span>';
+      }
+    }
+
+    function parseMultiLineKeyValuePaste(text, targetParentKind, isValueInput) {
+      const raw = String(text || '');
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      if (!isValueInput && (trimmed.startsWith('{') || trimmed.startsWith('['))) {
+        const parsed = parseJsonStrict(trimmed);
+        if (parsed.ok && (parsed.document.root.kind === 'object' || parsed.document.root.kind === 'array')) {
+          return { kind: 'json', root: parsed.document.root, rawText: trimmed };
+        }
+      }
+      const rawLines = raw.split(/\r?\n/);
+      const nonEmptyLines = rawLines.filter((l) => l.trim() !== '');
+      if (nonEmptyLines.length < 1) return null;
+
+      /* RFD-19: On value inputs, never intercept single-line text (URLs, base64 ==, 10:30 stay a single value) */
+      if (isValueInput && nonEmptyLines.length < 2) {
+        return null;
+      }
+
+      /* On key inputs, single-line pair paste requires >= 2 lines OR explicit 'key: value' (colon + space) / 'key=value' */
+      if (!isValueInput && nonEmptyLines.length === 1) {
+        const singleLine = nonEmptyLines[0];
+        const mSingle = /^([^:=\s][^:=]*?)\s*(?::\s+|=\s?)(.+)$/.exec(singleLine);
+        if (!mSingle || !mSingle[1].trim() || /^https?$/i.test(mSingle[1].trim())) {
+          return null;
+        }
+        return { kind: 'pairs', pairs: [{ key: mSingle[1].trim(), value: mSingle[2] }] };
+      }
+
+      const pairs = [];
+      let allPairs = nonEmptyLines.length >= 2;
+      for (let i = 0; i < nonEmptyLines.length; i++) {
+        const line = nonEmptyLines[i];
+        const m = /^([^:=]+?)\s*[:=]\s?(.*)$/.exec(line);
+        if (!m || !m[1].trim()) {
+          allPairs = false;
+          break;
+        }
+        pairs.push({ key: m[1].trim(), value: m[2] });
+      }
+      if (allPairs && pairs.length >= 2) {
+        return { kind: 'pairs', pairs };
+      }
+      if (targetParentKind === 'array' && nonEmptyLines.length >= 2) {
+        return { kind: 'lines', items: nonEmptyLines };
+      }
+      return null;
+    }
+
+    function renderRowsListHtml(list, parentKind, errorsMap, depth, parentRowId, pathPrefix) {
+      const isArr = parentKind === 'array';
+      const prefix = pathPrefix || '';
+      const colHeadHtml = depth === 0 ? `<div class="kv-col-head ${isArr ? 'kv-col-head-arr' : ''}" aria-hidden="true">
+        <span>${isArr ? '#' : 'Trường · <span lang="en">Key</span>'}</span>
+        <span>Giá trị · <span lang="en">Value</span></span>
+        <span>Kiểu · <span lang="en">Type</span></span>
+        <span class="sr-only">Menu</span>
+      </div>` : '';
+
+      if (list.length === 0) {
+        const emptyVi = isArr ? 'Mảng rỗng [] (0 phần tử)' : 'Object rỗng {} (0 trường)';
+        const emptyEn = isArr ? 'Empty array [] (0 items)' : 'Empty object {} (0 fields)';
+        const addBtnLabel = depth > 0
+          ? (isArr ? '+ phần tử · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add field</span>')
+          : (isArr ? '+ Thêm phần tử · <span lang="en">Add item</span>' : '+ Thêm dòng · <span lang="en">Add field</span>');
+        return `${colHeadHtml}<div class="kv-empty-container">
+          <span class="mono">${emptyVi} · <span lang="en">${emptyEn}</span></span>
+          <button type="button" class="btn btn-tertiary btn-sm" data-kv-act="add-row" data-parent-id="${esc(parentRowId || 'root')}">
+            ${addBtnLabel}
+          </button>
+        </div>`;
+      }
+
+      const itemsHtml = list.map((r, idx) => {
+        const rowNum = idx + 1;
+        const err = errorsMap.get(r.id) || {};
+        const keyErr = err.key || null;
+        const valErr = err.value || null;
+        const keyErrId = keyErr ? `kv-err-key-${r.id}` : '';
+        const valErrId = valErr ? `kv-err-val-${r.id}` : '';
+        const isInvalid = !!(keyErr || valErr);
+
+        const ctxPrefixVi = prefix ? `${prefix} › ` : '';
+        const ctxPrefixEn = prefix ? `${prefix} › ` : '';
+        const rowLabelText = isArr
+          ? `${ctxPrefixVi}Phần tử #${rowNum} · ${ctxPrefixEn}Item #${rowNum}`
+          : `${ctxPrefixVi}Dòng ${rowNum}${r.key ? `: ${r.key}` : ''} · ${ctxPrefixEn}Row ${rowNum}${r.key ? `: ${r.key}` : ''}`;
+
+        const occBadgeHtml = !isArr && r.occurrenceIndex >= 1
+          ? `<span class="kv-occ-badge" aria-label="Lần xuất hiện thứ ${r.occurrenceIndex + 1} · Occurrence ${r.occurrenceIndex + 1}" title="Khoá trùng lần ${r.occurrenceIndex + 1} · Duplicate key occurrence #${r.occurrenceIndex + 1}">⁽${toSuperscriptNum(r.occurrenceIndex + 1)}⁾</span>`
+          : '';
+
+        const keyWarnId = `kv-warn-key-${r.id}`;
+        const hasKeySpaceWarn = !isArr && !keyErr && r.key !== '' && r.key !== r.key.trim();
+        const keySpaceWarnHtml = hasKeySpaceWarn
+          ? `<p id="${esc(keyWarnId)}" class="text-[11px] text-warning-ink m-0 mt-0.5">Khoá có khoảng trắng đầu/cuối (được giữ nguyên) · <span lang="en">Key has leading/trailing spaces (preserved verbatim)</span></p>`
+          : '';
+        const keyDescribedBy = keyErr ? keyErrId : (hasKeySpaceWarn ? keyWarnId : '');
+
+        let keyCellHtml = '';
+        if (isArr) {
+          keyCellHtml = `<div class="kv-idx" aria-hidden="true">${rowNum}</div>`;
+        } else if (r.keyHasUnsafeChars) {
+          const safeKeyDisplay = formatReadOnlyStringSafe(r.key);
+          keyCellHtml = `<div class="kv-cell kv-cell-key">
+            <div class="kv-readonly-cell" tabindex="0" role="textbox" aria-readonly="true"
+                 aria-label="${esc(ctxPrefixVi)}Trường hàng ${rowNum} (chỉ đọc ở Bảng) · ${esc(ctxPrefixEn)}Key row ${rowNum} (read-only in Table)">
+              <span>${esc(safeKeyDisplay)}</span>
+              <span class="badge-type badge-ok text-[10px]">chỉ đọc · <span lang="en">read-only</span></span>
+            </div>
+          </div>`;
+        } else {
+          keyCellHtml = `<div class="kv-cell kv-cell-key">
+            <div class="kv-key-wrap ${occBadgeHtml ? 'has-occ' : ''}">
+              <input id="kv-key-${r.id}" type="text" class="kv-input kv-input-key"
+                data-kv-key-input="${esc(r.id)}"
+                value="${esc(r.key)}"
+                placeholder="Tên trường (vd: ssid) · Key"
+                aria-label="${esc(ctxPrefixVi)}Trường hàng ${rowNum} · ${esc(ctxPrefixEn)}Key row ${rowNum}"
+                ${keyErr ? 'aria-invalid="true"' : ''} ${keyDescribedBy ? `aria-describedby="${esc(keyDescribedBy)}"` : ''}
+                data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+              ${occBadgeHtml}
+            </div>
+            ${keySpaceWarnHtml}
+            ${keyErr ? `<p id="${esc(keyErrId)}" class="kv-row-err">${esc(keyErr.vi)} · <span lang="en">${esc(keyErr.en)}</span></p>` : ''}
+          </div>`;
+        }
+
+        const hasNumberSuggest = r.type === 'string' && !r.hasCarriageReturn && !r.hasLoneSurrogate && !r.value.includes('\n') && r.value.trim() !== '' && isValidJsonNumberLexeme(r.value.trim());
+        const suggestNumberChip = hasNumberSuggest
+          ? `<button type="button" class="kv-num-suggest" data-kv-act="suggest-number" data-row-id="${esc(r.id)}" aria-label="${esc(ctxPrefixVi)}Đổi dòng ${rowNum} sang kiểu Số · ${esc(ctxPrefixEn)}Switch row ${rowNum} to Number" title="Giá trị khớp số JSON — bấm để đổi sang kiểu Số · Value parses as a number — click to switch to Number">Số?</button>`
+          : '';
+
+        let valueControlHtml = '';
+        if (r.type === 'string' && (r.hasCarriageReturn || r.hasLoneSurrogate)) {
+          const safeVal = formatReadOnlyStringSafe(r.value);
+          const roReasonId = `kv-ro-note-${r.id}`;
+          valueControlHtml = `<div class="kv-readonly-cell" tabindex="0" role="textbox" aria-readonly="true"
+            aria-label="${esc(ctxPrefixVi)}Giá trị hàng ${rowNum} (chỉ đọc) · ${esc(ctxPrefixEn)}Value row ${rowNum} (read-only)"
+            aria-describedby="${esc(roReasonId)}">
+            <span>${esc(safeVal)}</span>
+            <span id="${esc(roReasonId)}" class="badge-type badge-ok text-[10px]">chỉ đọc ở Bảng (\\r / surrogate) · <span lang="en">read-only in Table</span></span>
+          </div>`;
+        } else if (r.type === 'string' || r.type === 'number') {
+          const ph = r.type === 'number'
+            ? 'Giá trị số (vd: 36) · Number value'
+            : (isArr ? `Giá trị mục #${rowNum} (trống = "") · Item #${rowNum} value` : 'Giá trị · Value');
+          const isMultiline = r.type === 'string' && r.value.includes('\n');
+          const rowsCount = isMultiline ? Math.min(6, Math.max(2, r.value.split('\n').length)) : 1;
+          const inputHtml = isMultiline
+            ? `<textarea id="kv-val-${r.id}" rows="${rowsCount}"
+                class="kv-input"
+                data-kv-val-input="${esc(r.id)}"
+                placeholder="${esc(ph)}"
+                aria-label="${esc(ctxPrefixVi)}Giá trị hàng ${rowNum} · ${esc(ctxPrefixEn)}Value row ${rowNum}"
+                ${valErr ? `aria-invalid="true" aria-describedby="${esc(valErrId)}"` : ''}
+                data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">${esc(r.value)}</textarea>`
+            : `<input id="kv-val-${r.id}" type="text"
+                class="kv-input ${r.type === 'number' ? 'kv-input-num' : ''}"
+                data-kv-val-input="${esc(r.id)}"
+                value="${esc(r.value)}"
+                placeholder="${esc(ph)}"
+                aria-label="${esc(ctxPrefixVi)}Giá trị hàng ${rowNum} · ${esc(ctxPrefixEn)}Value row ${rowNum}"
+                ${valErr ? `aria-invalid="true" aria-describedby="${esc(valErrId)}"` : ''}
+                data-vault-secret spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">`;
+          valueControlHtml = `<div class="kv-val-adorn-wrap ${hasNumberSuggest ? 'has-suggest' : ''}">
+            ${inputHtml}
+            ${suggestNumberChip}
+          </div>`;
+        } else if (r.type === 'boolean') {
+          const isTrue = r.value !== 'false';
+          valueControlHtml = `<div class="kv-bool-seg" role="group" aria-label="${esc(ctxPrefixVi)}Giá trị true/false hàng ${rowNum} · ${esc(ctxPrefixEn)}Boolean value row ${rowNum}">
+            <button type="button" data-kv-act="set-bool" data-row-id="${esc(r.id)}" data-bool-val="true" aria-pressed="${isTrue ? 'true' : 'false'}">true</button>
+            <button type="button" data-kv-act="set-bool" data-row-id="${esc(r.id)}" data-bool-val="false" aria-pressed="${!isTrue ? 'true' : 'false'}">false</button>
+          </div>`;
+        } else if (r.type === 'null') {
+          valueControlHtml = `<div class="kv-null-pill" role="note">
+            <span aria-hidden="true">null</span>
+            <span class="sr-only">${esc(ctxPrefixVi)}Giá trị null hàng ${rowNum} · ${esc(ctxPrefixEn)}Null value row ${rowNum}</span>
+          </div>`;
+        } else if (r.type === 'object' || r.type === 'array') {
+          const childList = r.children || [];
+          const nonBlankCount = childList.filter((c, cIdx) => !isEffectivePlaceholderRow(c, cIdx, childList, r.type)).length;
+          const summaryVi = r.type === 'object' ? `${nonBlankCount} trường con` : `${nonBlankCount} phần tử`;
+          const summaryEn = r.type === 'object' ? `${nonBlankCount} nested fields` : `${nonBlankCount} items`;
+          valueControlHtml = `<button type="button" class="kv-container-pill" data-kv-act="toggle-expand" data-row-id="${esc(r.id)}" aria-expanded="${r.expanded ? 'true' : 'false'}" aria-label="${esc(ctxPrefixVi)}${r.type === 'object' ? 'Object' : 'Mảng'} hàng ${rowNum} (${summaryVi}) · ${esc(ctxPrefixEn)}${r.type === 'object' ? 'Object' : 'Array'} row ${rowNum} (${summaryEn})">
+            <span class="caret" aria-hidden="true">›</span>
+            <span class="kv-pill-full">${r.type === 'object' ? 'Object' : 'Mảng · Array'} (${summaryVi} · <span lang="en" class="text-muted">${summaryEn}</span>)</span>
+            <span class="kv-pill-compact" aria-hidden="true">${r.type === 'object' ? 'Object' : 'Mảng'} (${nonBlankCount})</span>
+          </button>`;
+        }
+
+        const valueCellHtml = `<div class="kv-cell kv-cell-val">
+          ${valueControlHtml}
+          ${valErr ? `<p id="${esc(valErrId)}" class="kv-row-err">${esc(valErr.vi)} · <span lang="en">${esc(valErr.en)}</span></p>` : ''}
+        </div>`;
+
+        const isTypeOpen = openTypeMenuRowId === r.id;
+        const isRowMenuOpen = openMenuRowId === r.id;
+
+        const typePopHtml = isTypeOpen ? `<div role="menu" data-kv-menu-pop="type" data-row-id="${esc(r.id)}" aria-label="${esc(ctxPrefixVi)}Chọn kiểu dữ liệu hàng ${rowNum} · ${esc(ctxPrefixEn)}Select type row ${rowNum}" class="popover menu-pop menu-pop-right">
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'string' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="string">
+            <span>Văn bản · <span lang="en" class="text-muted">Text</span></span>
+            ${r.type === 'string' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'number' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="number">
+            <span>Số · <span lang="en" class="text-muted">Number</span></span>
+            ${r.type === 'number' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'boolean' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="boolean">
+            <span>true / false · <span lang="en" class="text-muted">Boolean</span></span>
+            ${r.type === 'boolean' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'null' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="null">
+            <span>null</span>
+            ${r.type === 'null' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'object' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="object">
+            <span>Object · <span lang="en" class="text-muted">Nested fields</span></span>
+            ${r.type === 'object' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
+          </button>
+          <button type="button" role="menuitemradio" aria-checked="${r.type === 'array' ? 'true' : 'false'}" class="menu-item" data-kv-act="pick-type" data-row-id="${esc(r.id)}" data-type="array">
+            <span>Mảng · <span lang="en" class="text-muted">Array</span></span>
+            ${r.type === 'array' ? '<span class="mono text-accent" aria-hidden="true">✓</span>' : ''}
+          </button>
+        </div>` : '';
+
+        const rowMenuPopHtml = isRowMenuOpen ? `<div role="menu" data-kv-menu-pop="row" data-row-id="${esc(r.id)}" aria-label="${esc(ctxPrefixVi)}Thao tác dòng ${rowNum} · ${esc(ctxPrefixEn)}Row ${rowNum} actions" class="popover menu-pop menu-pop-right">
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="insert-below" data-row-id="${esc(r.id)}">
+            <span>Chèn dòng bên dưới · <span lang="en" class="text-muted">Insert row below</span></span>
+          </button>
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="move-row-up" data-row-id="${esc(r.id)}" ${idx <= 0 ? 'disabled' : ''}>
+            <span>Chuyển lên · <span lang="en" class="text-muted">Move up</span></span>
+            <span class="mono text-[12px] text-muted" aria-hidden="true">↑</span>
+          </button>
+          <button type="button" role="menuitem" class="menu-item" data-kv-act="move-row-down" data-row-id="${esc(r.id)}" ${idx >= list.length - 1 ? 'disabled' : ''}>
+            <span>Chuyển xuống · <span lang="en" class="text-muted">Move down</span></span>
+            <span class="mono text-[12px] text-muted" aria-hidden="true">↓</span>
+          </button>
+          <button type="button" role="menuitem" class="menu-item menu-item-danger" data-kv-act="delete-row" data-row-id="${esc(r.id)}">
+            <span>Xoá dòng · <span lang="en" class="text-muted">Delete row</span></span>
+          </button>
+        </div>` : '';
+
+        const typeColHtml = `<div class="kv-type-col">
+          <button type="button" class="kv-type-chip"
+            data-kv-act="toggle-type-menu"
+            data-row-id="${esc(r.id)}"
+            data-kv-type="${esc(r.type)}"
+            aria-haspopup="menu"
+            aria-expanded="${isTypeOpen ? 'true' : 'false'}"
+            aria-label="${esc(ctxPrefixVi)}Kiểu dữ liệu hàng ${rowNum} · ${esc(ctxPrefixEn)}Type row ${rowNum}"
+            title="Đổi kiểu dữ liệu (Alt+↓) · Change type (Alt+↓)">
+            <span class="truncate">${typeChipLabel(r.type)}</span>
+            <span class="text-muted text-[11px] shrink-0" aria-hidden="true">▾</span>
+          </button>
+          ${typePopHtml}
+        </div>`;
+
+        const actColHtml = `<div class="kv-act-col">
+          <button type="button" class="kv-menu-btn"
+            data-kv-act="toggle-row-menu"
+            data-row-id="${esc(r.id)}"
+            aria-haspopup="menu"
+            aria-expanded="${isRowMenuOpen ? 'true' : 'false'}"
+            aria-label="${esc(ctxPrefixVi)}Menu dòng ${rowNum} · ${esc(ctxPrefixEn)}Row ${rowNum} menu">⋯</button>
+          ${rowMenuPopHtml}
+        </div>`;
+
+        let nestedHtml = '';
+        if ((r.type === 'object' || r.type === 'array') && r.expanded) {
+          const childName = r.key || (isArr ? `#${rowNum}` : `hàng ${rowNum}`);
+          const childPath = prefix ? `${prefix} › ${childName}` : childName;
+          const nestLabel = r.type === 'object'
+            ? `Object con của ${childName} · Nested object for ${childName}`
+            : `Mảng con của ${childName} · Nested array for ${childName}`;
+          nestedHtml = `<div class="kv-nest" role="group" aria-label="${esc(nestLabel)}">
+            ${renderRowsListHtml(r.children || [], r.type, errorsMap, depth + 1, r.id, childPath)}
+          </div>`;
+        }
+
+        return `<li class="kv-row ${isInvalid ? 'is-invalid' : ''}" data-kv-row="${esc(r.id)}" role="group" aria-label="${esc(rowLabelText)}">
+          <div class="kv-row-grid ${isArr ? 'kv-row-grid-arr' : ''}">
+            ${keyCellHtml}
+            ${valueCellHtml}
+            ${typeColHtml}
+            ${actColHtml}
+          </div>
+          ${nestedHtml}
+        </li>`;
+      }).join('');
+
+      const addBtnLabel = depth > 0
+        ? (isArr ? '+ phần tử · <span lang="en">Add item</span>' : '+ dòng · <span lang="en">Add field</span>')
+        : (isArr ? '+ Thêm phần tử · <span lang="en">Add item</span>' : '+ Thêm dòng · <span lang="en">Add field</span>');
+
+      const pasteHintHtml = depth === 0
+        ? (isArr
+          ? `<span class="text-[12px] text-muted">Mẹo: dán mỗi dòng một giá trị hoặc mảng JSON · <span lang="en">Tip: paste one value per line or JSON array</span></span>`
+          : `<span class="text-[12px] text-muted">Mẹo: dán nhiều dòng <span class="mono">key: value</span> hoặc JSON · <span class="kbd">Alt+↓</span> đổi kiểu · <span lang="en">Tip: paste <span class="mono">key: value</span> lines or JSON</span></span>`)
+        : '';
+
+      return `${colHeadHtml}<ul class="kv-rows" role="list" aria-label="${depth === 0 ? (isArr ? 'Danh sách phần tử mảng · Array items' : 'Danh sách trường khoá-giá trị · Key-value fields') : 'Danh sách dòng con · Nested rows'}">${itemsHtml}</ul>
+      <div class="kv-add-bar">
+        <button type="button" class="btn btn-tertiary btn-sm" data-kv-act="add-row" data-parent-id="${esc(parentRowId || 'root')}">
+          ${addBtnLabel}
+        </button>
+        ${pasteHintHtml}
+      </div>`;
+    }
+
+    function syncHeaderControls() {
+      if (!cardEl) return;
+      const rootBadge = cardEl.querySelector('[data-kv-root-badge]');
+      if (rootBadge) {
+        rootBadge.innerHTML = rootKind === 'array'
+          ? 'Gốc: Mảng · <span lang="en">Root: Array</span>'
+          : 'Gốc: Object · <span lang="en">Root: Object</span>';
+      }
+      const rootMenuBtn = cardEl.querySelector('[data-kv-root-menu-btn]');
+      const rootMenuPop = cardEl.querySelector('[data-kv-root-menu-pop]');
+      if (rootMenuBtn) rootMenuBtn.setAttribute('aria-expanded', openRootMenu ? 'true' : 'false');
+      if (rootMenuPop) {
+        rootMenuPop.hidden = !openRootMenu;
+        rootMenuPop.querySelectorAll('[data-kv-root-choice]').forEach((b) => {
+          const k = b.dataset.kvRootChoice;
+          b.setAttribute('role', 'menuitemradio');
+          b.setAttribute('aria-checked', k === rootKind ? 'true' : 'false');
+          const check = b.querySelector('[data-kv-root-check]');
+          if (check) check.hidden = k !== rootKind;
+        });
+      }
+    }
+
+    function syncInlinePromptBanner(focusFirstBtn) {
+      if (!cardEl) return;
+      const promptEl = cardEl.querySelector('[data-kv-inline-prompt]');
+      if (!promptEl) return;
+      if (!inlinePromptState) {
+        promptEl.hidden = true;
+        promptEl.innerHTML = '';
+        return;
+      }
+      promptEl.hidden = false;
+      promptEl.innerHTML = `<div class="min-w-0" role="alert">
+        <p class="font-semibold m-0 text-[13px] text-body">${inlinePromptState.titleHtml}</p>
+        ${inlinePromptState.descHtml ? `<p class="m-0 mt-0.5 text-[12px] text-muted">${inlinePromptState.descHtml}</p>` : ''}
+      </div>
+      <div class="flex flex-wrap items-center gap-2 min-w-0">
+        ${inlinePromptState.actionsHtml}
+      </div>`;
+      if (focusFirstBtn) {
+        const firstAction = promptEl.querySelector('button[data-kv-prompt-act]');
+        if (firstAction && typeof firstAction.focus === 'function') {
+          firstAction.focus();
+        }
+      }
+    }
+
+    function scheduleLiveErrorAnnouncement(errorsMap) {
+      if (!cardEl) return;
+      const liveEl = cardEl.querySelector('[data-kv-live-region]');
+      if (!liveEl) return;
+      const entries = [];
+      errorsMap.forEach((err, rowId) => {
+        const msg = err.key || err.value;
+        if (msg) entries.push(`${rowId}:${msg.code}`);
+      });
+      const sig = entries.join('|');
+      if (sig === lastErrorSignature) return;
+      lastErrorSignature = sig;
+      clearTimeout(liveAnnounceTimer);
+      if (!sig) {
+        liveEl.textContent = '';
+        return;
+      }
+      liveAnnounceTimer = setTimeout(() => {
+        const firstErr = errorsMap.values().next().value;
+        const msg = firstErr ? (firstErr.key || firstErr.value) : null;
+        const count = errorsMap.size;
+        if (msg) {
+          liveEl.textContent = count > 1
+            ? `Có ${count} lỗi cần sửa: ${msg.vi} · ${count} errors: ${msg.en}`
+            : `${msg.vi} · ${msg.en}`;
+        }
+      }, 300);
+    }
+
+    function syncFooterAndRaw(errorsMap) {
+      const jsonText = toJsonString();
+      const bytes = measureUtf8Bytes(jsonText);
+      const overCap = bytes > JSON_MAX_UTF8_BYTES;
+      const hasRowErrors = errorsMap.size > 0;
+      const isBlank = !hasAnyCommittedRow(rows, rootKind);
+
+      if (rawHost) {
+        const ta = rawHost.querySelector('[data-json-raw-textarea]');
+        if (ta && document.activeElement !== ta && !rawSyntaxIssue && canonicalRawText === null) {
+          ta.value = jsonText;
+        }
+        const byteEl = rawHost.querySelector('[data-json-raw-bytes]');
+        if (byteEl) {
+          byteEl.textContent = `${formatByteCountVi(bytes)} / 262.144 B`;
+        }
+      }
+
+      if (!cardEl) return;
+      const byteHeaderEl = cardEl.querySelector('[data-kv-bytes]');
+      if (byteHeaderEl) {
+        byteHeaderEl.innerHTML = `${formatByteCountVi(bytes)} / 262.144 B`;
+      }
+
+      const saveBtn = cardEl.querySelector('[data-kv-save-btn]');
+      const reasonEl = cardEl.querySelector('[data-kv-save-reason]');
+      const discardBox = cardEl.querySelector('[data-kv-discard-confirm]');
+      const switchBanner = cardEl.querySelector('[data-kv-switch-error]');
+
+      if (switchBanner) {
+        if (switchBlockedMsg) {
+          switchBanner.hidden = false;
+          switchBanner.innerHTML = switchBlockedMsg;
+        } else {
+          switchBanner.hidden = true;
+        }
+      }
+
+      syncInlinePromptBanner();
+
+      if (discardBox) {
+        discardBox.hidden = !discardPromptOpen;
+      }
+
+      let disableReason = null;
+      if (rawSyntaxIssue) {
+        disableReason = {
+          vi: `Chưa thể lưu: JSON gốc đang lỗi cú pháp (dòng ${rawSyntaxIssue.line}, cột ${rawSyntaxIssue.column}).`,
+          en: `Cannot save: Raw JSON has a syntax error (line ${rawSyntaxIssue.line}, col ${rawSyntaxIssue.column}).`
+        };
+      } else if (overCap) {
+        disableReason = {
+          vi: 'Chưa thể lưu: Nội dung vượt quá 256 KiB (262.144 B UTF-8).',
+          en: 'Cannot save: Entry exceeds 256 KiB (262,144 UTF-8 bytes).'
+        };
+      } else if (hasRowErrors) {
+        const errCount = errorsMap.size;
+        const firstErr = errorsMap.values().next().value;
+        const msg = firstErr.key || firstErr.value;
+        const countPrefixVi = errCount > 1 ? `${errCount} lỗi — ` : '';
+        const countPrefixEn = errCount > 1 ? `${errCount} errors — ` : '';
+        disableReason = {
+          vi: `Chưa thể lưu (${countPrefixVi}${msg.vi})`,
+          en: `Cannot save (${countPrefixEn}${msg.en})`
+        };
+      } else if (isBlank) {
+        disableReason = {
+          vi: rootKind === 'array'
+            ? 'Nhập ít nhất một giá trị để lưu entry.'
+            : 'Nhập ít nhất một trường để lưu entry.',
+          en: rootKind === 'array'
+            ? 'Enter at least one item value to save.'
+            : 'Enter at least one field to save.'
+        };
+      }
+
+      if (reasonEl) {
+        reasonEl.hidden = false;
+        const nextClass = (disableReason && (hasRowErrors || rawSyntaxIssue || overCap)) ? 'kv-save-reason' : 'text-[12px] text-muted';
+        const nextHtml = disableReason
+          ? `${esc(disableReason.vi)} · <span lang="en">${esc(disableReason.en)}</span>`
+          : `Mã hoá đầu-cuối · <span class="kbd">Enter</span>/<span class="kbd">Tab</span> chuyển ô · <span class="kbd">Alt+↓</span> đổi kiểu · <span lang="en">End-to-end encrypted</span>`;
+        /* RFD-24: Only mutate footer reason DOM when class or text actually changes */
+        if (lastReasonClass !== nextClass) {
+          reasonEl.className = nextClass;
+          lastReasonClass = nextClass;
+        }
+        if (lastReasonHtml !== nextHtml) {
+          reasonEl.innerHTML = nextHtml;
+          lastReasonHtml = nextHtml;
+        }
+      }
+
+      if (saveBtn) {
+        saveBtn.disabled = !!disableReason;
+        if (reasonEl && reasonEl.id) {
+          saveBtn.setAttribute('aria-describedby', reasonEl.id);
+        }
+      }
+
+      scheduleLiveErrorAnnouncement(errorsMap);
+    }
+
+    function paint(focusDesc) {
+      if (state.locked && kvHost.closest('[data-secret]')) {
+        kvHost.innerHTML = '';
+        return;
+      }
+      const errorsMap = new Map();
+      validateRows(rows, rootKind, errorsMap);
+      kvHost.innerHTML = `<div class="kv-editor">${renderRowsListHtml(rows, rootKind, errorsMap, 0, 'root', '')}</div>`;
+      syncHeaderControls();
+      syncFooterAndRaw(errorsMap);
+
+      if (focusDesc) {
+        let targetEl = null;
+        if (focusDesc.kind === 'key' && focusDesc.rowId) {
+          targetEl = kvHost.querySelector(`[data-kv-key-input="${CSS.escape(focusDesc.rowId)}"]`);
+        } else if (focusDesc.kind === 'val' && focusDesc.rowId) {
+          targetEl = kvHost.querySelector(`[data-kv-val-input="${CSS.escape(focusDesc.rowId)}"]`) ||
+                     kvHost.querySelector(`[data-kv-act="toggle-type-menu"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+        } else if (focusDesc.kind === 'type' && focusDesc.rowId) {
+          targetEl = kvHost.querySelector(`[data-kv-act="toggle-type-menu"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+        } else if (focusDesc.kind === 'menu' && focusDesc.rowId) {
+          targetEl = kvHost.querySelector(`[data-kv-act="toggle-row-menu"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+        } else if (focusDesc.kind === 'type-menu-item' && focusDesc.rowId) {
+          const pop = kvHost.querySelector(`[data-kv-menu-pop="type"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+          if (pop) {
+            targetEl = pop.querySelector('[aria-checked="true"]') || pop.querySelector('[role^="menuitem"]');
+          }
+        } else if (focusDesc.kind === 'row-menu-item' && focusDesc.rowId) {
+          const pop = kvHost.querySelector(`[data-kv-menu-pop="row"][data-row-id="${CSS.escape(focusDesc.rowId)}"]`);
+          if (pop) {
+            targetEl = Array.from(pop.querySelectorAll('[role^="menuitem"]')).find((el) => !el.disabled) || null;
+          }
+        }
+        if (targetEl && typeof targetEl.focus === 'function') {
+          targetEl.focus();
+          if (focusDesc.select && typeof targetEl.select === 'function') targetEl.select();
+        }
+      }
+    }
+
+    /* Update inline validation & DOM in-place without destroying focused input DOM (preserves IME composition & stops SR re-announcements) */
+    function refreshValidationInPlace() {
+      const errorsMap = new Map();
+      validateRows(rows, rootKind, errorsMap);
+
+      kvHost.querySelectorAll('[data-kv-row]').forEach((li) => {
+        const rId = li.dataset.kvRow;
+        const found = findRowAndParent(rows, rId, rootKind, null);
+        if (!found) return;
+        const r = found.row;
+        const err = errorsMap.get(rId) || {};
+        const keyErr = err.key || null;
+        const valErr = err.value || null;
+        const hasErrNow = !!(keyErr || valErr);
+
+        li.classList.toggle('is-invalid', hasErrNow);
+
+        /* RFD-29: Keep row group aria-label, key-space warning, and Số? aria-label in sync during in-place refresh */
+        const rowNum = found.index + 1;
+        const isArr = found.parentKind === 'array';
+        const ancPath = getRowAncestorPath(rId) || '';
+        const ctxPrefixVi = ancPath ? `${ancPath} › ` : '';
+        const ctxPrefixEn = ancPath ? `${ancPath} › ` : '';
+        const rowLabelText = isArr
+          ? `${ctxPrefixVi}Phần tử #${rowNum} · ${ctxPrefixEn}Item #${rowNum}`
+          : `${ctxPrefixVi}Dòng ${rowNum}${r.key ? `: ${r.key}` : ''} · ${ctxPrefixEn}Row ${rowNum}${r.key ? `: ${r.key}` : ''}`;
+        if (li.getAttribute('aria-label') !== rowLabelText) {
+          li.setAttribute('aria-label', rowLabelText);
+        }
+
+        const keyInp = li.querySelector(`[data-kv-key-input="${CSS.escape(rId)}"]`);
+        const keyCell = keyInp ? keyInp.closest('.kv-cell-key') : null;
+        if (keyInp && keyCell) {
+          const keyErrId = `kv-err-key-${rId}`;
+          const keyWarnId = `kv-warn-key-${rId}`;
+          let errP = keyCell.querySelector(`#${CSS.escape(keyErrId)}`);
+          let warnP = keyCell.querySelector(`#${CSS.escape(keyWarnId)}`);
+          const hasKeySpaceWarn = !isArr && !keyErr && r.key !== '' && r.key !== r.key.trim();
+
+          if (hasKeySpaceWarn) {
+            const warnHtml = 'Khoá có khoảng trắng đầu/cuối (được giữ nguyên) · <span lang="en">Key has leading/trailing spaces (preserved verbatim)</span>';
+            if (!warnP) {
+              warnP = document.createElement('p');
+              warnP.id = keyWarnId;
+              warnP.className = 'text-[11px] text-warning-ink m-0 mt-0.5';
+              warnP.innerHTML = warnHtml;
+              if (errP) keyCell.insertBefore(warnP, errP);
+              else keyCell.appendChild(warnP);
+            }
+          } else if (warnP) {
+            warnP.remove();
+          }
+
+          if (keyErr) {
+            keyInp.setAttribute('aria-invalid', 'true');
+            keyInp.setAttribute('aria-describedby', keyErrId);
+            const errHtml = `${esc(keyErr.vi)} · <span lang="en">${esc(keyErr.en)}</span>`;
+            if (!errP) {
+              errP = document.createElement('p');
+              errP.id = keyErrId;
+              errP.className = 'kv-row-err';
+              errP.innerHTML = errHtml;
+              keyCell.appendChild(errP);
+            } else if (errP.innerHTML !== errHtml) {
+              errP.innerHTML = errHtml;
+            }
+          } else {
+            keyInp.removeAttribute('aria-invalid');
+            if (hasKeySpaceWarn) {
+              keyInp.setAttribute('aria-describedby', keyWarnId);
+            } else {
+              keyInp.removeAttribute('aria-describedby');
+            }
+            if (errP) errP.remove();
+          }
+        }
+
+        const valInp = li.querySelector(`[data-kv-val-input="${CSS.escape(rId)}"]`);
+        const valCell = valInp ? valInp.closest('.kv-cell-val') : null;
+        if (valInp && valCell) {
+          const valErrId = `kv-err-val-${rId}`;
+          let errP = valCell.querySelector(`#${CSS.escape(valErrId)}`);
+          if (valErr) {
+            valInp.setAttribute('aria-invalid', 'true');
+            valInp.setAttribute('aria-describedby', valErrId);
+            const errHtml = `${esc(valErr.vi)} · <span lang="en">${esc(valErr.en)}</span>`;
+            if (!errP) {
+              errP = document.createElement('p');
+              errP.id = valErrId;
+              errP.className = 'kv-row-err';
+              errP.innerHTML = errHtml;
+              valCell.appendChild(errP);
+            } else if (errP.innerHTML !== errHtml) {
+              errP.innerHTML = errHtml;
+            }
+          } else {
+            valInp.removeAttribute('aria-invalid');
+            valInp.removeAttribute('aria-describedby');
+            if (errP) errP.remove();
+          }
+
+          const adornWrap = valInp.closest('.kv-val-adorn-wrap');
+          if (adornWrap) {
+            const shouldHaveSug = r.type === 'string' && !r.hasCarriageReturn && !r.hasLoneSurrogate && !r.value.includes('\n') && r.value.trim() !== '' && isValidJsonNumberLexeme(r.value.trim());
+            let sugBtn = adornWrap.querySelector('[data-kv-act="suggest-number"]');
+            adornWrap.classList.toggle('has-suggest', shouldHaveSug);
+            const sugAriaLabel = `${ctxPrefixVi}Đổi dòng ${rowNum} sang kiểu Số · ${ctxPrefixEn}Switch row ${rowNum} to Number`;
+            if (shouldHaveSug && !sugBtn) {
+              sugBtn = document.createElement('button');
+              sugBtn.type = 'button';
+              sugBtn.className = 'kv-num-suggest';
+              sugBtn.dataset.kvAct = 'suggest-number';
+              sugBtn.dataset.rowId = rId;
+              sugBtn.setAttribute('aria-label', sugAriaLabel);
+              sugBtn.title = 'Giá trị khớp số JSON — bấm để đổi sang kiểu Số · Value parses as a number — click to switch to Number';
+              sugBtn.textContent = 'Số?';
+              adornWrap.appendChild(sugBtn);
+            } else if (shouldHaveSug && sugBtn) {
+              if (sugBtn.getAttribute('aria-label') !== sugAriaLabel) {
+                sugBtn.setAttribute('aria-label', sugAriaLabel);
+              }
+            } else if (!shouldHaveSug && sugBtn) {
+              sugBtn.remove();
+            }
+          }
+        }
+      });
+
+      syncFooterAndRaw(errorsMap);
+    }
+
+    kvHost.addEventListener('input', (e) => {
+      const keyInp = e.target.closest('[data-kv-key-input]');
+      if (keyInp) {
+        const found = findRowAndParent(rows, keyInp.dataset.kvKeyInput, rootKind, null);
+        if (found) {
+          found.row.key = keyInp.value;
+          markTableMutated(found.row, 'key');
+          refreshValidationInPlace();
+        }
+        return;
+      }
+      const valInp = e.target.closest('[data-kv-val-input]');
+      if (valInp) {
+        const found = findRowAndParent(rows, valInp.dataset.kvValInput, rootKind, null);
+        if (found) {
+          found.row.value = valInp.value;
+          markTableMutated(found.row, 'value');
+          refreshValidationInPlace();
+        }
+      }
+    });
+
+    function insertRowsAtFound(found, newRows) {
+      if (isEffectivePlaceholderRow(found.row, found.index, found.list, found.parentKind) && isRowCompletelyBlank(found.row, found.parentKind)) {
+        found.list.splice(found.index, 1, ...newRows);
+      } else {
+        found.list.splice(found.index + 1, 0, ...newRows);
+      }
+    }
+
+    kvHost.addEventListener('paste', (e) => {
+      const targetInp = e.target.closest('[data-kv-key-input], [data-kv-val-input]');
+      if (!targetInp || !e.clipboardData) return;
+      const text = e.clipboardData.getData('text/plain');
+      if (!text) return;
+      const trimmed = text.trim();
+      if (!text.includes('\n') && !text.includes(':') && !text.includes('=') && !trimmed.startsWith('{') && !trimmed.startsWith('[')) return;
+      const rowId = targetInp.dataset.kvKeyInput || targetInp.dataset.kvValInput;
+      const found = findRowAndParent(rows, rowId, rootKind, null);
+      if (!found) return;
+      const isValueInput = !!targetInp.dataset.kvValInput;
+      if (isValueInput && targetInp.value !== '') return;
+
+      const parsedPaste = parseMultiLineKeyValuePaste(text, found.parentKind, isValueInput);
+      if (!parsedPaste) return;
+
+      const prevSnap = captureEditorSnapshot();
+      const isEditorBlank = !hasAnyCommittedRow(rows, rootKind);
+
+      if (parsedPaste.kind === 'json') {
+        e.preventDefault();
+        const pastedRoot = parsedPaste.root;
+        if (isEditorBlank) {
+          loadFromJsonString(parsedPaste.rawText, { preserveRawSource: false });
+          rows.forEach((r) => { r.fromRaw = false; });
+          const firstRow = rows[0];
+          paint(firstRow ? { kind: rootKind === 'array' ? 'val' : 'key', rowId: firstRow.id } : null);
+          toast('Đã điền các trường từ JSON vừa dán · Filled fields from pasted JSON', 'Hoàn tác', {
+            originEl: kvHost,
+            onAction: () => restoreEditorSnapshot(prevSnap)
+          });
+          return;
+        }
+
+        if (pastedRoot.kind === found.parentKind) {
+          const newRows = pastedRoot.kind === 'object'
+            ? pastedRoot.properties.map((p) => {
+                const r = astNodeToRow(p.valueNode, p.key);
+                r.fromRaw = false;
+                return r;
+              })
+            : pastedRoot.elements.map((el) => {
+                const r = astNodeToRow(el, '');
+                r.fromRaw = false;
+                return r;
+              });
+          if (newRows.length === 0) return;
+          canonicalRawText = null;
+          insertRowsAtFound(found, newRows);
+          const lastInserted = newRows[newRows.length - 1];
+          paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: lastInserted.id });
+          toast(`Đã chèn ${newRows.length} dòng từ JSON vừa dán · Inserted ${newRows.length} rows from pasted JSON`, 'Hoàn tác', {
+            originEl: kvHost,
+            onAction: () => restoreEditorSnapshot(prevSnap)
+          });
+          return;
+        }
+
+        /* Shape mismatch on non-empty editor: ask inline instead of clobbering (RFD-25, RFD-27) */
+        const shapeLabelVi = pastedRoot.kind === 'array' ? 'mảng JSON ([...])' : 'object JSON ({...})';
+        const shapeLabelEn = pastedRoot.kind === 'array' ? 'JSON array ([...])' : 'JSON object ({...})';
+        inlinePromptState = {
+          kind: 'paste-mismatch',
+          pastedRawText: parsedPaste.rawText,
+          pastedRoot,
+          targetRowId: found.row.id,
+          restoreFocusDesc: { kind: isValueInput ? 'val' : 'key', rowId: found.row.id },
+          titleHtml: `Nội dung dán là ${shapeLabelVi}, khác với khung hiện tại · <span lang="en" class="font-normal text-muted">Pasted ${shapeLabelEn} differs from current container</span>`,
+          descHtml: `Chọn cách xử lý để không làm mất các trường đã nhập. · <span lang="en">Choose how to apply without losing existing rows.</span>`,
+          actionsHtml: `
+            <button type="button" class="btn btn-secondary btn-sm" data-kv-prompt-act="paste-nest">Thay giá trị dòng này · <span lang="en">Replace this row's value</span></button>
+            <button type="button" class="btn btn-danger btn-sm" data-kv-prompt-act="paste-replace">Thay toàn bộ · <span lang="en">Replace all</span></button>
+            <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Huỷ · <span lang="en">Cancel</span></button>
+          `
+        };
+        syncInlinePromptBanner(true);
+        return;
+      }
+
+      if (parsedPaste.kind === 'pairs' && found.parentKind === 'object') {
+        e.preventDefault();
+        canonicalRawText = null;
+        const newRows = parsedPaste.pairs.map((pair) => makeRow({ key: pair.key, value: pair.value, type: 'string', placeholder: false }));
+        insertRowsAtFound(found, newRows);
+        const lastInserted = newRows[newRows.length - 1];
+        paint({ kind: 'val', rowId: lastInserted.id });
+        toast(`Đã điền ${newRows.length} dòng từ nội dung dán · Filled ${newRows.length} rows from paste`, 'Hoàn tác', {
+          originEl: kvHost,
+          onAction: () => restoreEditorSnapshot(prevSnap)
+        });
+        return;
+      }
+
+      if (parsedPaste.kind === 'lines' && found.parentKind === 'array') {
+        e.preventDefault();
+        canonicalRawText = null;
+        const newRows = parsedPaste.items.map((item) => makeRow({ key: '', value: item, type: 'string', placeholder: false }));
+        insertRowsAtFound(found, newRows);
+        const lastInserted = newRows[newRows.length - 1];
+        paint({ kind: 'val', rowId: lastInserted.id });
+        toast(`Đã điền ${newRows.length} phần tử từ nội dung dán · Filled ${newRows.length} items from paste`, 'Hoàn tác', {
+          originEl: kvHost,
+          onAction: () => restoreEditorSnapshot(prevSnap)
+        });
+      }
+    });
+
+    function handleMenuKeydown(e, popEl, closeAndRestoreFn) {
+      const items = Array.from(popEl.querySelectorAll('[role^="menuitem"]')).filter((el) => !el.disabled);
+      if (!items.length) return false;
+      const cur = items.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        e.stopPropagation();
+        items[(cur + 1) % items.length].focus();
+        return true;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        items[(cur - 1 + items.length) % items.length].focus();
+        return true;
+      }
+      if (e.key === 'Home') {
+        e.preventDefault();
+        e.stopPropagation();
+        items[0].focus();
+        return true;
+      }
+      if (e.key === 'End') {
+        e.preventDefault();
+        e.stopPropagation();
+        items[items.length - 1].focus();
+        return true;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAndRestoreFn(true);
+        return true;
+      }
+      if (e.key === 'Tab') {
+        /* RFD-26: Focus the trigger synchronously before native Tab runs so sequential focus continues from the trigger */
+        closeAndRestoreFn(true);
+        return true;
+      }
+      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const ch = e.key.toLowerCase();
+        const match = items.find((item, idx) => idx > cur && (item.textContent || '').trim().toLowerCase().startsWith(ch)) ||
+                      items.find((item) => (item.textContent || '').trim().toLowerCase().startsWith(ch));
+        if (match) {
+          e.preventDefault();
+          e.stopPropagation();
+          match.focus();
+          return true;
+        }
+      }
+      return false;
+    }
+
+    kvHost.addEventListener('keydown', (e) => {
+      const openPop = kvHost.querySelector('[data-kv-menu-pop]');
+      if (openPop && (openTypeMenuRowId || openMenuRowId)) {
+        const isType = !!openTypeMenuRowId;
+        const rId = openTypeMenuRowId || openMenuRowId;
+        const handled = handleMenuKeydown(e, openPop, (restoreFocus) => {
+          openTypeMenuRowId = null;
+          openMenuRowId = null;
+          paint(restoreFocus ? { kind: isType ? 'type' : 'menu', rowId: rId } : null);
+        });
+        if (handled) return;
+      }
+
+      const keyInp = e.target.closest('[data-kv-key-input]');
+      const valInp = e.target.closest('[data-kv-val-input]');
+      const typeTrigger = e.target.closest('[data-kv-act="toggle-type-menu"]');
+      const rowMenuTrigger = e.target.closest('[data-kv-act="toggle-row-menu"]');
+
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.altKey && (typeTrigger || rowMenuTrigger)) {
+        e.preventDefault();
+        const rId = (typeTrigger || rowMenuTrigger).dataset.rowId;
+        if (typeTrigger) {
+          openMenuRowId = null;
+          openRootMenu = false;
+          openTypeMenuRowId = rId;
+          paint({ kind: 'type-menu-item', rowId: rId });
+        } else {
+          openTypeMenuRowId = null;
+          openRootMenu = false;
+          openMenuRowId = rId;
+          paint({ kind: 'row-menu-item', rowId: rId });
+        }
+        return;
+      }
+
+      /* Alt+ArrowDown from key or value input opens the row's Type menu directly (RFD-6) */
+      if (e.altKey && e.key === 'ArrowDown' && (keyInp || valInp)) {
+        e.preventDefault();
+        const rId = keyInp ? keyInp.dataset.kvKeyInput : valInp.dataset.kvValInput;
+        openMenuRowId = null;
+        openRootMenu = false;
+        openTypeMenuRowId = rId;
+        paint({ kind: 'type-menu-item', rowId: rId });
+        return;
+      }
+
+      if (keyInp) {
+        const rId = keyInp.dataset.kvKeyInput;
+        const found = findRowAndParent(rows, rId, rootKind, null);
+        if (!found) return;
+
+        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          /* RFD-28: On an untouched blank placeholder row in a nested container, Enter outdents to a new row after the parent */
+          if (found.index === found.list.length - 1 && isRowCompletelyBlank(found.row, 'object') && found.parentRow) {
+            const parentFound = findRowAndParent(rows, found.parentRow.id, rootKind, null);
+            if (parentFound) {
+              if (found.list.length > 1) {
+                found.list.splice(found.index, 1);
+              }
+              const outdentedRow = makeRow({ key: '', value: '', type: 'string', placeholder: true });
+              parentFound.list.splice(parentFound.index + 1, 0, outdentedRow);
+              paint({ kind: parentFound.parentKind === 'array' ? 'val' : 'key', rowId: outdentedRow.id });
+              return;
+            }
+          }
+          paint({ kind: 'val', rowId: rId, select: true });
+          return;
+        }
+        /* RFD-11: Only delete row on Backspace when the entire row is a blank string row */
+        if (e.key === 'Backspace' && keyInp.value === '' && isRowCompletelyBlank(found.row, 'object') && found.list.length > 1) {
+          e.preventDefault();
+          const prevIdx = Math.max(0, found.index - 1);
+          found.list.splice(found.index, 1);
+          const targetRow = found.list[prevIdx];
+          paint({ kind: 'val', rowId: targetRow.id });
+          return;
+        }
+      }
+
+      if (valInp) {
+        const rId = valInp.dataset.kvValInput;
+        const found = findRowAndParent(rows, rId, rootKind, null);
+        if (!found) return;
+        const isTextarea = valInp.tagName === 'TEXTAREA';
+
+        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && (!isTextarea || !e.shiftKey)) {
+          if (isTextarea && e.shiftKey) return;
+          e.preventDefault();
+          if (found.index < found.list.length - 1) {
+            const nextRow = found.list[found.index + 1];
+            paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nextRow.id, select: true });
+          } else if (isRowCompletelyBlank(found.row, found.parentKind) && !found.row.fromRaw) {
+            /* RFD-28: Do not pile up extra blank placeholder rows on repeated Enter; outdent if inside a nested container */
+            if (found.parentRow) {
+              const parentFound = findRowAndParent(rows, found.parentRow.id, rootKind, null);
+              if (parentFound) {
+                if (found.list.length > 1) {
+                  found.list.splice(found.index, 1);
+                }
+                const outdentedRow = makeRow({ key: '', value: '', type: 'string', placeholder: true });
+                parentFound.list.splice(parentFound.index + 1, 0, outdentedRow);
+                paint({ kind: parentFound.parentKind === 'array' ? 'val' : 'key', rowId: outdentedRow.id });
+                return;
+              }
+            }
+            paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: found.row.id });
+          } else {
+            const created = makeRow({ key: '', value: '', type: 'string', placeholder: true });
+            found.list.push(created);
+            paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: created.id });
+          }
+          return;
+        }
+        /* RFD-6: Leave Tab native so focus visits Số? -> Type chip -> Row menu -> next row */
+        if (e.key === 'Backspace' && valInp.value === '' && isRowCompletelyBlank(found.row, found.parentKind) && found.list.length > 1) {
+          e.preventDefault();
+          const prevIdx = Math.max(0, found.index - 1);
+          found.list.splice(found.index, 1);
+          const targetRow = found.list[prevIdx];
+          paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: targetRow.id });
+        }
+      }
+    });
+
+    function applyRowTypeChange(r, prevType, nextType, withUndoToast) {
+      const prevSnap = withUndoToast ? captureEditorSnapshot() : null;
+      if (prevType !== nextType) {
+        markTableMutated(r, 'type');
+      }
+      r.type = nextType;
+      if (nextType === 'boolean') {
+        if (r.value !== 'true' && r.value !== 'false') r.value = 'true';
+        r.children = [];
+      } else if (nextType === 'null') {
+        r.value = 'null';
+        r.children = [];
+      } else if (nextType === 'number') {
+        if (!isValidJsonNumberLexeme(r.value.trim())) {
+          r.value = r.value.trim() || '0';
+        }
+        r.children = [];
+      } else if (nextType === 'object' || nextType === 'array') {
+        r.expanded = true;
+        if (!Array.isArray(r.children) || r.children.length === 0) {
+          r.children = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
+        } else {
+          /* RFD-20: Clear fromRaw and rawKeyLiteral on direct children when container kind changes */
+          r.children.forEach((c) => {
+            c.fromRaw = false;
+            c.rawKeyLiteral = null;
+            if (nextType === 'array') c.key = '';
+          });
+        }
+      } else if (nextType === 'string') {
+        if (prevType === 'null' && r.value === 'null') r.value = '';
+        r.children = [];
+      }
+      const focusTarget = (nextType === 'object' || nextType === 'array') && r.children && r.children[0]
+        ? { kind: nextType === 'array' ? 'val' : 'key', rowId: r.children[0].id }
+        : { kind: 'val', rowId: r.id };
+      paint(focusTarget);
+      if (withUndoToast && prevSnap) {
+        toast('Đã đổi kiểu dòng · Changed row type', 'Hoàn tác', {
+          originEl: kvHost,
+          onAction: () => restoreEditorSnapshot(prevSnap)
+        });
+      }
+    }
+
+    kvHost.addEventListener('click', (e) => {
+      const actBtn = e.target.closest('[data-kv-act]');
+      if (!actBtn) return;
+      const act = actBtn.dataset.kvAct;
+      const rowId = actBtn.dataset.rowId;
+
+      if (act === 'toggle-type-menu') {
+        e.stopPropagation();
+        openMenuRowId = null;
+        openRootMenu = false;
+        const willOpen = openTypeMenuRowId !== rowId;
+        openTypeMenuRowId = willOpen ? rowId : null;
+        paint({ kind: willOpen ? 'type-menu-item' : 'type', rowId });
+        return;
+      }
+      if (act === 'toggle-row-menu') {
+        e.stopPropagation();
+        openTypeMenuRowId = null;
+        openRootMenu = false;
+        const willOpen = openMenuRowId !== rowId;
+        openMenuRowId = willOpen ? rowId : null;
+        paint({ kind: willOpen ? 'row-menu-item' : 'menu', rowId });
+        return;
+      }
+      if (act === 'pick-type') {
+        e.stopPropagation();
+        const nextType = actBtn.dataset.type || 'string';
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        openTypeMenuRowId = null;
+        if (!found) return;
+        const r = found.row;
+        const prevType = r.type;
+        if (prevType === nextType) {
+          paint({ kind: 'type', rowId: r.id });
+          return;
+        }
+        const prevChildren = Array.isArray(r.children) ? r.children : [];
+        const committedChildren = (prevType === 'object' || prevType === 'array')
+          ? prevChildren.filter((c, cIdx) => !isEffectivePlaceholderRow(c, cIdx, prevChildren, prevType))
+          : [];
+
+        /* RFD-23: Confirm when changing a container row with >=1 committed child to a scalar type */
+        if ((prevType === 'object' || prevType === 'array') && nextType !== 'object' && nextType !== 'array' && committedChildren.length > 0) {
+          const unitVi = prevType === 'object' ? 'trường con' : 'phần tử con';
+          const unitEn = prevType === 'object' ? 'nested fields' : 'nested items';
+          inlinePromptState = {
+            kind: 'switch-row-type',
+            rowId: r.id,
+            prevType,
+            nextType,
+            restoreFocusDesc: { kind: 'type', rowId: r.id },
+            titleHtml: `${committedChildren.length} ${unitVi} sẽ bị xoá khi đổi sang kiểu đơn · <span lang="en" class="font-normal text-muted">${committedChildren.length} ${unitEn} will be removed</span>`,
+            descHtml: `Đổi sang kiểu ${typeChipLabel(nextType)} sẽ bỏ danh sách con hiện tại của dòng này. · <span lang="en">Switching to a scalar type drops nested children.</span>`,
+            actionsHtml: `
+              <button type="button" class="btn btn-danger btn-sm" data-kv-prompt-act="confirm-row-type">Đổi kiểu &amp; xoá con · <span lang="en">Switch &amp; remove</span></button>
+              <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Huỷ · <span lang="en">Cancel</span></button>
+            `
+          };
+          paint({ kind: 'type', rowId: r.id });
+          syncInlinePromptBanner(true);
+          return;
+        }
+
+        /* RFD-20 / RFD-13: Confirm when switching a nested container between Object and Array with committed children */
+        if ((prevType === 'object' && nextType === 'array') || (prevType === 'array' && nextType === 'object')) {
+          const keysWithNames = prevType === 'object' ? committedChildren.filter((c) => c.key !== '') : [];
+          if (prevType === 'object' && nextType === 'array' && keysWithNames.length > 0) {
+            inlinePromptState = {
+              kind: 'switch-row-type',
+              rowId: r.id,
+              prevType,
+              nextType,
+              restoreFocusDesc: { kind: 'type', rowId: r.id },
+              titleHtml: `${keysWithNames.length} trường con sẽ mất tên khi chuyển sang Mảng · <span lang="en" class="font-normal text-muted">${keysWithNames.length} nested keys will be dropped</span>`,
+              descHtml: `Mảng chỉ lưu danh sách giá trị theo thứ tự chỉ mục (#1, #2…). · <span lang="en">Arrays store ordered values by index only.</span>`,
+              actionsHtml: `
+                <button type="button" class="btn btn-danger btn-sm" data-kv-prompt-act="confirm-row-type">Chuyển sang Mảng · <span lang="en">Switch to Array</span></button>
+                <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Giữ Object · <span lang="en">Keep Object</span></button>
+              `
+            };
+            paint({ kind: 'type', rowId: r.id });
+            syncInlinePromptBanner(true);
+            return;
+          }
+          if (prevType === 'array' && nextType === 'object' && committedChildren.length > 0) {
+            inlinePromptState = {
+              kind: 'switch-row-type',
+              rowId: r.id,
+              prevType,
+              nextType,
+              restoreFocusDesc: { kind: 'type', rowId: r.id },
+              titleHtml: `${committedChildren.length} phần tử cần đặt tên trường khi chuyển sang Object · <span lang="en" class="font-normal text-muted">${committedChildren.length} items need key names</span>`,
+              descHtml: `Mỗi trường trong Object cần có tên khoá trước khi lưu. · <span lang="en">Each Object field requires a key name before saving.</span>`,
+              actionsHtml: `
+                <button type="button" class="btn btn-secondary btn-sm" data-kv-prompt-act="confirm-row-type">Chuyển &amp; đặt tên · <span lang="en">Switch &amp; name keys</span></button>
+                <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Giữ Mảng · <span lang="en">Keep Array</span></button>
+              `
+            };
+            paint({ kind: 'type', rowId: r.id });
+            syncInlinePromptBanner(true);
+            return;
+          }
+        }
+
+        applyRowTypeChange(r, prevType, nextType, false);
+        return;
+      }
+      if (act === 'suggest-number') {
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        markTableMutated(found.row, 'type');
+        found.row.type = 'number';
+        found.row.value = found.row.value.trim();
+        paint({ kind: 'val', rowId });
+        toast('Đã chuyển kiểu sang Số · Switched type to Number');
+        return;
+      }
+      if (act === 'set-bool') {
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        markTableMutated(found.row, 'value');
+        found.row.value = actBtn.dataset.boolVal === 'false' ? 'false' : 'true';
+        paint();
+        return;
+      }
+      if (act === 'toggle-expand') {
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        found.row.expanded = !found.row.expanded;
+        paint();
+        return;
+      }
+      if (act === 'add-row') {
+        const parentId = actBtn.dataset.parentId;
+        openTypeMenuRowId = null;
+        openMenuRowId = null;
+        canonicalRawText = null;
+        if (!parentId || parentId === 'root') {
+          const created = makeRow({ key: '', value: '', type: 'string', placeholder: true });
+          rows.push(created);
+          paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: created.id });
+        } else {
+          const found = findRowAndParent(rows, parentId, rootKind, null);
+          if (found && (found.row.type === 'object' || found.row.type === 'array')) {
+            found.row.expanded = true;
+            found.row.children = found.row.children || [];
+            const created = makeRow({ key: '', value: '', type: 'string', placeholder: true });
+            found.row.children.push(created);
+            paint({ kind: found.row.type === 'array' ? 'val' : 'key', rowId: created.id });
+          }
+        }
+        return;
+      }
+      if (act === 'insert-below') {
+        openMenuRowId = null;
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        canonicalRawText = null;
+        const created = makeRow({ key: '', value: '', type: 'string', placeholder: true });
+        found.list.splice(found.index + 1, 0, created);
+        paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: created.id });
+        return;
+      }
+      if (act === 'move-row-up') {
+        openMenuRowId = null;
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found || found.index <= 0) return;
+        canonicalRawText = null;
+        const item = found.list.splice(found.index, 1)[0];
+        found.list.splice(found.index - 1, 0, item);
+        paint({ kind: 'menu', rowId });
+        return;
+      }
+      if (act === 'move-row-down') {
+        openMenuRowId = null;
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found || found.index >= found.list.length - 1) return;
+        canonicalRawText = null;
+        const item = found.list.splice(found.index, 1)[0];
+        found.list.splice(found.index + 1, 0, item);
+        paint({ kind: 'menu', rowId });
+        return;
+      }
+      if (act === 'delete-row') {
+        openMenuRowId = null;
+        const found = findRowAndParent(rows, rowId, rootKind, null);
+        if (!found) return;
+        canonicalRawText = null;
+        if (found.list.length <= 1) {
+          const replacement = makeRow({ key: '', value: '', type: 'string', placeholder: true });
+          found.list.splice(0, 1, replacement);
+          paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: replacement.id });
+        } else {
+          const nextIdx = Math.max(0, Math.min(found.index, found.list.length - 2));
+          found.list.splice(found.index, 1);
+          const nextTarget = found.list[nextIdx];
+          paint({ kind: found.parentKind === 'array' ? 'val' : 'key', rowId: nextTarget.id });
+        }
+      }
+    });
+
+    /* Wire Raw JSON tab & Card-level controls */
+    if (rawHost) {
+      const ta = rawHost.querySelector('[data-json-raw-textarea]');
+      const formatBtn = rawHost.querySelector('[data-json-raw-format]');
+      const errBox = rawHost.querySelector('[data-json-raw-error]');
+      const formatMsgEl = rawHost.querySelector('[data-json-format-msg]');
+
+      function validateRawEditor() {
+        if (!ta) return true;
+        const draft = ta.value;
+        const bytes = measureUtf8Bytes(draft);
+        const byteEl = rawHost.querySelector('[data-json-raw-bytes]');
+        if (byteEl) byteEl.textContent = `${formatByteCountVi(bytes)} / 262.144 B`;
+
+        const res = parseJsonStrict(draft);
+        if (!res.ok) {
+          rawSyntaxIssue = res.error;
+          lastRawErrorOffset = res.error.offset || 0;
+          ta.setAttribute('aria-invalid', 'true');
+          if (errBox) {
+            errBox.hidden = false;
+            if (errBox.id) ta.setAttribute('aria-describedby', errBox.id);
+            errBox.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p class="font-semibold m-0 mb-0.5">JSON không hợp lệ — Dòng ${res.error.line}, cột ${res.error.column}</p>
+                <p class="m-0">${esc(res.error.messageVi)} · <span lang="en">${esc(res.error.messageEn)}</span></p>
+              </div>
+              <button type="button" class="btn btn-tertiary btn-sm" data-json-raw-goto>Đi tới lỗi · <span lang="en">Go to error</span></button>
+            </div>`;
+          }
+          const errorsMap = new Map();
+          validateRows(rows, rootKind, errorsMap);
+          syncFooterAndRaw(errorsMap);
+          return false;
+        }
+        rawSyntaxIssue = null;
+        ta.removeAttribute('aria-invalid');
+        if (errBox) errBox.hidden = true;
+        const loadRes = loadFromJsonString(draft, { preserveRawSource: true });
+        if (!loadRes.ok && loadRes.reason === 'scalar') {
+          /* Scalar root is valid JSON in Raw, so canonicalRawText is preserved for Save, but Table view is blocked */
+          canonicalRawText = draft;
+        } else {
+          switchBlockedMsg = null;
+        }
+        const errorsMap = new Map();
+        validateRows(rows, rootKind, errorsMap);
+        syncHeaderControls();
+        syncFooterAndRaw(errorsMap);
+        return true;
+      }
+
+      if (ta) {
+        ta.addEventListener('input', () => {
+          rawEditedSinceSwitch = true;
+          if (formatMsgEl) formatMsgEl.hidden = true;
+          validateRawEditor();
+        });
+      }
+      if (errBox && ta) {
+        errBox.addEventListener('click', (e) => {
+          const gotoBtn = e.target.closest('[data-json-raw-goto]');
+          if (!gotoBtn) return;
+          const normText = ta.value;
+          const pos = Math.max(0, Math.min(mapSourceOffsetToLfOffset(normText, lastRawErrorOffset), normText.length));
+          ta.focus();
+          ta.setSelectionRange(pos, Math.min(pos + 1, normText.length));
+        });
+      }
+      if (formatBtn && ta) {
+        formatBtn.addEventListener('click', () => {
+          const fmtRes = formatJsonStrict(ta.value, { eol: 'lf' });
+          if (!fmtRes.ok) {
+            if (formatMsgEl) {
+              formatMsgEl.hidden = false;
+              formatMsgEl.innerHTML = 'Không thể định dạng khi JSON đang lỗi cú pháp. · <span lang="en">Cannot format invalid JSON.</span>';
+            }
+            return;
+          }
+          ta.value = fmtRes.text;
+          rawEditedSinceSwitch = true;
+          if (formatMsgEl) formatMsgEl.hidden = true;
+          validateRawEditor();
+          toast('Đã định dạng JSON gốc · Formatted Raw JSON');
+        });
+      }
+    }
+
+    if (cardEl) {
+      const rootMenuBtn = cardEl.querySelector('[data-kv-root-menu-btn]');
+      const rootMenuPop = cardEl.querySelector('[data-kv-root-menu-pop]');
+      const inlinePromptEl = cardEl.querySelector('[data-kv-inline-prompt]');
+
+      function applyRootKindSwitch(nextKind) {
+        const prevSnap = captureEditorSnapshot();
+        canonicalRawText = null;
+        rootKind = nextKind;
+        /* RFD-20: Clear fromRaw and rawKeyLiteral on direct children when root container kind changes */
+        rows.forEach((r) => {
+          r.fromRaw = false;
+          r.rawKeyLiteral = null;
+          if (nextKind === 'array') {
+            r.key = '';
+          }
+        });
+        if (rows.length === 0) {
+          rows = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
+        }
+        paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: rows[0]?.id });
+        toast(rootKind === 'array'
+          ? 'Đã chuyển gốc sang Mảng · Switched root to Array'
+          : 'Đã chuyển gốc sang Object · Switched root to Object', 'Hoàn tác', {
+          originEl: rootMenuBtn,
+          onAction: () => restoreEditorSnapshot(prevSnap)
+        });
+      }
+
+      if (rootMenuBtn) {
+        rootMenuBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openTypeMenuRowId = null;
+          openMenuRowId = null;
+          openRootMenu = !openRootMenu;
+          syncHeaderControls();
+          if (openRootMenu && rootMenuPop) {
+            const checkedItem = rootMenuPop.querySelector('[aria-checked="true"]') || rootMenuPop.querySelector('[role^="menuitem"]');
+            if (checkedItem && typeof checkedItem.focus === 'function') checkedItem.focus();
+          }
+        });
+        rootMenuBtn.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            openTypeMenuRowId = null;
+            openMenuRowId = null;
+            openRootMenu = true;
+            syncHeaderControls();
+            if (rootMenuPop) {
+              const checkedItem = rootMenuPop.querySelector('[aria-checked="true"]') || rootMenuPop.querySelector('[role^="menuitem"]');
+              if (checkedItem && typeof checkedItem.focus === 'function') checkedItem.focus();
+            }
+          }
+        });
+      }
+      if (rootMenuPop) {
+        rootMenuPop.addEventListener('keydown', (e) => {
+          handleMenuKeydown(e, rootMenuPop, (restoreFocus) => {
+            openRootMenu = false;
+            syncHeaderControls();
+            if (restoreFocus && rootMenuBtn) rootMenuBtn.focus();
+          });
+        });
+        rootMenuPop.addEventListener('click', (e) => {
+          const choiceBtn = e.target.closest('[data-kv-root-choice]');
+          if (!choiceBtn) return;
+          const nextKind = choiceBtn.dataset.kvRootChoice === 'array' ? 'array' : 'object';
+          openRootMenu = false;
+          syncHeaderControls();
+          if (nextKind === rootKind) {
+            if (rootMenuBtn) rootMenuBtn.focus();
+            return;
+          }
+          /* RFD-13 & RFD-20: Confirm inline in both directions when switching root container kind with committed items */
+          if (rootKind === 'object' && nextKind === 'array') {
+            const keysWithNames = rows.filter((r, idx) => !isEffectivePlaceholderRow(r, idx, rows, 'object') && r.key !== '');
+            if (keysWithNames.length > 0) {
+              inlinePromptState = {
+                kind: 'switch-root',
+                nextKind: 'array',
+                restoreFocusEl: rootMenuBtn,
+                titleHtml: `${keysWithNames.length} trường sẽ mất tên khi chuyển sang Mảng · <span lang="en" class="font-normal text-muted">${keysWithNames.length} keys will be dropped when switching to Array</span>`,
+                descHtml: `Mảng chỉ lưu danh sách giá trị theo thứ tự chỉ mục (#1, #2…). · <span lang="en">Arrays store ordered values by index only.</span>`,
+                actionsHtml: `
+                  <button type="button" class="btn btn-danger btn-sm" data-kv-prompt-act="confirm-root-switch">Chuyển sang Mảng · <span lang="en">Switch to Array</span></button>
+                  <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Giữ Object · <span lang="en">Keep Object</span></button>
+                `
+              };
+              syncInlinePromptBanner(true);
+              return;
+            }
+          } else if (rootKind === 'array' && nextKind === 'object') {
+            const committedItems = rows.filter((r, idx) => !isEffectivePlaceholderRow(r, idx, rows, 'array'));
+            if (committedItems.length > 0) {
+              inlinePromptState = {
+                kind: 'switch-root',
+                nextKind: 'object',
+                restoreFocusEl: rootMenuBtn,
+                titleHtml: `${committedItems.length} phần tử cần đặt tên trường khi chuyển sang Object · <span lang="en" class="font-normal text-muted">${committedItems.length} items need key names</span>`,
+                descHtml: `Mỗi trường trong Object cần có tên khoá trước khi lưu. · <span lang="en">Each Object field requires a key name before saving.</span>`,
+                actionsHtml: `
+                  <button type="button" class="btn btn-secondary btn-sm" data-kv-prompt-act="confirm-root-switch">Chuyển &amp; đặt tên · <span lang="en">Switch &amp; name keys</span></button>
+                  <button type="button" class="btn btn-tertiary btn-sm" data-kv-prompt-act="dismiss">Giữ Mảng · <span lang="en">Keep Array</span></button>
+                `
+              };
+              syncInlinePromptBanner(true);
+              return;
+            }
+          }
+          applyRootKindSwitch(nextKind);
+        });
+      }
+
+      if (inlinePromptEl) {
+        inlinePromptEl.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-kv-prompt-act]');
+          if (!btn || !inlinePromptState) return;
+          const act = btn.dataset.kvPromptAct;
+          const st = inlinePromptState;
+          inlinePromptState = null;
+          syncInlinePromptBanner();
+
+          if (act === 'confirm-root-switch') {
+            applyRootKindSwitch(st.nextKind || 'array');
+          } else if (act === 'confirm-row-type' && st.rowId) {
+            const found = findRowAndParent(rows, st.rowId, rootKind, null);
+            if (found) {
+              applyRowTypeChange(found.row, st.prevType, st.nextType, true);
+            }
+          } else if (act === 'paste-replace' && st.pastedRawText) {
+            const prevSnap = captureEditorSnapshot();
+            loadFromJsonString(st.pastedRawText, { preserveRawSource: false });
+            rows.forEach((r) => { r.fromRaw = false; });
+            paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: rows[0]?.id });
+            toast('Đã thay bằng JSON vừa dán · Replaced with pasted JSON', 'Hoàn tác', {
+              originEl: kvHost,
+              onAction: () => restoreEditorSnapshot(prevSnap)
+            });
+          } else if (act === 'paste-nest' && st.pastedRoot && st.targetRowId) {
+            const prevSnap = captureEditorSnapshot();
+            const found = findRowAndParent(rows, st.targetRowId, rootKind, null);
+            if (found) {
+              canonicalRawText = null;
+              /* RFD-27: Preserve the row's existing key verbatim (even if empty, so EMPTY_KEY flags it instead of inventing 'data') */
+              const preservedKey = found.parentKind === 'object' ? found.row.key : '';
+              const nestedRow = astNodeToRow(st.pastedRoot, preservedKey);
+              nestedRow.fromRaw = false;
+              nestedRow.rawKeyLiteral = null;
+              if (Array.isArray(nestedRow.children)) {
+                nestedRow.children.forEach((c) => { c.fromRaw = false; });
+              }
+              found.list.splice(found.index, 1, nestedRow);
+              const focusKind = found.parentKind === 'object' && preservedKey === '' ? 'key' : (found.parentKind === 'array' ? 'val' : 'key');
+              paint({ kind: focusKind, rowId: nestedRow.id });
+              toast('Đã thay giá trị dòng bằng JSON vừa dán · Replaced row value with pasted JSON', 'Hoàn tác', {
+                originEl: kvHost,
+                onAction: () => restoreEditorSnapshot(prevSnap)
+              });
+            }
+          } else if (act === 'dismiss') {
+            if (st.restoreFocusEl && typeof st.restoreFocusEl.focus === 'function') {
+              st.restoreFocusEl.focus();
+            } else if (st.restoreFocusDesc) {
+              paint(st.restoreFocusDesc);
+            }
+          }
+        });
+      }
+
+      /* Tab switch guard: Table <-> Raw JSON */
+      const modeSeg = cardEl.querySelector('[data-kv-mode-seg]');
+      if (modeSeg) {
+        modeSeg.addEventListener('click', (e) => {
+          const b = e.target.closest('button[data-target]');
+          if (!b) return;
+          const target = b.dataset.target;
+          if (target === kvHost.dataset.view) {
+            /* RFD-22: Only block Raw -> Table on syntax error if the user actually edited Raw since switching from Table */
+            if (rawSyntaxIssue && rawEditedSinceSwitch) {
+              e.stopPropagation();
+              switchBlockedMsg = 'Chưa thể chuyển sang Bảng khi JSON gốc đang có lỗi cú pháp. · <span lang="en">Cannot switch to Table while Raw JSON has syntax errors.</span>';
+              const errorsMap = new Map();
+              validateRows(rows, rootKind, errorsMap);
+              syncFooterAndRaw(errorsMap);
+              return;
+            }
+            if (rawSyntaxIssue && !rawEditedSinceSwitch) {
+              rawSyntaxIssue = null;
+              if (rawHost) {
+                const ta = rawHost.querySelector('[data-json-raw-textarea]');
+                const errBox = rawHost.querySelector('[data-json-raw-error]');
+                if (ta) ta.removeAttribute('aria-invalid');
+                if (errBox) errBox.hidden = true;
+              }
+            }
+            if (rawHost) {
+              const ta = rawHost.querySelector('[data-json-raw-textarea]');
+              if (ta) {
+                const parsed = parseJsonStrict(ta.value);
+                if (parsed.ok && parsed.document.root.kind !== 'object' && parsed.document.root.kind !== 'array') {
+                  e.stopPropagation();
+                  switchBlockedMsg = `Giá trị gốc là kiểu đơn (${esc(parsed.document.root.kind)}). Chế độ Bảng chỉ áp dụng cho Object {} hoặc Mảng []; hãy sửa hoặc lưu trực tiếp ở tab JSON gốc. · <span lang="en">Root is a scalar (${esc(parsed.document.root.kind)}). Table view supports Object {} or Array [] roots; edit or save directly in Raw JSON.</span>`;
+                  const errorsMap = new Map();
+                  validateRows(rows, rootKind, errorsMap);
+                  syncFooterAndRaw(errorsMap);
+                  return;
+                }
+              }
+            }
+          }
+          switchBlockedMsg = null;
+          modeSeg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+          cardEl.querySelectorAll('[data-view]').forEach((v) => {
+            v.hidden = v.dataset.view !== target;
+          });
+          if (target === kvHost.dataset.view) {
+            paint();
+          } else if (rawHost) {
+            const ta = rawHost.querySelector('[data-json-raw-textarea]');
+            const errBox = rawHost.querySelector('[data-json-raw-error]');
+            const byteEl = rawHost.querySelector('[data-json-raw-bytes]');
+            if (ta) {
+              const textToShow = toJsonString();
+              ta.value = textToShow;
+              rawEditedSinceSwitch = false;
+              if (byteEl) byteEl.textContent = `${formatByteCountVi(measureUtf8Bytes(textToShow))} / 262.144 B`;
+              const res = parseJsonStrict(textToShow);
+              if (!res.ok) {
+                rawSyntaxIssue = res.error;
+                lastRawErrorOffset = res.error.offset || 0;
+                ta.setAttribute('aria-invalid', 'true');
+                if (errBox) {
+                  errBox.hidden = false;
+                  if (errBox.id) ta.setAttribute('aria-describedby', errBox.id);
+                  errBox.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p class="font-semibold m-0 mb-0.5">JSON không hợp lệ — Dòng ${res.error.line}, cột ${res.error.column}</p>
+                      <p class="m-0">${esc(res.error.messageVi)} · <span lang="en">${esc(res.error.messageEn)}</span></p>
+                    </div>
+                    <button type="button" class="btn btn-tertiary btn-sm" data-json-raw-goto>Đi tới lỗi · <span lang="en">Go to error</span></button>
+                  </div>`;
+                }
+              } else {
+                rawSyntaxIssue = null;
+                ta.removeAttribute('aria-invalid');
+                if (errBox) errBox.hidden = true;
+              }
+              const errorsMap = new Map();
+              validateRows(rows, rootKind, errorsMap);
+              syncFooterAndRaw(errorsMap);
+            }
+          }
+        });
+      }
+
+      const saveBtn = cardEl.querySelector('[data-kv-save-btn]');
+      const cancelBtn = cardEl.querySelector('[data-kv-cancel-btn]');
+      const keepBtn = cardEl.querySelector('[data-kv-keep-btn]');
+      const discardBtn = cardEl.querySelector('[data-kv-discard-btn]');
+
+      function triggerSave() {
+        if (!saveBtn || saveBtn.disabled) return;
+        if (typeof config.onSave === 'function') {
+          config.onSave(toJsonString());
+        } else {
+          toast('Đã mã hoá và lưu entry JSON · Encrypted and saved JSON entry');
+        }
+      }
+
+      function triggerCancel() {
+        const isDirty = hasAnyCommittedRow(rows, rootKind) || rawSyntaxIssue !== null;
+        if (!isDirty) {
+          discardPromptOpen = false;
+          if (typeof config.onCancel === 'function') config.onCancel();
+          return;
+        }
+        discardPromptOpen = true;
+        const errorsMap = new Map();
+        validateRows(rows, rootKind, errorsMap);
+        syncFooterAndRaw(errorsMap);
+      }
+
+      if (saveBtn) saveBtn.addEventListener('click', triggerSave);
+      if (cancelBtn) cancelBtn.addEventListener('click', triggerCancel);
+      if (keepBtn) keepBtn.addEventListener('click', () => {
+        discardPromptOpen = false;
+        const errorsMap = new Map();
+        validateRows(rows, rootKind, errorsMap);
+        syncFooterAndRaw(errorsMap);
+      });
+      if (discardBtn) discardBtn.addEventListener('click', () => {
+        discardPromptOpen = false;
+        if (typeof config.onCancel === 'function') config.onCancel();
+      });
+
+      cardEl.addEventListener('keydown', (e) => {
+        const k = (e.key || '').toLowerCase();
+        if (k === 's' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          triggerSave();
+        } else if (k === 'escape') {
+          if (openRootMenu) {
+            e.preventDefault();
+            e.stopPropagation();
+            openRootMenu = false;
+            syncHeaderControls();
+            if (rootMenuBtn) rootMenuBtn.focus();
+            return;
+          }
+          if (openMenuRowId || openTypeMenuRowId) {
+            e.preventDefault();
+            e.stopPropagation();
+            const restoreTypeId = openTypeMenuRowId;
+            const restoreMenuId = openMenuRowId;
+            openTypeMenuRowId = null;
+            openMenuRowId = null;
+            paint(restoreTypeId ? { kind: 'type', rowId: restoreTypeId } : { kind: 'menu', rowId: restoreMenuId });
+            return;
+          }
+          if (inlinePromptState) {
+            e.preventDefault();
+            e.stopPropagation();
+            const st = inlinePromptState;
+            inlinePromptState = null;
+            syncInlinePromptBanner();
+            if (st.restoreFocusEl && typeof st.restoreFocusEl.focus === 'function') {
+              st.restoreFocusEl.focus();
+            } else if (st.restoreFocusDesc) {
+              paint(st.restoreFocusDesc);
+            }
+            return;
+          }
+          e.preventDefault();
+          triggerCancel();
+        }
+      });
+    }
+
+    document.addEventListener('click', (e) => {
+      if ((openTypeMenuRowId || openMenuRowId) && !kvHost.contains(e.target)) {
+        openTypeMenuRowId = null;
+        openMenuRowId = null;
+        paint();
+      }
+      if (openRootMenu && cardEl && !cardEl.contains(e.target)) {
+        openRootMenu = false;
+        syncHeaderControls();
+      }
+    });
+
+    paint();
+
+    const controller = {
+      paint,
+      focusFirstInput() {
+        const first = rows[0];
+        if (!first) return;
+        paint({ kind: rootKind === 'array' ? 'val' : 'key', rowId: first.id });
+      },
+      setPresetState(presetName) {
+        openMenuRowId = null;
+        openTypeMenuRowId = null;
+        openRootMenu = false;
+        discardPromptOpen = false;
+        switchBlockedMsg = null;
+        rawSyntaxIssue = null;
+        canonicalRawText = null;
+        rawEditedSinceSwitch = false;
+        inlinePromptState = null;
+
+        const showTab = (tabName) => {
+          if (!cardEl) return;
+          const modeSeg = cardEl.querySelector('[data-kv-mode-seg]');
+          if (modeSeg) {
+            modeSeg.querySelectorAll('button').forEach((b) => {
+              b.setAttribute('aria-pressed', String(b.dataset.target === tabName));
+            });
+          }
+          cardEl.querySelectorAll('[data-view]').forEach((v) => {
+            v.hidden = v.dataset.view !== tabName;
+          });
+        };
+
+        if (presetName === 'empty') {
+          rootKind = 'object';
+          rows = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint({ kind: 'key', rowId: rows[0].id });
+        } else if (presetName === 'filled-3') {
+          rootKind = 'object';
+          rows = [
+            makeRow({ key: 'ssid', value: 'Zone17th-5G', type: 'string' }),
+            makeRow({ key: 'channel', value: '36', type: 'number' }),
+            makeRow({
+              key: 'guest',
+              value: '',
+              type: 'object',
+              expanded: true,
+              children: [
+                makeRow({ key: 'ssid', value: 'Zone17th-Guest', type: 'string' }),
+                makeRow({ key: 'vlan', value: '30', type: 'string' }),
+                makeRow({ key: 'isolate', value: 'true', type: 'boolean' })
+              ]
+            })
+          ];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint();
+        } else if (presetName === 'validation-error') {
+          rootKind = 'object';
+          rows = [
+            makeRow({ key: 'ssid', value: 'Zone17th-5G', type: 'string' }),
+            makeRow({ key: 'ssid', value: 'Zone17th-Backup', type: 'string' }),
+            makeRow({ key: 'channel', value: '036', type: 'number' }),
+            makeRow({ key: '', value: 'wpa3-personal', type: 'string' })
+          ];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint();
+        } else if (presetName === 'raw-tab') {
+          rootKind = 'object';
+          rows = [
+            makeRow({ key: 'ssid', value: 'Zone17th-5G', type: 'string' }),
+            makeRow({ key: 'channel', value: '36', type: 'number' }),
+            makeRow({
+              key: 'guest',
+              value: '',
+              type: 'object',
+              expanded: true,
+              children: [
+                makeRow({ key: 'ssid', value: 'Zone17th-Guest', type: 'string' }),
+                makeRow({ key: 'vlan', value: '30', type: 'string' }),
+                makeRow({ key: 'isolate', value: 'true', type: 'boolean' })
+              ]
+            })
+          ];
+          paint();
+          showTab(rawHost ? rawHost.dataset.view : 'nraw');
+          if (rawHost) {
+            const ta = rawHost.querySelector('[data-json-raw-textarea]');
+            if (ta) ta.value = toJsonString();
+            const errBox = rawHost.querySelector('[data-json-raw-error]');
+            if (errBox) errBox.hidden = true;
+          }
+        } else if (presetName === 'array-root') {
+          rootKind = 'array';
+          rows = [
+            makeRow({ key: '', value: '1.1.1.1', type: 'string' }),
+            makeRow({ key: '', value: '8.8.8.8', type: 'string' }),
+            makeRow({ key: '', value: '9.9.9.9', type: 'string' })
+          ];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint();
+        } else if (presetName === 'deep-nesting') {
+          rootKind = 'object';
+          rows = [
+            makeRow({ key: 'site', value: 'Hanoi-HQ', type: 'string' }),
+            makeRow({
+              key: 'network',
+              value: '',
+              type: 'object',
+              expanded: true,
+              children: [
+                makeRow({
+                  key: ' firewall_rules_v6_production ',
+                  value: '',
+                  type: 'object',
+                  expanded: true,
+                  children: [
+                    makeRow({
+                      key: 'allow_cidrs',
+                      value: '',
+                      type: 'array',
+                      expanded: true,
+                      children: [
+                        makeRow({ key: '', value: '2001:db8:85a3::/48', type: 'string' }),
+                        makeRow({ key: '', value: 'fe80::1ff:fe23:4567:890a/64', type: 'string' })
+                      ]
+                    }),
+                    makeRow({ key: 'max_hops', value: '64', type: 'number' })
+                  ]
+                })
+              ]
+            })
+          ];
+          showTab(kvHost.dataset.view || 'ntbl');
+          paint();
+        }
+      },
+      onVaultStateChange(isLocked) {
+        openMenuRowId = null;
+        openTypeMenuRowId = null;
+        openRootMenu = false;
+        discardPromptOpen = false;
+        inlinePromptState = null;
+        if (isLocked) {
+          canonicalRawText = null;
+          rows = [makeRow({ key: '', value: '', type: 'string', placeholder: true })];
+          if (kvHost.closest('[data-secret]')) kvHost.innerHTML = '';
+          if (rawHost) {
+            const ta = rawHost.querySelector('[data-json-raw-textarea]');
+            if (ta) ta.value = '';
+          }
+        } else {
+          paint();
+        }
+      },
+      toJsonString
+    };
+
+    kvEditorInstances.push(controller);
+    return controller;
+  }
   /* ---------- chrome chung: theme, khoá vault, tab ---------- */
 
   function initChrome() {
@@ -5599,6 +7832,11 @@
           jsonCardInstances.forEach((cardInst) => {
             if (cardInst && typeof cardInst.onVaultStateChange === 'function') {
               cardInst.onVaultStateChange(state.locked, prevLocked);
+            }
+          });
+          kvEditorInstances.forEach((kvInst) => {
+            if (kvInst && typeof kvInst.onVaultStateChange === 'function') {
+              kvInst.onVaultStateChange(state.locked, prevLocked);
             }
           });
         }
@@ -5678,7 +7916,7 @@
 
   window.SAK = {
     TAGS, ITEMS, SUGGEST_QUOTA, search, searchDemo, parseQuickAdd, initOmnibox, openDupDialog,
-    renderJsonTable, initJsonEntryCard, parseJsonStrict, formatJsonStrict,
+    renderJsonTable, initJsonEntryCard, initKvEntryEditor, parseJsonStrict, formatJsonStrict,
     detectEol, measureUtf8Bytes, isWellFormedUtf16,
     initChrome, toast, state, norm, normIdentity,
     undoShortcutLabel, isApplePlatform

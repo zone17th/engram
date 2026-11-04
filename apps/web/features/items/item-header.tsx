@@ -757,15 +757,22 @@ export function ItemHeader({ item, entryCount, onAnnounce }: ItemHeaderProps) {
 
   return (
     <div data-testid="item-header">
-      <nav aria-label={tItem('breadcrumbLabel')} className="mb-5 text-[13px] text-muted">
+      <nav
+        aria-label={tItem('breadcrumbLabel')}
+        className="mb-5 flex min-w-0 flex-wrap items-center text-[13px] text-muted"
+      >
         <Link
           href="/app"
-          className="inline-flex items-center font-medium text-body no-underline hover:underline [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+          className="inline-flex shrink-0 items-center font-medium text-body no-underline hover:underline [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
         >
           {tItem('allItems')}
         </Link>
-        <span className="mx-1.5">/</span>
-        <span id="breadcrumb-item-name" data-testid="breadcrumb-item-name">
+        <span className="mx-1.5 shrink-0">/</span>
+        <span
+          id="breadcrumb-item-name"
+          data-testid="breadcrumb-item-name"
+          className="min-w-0 break-all"
+        >
           {nameInput || item.name}
         </span>
       </nav>

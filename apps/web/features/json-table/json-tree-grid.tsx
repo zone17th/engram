@@ -18,8 +18,10 @@ import {
   JSON_TABLE_PAGE_SIZE,
   buildRootTableView,
   changeCellType,
+  escapeJsonStringMinimal,
   insertField,
   insertRow,
+  isValidJsonNumberLexeme,
   measureUtf8Bytes,
   removeField,
   removeRow,
@@ -77,6 +79,7 @@ export interface ActiveAddFieldState {
   readonly containerPath: string;
   readonly containerRef: JsonNodeRef;
   readonly newKey: string;
+  readonly newVal: string;
   readonly newType: JsonCellValueKind;
   readonly error: string | null;
 }
@@ -120,12 +123,15 @@ export function JsonTreeGrid({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const editInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const addFieldInputRef = useRef<HTMLInputElement | null>(null);
+  const addFieldValInputRef = useRef<HTMLInputElement | null>(null);
   const skipBlurCommitRef = useRef<boolean>(false);
   const pendingFocusKeyRef = useRef<string | null>(null);
   const lastEditedFocusKeyRef = useRef<string | null>(null);
   const [activeCellEdit, setActiveCellEdit] = useState<ActiveCellEditState | null>(null);
   const [activeAddField, setActiveAddField] = useState<ActiveAddFieldState | null>(null);
-
+  const [expandedMultilineCells, setExpandedMultilineCells] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
   // Clear any active inline editor or add-field form when resetEpoch bumps (e.g., on vault lock)
   useEffect(() => {
     if (editInputRef.current) {
@@ -134,8 +140,12 @@ export function JsonTreeGrid({
     if (addFieldInputRef.current) {
       addFieldInputRef.current.value = '';
     }
+    if (addFieldValInputRef.current) {
+      addFieldValInputRef.current.value = '';
+    }
     setActiveCellEdit(null);
     setActiveAddField(null);
+    setExpandedMultilineCells(new Set());
     pendingFocusKeyRef.current = null;
     lastEditedFocusKeyRef.current = null;
   }, [resetEpoch]);
@@ -394,8 +404,12 @@ export function JsonTreeGrid({
           editInputRef.current.value = '';
         }
         setActiveCellEdit(null);
-        lastEditedFocusKeyRef.current = editState.cellKey;
-        pendingFocusKeyRef.current = editState.cellKey;
+        const nextFocusKey =
+          targetType === 'object' || targetType === 'array'
+            ? `toggle:${editState.cellKey}`
+            : editState.cellKey;
+        lastEditedFocusKeyRef.current = nextFocusKey;
+        pendingFocusKeyRef.current = nextFocusKey;
       }
     },
     [doc, onApplyEdit, tJson, translateEditError],
@@ -434,16 +448,34 @@ export function JsonTreeGrid({
         return;
       }
 
+      const rawVal = formState.newVal ?? '';
+      if (
+        formState.newType === 'number' &&
+        rawVal.trim() !== '' &&
+        !isValidJsonNumberLexeme(rawVal.trim())
+      ) {
+        setActiveAddField({
+          ...formState,
+          error: tJson('editErrorInvalidNumber'),
+        });
+        addFieldValInputRef.current?.focus();
+        return;
+      }
+
       const initialValueLexeme =
         formState.newType === 'string'
-          ? '""'
+          ? escapeJsonStringMinimal(rawVal)
           : formState.newType === 'number'
-            ? '0'
+            ? rawVal.trim() || '0'
             : formState.newType === 'true'
               ? 'true'
               : formState.newType === 'false'
                 ? 'false'
-                : 'null';
+                : formState.newType === 'object'
+                  ? '{}'
+                  : formState.newType === 'array'
+                    ? '[]'
+                    : 'null';
 
       const outcome = insertField(doc, formState.containerRef, trimmedKey, {
         initialValueLexeme,
@@ -470,6 +502,9 @@ export function JsonTreeGrid({
       if (onApplyEdit(outcome)) {
         if (addFieldInputRef.current) {
           addFieldInputRef.current.value = '';
+        }
+        if (addFieldValInputRef.current) {
+          addFieldValInputRef.current.value = '';
         }
         setActiveAddField(null);
         lastEditedFocusKeyRef.current = `${formState.containerPath}:open-add-field`;
@@ -624,11 +659,15 @@ export function JsonTreeGrid({
       readonly rowNum: number;
       readonly colNum: number;
       readonly isKeyCell?: boolean;
+      readonly fieldName?: string;
     },
   ) => {
-    const posLabel = tJson('posCellAria', { row: opts.rowNum, col: opts.colNum });
     const isKeyCell = opts.isKeyCell === true;
-
+    const posLabel = opts.fieldName
+      ? isKeyCell
+        ? `${tJson('posFieldKeyAria', { field: opts.fieldName, row: opts.rowNum })} · ${tJson('posCellAria', { row: opts.rowNum, col: opts.colNum })}`
+        : `${tJson('posFieldValueAria', { field: opts.fieldName, row: opts.rowNum })} · ${tJson('posCellAria', { row: opts.rowNum, col: opts.colNum })}`
+      : tJson('posCellAria', { row: opts.rowNum, col: opts.colNum });
     if (cell.readOnly) {
       renderedHasReadOnlyCells = true;
       const safeText = formatReadOnlyDisplayText(cell);
@@ -672,8 +711,31 @@ export function JsonTreeGrid({
           e.stopPropagation();
           handleCancelCellEdit(cellKey);
         } else if (e.key === 'Enter') {
-          if (activeCellEdit.multiline && e.shiftKey) {
-            // Shift+Enter inserts a newline in multiline string cells (plan §2.10 rule 6)
+          if (!isKeyCell && activeCellEdit.valueType === 'string' && e.shiftKey) {
+            // Shift+Enter inserts a newline in string value cells and upgrades to multiline textarea (RFD-32)
+            if (!activeCellEdit.multiline) {
+              e.preventDefault();
+              e.stopPropagation();
+              const el = e.currentTarget;
+              const start = el.selectionStart ?? activeCellEdit.draftText.length;
+              const end = el.selectionEnd ?? activeCellEdit.draftText.length;
+              const nextDraft =
+                activeCellEdit.draftText.slice(0, start) +
+                '\n' +
+                activeCellEdit.draftText.slice(end);
+              const nextCursor = start + 1;
+              setActiveCellEdit((prev) =>
+                prev && prev.cellKey === cellKey
+                  ? { ...prev, multiline: true, draftText: nextDraft, error: null }
+                  : prev,
+              );
+              queueMicrotask(() => {
+                if (editInputRef.current) {
+                  editInputRef.current.focus();
+                  editInputRef.current.setSelectionRange(nextCursor, nextCursor);
+                }
+              });
+            }
             return;
           }
           e.preventDefault();
@@ -739,6 +801,33 @@ export function JsonTreeGrid({
                       : prev,
                   )
                 }
+                onPaste={(e) => {
+                  if (isKeyCell || activeCellEdit.valueType !== 'string') return;
+                  const pasted = e.clipboardData?.getData('text/plain');
+                  if (typeof pasted === 'string' && /[\r\n]/.test(pasted)) {
+                    e.preventDefault();
+                    const normalized = pasted.replace(/\r\n?/g, '\n');
+                    const el = e.currentTarget;
+                    const start = el.selectionStart ?? activeCellEdit.draftText.length;
+                    const end = el.selectionEnd ?? activeCellEdit.draftText.length;
+                    const nextDraft =
+                      activeCellEdit.draftText.slice(0, start) +
+                      normalized +
+                      activeCellEdit.draftText.slice(end);
+                    const nextCursor = start + normalized.length;
+                    setActiveCellEdit((prev) =>
+                      prev && prev.cellKey === cellKey
+                        ? { ...prev, multiline: true, draftText: nextDraft, error: null }
+                        : prev,
+                    );
+                    queueMicrotask(() => {
+                      if (editInputRef.current) {
+                        editInputRef.current.focus();
+                        editInputRef.current.setSelectionRange(nextCursor, nextCursor);
+                      }
+                    });
+                  }
+                }}
                 onKeyDown={handleInputKeyDown}
               />
             )}
@@ -765,11 +854,13 @@ export function JsonTreeGrid({
                     );
                   }}
                 >
-                  <option value="string">string</option>
-                  <option value="number">number</option>
-                  <option value="true">true</option>
-                  <option value="false">false</option>
-                  <option value="null">null</option>
+                  <option value="string">{tJson('typeOptionString')}</option>
+                  <option value="number">{tJson('typeOptionNumber')}</option>
+                  <option value="true">{tJson('typeOptionTrue')}</option>
+                  <option value="false">{tJson('typeOptionFalse')}</option>
+                  <option value="null">{tJson('typeOptionNull')}</option>
+                  <option value="object">{tJson('typeOptionObject')}</option>
+                  <option value="array">{tJson('typeOptionArray')}</option>
                 </select>
               </label>
             ) : null}
@@ -807,6 +898,9 @@ export function JsonTreeGrid({
               {tJson('cellCancelBtn')}
             </button>
           </div>
+          {!isKeyCell ? (
+            <p className="m-0 text-[11px] text-muted">{tJson('replaceContainerHint')}</p>
+          ) : null}
 
           {activeCellEdit.error ? (
             <p
@@ -821,6 +915,16 @@ export function JsonTreeGrid({
       );
     }
 
+    const isEmptyStringValue =
+      !isKeyCell && cell.valueType === 'string' && cell.displayText === '';
+    const multilineLines =
+      !isKeyCell && cell.valueType === 'string' && cell.displayText.includes('\n')
+        ? cell.displayText.split('\n')
+        : null;
+    const isClampedMultiline = Boolean(multilineLines && multilineLines.length > 3);
+    const isMultilineExpanded =
+      isClampedMultiline && expandedMultilineCells.has(cellKey);
+
     const valueNode =
       cell.valueType === 'number' ? (
         <span className="v-num">{cell.displayText}</span>
@@ -828,15 +932,49 @@ export function JsonTreeGrid({
         <span className="v-bool">{cell.displayText}</span>
       ) : cell.valueType === 'null' ? (
         <span className="v-null">null</span>
+      ) : isEmptyStringValue ? (
+        <span className="text-[13px] italic text-muted">
+          {tJson('emptyStringAffordance')}
+        </span>
       ) : (
-        <span className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{cell.displayText}</span>
+        <span
+          className={`whitespace-pre-wrap break-words [overflow-wrap:anywhere] ${
+            isClampedMultiline && !isMultilineExpanded ? 'line-clamp-3 block' : ''
+          }`}
+        >
+          {cell.displayText}
+        </span>
       );
 
     if (readOnly) {
-      return valueNode;
+      if (!isClampedMultiline) {
+        return valueNode;
+      }
+      return (
+        <div>
+          {valueNode}
+          <button
+            type="button"
+            data-testid={`json-cell-multiline-toggle-${cellKey}`}
+            className="link-btn mt-0.5 block text-[11px]"
+            onClick={() =>
+              setExpandedMultilineCells((prev) => {
+                const next = new Set(prev);
+                if (next.has(cellKey)) next.delete(cellKey);
+                else next.add(cellKey);
+                return next;
+              })
+            }
+          >
+            {isMultilineExpanded
+              ? tJson('multilineCollapseBtn')
+              : tJson('multilineExpandBtn', { count: multilineLines!.length })}
+          </button>
+        </div>
+      );
     }
 
-    return (
+    const cellBtn = (
       <button
         type="button"
         disabled={disabled}
@@ -850,6 +988,34 @@ export function JsonTreeGrid({
       >
         {valueNode}
       </button>
+    );
+
+    if (!isClampedMultiline) {
+      return cellBtn;
+    }
+
+    return (
+      <>
+        {cellBtn}
+        <button
+          type="button"
+          data-testid={`json-cell-multiline-toggle-${cellKey}`}
+          className="link-btn mt-0.5 block text-[11px]"
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpandedMultilineCells((prev) => {
+              const next = new Set(prev);
+              if (next.has(cellKey)) next.delete(cellKey);
+              else next.add(cellKey);
+              return next;
+            });
+          }}
+        >
+          {isMultilineExpanded
+            ? tJson('multilineCollapseBtn')
+            : tJson('multilineExpandBtn', { count: multilineLines!.length })}
+        </button>
+      </>
     );
   };
 
@@ -1017,7 +1183,7 @@ export function JsonTreeGrid({
             aria-label={tJson('addFieldKeyPlaceholder')}
             aria-invalid={activeAddField.error ? 'true' : undefined}
             data-testid={`json-new-key-input-${containerPath}`}
-            className="field-input json-cell-input shrink-0 px-2 py-1 text-[13px]"
+            className="field-input json-cell-input !w-[168px] shrink-0 px-2 py-1 text-[13px]"
             {...VAULT_SECRET_INPUT_PROPS}
             onChange={(e) =>
               setActiveAddField((prev) =>
@@ -1034,6 +1200,9 @@ export function JsonTreeGrid({
                 if (addFieldInputRef.current) {
                   addFieldInputRef.current.value = '';
                 }
+                if (addFieldValInputRef.current) {
+                  addFieldValInputRef.current.value = '';
+                }
                 setActiveAddField(null);
                 pendingFocusKeyRef.current = `${containerPath}:open-add-field`;
               } else if (e.key === 'Enter') {
@@ -1043,6 +1212,44 @@ export function JsonTreeGrid({
               }
             }}
           />
+          {activeAddField.newType === 'string' || activeAddField.newType === 'number' ? (
+            <input
+              ref={addFieldValInputRef}
+              type="text"
+              value={activeAddField.newVal}
+              placeholder={tJson('addFieldValuePlaceholder')}
+              aria-label={tJson('addFieldValueAria')}
+              data-testid={`json-new-val-input-${containerPath}`}
+              className="field-input json-cell-input !w-[192px] shrink-0 px-2 py-1 text-[13px] [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+              {...VAULT_SECRET_INPUT_PROPS}
+              onChange={(e) =>
+                setActiveAddField((prev) =>
+                  prev && prev.containerPath === containerPath
+                    ? { ...prev, newVal: e.target.value, error: null }
+                    : prev,
+                )
+              }
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (addFieldInputRef.current) {
+                    addFieldInputRef.current.value = '';
+                  }
+                  if (addFieldValInputRef.current) {
+                    addFieldValInputRef.current.value = '';
+                  }
+                  setActiveAddField(null);
+                  pendingFocusKeyRef.current = `${containerPath}:open-add-field`;
+                } else if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleConfirmAddField(activeAddField);
+                }
+              }}
+            />
+          ) : null}
           <select
             value={activeAddField.newType}
             aria-label={tJson('addFieldTypeAria')}
@@ -1051,16 +1258,18 @@ export function JsonTreeGrid({
             onChange={(e) =>
               setActiveAddField((prev) =>
                 prev && prev.containerPath === containerPath
-                  ? { ...prev, newType: e.target.value as JsonCellValueKind }
+                  ? { ...prev, newType: e.target.value as JsonCellValueKind, error: null }
                   : prev,
               )
             }
           >
-            <option value="string">string (&quot;&quot;)</option>
-            <option value="number">number (0)</option>
-            <option value="true">true</option>
-            <option value="false">false</option>
-            <option value="null">null</option>
+            <option value="string">{tJson('typeOptionString')}</option>
+            <option value="number">{tJson('typeOptionNumber')}</option>
+            <option value="true">{tJson('typeOptionTrue')}</option>
+            <option value="false">{tJson('typeOptionFalse')}</option>
+            <option value="null">{tJson('typeOptionNull')}</option>
+            <option value="object">{tJson('typeOptionObject')}</option>
+            <option value="array">{tJson('typeOptionArray')}</option>
           </select>
           <button
             type="button"
@@ -1077,6 +1286,9 @@ export function JsonTreeGrid({
             onClick={() => {
               if (addFieldInputRef.current) {
                 addFieldInputRef.current.value = '';
+              }
+              if (addFieldValInputRef.current) {
+                addFieldValInputRef.current.value = '';
               }
               setActiveAddField(null);
               pendingFocusKeyRef.current = `${containerPath}:open-add-field`;
@@ -1113,7 +1325,8 @@ export function JsonTreeGrid({
               containerPath,
               containerRef,
               newKey: '',
-              newType: 'null',
+              newVal: '',
+              newType: 'string',
               error: null,
             });
           }}
@@ -1214,6 +1427,7 @@ export function JsonTreeGrid({
                       rowNum,
                       colNum: 1,
                       isKeyCell: true,
+                      fieldName: row.key,
                     })}
                     {row.isDuplicateKey ? (
                       <span
@@ -1243,6 +1457,7 @@ export function JsonTreeGrid({
                       : renderPrimitiveCell(row.valueCell, valCellKey, {
                           rowNum,
                           colNum: 2,
+                          fieldName: row.key,
                         })}
                   </td>
                   {!readOnly && !disabled && !opts?.hideToolbar ? (
@@ -1435,10 +1650,10 @@ export function JsonTreeGrid({
                     const cell: JsonTableCellView | undefined = colRow.cells.get(colKey);
 
                     if (!cell || cell.kind === 'missing') {
-                      const posLabel = tJson('posCellAria', {
+                      const posLabel = `${tJson('posFieldValueAria', { field: colKey, row: rowNum })} · ${tJson('posCellAria', {
                         row: rowNum,
                         col: colNum,
-                      });
+                      })}`;
                       return (
                         <td key={`cell-${colIdx}`} role="gridcell">
                           {!readOnly && !disabled && cell?.kind === 'missing' ? (
@@ -1471,7 +1686,11 @@ export function JsonTreeGrid({
 
                     return (
                       <td key={`cell-${colIdx}`} role="gridcell">
-                        {renderPrimitiveCell(cell, cellKey, { rowNum, colNum })}
+                        {renderPrimitiveCell(cell, cellKey, {
+                          rowNum,
+                          colNum,
+                          fieldName: colKey,
+                        })}
                       </td>
                     );
                   })}
@@ -1829,7 +2048,7 @@ export function JsonTreeGrid({
     <div
       ref={hostRef}
       data-testid={`json-table-host-${entryId}`}
-      className="overflow-x-auto"
+      className="overflow-x-auto rounded-b-[calc(var(--r-xl)-1px)]"
       onKeyDown={handleHostKeyDown}
     >
       {renderedTree}

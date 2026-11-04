@@ -1356,6 +1356,25 @@ export function JsonEntryCard({
       e.stopPropagation();
       setMenuOpen(false);
       menuTriggerRef.current?.focus();
+    } else if (e.key === 'Tab') {
+      // RFD-26: Focus the trigger synchronously before native Tab runs so sequential focus continues from the trigger
+      setMenuOpen(false);
+      menuTriggerRef.current?.focus();
+    } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const ch = e.key.toLowerCase();
+      const match =
+        items.find(
+          (item, idx) =>
+            idx > currentIndex && (item.textContent || '').trim().toLowerCase().startsWith(ch),
+        ) ??
+        items.find((item) =>
+          (item.textContent || '').trim().toLowerCase().startsWith(ch),
+        );
+      if (match) {
+        e.preventDefault();
+        e.stopPropagation();
+        match.focus();
+      }
     }
   };
 
@@ -1402,7 +1421,7 @@ export function JsonEntryCard({
       className={`card min-w-0 ${hasCardError ? 'card-error' : ''}`}
     >
       {/* Card Header */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-1.5 rounded-t-[calc(var(--r-xl)-1px)] border-b border-line bg-surface px-3 py-2.5 sm:gap-2 sm:px-4">
         <span
           draggable={canReorder && !showEditControls}
           onDragStart={(e) => onDragStart?.(index, e)}
@@ -1430,7 +1449,7 @@ export function JsonEntryCard({
             role="group"
             aria-label={tJson('viewModeAria')}
             data-testid={`json-mode-switcher-${entry.id}`}
-            className="seg ml-1"
+            className="seg sm:ml-1 max-[420px]:[&_button]:px-2.5 max-[420px]:[&_button]:text-[12px]"
           >
             <button
               ref={tabTableBtnRef}
@@ -1471,7 +1490,7 @@ export function JsonEntryCard({
           </span>
         ) : null}
 
-        <div className="relative ml-auto flex items-center gap-1.5" data-card-menu-host>
+        <div className="relative ml-auto flex shrink-0 items-center gap-1 sm:gap-1.5" data-card-menu-host>
           {showTableSaveBar ? (
             <span
               id={`entry-byte-counter-${entry.id}`}
@@ -1491,7 +1510,7 @@ export function JsonEntryCard({
           {hasLoadedJsonSource && !oldKey && !effectiveFailed ? (
             <button
               type="button"
-              className="btn btn-tertiary btn-sm"
+              className="btn btn-tertiary btn-sm max-[420px]:!px-2"
               data-testid={`entry-copy-btn-${entry.id}`}
               onClick={() => {
                 void handleCopyBody();
@@ -1511,10 +1530,16 @@ export function JsonEntryCard({
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             aria-controls={menuOpen ? `card-menu-pop-${entry.id}` : undefined}
-            className="btn btn-tertiary btn-sm btn-icon"
+            className="btn btn-tertiary btn-sm btn-icon max-[420px]:!px-2"
             onClick={(e) => {
               e.stopPropagation();
               setMenuOpen((prev) => !prev);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                setMenuOpen(true);
+              }
             }}
           >
             ⋯
@@ -1614,7 +1639,7 @@ export function JsonEntryCard({
       </div>
 
       {/* Card Body */}
-      <div className={mode === 'table' && hasLoadedJsonSource && !oldKey && !effectiveFailed ? '' : 'p-4'}>
+      <div className={mode === 'table' && hasLoadedJsonSource && !oldKey && !effectiveFailed ? 'overflow-hidden rounded-b-[calc(var(--r-xl)-1px)]' : 'p-4'}>
         {!unlocked ? (
           <LockMask />
         ) : oldKey ? (
@@ -1721,7 +1746,7 @@ export function JsonEntryCard({
             {showEditControls ? (
               <div
                 data-testid={`entry-editor-${entry.id}`}
-                className="border-t border-line bg-surface px-4 py-3"
+                className="rounded-b-[calc(var(--r-xl)-1px)] border-t border-line bg-surface px-4 py-3"
               >
                 {/* Mixed / lone CR EOL warning before save (plan §2.10 rule 2) */}
                 {mixedEolWarningTarget ? (
@@ -1926,7 +1951,8 @@ export function JsonEntryCard({
                       disabled={savingInFlight}
                       onClick={requestCancelEdit}
                     >
-                      {tEntry('cancel')} (<span className="mono">Esc</span>)
+                      <span>{tEntry('cancel')}</span>
+                      <kbd className="kbd">Esc</kbd>
                     </button>
                     <button
                       type="button"
@@ -1942,7 +1968,8 @@ export function JsonEntryCard({
                         tEntry('savingButton')
                       ) : (
                         <>
-                          {tEntry('save')} (<span className="mono">Ctrl+S</span>)
+                          <span>{tEntry('save')}</span>
+                          <kbd className="kbd">Ctrl+S</kbd>
                         </>
                       )}
                     </button>

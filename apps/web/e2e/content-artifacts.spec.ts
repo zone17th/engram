@@ -117,7 +117,7 @@ test.describe('P04-T21a SSR HTML leak checks (A4) and earlier test output disk s
         await expect(composer).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
         await composer.getByTestId('new-json-tab-raw').click();
         await setQuietInputValue(composer.getByTestId('json-raw-textarea-new-json'), userAJsonRaw);
-        await composer.getByTestId('json-raw-save-btn-new-json').click();
+        await composer.getByTestId('new-json-save-btn').click();
         await expect(composer).toBeHidden({ timeout: ACCEPTANCE_UI_WAIT_MS });
 
         await expect(pageA.getByTestId('entry-body')).toHaveCount(2, {

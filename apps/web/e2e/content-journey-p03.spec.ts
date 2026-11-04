@@ -154,7 +154,7 @@ test.describe('P04-T21a P03 suites re-run with real UI-created entries (locked s
           composer.getByTestId('json-raw-textarea-new-json'),
           jsonRawBeforeRecovery,
         );
-        await composer.getByTestId('json-raw-save-btn-new-json').click();
+        await composer.getByTestId('new-json-save-btn').click();
         await expect(composer).toBeHidden({ timeout: ACCEPTANCE_UI_WAIT_MS });
 
         await expect(page.getByTestId('entry-body')).toHaveCount(2, {

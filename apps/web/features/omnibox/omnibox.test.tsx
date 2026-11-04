@@ -1387,7 +1387,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     fireEvent.click(jsonBannerAction);
     expect(screen.getByTestId('import-json-dialog')).toBeInTheDocument();
     expect(screen.getByTestId('import-json-source-textarea')).toHaveValue('{"ssid":"Zone17","vlan":10}');
-    fireEvent.click(screen.getByTestId('import-json-close-btn'));
+    fireEvent.click(screen.getByTestId('import-json-cancel-btn'));
     expect(preview).toHaveTextContent('text · E2E');
 
     // 6. Locked vault -> shows "Mở khoá để lưu" button, Enter does not fire lookup

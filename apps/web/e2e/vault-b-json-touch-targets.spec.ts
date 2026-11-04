@@ -20,8 +20,8 @@ import { UI_WAIT_MS, installApiMocks, unlockFromBanner } from './vault-locked-su
  *      buttons (`json-remove-field-*`), and array row delete `×` buttons (`json-remove-row-*`) (dec-217)
  *    - the whole in-cell JSON editor bar (`json-cell-input-*`, `json-type-select-*`,
  *      `json-commit-cell-*`, `json-cancel-cell-*`) and the add-field toolbar bar
- *      (`json-new-key-input-*`, `json-new-type-select-*`, `json-confirm-add-field-*`,
- *      `json-cancel-add-field-*`) (dec-223, dec-224)
+ *      (`json-new-key-input-*`, `json-new-val-input-*`, `json-new-type-select-*`,
+ *      `json-confirm-add-field-*`, `json-cancel-add-field-*`) (dec-223, dec-224, dec-370)
  *    - the Import JSON dialog parse-error jump button (`import-json-parse-error-jump`) and
  *      format-before-save checkbox hit area via its wrapping label (`import-json-format-checkbox`
  *      / `import-json-format-label`) (dec-228)
@@ -679,6 +679,10 @@ test.describe('FU11 JSON-TABLE + ITEM TOUCH 44x44 coarse-pointer targets and nar
           {
             name: 'json-new-key-input',
             selector: '[data-testid="json-new-key-input-root"]',
+          },
+          {
+            name: 'json-new-val-input',
+            selector: '[data-testid="json-new-val-input-root"]',
           },
           {
             name: 'json-new-type-select',

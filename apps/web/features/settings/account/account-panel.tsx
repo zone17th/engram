@@ -1,6 +1,6 @@
 'use client';
 
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,7 @@ export function AccountPanel({
   notice?: AccountNotice | null;
 }) {
   const t = useTranslations('settings');
+  const uiLocale: Locale = useLocale() === 'vi' ? 'vi' : 'en';
   const { me, refetchMe } = useSession();
   const { setTheme } = useTheme();
   const router = useRouter();
@@ -103,7 +104,7 @@ export function AccountPanel({
             <div className="break-all text-[15px] font-semibold text-body">{me.user.email}</div>
             <div className="text-[13px] text-muted">
               {me.user.email_verified ? t('account.verified') : t('account.unverified')} ·{' '}
-              {t('account.joined', { date: formatJoined(me.user.created_at, me.settings.locale) })}
+              {t('account.joined', { date: formatJoined(me.user.created_at, uiLocale) })}
             </div>
           </div>
           <Button variant="tertiary" className="ml-auto" onClick={() => dialogs.open('emailChangeDlg')}>
@@ -175,7 +176,7 @@ export function AccountPanel({
           <Segmented
             className="ml-auto max-w-full"
             ariaLabel={t('account.localeTitle')}
-            value={me.settings.locale}
+            value={uiLocale}
             onChange={(v) => void patchLocale(v as Locale)}
             options={[
               { value: 'vi', label: 'Tiếng Việt' },
