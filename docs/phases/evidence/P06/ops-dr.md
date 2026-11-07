@@ -63,7 +63,7 @@ Every round-2 check above still runs and passes; these were added:
 | RPO protocol cases (superseded in round 4) | missing capture → `PENDING`; over bound (2000 s) → `FAIL`; proven inactive → `PASS` | `PENDING` / `FAIL` / `PASS` |
 | Scratch RPO / warm RTO | 294 s / 12 s | 294 s / 9 s |
 
-### Round 4 — review r3 fixes and advisor-dec-P06-029 (`R4_SHA`)
+### Round 4 — review r3 fixes and advisor-dec-P06-029 (`3bc19cd`)
 
 Owner mode no longer accepts RPO: it reports `ARCHIVE_FRESHNESS_SECONDS` / `ROLLBACK_SECONDS` as telemetry with
 `RPO_ACCEPTANCE=UNMEASURED_OWNER`; production RPO is Task 21c (source commit/LSN boundary). Every timestamp is parsed
@@ -72,12 +72,12 @@ plain non-root user. All earlier checks still run.
 
 | Check | bro dev smoke (`bro-smoke-9.log`) | Cursor cloud runner |
 | --- | --- | --- |
-| Exit / verdict | R4_BRO_VERDICT | R4_CLOUD_VERDICT |
-| Owner simulation: owner-owned pulled copy → `convert-archive-to-test-key.sh` as non-root uid (≠ 999) → owner flow with key B only, no permission fix-ups | R4_BRO_OWNER | R4_CLOUD_OWNER |
-| Owner RPO never accepted (`RPO_ACCEPTANCE=UNMEASURED_OWNER`), freshness telemetry 60 s | R4_BRO_RPO | R4_CLOUD_RPO |
-| Fail-closed timestamps: not-a-time, capture before archive, bad target → non-zero; missing capture → `UNMEASURED_NO_CAPTURE_TIME`; valid → 120 s telemetry | R4_BRO_FRESH | R4_CLOUD_FRESH |
-| Negative control prints `NEGCTL_MIGRATE_UP_FAILED_AS_EXPECTED=yes` | R4_BRO_NEG | R4_CLOUD_NEG |
-| Scratch RPO / warm RTO (Task 10) | R4_BRO_RPORTO | R4_CLOUD_RPORTO |
+| Exit / verdict | `0` / `PITR_REHEARSAL=PASS` (tree == round-4 commit except the two telemetry lines added after it: `NEGCTL_MIGRATE_UP_FAILED_AS_EXPECTED`, `OWNERSIM_CONV_WAL_MODE` format) | `0` / `PITR_REHEARSAL=PASS` (`cloud-test-5.md` @ `3bc19cd`; `OPSDR_LINT_EXIT=0`, `OPSDR_IMAGE_EXIT=0`, `OPSDR_EXIT=0`; nonzero `*_EXIT` grep empty; canary 0) |
+| Owner simulation: owner-owned pulled copy → `convert-archive-to-test-key.sh` as non-root uid (≠ 999) → owner flow with key B only, no permission fix-ups | uid 1001, converted `wal/` owner-only 0700; restored, sessions revoked, migrate rc 0, `/readyz` 200, T3+T4 500, RTO 7 s | uid 1000, `wal/` 1000-700; migrate rc 0, `/readyz` 200, RTO 5 s, flow PASS |
+| Owner RPO never accepted (`RPO_ACCEPTANCE=UNMEASURED_OWNER`), freshness telemetry 60 s | `UNMEASURED_OWNER`, `ARCHIVE_FRESHNESS_SECONDS=60` | `UNMEASURED_OWNER`, 60 s |
+| Fail-closed timestamps: not-a-time, capture before archive, bad target → non-zero; missing capture → `UNMEASURED_NO_CAPTURE_TIME`; valid → 120 s telemetry | all PASS (`INVALID_CAPTURE_TIME`, `INVALID_CAPTURE_BEFORE_ARCHIVE`, `INVALID_TARGET_TIME`, `UNMEASURED_NO_CAPTURE_TIME`, 120 s) | all PASS |
+| Negative control prints `NEGCTL_MIGRATE_UP_FAILED_AS_EXPECTED=yes` | added after this run (cloud column) | `yes` |
+| Scratch RPO / warm RTO (Task 10) | 295 s / 12 s | 294 s / 9 s |
 
 ## `wal_keep_size` sizing (R4-03)
 
