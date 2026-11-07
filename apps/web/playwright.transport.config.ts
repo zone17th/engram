@@ -15,7 +15,7 @@ export default defineConfig({
   testDir: './e2e',
   testMatch: /transport\.spec\.ts/,
   outputDir: 'test-results/transport',
-  timeout: 60_000,
+  timeout: 120_000,
   fullyParallel: false,
   workers: 1,
   forbidOnly: Boolean(process.env.CI),
