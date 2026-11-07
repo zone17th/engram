@@ -1,0 +1,21 @@
+# Bằng chứng nghiệm thu — P06 · Task 5 (`ops-config`)
+
+> Lane `ops-config` (W1, P06-T5) — nguồn: [plan P06](../../../plans/2026-11-07-P06-beta.md) mục 4.2 và Task 5 (`APP_ENV=production`, Generic SMTP Mailer, `MAIL-CAP-P02`, C13/R1-13).
+
+## 1. Bàn giao theo từng mục Task 5
+
+| Hạng mục Task 5 | File sở hữu (mục 4.2) | Trạng thái |
+|---|---|---|
+| `SMTPMailer` (`SMTP_HOST` / `SMTP_PORT` 587 / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_TLS_MODE` `starttls`\|`implicit`) | `apps/api/internal/auth/{smtp_mail.go,smtp_mail_test.go}` | Hoàn tất: `net/smtp` + `crypto/tls` (TLS >= 1.2; `starttls` từ chối hạ cấp plaintext khi thiếu extension `STARTTLS`; `implicit` bắt tay TLS trước greeting), timeout 10s theo `ctx`, phân loại lỗi tạm thời (mạng/timeout/4xx) và vĩnh viễn (5xx/chứng chỉ không tin cậy/đầu vào không hợp lệ) qua `SMTPError` + `IsPermanentMailError`, bắt `recover`, log chỉ ghi `recipient_domain` (không lộ `SMTP_PASSWORD` hay địa chỉ đầy đủ), từ chối CRLF header injection. |
+| Factory dùng chung `compose.NewMailer(cfg)` cho API và worker (R1-13) | `apps/api/internal/compose/{mail.go,auth.go,mail_test.go}`, `apps/api/internal/worker/mail.go` | Hoàn tất: `SMTP_HOST` khác rỗng → `*auth.SMTPMailer`; thư mục sink ở `development` → `*auth.SinkMailer`; ngược lại `*auth.NoopMailer`. `compose.NewAuth` và `worker.NewWorkerMailer` gọi cùng `compose.NewMailer`, đảm bảo `APP_ENV=production` khi chưa có `SMTP_HOST` vẫn khởi động được với `mail_delivery_available: false`. |
+| `SecurityNoticeWorker` terminal/retry (C13) | `apps/api/internal/worker/{notice_mail.go,notice_mail_test.go}` | Hoàn tất: `pgx.ErrNoRows` (notification đã xoá do xoá tài khoản cascade) → `river.JobCancel` (log info, không retry); mailer `MailDeliveryAvailable() == false` (`NoopMailer`/`nil`) → `river.JobCancel`; lỗi SMTP tạm thời (timeout/mạng/4xx) → trả lỗi để River retry theo backoff; lỗi 5xx vĩnh viễn → `river.JobCancel` + counter `engram_notice_mail_outcomes_total`. |
+| `MAIL-CAP-P02` đồng nhất 503 trước tạo token | `apps/api/internal/auth/{account.go,smtp_mail_test.go}` | Hoàn tất: `SendVerifyCurrent`, `SendEnroll`, `RequestEmailChange` kiểm tra `!s.MailDeliveryAvailable()` ngay đầu hàm và trả `ErrMailDeliveryUnavailable` (`503 mail_delivery_unavailable`) trước khi sinh và ghi bất kỳ hàng `email_verification` nào (khớp `POST /auth/password/forgot`, `advisor-dec-140`). |
+
+## 2. Kiểm tra nghiệm thu (`reports/ops-config/cloud-spec-1.txt`)
+
+| Kiểm tra | Lệnh | Host | Kết quả |
+|---|---|---|---|
+| `APP_ENV=production` boot + mail | `(cd apps/api && go test -v -run 'TestNewMailer\|TestProductionBootNoSMTP\|TestSMTPMailerTLS' ./internal/compose ./internal/auth)` | `cursor-runner` | `--- PASS:` `TestNewMailer`, `TestProductionBootNoSMTP` (gồm `no_smtp`, `smtp`, và `api_and_worker_boot_and_verify_mail_delivered`), `TestSMTPMailerTLS`; `/api/v1/auth/config` trả `mail_delivery_available: false` khi vắng SMTP và `true` + gửi mail xác minh tới SMTP sink khi có; `Redacted()` không lộ `SMTP_PASSWORD`. |
+| `MAIL-CAP-P02` | `(cd apps/api && go test -v -run 'TestMailDeliveryUnavailable' ./internal/auth)` | `cursor-runner` | `--- PASS: TestMailDeliveryUnavailable` (`no_adapter` và `sink_not_delivery`): cả 3 route trả `mail_delivery_unavailable` (HTTP `503`) trước khi ghi hàng `email_verification`. |
+| Notice worker terminal/retry (C13) | `(cd apps/api && go test -v -race -run 'TestNoticeMailMissingNotificationCancels\|TestNoticeMailNoopCancels\|TestNoticeMailTransientRetries\|TestWorkerSecurityNoticeSMTP' ./internal/worker)` | `cursor-runner` | `--- PASS:` đủ 4 test: notification đã xoá → `cancelled` sau đúng 1 attempt; `NoopMailer` → `JobCancel`; 4xx/mạng → trả lỗi retry, 5xx → `JobCancel` + tăng metric `smtp_permanent`; worker thật giao thông báo bảo mật tới SMTP sink qua `compose.NewMailer`. |
+| Regression `go-unit` + `go-race-integration` | `.cursor/cloud/specs/go-unit.txt`, `.cursor/cloud/specs/go-race-integration.txt` | `cursor-runner` | Xem `reports/ops-config/merge-ready.md`. |
