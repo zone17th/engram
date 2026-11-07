@@ -57,9 +57,12 @@ func TestSettingsPatchRejectsExplicitNullAtomically(t *testing.T) {
 	}
 }
 
-// decodeMe reads a 200 Me body and closes it.
-func decodeMe(t *testing.T, h *harness, resp *http.Response, what string) auth.Me {
+// doAsMe executes a request, closes its body in the same frame (satisfying
+// bodyclose), and returns the decoded Me.
+func doAsMe(t *testing.T, h *harness, j jar, method, path, body string, withCSRF bool, what string) auth.Me {
 	t.Helper()
+	resp := h.doAs(j, method, path, body, withCSRF, "")
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		t.Fatalf("%s = %d %s", what, resp.StatusCode, h.body(resp))
 	}
@@ -67,8 +70,12 @@ func decodeMe(t *testing.T, h *harness, resp *http.Response, what string) auth.M
 	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
 		t.Fatal(err)
 	}
-	_ = resp.Body.Close()
 	return me
+}
+
+func doMe(t *testing.T, h *harness, method, path, body string, withCSRF bool, what string) auth.Me {
+	t.Helper()
+	return doAsMe(t, h, h.jar, method, path, body, withCSRF, what)
 }
 
 // storedConsent reads the raw DB row, independent of BuildMe's own defaults.
@@ -103,9 +110,11 @@ func TestSemanticConsentDefaultOffPassword(t *testing.T) {
 	h := newHarness(t, nil)
 	h.csrf()
 	const email = "consent-pw@example.com"
-	me := decodeMe(t, h, h.do(http.MethodPost, "/api/v1/auth/signup", `{"email":"`+email+`","password":"correcthorse"}`, true), "signup")
+	me := doMe(t, h, http.MethodPost, "/api/v1/auth/signup", `{"email":"`+email+`","password":"correcthorse"}`, true, "signup")
 	assertConsentDefaults(t, h, me, email)
-	raw := h.body(h.do(http.MethodGet, "/api/v1/auth/me", "", false))
+	resp := h.do(http.MethodGet, "/api/v1/auth/me", "", false)
+	raw := h.body(resp)
+	_ = resp.Body.Close()
 	if !strings.Contains(raw, `"semantic_consent_seen_at":null`) {
 		t.Errorf("GET /auth/me must carry semantic_consent_seen_at:null, got %s", raw)
 	}
@@ -139,7 +148,7 @@ func TestSemanticConsentDefaultOffOAuth(t *testing.T) {
 		t.Fatalf("callback redirect = %s", loc)
 	}
 	h.csrf()
-	me := decodeMe(t, h, h.do(http.MethodPost, "/api/v1/auth/oauth/complete", "", true), "oauth complete")
+	me := doMe(t, h, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "oauth complete")
 	if me.User.Email != email {
 		t.Fatalf("oauth me email = %q", me.User.Email)
 	}
@@ -150,10 +159,10 @@ func TestPatchSettingsConsentSeenServerTime(t *testing.T) {
 	h := newHarness(t, nil)
 	h.csrf()
 	const email = "consent-seen@example.com"
-	decodeMe(t, h, h.do(http.MethodPost, "/api/v1/auth/signup", `{"email":"`+email+`","password":"correcthorse"}`, true), "signup")
+	doMe(t, h, http.MethodPost, "/api/v1/auth/signup", `{"email":"`+email+`","password":"correcthorse"}`, true, "signup")
 
 	before := time.Now().Add(-5 * time.Second)
-	me := decodeMe(t, h, h.do(http.MethodPatch, "/api/v1/me/settings", `{"semantic_consent_seen":true}`, true), "patch seen")
+	me := doMe(t, h, http.MethodPatch, "/api/v1/me/settings", `{"semantic_consent_seen":true}`, true, "patch seen")
 	after := time.Now().Add(5 * time.Second)
 	if me.SemanticConsentSeenAt == nil {
 		t.Fatal("PATCH semantic_consent_seen:true returned semantic_consent_seen_at null")
@@ -171,7 +180,7 @@ func TestPatchSettingsConsentSeenServerTime(t *testing.T) {
 	// Repeat (alone, then with another setting): COALESCE keeps the first stamp.
 	time.Sleep(20 * time.Millisecond)
 	for _, body := range []string{`{"semantic_consent_seen":true}`, `{"semantic_consent_seen":true,"semantic_suggest":false}`} {
-		again := decodeMe(t, h, h.do(http.MethodPatch, "/api/v1/me/settings", body, true), "patch again "+body)
+		again := doMe(t, h, http.MethodPatch, "/api/v1/me/settings", body, true, "patch again "+body)
 		if again.SemanticConsentSeenAt == nil || !again.SemanticConsentSeenAt.Equal(first) {
 			t.Errorf("PATCH %s moved semantic_consent_seen_at: %v -> %v", body, first, again.SemanticConsentSeenAt)
 		}
@@ -189,7 +198,7 @@ func TestPatchSettingsConsentSeenServerTime(t *testing.T) {
 		other[authhttp.CookieSession].Value == h.jar[authhttp.CookieSession].Value {
 		t.Fatal("device B must hold its own session cookie")
 	}
-	meB := decodeMe(t, h, h.doAs(other, http.MethodGet, "/api/v1/auth/me", "", false, ""), "me B")
+	meB := doAsMe(t, h, other, http.MethodGet, "/api/v1/auth/me", "", false, "me B")
 	if meB.SemanticConsentSeenAt == nil || !meB.SemanticConsentSeenAt.Equal(first) {
 		t.Errorf("session B semantic_consent_seen_at = %v, want %v", meB.SemanticConsentSeenAt, first)
 	}
@@ -199,7 +208,7 @@ func TestPatchSettingsConsentSeenFalseRejected(t *testing.T) {
 	h := newHarness(t, nil)
 	h.csrf()
 	const email = "consent-false@example.com"
-	decodeMe(t, h, h.do(http.MethodPost, "/api/v1/auth/signup", `{"email":"`+email+`","password":"correcthorse"}`, true), "signup")
+	doMe(t, h, http.MethodPost, "/api/v1/auth/signup", `{"email":"`+email+`","password":"correcthorse"}`, true, "signup")
 	for _, body := range []string{
 		`{"semantic_consent_seen":false}`,
 		`{"semantic_consent_seen":false,"theme":"dark"}`,
@@ -210,12 +219,14 @@ func TestPatchSettingsConsentSeenFalseRejected(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("PATCH %s = %d %s, want 400", body, resp.StatusCode, h.body(resp))
 		}
-		if raw := h.body(resp); !strings.Contains(raw, `"invalid_request"`) {
+		raw := h.body(resp)
+		_ = resp.Body.Close()
+		if !strings.Contains(raw, `"invalid_request"`) {
 			t.Fatalf("PATCH %s body = %s, want invalid_request", body, raw)
 		}
 	}
 	// Nothing was written: no stamp, theme unchanged.
-	me := decodeMe(t, h, h.do(http.MethodGet, "/api/v1/auth/me", "", false), "me")
+	me := doMe(t, h, http.MethodGet, "/api/v1/auth/me", "", false, "me")
 	if me.SemanticConsentSeenAt != nil {
 		t.Errorf("rejected PATCH stamped semantic_consent_seen_at = %v", me.SemanticConsentSeenAt)
 	}
