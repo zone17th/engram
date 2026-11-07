@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1443,14 +1444,20 @@ func TestConfig_ExportAtRestSecretDevConstant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() 2: %v", err)
 	}
-	if len(cfg1.ExportAtRestSecret) != 32 {
-		t.Fatalf("len(ExportAtRestSecret) = %d, muốn 32", len(cfg1.ExportAtRestSecret))
+	key1 := cfg1.ExportAtRestKey()
+	key2 := cfg2.ExportAtRestKey()
+	if len(key1) != 32 {
+		t.Fatalf("len(ExportAtRestKey()) = %d, muốn 32", len(key1))
 	}
-	if !bytes.Equal(cfg1.ExportAtRestSecret, cfg2.ExportAtRestSecret) || !bytes.Equal(cfg1.ExportAtRestSecret, config.DevExportAtRestSecret) {
+	if !bytes.Equal(key1, key2) || !bytes.Equal(key1, []byte(config.DevExportAtRestSecret)) {
 		t.Fatal("development với EXPORT_AT_REST_SECRET trống phải trả cùng hằng cố định 32B qua nhiều lần Load()")
 	}
+	wantDefaultDir := filepath.Join(os.TempDir(), "engram-exports")
+	if cfg1.ExportStorageDir != wantDefaultDir {
+		t.Fatalf("default ExportStorageDir = %q, muốn %q", cfg1.ExportStorageDir, wantDefaultDir)
+	}
 
-	devConstB64 := base64.StdEncoding.EncodeToString(config.DevExportAtRestSecret)
+	devConstB64 := base64.StdEncoding.EncodeToString([]byte(config.DevExportAtRestSecret))
 	for _, envName := range []string{"staging", "production"} {
 		t.Run(envName+"_rejects_dev_constant", func(t *testing.T) {
 			setEnv(t, map[string]string{
@@ -1468,6 +1475,70 @@ func TestConfig_ExportAtRestSecretDevConstant(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("opaque_secret_canary_redacts_json_fmt_slog_and_text", func(t *testing.T) {
+		const rawExportKeyBytes = "canary-export-at-rest-secret-32B"
+		exportKeyB64 := base64.StdEncoding.EncodeToString([]byte(rawExportKeyBytes))
+		exportKeyRawB64 := base64.RawStdEncoding.EncodeToString([]byte(rawExportKeyBytes))
+		customDir := filepath.Join(t.TempDir(), "shared-exports")
+		setEnv(t, map[string]string{
+			"APP_ENV":               "development",
+			"EXPORT_STORAGE_DIR":    customDir,
+			"EXPORT_AT_REST_SECRET": exportKeyB64,
+		})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() với canary EXPORT_AT_REST_SECRET: %v", err)
+		}
+		if cfg.ExportStorageDir != customDir {
+			t.Fatalf("ExportStorageDir = %q, muốn %q", cfg.ExportStorageDir, customDir)
+		}
+		if !bytes.Equal(cfg.ExportAtRestKey(), []byte(rawExportKeyBytes)) {
+			t.Fatalf("ExportAtRestKey() = %q, muốn %q", cfg.ExportAtRestKey(), rawExportKeyBytes)
+		}
+
+		cfgJSON, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("json.Marshal(cfg): %v", err)
+		}
+		secretJSON, err := json.Marshal(cfg.ExportAtRestSecret)
+		if err != nil {
+			t.Fatalf("json.Marshal(ExportAtRestSecret): %v", err)
+		}
+		secretText, err := cfg.ExportAtRestSecret.MarshalText()
+		if err != nil {
+			t.Fatalf("ExportAtRestSecret.MarshalText(): %v", err)
+		}
+		var logBuf bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+		logger.Info("export_secret_check",
+			slog.Any("cfg", cfg),
+			slog.Any("cfg_val", *cfg),
+			slog.Any("export_secret", cfg.ExportAtRestSecret),
+		)
+		unexportedSecretHolder := struct{ secret config.Secret }{secret: cfg.ExportAtRestSecret}
+		unexportedCfgHolder := struct{ cfg config.Config }{cfg: *cfg}
+		outputs := []string{
+			string(cfgJSON),
+			string(secretJSON),
+			string(secretText),
+			logBuf.String(),
+			fmt.Sprint(cfg.Redacted()),
+			fmtMap(cfg.Redacted()),
+			fmt.Sprintf("%v|%s|%+v|%#v", cfg, cfg, cfg, cfg),
+			fmt.Sprintf("%v|%s|%+v|%#v", *cfg, *cfg, *cfg, *cfg),
+			fmt.Sprintf("%v|%s|%+v|%#v|%q|%x", cfg.ExportAtRestSecret, cfg.ExportAtRestSecret, cfg.ExportAtRestSecret, cfg.ExportAtRestSecret, cfg.ExportAtRestSecret, cfg.ExportAtRestSecret),
+			fmt.Sprintf("%v|%+v|%#v", unexportedSecretHolder, unexportedSecretHolder, unexportedSecretHolder),
+			fmt.Sprintf("%v|%+v|%#v", unexportedCfgHolder, unexportedCfgHolder, unexportedCfgHolder),
+		}
+		for idx, out := range outputs {
+			for _, canary := range []string{rawExportKeyBytes, exportKeyB64, exportKeyRawB64} {
+				if strings.Contains(out, canary) {
+					t.Fatalf("outputs[%d] làm lộ canary %q: %s", idx, canary, out)
+				}
+			}
+		}
+	})
 }
 
 func TestConfig_SMTPTLSNoneRejectedInProd(t *testing.T) {
@@ -1499,9 +1570,10 @@ func TestConfig_SMTPTLSNoneRejectedInProd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("development SMTP_TLS_MODE=none: %v", err)
 		}
-		if cfg.SMTPTLSMode != "none" || cfg.ExportSpoolDir != ".data/exports" || cfg.ExportMaxSpoolBytes != 4294967296 || cfg.ExportCreatePaused {
-			t.Fatalf("defaults lệch: SMTPTLSMode=%q ExportSpoolDir=%q ExportMaxSpoolBytes=%d ExportCreatePaused=%v",
-				cfg.SMTPTLSMode, cfg.ExportSpoolDir, cfg.ExportMaxSpoolBytes, cfg.ExportCreatePaused)
+		wantDefaultDir := filepath.Join(os.TempDir(), "engram-exports")
+		if cfg.SMTPTLSMode != "none" || cfg.ExportStorageDir != wantDefaultDir || cfg.ExportMaxSpoolBytes != 4294967296 || cfg.ExportCreatePaused {
+			t.Fatalf("defaults lệch: SMTPTLSMode=%q ExportStorageDir=%q ExportMaxSpoolBytes=%d ExportCreatePaused=%v",
+				cfg.SMTPTLSMode, cfg.ExportStorageDir, cfg.ExportMaxSpoolBytes, cfg.ExportCreatePaused)
 		}
 
 		setEnv(t, map[string]string{
