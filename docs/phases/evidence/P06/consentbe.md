@@ -15,5 +15,6 @@
 
 | Kiểm tra | Lệnh | Host | Kết quả |
 |---|---|---|---|
-| Consent BE (5 test mục Task 5b) | `(cd apps/api && CGO_ENABLED=1 go test -v -race -count=1 -run 'TestSemanticConsentDefaultOffPassword\|TestSemanticConsentDefaultOffOAuth\|TestPatchSettingsConsentSeenServerTime\|TestPatchSettingsConsentSeenFalseRejected\|TestSemanticConsentNoEmbedBeforeOptIn' ./internal/auth ./internal/auth/authhttp)` | `cursor-runner` | Xem `reports/consentbe/cloud-test-*.md` |
-| Regression `auth` + `httpx` + `sqlc diff` + `golangci-lint` | `reports/consentbe/cloud-spec-1.txt` + `.cursor/cloud/specs/full.txt` | `cursor-runner` | Xem `reports/consentbe/cloud-test-*.md` |
+| Consent BE (5 test mục Task 5b) | `(cd apps/api && CGO_ENABLED=1 go test -v -race -count=1 -run 'TestSemanticConsentDefaultOffPassword\|TestSemanticConsentDefaultOffOAuth\|TestPatchSettingsConsentSeenServerTime\|TestPatchSettingsConsentSeenFalseRejected\|TestSemanticConsentNoEmbedBeforeOptIn' ./internal/auth ./internal/auth/authhttp)` | `cursor-runner` | PASS (`CONSENT_BE_EXIT=0`, 5/5 `--- PASS:` tại `c09b0e1` — `reports/consentbe/cloud-test-2.md`) |
+| Regression `auth` + `httpx` + `sqlc diff` + `golangci-lint` | `(cd apps/api && CGO_ENABLED=1 go test -race -count=1 ./internal/auth/... ./internal/httpx/...)` + `sqlc diff` + `golangci-lint run ./internal/auth/...` | `cursor-runner` | PASS (`AUTH_PKG_EXIT=0`, `SQLC_DIFF_EXIT=0`, `GOLANGCI_LINT_EXIT=0` tại `c09b0e1` — `reports/consentbe/cloud-test-2.md`) |
+| Full CI replica (`.cursor/cloud/specs/full.txt`) | `node .cursor/cloud/cloud-runner.mjs test --spec .cursor/cloud/specs/full.txt --lane consentbe --out reports/consentbe/cloud-test-full.md` | `cursor-runner` | Xem `reports/consentbe/merge-ready.md` |
