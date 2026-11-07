@@ -13,11 +13,13 @@
 #          restore again to T_near from the same directory (picks the later base)
 #       -> RPO/RTO; canary replication password never in argv/logs.
 #   run-pitr-rehearsal.sh --from-decrypted-stream --archive-dir DIR --gnupghome DIR --target-time TS
-#                         [--capture-time TS [--source-last-commit TS]]
+#                         [--capture-time TS]
 #       Owner PC only (R1-11, Task 21c): DIR holds base/ and wal/ converted to the test key in --gnupghome by
 #       convert-archive-to-test-key.sh. Restores to TS with a restore-only HBA (no production credential needed),
 #       then the same mandatory post-restore assertions (sessions revoked, migrate up exit 0, /readyz 200,
-#       RTO <= 2h) and the RPO protocol (rpo_eval): without --capture-time RPO_ACCEPTANCE=PENDING.
+#       RTO <= 2h). RPO is NOT accepted here (advisor-dec-P06-029): ARCHIVE_FRESHNESS_SECONDS (capture time minus
+#       the newest WAL file's archive_command time) is telemetry only and RPO_ACCEPTANCE=UNMEASURED_OWNER always;
+#       production RPO is measured in Task 21c against a source commit/LSN boundary.
 #   run-pitr-rehearsal.sh --from-prod-archive   always refused: production archives are never restored on bro or
 #       a runner (the production private key never leaves the owner PC).
 #
@@ -38,7 +40,6 @@ archive_in=""
 gnupg_in=""
 target_in=""
 capture_in=""
-srclast_in=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --scratch) mode=scratch ;;
@@ -48,7 +49,6 @@ while [ "$#" -gt 0 ]; do
     --gnupghome) gnupg_in="$2"; shift ;;
     --target-time) target_in="$2"; shift ;;
     --capture-time) capture_in="$2"; shift ;;
-    --source-last-commit) srclast_in="$2"; shift ;;
     -h | --help) sed -n '2,/^# shellcheck/p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -86,6 +86,7 @@ VOL_DST="$P-dstdata"
 VOL_SEC="$P-secrets"
 VOL_RGPG="$P-restoregpg"
 VOL_RHBA="$P-restorehba"
+VOL_RWAL="$P-restorewal"
 APP_IMAGE="engram-dr-app:$rid"
 PITR_IMAGE="$POSTGRES_PITR_IMAGE"
 DB_USER="${ENGRAM_DR_DB_USER:-engram}"
@@ -125,7 +126,7 @@ cleanup() {
   # Archive files are owned by the container's postgres uid; remove them from a container.
   [ -d "$WORK" ] && docker run --rm --user 0 -v "$WORK:/w" --entrypoint sh "$POSTGRES_IMAGE" -c 'rm -rf /w/pitr /w/conv' >/dev/null 2>&1
   [ -n "$tmpfs_dir" ] && sudo -n umount "$tmpfs_dir" 2>/dev/null
-  docker volume rm -f "$VOL_SRC" "$VOL_DST" "$VOL_SEC" "$VOL_RGPG" "$VOL_RHBA" "$P-pwmissdata" >/dev/null 2>&1
+  docker volume rm -f "$VOL_SRC" "$VOL_DST" "$VOL_SEC" "$VOL_RGPG" "$VOL_RHBA" "$VOL_RWAL" "$P-pwmissdata" >/dev/null 2>&1
   docker network rm "$NET" >/dev/null 2>&1
   docker image rm -f "$APP_IMAGE" >/dev/null 2>&1
   rm -rf "$WORK"
@@ -482,9 +483,9 @@ prepare_restore_volumes() { # gnupghome
   if docker inspect "$DST" >/dev/null 2>&1 || docker inspect "$API" >/dev/null 2>&1; then
     say "previous restore container still present"; return 1
   fi
-  docker volume rm -f "$VOL_DST" "$VOL_RGPG" "$VOL_RHBA" >/dev/null 2>&1 || true
+  docker volume rm -f "$VOL_DST" "$VOL_RGPG" "$VOL_RHBA" "$VOL_RWAL" >/dev/null 2>&1 || true
   if docker volume inspect "$VOL_DST" >/dev/null 2>&1 || docker volume inspect "$VOL_RGPG" >/dev/null 2>&1 \
-    || docker volume inspect "$VOL_RHBA" >/dev/null 2>&1; then
+    || docker volume inspect "$VOL_RHBA" >/dev/null 2>&1 || docker volume inspect "$VOL_RWAL" >/dev/null 2>&1; then
     say "previous restore volume still present"; return 1
   fi
   GNUPGHOME="$1" gpg --batch --quiet --pinentry-mode loopback --passphrase '' --export-secret-keys \
@@ -512,8 +513,16 @@ restore_one() { # base gnupghome archive_root target -> 0 promoted, 2 base not c
         chown -R postgres:postgres /var/lib/postgresql/data
         chmod 0700 /var/lib/postgresql/data' \
     || { say "base decrypt/extract failed for $(basename "$base")"; return 1; }
+  # Copy the archive's WAL (whoever owns it on the host: owner PC user, runner user, uid 999) into a
+  # postgres-owned restore volume; the source directory is mounted read-only and never modified.
+  docker run --rm --user 0 -v "$root/wal:/src:ro" -v "$VOL_RWAL:/w" --entrypoint sh "$PITR_IMAGE" -c '
+      set -e
+      find /src -maxdepth 1 -type f \( -name "*--*.gz.gpg" -o -name "*--*.gz.gpg.sha256" \) -exec cp -t /w {} +
+      chown -R postgres:postgres /w; chmod 0700 /w; find /w -type f -exec chmod 0600 {} +
+      test -n "$(find /w -maxdepth 1 -name "*--*.gz.gpg" -print -quit)"' \
+    || { say "copying WAL into the restore volume failed"; return 1; }
   cid="$(docker run -d --name "$DST" --network "$NET" \
-    -v "$VOL_DST:/var/lib/postgresql/data" -v "$root/wal:$ARCH_IN_CT:ro" \
+    -v "$VOL_DST:/var/lib/postgresql/data" -v "$VOL_RWAL:$ARCH_IN_CT:ro" \
     -v "$VOL_RGPG:/var/lib/postgresql/restore-gnupg" -v "$VOL_RHBA:/var/lib/postgresql/restore-hba:ro" \
     -e ENGRAM_RESTORE_GNUPGHOME=/var/lib/postgresql/restore-gnupg \
     "$PITR_IMAGE" postgres -c config_file=/etc/postgresql/postgresql-pitr.conf -c archive_mode=off \
@@ -587,41 +596,38 @@ finish() {
   exit 1
 }
 
-compact_to_epoch() { local t="$1"; date -u -d "${t:0:4}-${t:4:2}-${t:6:2} ${t:9:2}:${t:11:2}:${t:13:2}Z" +%s; }
-
-# RPO protocol for an off-host archive copy (owner PC, Task 21c). Inputs:
-#   capture   = when the copy was taken from bro (the simulated disaster instant), required for any RPO claim;
-#   src_last  = optional newest commit time read on the SOURCE at capture (proves inactivity when it is older
-#               than the newest archived WAL).
-# Archive freshness = capture - source timestamp of the newest archived WAL file (its name), i.e. how much
-# committed time could be missing from the copy. RPO_ACCEPTANCE: PASS (<= 900 s, or proven inactive),
-# FAIL (> 900 s), PENDING (no capture time: nothing claimed). A six-day target is a rollback, not RPO.
-rpo_eval() { # archive_root capture src_last target
-  local newest cap_e new_e bound
-  newest="$(find "$1/wal" -maxdepth 1 -name '*--*.gz.gpg' -printf '%f\n' | sort | tail -n 1)"
-  newest="${newest%%--*}"
-  ev ARCHIVE_NEWEST_WAL_TS "${newest:-none}"
-  if [ -n "$2" ] && [ -n "$4" ]; then ev ROLLBACK_SECONDS "$(( $(date -u -d "$2" +%s) - $(date -u -d "$4" +%s) ))"; fi
-  if [ -z "$2" ]; then
-    ev RPO_ACCEPTANCE PENDING
-    ev RPO_NOTE "no capture time given: RPO not measured, nothing claimed"
-    return 0
-  fi
-  if [ -z "$newest" ]; then ev RPO_ACCEPTANCE FAIL; return 1; fi
-  cap_e="$(date -u -d "$2" +%s)"; new_e="$(compact_to_epoch "$newest")"
-  bound=$((cap_e - new_e))
-  ev RPO_UPPER_BOUND_SECONDS "$bound"
-  if [ -n "$3" ] && [ "$(date -u -d "$3" +%s)" -le "$new_e" ]; then
-    ev RPO_NOTE "source had no commit after the newest archived WAL: nothing lost (inactive)"
-    ev RPO_ACCEPTANCE PASS
-    return 0
-  fi
-  if [ "$bound" -le 900 ]; then ev RPO_ACCEPTANCE PASS; return 0; fi
-  ev RPO_ACCEPTANCE FAIL
-  return 1
+# Strict UTC parse; prints epoch or fails (never lets an empty value become 0 in arithmetic).
+to_epoch() { local e; e="$(date -u -d "$1" +%s 2>/dev/null)" || return 1; [[ "$e" =~ ^[0-9]+$ ]] || return 1; printf '%s\n' "$e"; }
+compact_to_epoch() { # YYYYmmddTHHMMSSZ
+  local t="$1"
+  [[ "$t" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || return 1
+  to_epoch "${t:0:4}-${t:4:2}-${t:6:2} ${t:9:2}:${t:11:2}:${t:13:2}Z"
 }
 
-owner_flow() { # archive_root gnupghome target capture src_last
+# Owner-mode archive telemetry (advisor-dec-P06-029). ARCHIVE_FRESHNESS_SECONDS = capture time - archive_command
+# time of the newest WAL file. That clock is when the segment was SHIPPED (>= its last write), so it is not a
+# recovered-commit bound and never yields RPO acceptance: RPO_ACCEPTANCE=UNMEASURED_OWNER always. Production RPO is
+# measured in Task 21c against a source commit/LSN boundary. Fails closed (return 1) on any unparsable timestamp,
+# on capture before the newest archived WAL, or on capture before the target.
+archive_freshness() { # archive_root capture target
+  local newest new_e cap_e tgt_e
+  ev RPO_ACCEPTANCE UNMEASURED_OWNER
+  newest="$(find "$1/wal" -maxdepth 1 -name '*--*.gz.gpg' -printf '%f\n' | sort | tail -n 1)" || return 1
+  newest="${newest%%--*}"
+  ev ARCHIVE_NEWEST_WAL_TS "${newest:-none}"
+  [ -n "$newest" ] || { ev ARCHIVE_FRESHNESS INVALID_NO_WAL; return 1; }
+  new_e="$(compact_to_epoch "$newest")" || { ev ARCHIVE_FRESHNESS INVALID_WAL_NAME; return 1; }
+  if [ -z "$2" ]; then ev ARCHIVE_FRESHNESS UNMEASURED_NO_CAPTURE_TIME; return 0; fi
+  cap_e="$(to_epoch "$2")" || { ev ARCHIVE_FRESHNESS INVALID_CAPTURE_TIME; return 1; }
+  tgt_e="$(to_epoch "$3")" || { ev ARCHIVE_FRESHNESS INVALID_TARGET_TIME; return 1; }
+  [ "$cap_e" -ge "$new_e" ] || { ev ARCHIVE_FRESHNESS INVALID_CAPTURE_BEFORE_ARCHIVE; return 1; }
+  [ "$cap_e" -ge "$tgt_e" ] || { ev ARCHIVE_FRESHNESS INVALID_CAPTURE_BEFORE_TARGET; return 1; }
+  ev ARCHIVE_FRESHNESS_SECONDS "$((cap_e - new_e))"
+  ev ROLLBACK_SECONDS "$((cap_e - tgt_e))"
+  ev ARCHIVE_FRESHNESS MEASURED_TELEMETRY_ONLY
+}
+
+owner_flow() { # archive_root gnupghome target capture
   local t_start rc rto
   ev TARGET_TIME "$3"
   t_start="$(epoch)"
@@ -636,18 +642,20 @@ owner_flow() { # archive_root gnupghome target capture src_last
   rto=$(( $(epoch) - t_start ))
   ev RTO_SECONDS "$rto"
   check RTO_LE_2H test "$rto" -le 7200
-  check RPO_NOT_FAILED rpo_eval "$1" "$4" "$5" "$3"
+  check ARCHIVE_TIMESTAMPS_VALID archive_freshness "$1" "$4" "$3"
 }
 
 # =====================================================================================
 if [ "$mode" = decrypted ]; then
   if [ ! -d "$archive_in/base" ] || [ ! -d "$archive_in/wal" ] || [ ! -d "$gnupg_in" ] || [ -z "$target_in" ]; then
-    echo "--from-decrypted-stream needs --archive-dir (base/, wal/), --gnupghome, --target-time [--capture-time, --source-last-commit]" >&2
+    echo "--from-decrypted-stream needs --archive-dir (base/, wal/), --gnupghome, --target-time [--capture-time]" >&2
     exit 2
   fi
   docker network create "$NET" >/dev/null
   build_images
-  owner_flow "$archive_in" "$gnupg_in" "$target_in" "$capture_in" "$srclast_in"
+  to_epoch "$target_in" >/dev/null || { echo "--target-time is not a valid time: $target_in" >&2; exit 2; }
+  if [ -n "$capture_in" ]; then to_epoch "$capture_in" >/dev/null || { echo "--capture-time is not a valid time: $capture_in" >&2; exit 2; }; fi
+  owner_flow "$archive_in" "$gnupg_in" "$target_in" "$capture_in"
   finish
 fi
 
@@ -945,7 +953,13 @@ ev_prefix=""
 neg_failures=$((failures - saved_failures))
 failures="$saved_failures"
 psql_dst 'UPDATE schema_migrations SET dirty = false' >/dev/null
-check NEGATIVE_CONTROL_MIGRATE_FAILURE_FAILS_VERDICT bash -c '[ "$1" -ge 1 ] && grep -qx "NEGCTL_MIGRATE_UP=FAIL" "$2"' _ "$neg_failures" "$EVID"
+if [ "$neg_failures" -ge 1 ] && grep -qx 'NEGCTL_MIGRATE_UP=FAIL' "$EVID"; then
+  ev NEGCTL_MIGRATE_UP_FAILED_AS_EXPECTED yes
+else
+  ev NEGCTL_MIGRATE_UP_FAILED_AS_EXPECTED no
+fi
+# An unexpected migrate success makes this check (and the run) FAIL.
+check NEGATIVE_CONTROL_MIGRATE_FAILURE_FAILS_VERDICT grep -qx 'NEGCTL_MIGRATE_UP_FAILED_AS_EXPECTED=yes' "$EVID"
 
 # Restore negative controls (a promoted restore from the step above is still running when the first starts):
 # each must return non-zero and leave no promoted restore container behind.
@@ -966,43 +980,54 @@ check NEG_RESTORE_KEY_IMPORT_FAILS restore_must_fail "$PITR_DIR/base/$late_base"
 check NEG_RESTORE_EXTRACT_FAILS restore_must_fail "$fake" "$TESTGPG" "$T_NEAR"
 check NEG_RESTORE_START_FAILS restore_must_fail "$PITR_DIR/base/$late_base" "$TESTGPG" "not-a-time"
 
-# Owner procedure simulation (R1-11/R2-03): convert the archive from key A (scratch key) to key B with
-# convert-archive-to-test-key.sh, then run the owner flow using ONLY key B, with the RPO protocol.
-say "owner simulation: convert archive key A -> key B, restore with key B only"
+# Owner procedure simulation (R1-11, R2-03, R3-01): the scratch archive (key A) is "pulled" to a copy owned by
+# the invoking non-root user (as on the owner PC), converted to key B with convert-archive-to-test-key.sh run
+# directly as that user, then restored through the real owner flow with ONLY key B and no permission fix-ups.
+say "owner simulation: pull copy -> convert key A -> key B as uid $(id -u) -> owner flow with key B only"
+ev OWNERSIM_UID "$(id -u)"
+check OWNERSIM_UID_NOT_POSTGRES test "$(id -u)" != 999 -a "$(id -u)" != 0
 TESTGPG_B="$WORK/gnupg-b"
 FPR_B="$(make_key "$TESTGPG_B" keyb)"
 ev OWNERSIM_KEY_B_FPR "$FPR_B"
-mkdir -p "$WORK/conv"
-docker run --rm --user 0 -v "$PITR_DIR:/src:ro" -v "$WORK/conv:/dst" -v "$TESTGPG:/ga" -v "$TESTGPG_B:/gb" \
-  -v "$here/convert-archive-to-test-key.sh:/convert.sh:ro" -e SRC_GNUPGHOME=/ga -e DST_GNUPGHOME=/gb \
-  --entrypoint bash "$PITR_IMAGE" -c "bash /convert.sh /src /dst $FPR_B; rc=\$?; rm -f /ga/S.* /gb/S.*; \
-    chown -R $(id -u):$(id -g) /ga /gb /dst; chown -R 999:999 /dst/wal; chmod 0755 /dst/wal; chmod 0644 /dst/wal/*; exit \$rc" \
+mkdir -p "$WORK/pull" "$WORK/conv"
+docker run --rm --user 0 -v "$PITR_DIR:/src:ro" -v "$WORK/pull:/pull" --entrypoint sh "$PITR_IMAGE" -c \
+  "cp -r /src/base /src/wal /pull/ && rm -f /pull/base/*.partial && chown -R $(id -u):$(id -g) /pull && chmod -R go-rwx /pull" \
+  || die "pull copy failed"
+SRC_GNUPGHOME="$TESTGPG" DST_GNUPGHOME="$TESTGPG_B" bash "$here/convert-archive-to-test-key.sh" "$WORK/pull" "$WORK/conv" "$FPR_B" \
   >"$WORK/convert.log" 2>&1 || { cat "$WORK/convert.log"; die "archive conversion failed"; }
 sed 's/^/    /' "$WORK/convert.log" | tail -n 1
+ev OWNERSIM_CONV_WAL_MODE "$(stat -c '%u-%a' "$WORK/conv/wal" | tr -d '\n')"
 check OWNERSIM_CONVERTED_ARCHIVE_ONLY_KEY_B bash -c '! GNUPGHOME="$1" gpg --batch --list-secret-keys "$2" >/dev/null 2>&1' _ "$TESTGPG_B" "$TEST_FPR"
-newest_wal="$(find "$WORK/conv/wal" -maxdepth 1 -name '*--*.gz.gpg' -printf '%f\n' 2>/dev/null | sort | tail -n 1)"
+newest_wal="$(find "$WORK/conv/wal" -maxdepth 1 -name '*--*.gz.gpg' -printf '%f\n' | sort | tail -n 1)"
 [ -n "$newest_wal" ] || die "converted archive has no WAL"
-newest_e="$(compact_to_epoch "${newest_wal%%--*}")"
-capture_ok="$(date -u -d "@$((newest_e + 60))" '+%Y-%m-%d %H:%M:%S+00')"
+newest_e="$(compact_to_epoch "${newest_wal%%--*}")" || die "bad WAL name $newest_wal"
+fmt() { date -u -d "@$1" '+%Y-%m-%d %H:%M:%S+00'; }
 saved_failures="$failures"
 ev_prefix="OWNERSIM_"
-owner_flow "$WORK/conv" "$TESTGPG_B" "$T_NEAR" "$capture_ok" ""
+owner_flow "$WORK/conv" "$TESTGPG_B" "$T_NEAR" "$(fmt $((newest_e + 60)))"
 ev T3_T4_PRESENT "$(psql_dst "SELECT count(*) FROM dr_marker WHERE phase IN ('T3','T4')")"
 ev_prefix=""
 ownersim_failures=$((failures - saved_failures))
 failures="$saved_failures"
 check OWNERSIM_FLOW_PASS test "$ownersim_failures" -eq 0
-check OWNERSIM_RPO_PASS grep -qx 'OWNERSIM_RPO_ACCEPTANCE=PASS' "$EVID"
 check OWNERSIM_T3_T4_PRESENT grep -qx 'OWNERSIM_T3_T4_PRESENT=500' "$EVID"
+check OWNERSIM_RPO_NOT_ACCEPTED grep -qx 'OWNERSIM_RPO_ACCEPTANCE=UNMEASURED_OWNER' "$EVID"
+check OWNERSIM_FRESHNESS_TELEMETRY grep -qx 'OWNERSIM_ARCHIVE_FRESHNESS_SECONDS=60' "$EVID"
 
-# RPO protocol cases on the same converted archive (no restore): missing capture, over bound, proven inactive.
-ev_prefix="RPOSIM_MISSING_"; rpo_eval "$WORK/conv" "" "" "$T_NEAR" || true
-ev_prefix="RPOSIM_OVER_"; rpo_eval "$WORK/conv" "$(date -u -d "@$((newest_e + 2000))" '+%Y-%m-%d %H:%M:%S+00')" "" "$T_NEAR" || true
-ev_prefix="RPOSIM_INACTIVE_"; rpo_eval "$WORK/conv" "$(date -u -d "@$((newest_e + 2000))" '+%Y-%m-%d %H:%M:%S+00')" \
-  "$(date -u -d "@$((newest_e - 10))" '+%Y-%m-%d %H:%M:%S+00')" "$T_NEAR" || true
-ev_prefix=""
-check RPO_MISSING_CAPTURE_IS_PENDING grep -qx 'RPOSIM_MISSING_RPO_ACCEPTANCE=PENDING' "$EVID"
-check RPO_OVER_BOUND_FAILS grep -qx 'RPOSIM_OVER_RPO_ACCEPTANCE=FAIL' "$EVID"
-check RPO_PROVEN_INACTIVE_PASSES grep -qx 'RPOSIM_INACTIVE_RPO_ACCEPTANCE=PASS' "$EVID"
+# Owner timestamp validation (no restore): every invalid input fails closed, none claims RPO.
+fresh_case() { # prefix capture target -> rc
+  local rc=0
+  ev_prefix="$1"; archive_freshness "$WORK/conv" "$2" "$3" || rc=$?; ev_prefix=""
+  return "$rc"
+}
+fresh_must_fail() { ! fresh_case "$@"; }
+check FRESHNESS_MISSING_CAPTURE_UNMEASURED fresh_case FRESH_MISSING_ "" "$T_NEAR"
+check FRESHNESS_MISSING_CAPTURE_STATE grep -qx 'FRESH_MISSING_ARCHIVE_FRESHNESS=UNMEASURED_NO_CAPTURE_TIME' "$EVID"
+check FRESHNESS_REJECTS_NOT_A_TIME fresh_must_fail FRESH_BADTIME_ "not-a-time" "$T_NEAR"
+check FRESHNESS_REJECTS_CAPTURE_BEFORE_ARCHIVE fresh_must_fail FRESH_BACKWARDS_ "$(fmt $((newest_e - 3600)))" "$T_NEAR"
+check FRESHNESS_REJECTS_BAD_TARGET fresh_must_fail FRESH_BADTARGET_ "$(fmt $((newest_e + 60)))" "2026-13-45 99:99:99+00"
+check FRESHNESS_VALID_IS_TELEMETRY_ONLY fresh_case FRESH_VALID_ "$(fmt $((newest_e + 120)))" "$T_NEAR"
+check FRESHNESS_VALID_SECONDS grep -qx 'FRESH_VALID_ARCHIVE_FRESHNESS_SECONDS=120' "$EVID"
+check FRESHNESS_NEVER_ACCEPTS_RPO bash -c '! grep -E "^(FRESH_[A-Z]+_|OWNERSIM_)RPO_ACCEPTANCE=" "$1" | grep -vq "=UNMEASURED_OWNER$"' _ "$EVID"
 
 finish

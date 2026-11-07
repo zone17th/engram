@@ -59,9 +59,25 @@ Every round-2 check above still runs and passes; these were added:
 | HBA apply failing before publication (stale temporary) | live `pg_hba.conf` byte-identical, apply succeeds afterwards | PASS / PASS |
 | Restore DB on its dedicated network | unreachable from the default bridge, reachable on the private network | PASS / PASS |
 | Restore negative controls (a promoted restore running before the first) | key import / extraction / start failures all non-zero, no promoted container left | all 3 PASS |
-| Owner simulation: archive converted key A → key B (`convert-archive-to-test-key.sh`), owner flow with key B only, `T_near` | restored, sessions revoked, migrate rc 0, `/readyz` 200, T3+T4 present, RTO 6 s, `RPO_UPPER_BOUND_SECONDS=60` → `RPO_ACCEPTANCE=PASS` | PASS: migrate rc 0, `/readyz` 200, T3+T4 500, RTO 5 s, bound 60 s → `PASS` |
-| RPO protocol cases (same converted archive) | missing capture → `PENDING`; over bound (2000 s) → `FAIL`; proven inactive → `PASS` | `PENDING` / `FAIL` / `PASS` |
+| Owner simulation (superseded in round 4: RPO PASS from filename times withdrawn, advisor-dec-P06-029) | restored, sessions revoked, migrate rc 0, `/readyz` 200, T3+T4 present, RTO 6 s, `RPO_UPPER_BOUND_SECONDS=60` → `RPO_ACCEPTANCE=PASS` | PASS: migrate rc 0, `/readyz` 200, T3+T4 500, RTO 5 s, bound 60 s → `PASS` |
+| RPO protocol cases (superseded in round 4) | missing capture → `PENDING`; over bound (2000 s) → `FAIL`; proven inactive → `PASS` | `PENDING` / `FAIL` / `PASS` |
 | Scratch RPO / warm RTO | 294 s / 12 s | 294 s / 9 s |
+
+### Round 4 — review r3 fixes and advisor-dec-P06-029 (`R4_SHA`)
+
+Owner mode no longer accepts RPO: it reports `ARCHIVE_FRESHNESS_SECONDS` / `ROLLBACK_SECONDS` as telemetry with
+`RPO_ACCEPTANCE=UNMEASURED_OWNER`; production RPO is Task 21c (source commit/LSN boundary). Every timestamp is parsed
+explicitly and fails closed. Restores copy WAL into a postgres-owned volume, so the documented owner path works as a
+plain non-root user. All earlier checks still run.
+
+| Check | bro dev smoke (`bro-smoke-9.log`) | Cursor cloud runner |
+| --- | --- | --- |
+| Exit / verdict | R4_BRO_VERDICT | R4_CLOUD_VERDICT |
+| Owner simulation: owner-owned pulled copy → `convert-archive-to-test-key.sh` as non-root uid (≠ 999) → owner flow with key B only, no permission fix-ups | R4_BRO_OWNER | R4_CLOUD_OWNER |
+| Owner RPO never accepted (`RPO_ACCEPTANCE=UNMEASURED_OWNER`), freshness telemetry 60 s | R4_BRO_RPO | R4_CLOUD_RPO |
+| Fail-closed timestamps: not-a-time, capture before archive, bad target → non-zero; missing capture → `UNMEASURED_NO_CAPTURE_TIME`; valid → 120 s telemetry | R4_BRO_FRESH | R4_CLOUD_FRESH |
+| Negative control prints `NEGCTL_MIGRATE_UP_FAILED_AS_EXPECTED=yes` | R4_BRO_NEG | R4_CLOUD_NEG |
+| Scratch RPO / warm RTO (Task 10) | R4_BRO_RPORTO | R4_CLOUD_RPORTO |
 
 ## `wal_keep_size` sizing (R4-03)
 

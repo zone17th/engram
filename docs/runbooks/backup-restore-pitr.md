@@ -150,17 +150,21 @@ A point-in-time restore rolls back **server-side vault state**, not users' memor
   SAME source-timestamped name. Copying the production sidecars unchanged would fail (re-encryption changes the encrypted
   bytes), so always use the converter. The pulled originals are only read.
 - Then run `run-pitr-rehearsal.sh --from-decrypted-stream --archive-dir <converted-dir> --gnupghome <test keyring>
-  --target-time <ts> [--capture-time <when the copy was pulled from bro> [--source-last-commit <newest commit on bro at
-  that moment>]]` against a scratch cluster, once with `now − 6d` and once near `now`. Delete the converted copy and the
-  test key afterwards.
-- RPO protocol (`RPO_ACCEPTANCE`): archive freshness = capture time − source timestamp of the newest archived WAL file;
-  PASS when ≤ 900 s, or when `--source-last-commit` is not newer than that WAL (nothing committed since: inactivity, no
-  loss); FAIL when larger; PENDING when no capture time is given (no RPO claimed). The `now − 6d` run measures a
-  deliberate rollback (`ROLLBACK_SECONDS`), not RPO. The target must be earlier than some archived commit, otherwise
-  recovery stops with `recovery ended before configured recovery target was reached`.
+  --target-time <ts> [--capture-time <when the copy was pulled from bro>]` as the normal (non-root) owner user against a
+  scratch cluster, once with `now − 6d` and once near `now`. The script copies the converted WAL into a postgres-owned
+  restore volume itself (the converted directory stays owner-only and is never modified). Delete the converted copy
+  and the test key afterwards.
+- RPO is **not** accepted by this script (advisor-dec-P06-029): it reports `ARCHIVE_FRESHNESS_SECONDS` (capture time −
+  `archive_command` time of the newest WAL file) and `ROLLBACK_SECONDS` (capture − target) as telemetry only, always
+  with `RPO_ACCEPTANCE=UNMEASURED_OWNER`. The `archive_command` time is when a segment was shipped (≥ its last write),
+  so it cannot bound lost commits. Production RPO is measured in Task 21c against a source commit/LSN boundary.
+  Unparsable times, a capture before the newest archived WAL or before the target fail the run. The target must be
+  earlier than some archived commit, otherwise recovery stops with `recovery ended before configured recovery target
+  was reached`.
 - The production private key **never** goes to `bro` or to any cloud runner. `run-pitr-rehearsal.sh` refuses
   `--from-prod-archive` everywhere and refuses `--from-decrypted-stream` on the production host.
-- Task 21c records this run (targets `now − 6d` and near `now`, key fingerprint `F2C47029…`, table counts, RPO/RTO) in
+- Task 21c records this run (targets `now − 6d` and near `now`, key fingerprint `F2C47029…`, table counts, RTO, and the
+  RPO measured against a source commit/LSN boundary) in
   `docs/phases/evidence/P06/release.md`; a scratch PASS never stands in for it.
 
 ## 6. Rehearsal (scratch) and checks
@@ -177,8 +181,9 @@ built and archive local before the clock starts), canary replication password ab
 lines `KEY=VALUE` end with `PITR_REHEARSAL=PASS|FAIL`; results in `docs/phases/evidence/P06/ops-dr.md`.
 Also exercised: HBA apply failing before publication leaves the live file byte-identical; the restore DB is unreachable
 from the default bridge; restore negative controls (key import, extraction, start) fail with no promoted container; a
-key A → key B conversion with `convert-archive-to-test-key.sh` followed by the owner flow using only key B, and the RPO
-protocol's PASS / FAIL / PENDING / inactive cases.
+key A → key B conversion with `convert-archive-to-test-key.sh` run as a non-root user on an owner-owned pulled copy,
+followed by the owner flow using only key B with no permission fix-ups, and the freshness telemetry's fail-closed cases
+(not-a-time, capture before archive, bad target) with `RPO_ACCEPTANCE` never anything but `UNMEASURED_OWNER`.
 
 Day-to-day checks on bro (read-only):
 
