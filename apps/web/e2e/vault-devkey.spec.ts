@@ -636,6 +636,8 @@ test.describe('P03-T18 two-page / two-Worker Remember vs Forget / reset / revoke
     await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
 
     await page.goto('/app');
+    await waitForBridges(page);
+    await expect(page.locator('.vault-pill')).toHaveClass(/vault-open/, { timeout: CRYPTO_WAIT_MS });
     await page.evaluate(async () => {
       const win: DeviceWindow = window;
       await win.__engramVaultTestBridge!.lock({ broadcast: false, reason: 'auto_lock' });
