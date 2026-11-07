@@ -19,3 +19,6 @@ playwright-report/
 test-results/
 .playwright-browsers/
 .data/
+
+# Cursor cloud runner: local key/env file, never committed
+.cursor/cloud/cloud.env

@@ -1,6 +1,12 @@
 # Đọc digest từ image-pins.env: docker compose --env-file infra/image-pins.env ...
 name: engram
 
+x-engram-logging: &engram-logging
+  driver: json-file
+  options:
+    max-size: '20m'
+    max-file: '5'
+
 services:
   db:
     image: ${POSTGRES_IMAGE}
@@ -15,6 +21,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    logging: *engram-logging
 
   migrate:
     build:
@@ -29,6 +36,7 @@ services:
     depends_on:
       db: { condition: service_healthy }
     restart: 'no'
+    logging: *engram-logging
 
   # Distroless api/worker run as nonroot (uid 65532). Host-owned 0755 bind
   # mounts are not writable → mail Send 503 and empty sink for Playwright.
@@ -39,6 +47,7 @@ services:
       - ../.data/mail-sink:/sink
     command: ['sh', '-c', 'chmod 0777 /sink']
     restart: 'no'
+    logging: *engram-logging
 
   api:
     build:
@@ -99,6 +108,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    logging: *engram-logging
 
   worker:
     build:
@@ -146,6 +156,7 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
       mail-sink-perms: { condition: service_completed_successfully }
+    logging: *engram-logging
 
   web:
     build:
@@ -161,6 +172,7 @@ services:
       NEXT_PUBLIC_CONTENT_ENABLED: ${NEXT_PUBLIC_CONTENT_ENABLED:-false}
     ports: ['3000:3000']
     depends_on: [api]
+    logging: *engram-logging
 
   # TEI là OPTIONAL (profile `semantic`, opt-in). Không bật profile này thì
   # EMBEDDING_PROVIDER=noop và semantic không khả dụng — readyz vẫn pass (P01 §Contract).
@@ -184,6 +196,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    logging: *engram-logging
 
   # CI-only fake embedding provider (profile `semantic-fake`, Task 16 / Task 20b).
   # Built from Dockerfile target `fakeembed`; never included in the production
@@ -222,6 +235,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    logging: *engram-logging
 
 volumes:
   engram-db:

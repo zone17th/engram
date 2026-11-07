@@ -1,0 +1,2 @@
+# engram CI optional benchmark: embedding-lag (mirrors .github/workflows/ci.yml job embedding-lag, TestEmbeddingLagP95).
+(set -o pipefail && cd apps/api && rm -f lag.log && CGO_ENABLED=1 go test -tags lagperf ./internal/perf/... -run '^TestEmbeddingLagP95$' -count=1 -timeout 35m -v | tee lag.log && grep -q -- '--- PASS: TestEmbeddingLagP95' lag.log); rc=$?; rm -f apps/api/lag.log; echo; echo EMBEDDING_LAG_EXIT=$rc; exit $rc

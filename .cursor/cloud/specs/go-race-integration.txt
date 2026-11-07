@@ -1,0 +1,5 @@
+# engram CI group: go-race-integration (mirrors .github/workflows/ci.yml api-check integration tests and content-perf).
+# Requires a running Docker daemon for Testcontainers Postgres + pgvector.
+# The optional 9-minute embedding-lag benchmark lives in specs/go-embedding-lag.txt.
+(cd apps/api && CGO_ENABLED=1 go test ./... -race -count=1 -timeout 10m); rc=$?; echo; echo GO_INTEGRATION_EXIT=$rc; exit $rc
+(cd apps/api && CGO_ENABLED=1 go test -tags perf ./internal/perf/... -count=1 -timeout 18m -v); rc=$?; echo; echo CONTENT_PERF_EXIT=$rc; exit $rc
