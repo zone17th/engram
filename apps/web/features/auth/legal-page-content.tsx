@@ -2,34 +2,49 @@ import Link from 'next/link';
 import { getTranslations } from 'next-intl/server';
 import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { Logo } from '@/components/landing/logo';
+import { LocaleSwitch } from '@/components/locale-switch';
+import { LegalBackToLoginLink } from '@/app/(marketing)/[locale]/docs/docs-client-actions';
 
 export async function LegalPageContent({
   locale,
   activeSection,
+  hasSession,
 }: {
   locale: string;
   activeSection: 'terms' | 'privacy';
+  hasSession?: boolean;
 }) {
   const t = await getTranslations('legal');
+  const tNav = await getTranslations('nav');
   const homeHref = locale === 'vi' ? '/vi' : '/';
   const termsHref = locale === 'vi' ? '/vi/terms' : '/terms';
   const privacyHref = locale === 'vi' ? '/vi/privacy' : '/privacy';
+  const docsHref = locale === 'vi' ? '/vi/docs' : '/docs';
 
   return (
     <>
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:border focus:border-line focus:bg-canvas focus:px-4 focus:py-2 focus:font-semibold focus:!text-body"
+      >
+        {tNav('skipToContent')}
+      </a>
       <header className="mx-auto flex max-w-container flex-wrap items-center gap-3 px-5 pt-6">
-        <Link href={homeHref} className="flex items-center gap-2.5 text-ink no-underline" aria-label="engram">
+        <Link
+          href={homeHref}
+          className="touch-target inline-flex min-h-11 min-w-11 items-center gap-2.5 text-ink no-underline"
+          aria-label="engram"
+        >
           <Logo />
         </Link>
         <div className="ml-auto flex items-center gap-2">
-          <Link href="/app/auth/login" className="btn btn-tertiary !text-body no-underline">
-            {t('backToLogin')}
-          </Link>
+          <LocaleSwitch mode="landing" />
+          <LegalBackToLoginLink label={t('backToLogin')} hasSession={hasSession} />
           <ThemeToggle />
         </div>
       </header>
 
-      <main className="mx-auto max-w-container px-5 pb-24 pt-10">
+      <main id="main-content" className="mx-auto max-w-container px-5 pb-24 pt-10">
         <div className="mb-10 max-w-[780px]">
           <p className="t-label mb-2 text-muted">{t('updatedLabel')}</p>
           <h1 className="t-headline-md mb-3">{t('title')}</h1>
@@ -270,6 +285,12 @@ export async function LegalPageContent({
                 >
                   <span>{t('contact.advisoriesCta')}</span>
                 </a>
+                <Link
+                  href={docsHref}
+                  className="btn btn-tertiary !whitespace-normal text-center no-underline"
+                >
+                  <span>{t('contact.docsCta')}</span>
+                </Link>
                 <Link
                   href={activeSection === 'terms' ? privacyHref : termsHref}
                   className="btn btn-tertiary !whitespace-normal text-center no-underline"

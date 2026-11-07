@@ -81,7 +81,7 @@ export function LocaleSwitch({
             value={option}
             aria-label={ariaLabel}
             lang={option}
-            className="touch-target !px-1.5 sm:!px-2 font-semibold text-[13px]"
+            className="touch-target min-h-11 min-w-11 !px-1.5 sm:!px-2 font-semibold text-[13px]"
           >
             {shortLabel}
           </ToggleGroup.Item>
