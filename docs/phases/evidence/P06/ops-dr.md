@@ -49,6 +49,20 @@ round 2 on `e490066` passed every check but tripped the runner on the negative c
 marker, renamed to `*_RC` in `16f4fba`). RTO is a warm, local-archive figure; a cold disaster adds image pulls
 and copying the archive from off-host.
 
+### Round 3 — review r2 fixes (`d98024c`)
+
+Every round-2 check above still runs and passes; these were added:
+
+| Check | bro dev smoke (`bro-smoke-8.log`, tree == `d98024c`) | Cursor cloud runner |
+| --- | --- | --- |
+| Exit / verdict | `0` / `PITR_REHEARSAL=PASS` | CLOUD_R4_VERDICT |
+| HBA apply failing before publication (stale temporary) | live `pg_hba.conf` byte-identical, apply succeeds afterwards | CLOUD_R4_HBA |
+| Restore DB on its dedicated network | unreachable from the default bridge, reachable on the private network | CLOUD_R4_NET |
+| Restore negative controls (a promoted restore running before the first) | key import / extraction / start failures all non-zero, no promoted container left | CLOUD_R4_NEG |
+| Owner simulation: archive converted key A → key B (`convert-archive-to-test-key.sh`), owner flow with key B only, `T_near` | restored, sessions revoked, migrate rc 0, `/readyz` 200, T3+T4 present, RTO 6 s, `RPO_UPPER_BOUND_SECONDS=60` → `RPO_ACCEPTANCE=PASS` | CLOUD_R4_OWNER |
+| RPO protocol cases (same converted archive) | missing capture → `PENDING`; over bound (2000 s) → `FAIL`; proven inactive → `PASS` | CLOUD_R4_RPO |
+| Scratch RPO / warm RTO | 294 s / 12 s | CLOUD_R4_RPORTO |
+
 ## `wal_keep_size` sizing (R4-03)
 
 - Measured WAL rate under the rehearsal's synthetic write load (200-row inserts + `CHECKPOINT` every ~0.3 s):
