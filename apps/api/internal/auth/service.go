@@ -201,12 +201,18 @@ func (s *Service) BuildMe(ctx context.Context, userID uuid.UUID) (Me, error) {
 		}
 	}
 	verified := u.EmailVerifiedAt.Valid
+	var consentSeenAt *time.Time
+	if u.SemanticConsentSeenAt.Valid {
+		t := u.SemanticConsentSeenAt.Time.UTC()
+		consentSeenAt = &t
+	}
 	return Me{
 		User: MeUser{ID: u.ID, Email: u.Email, EmailVerified: verified, CreatedAt: u.CreatedAt.Time},
 		Settings: MeSettings{
 			Locale: u.Locale, Theme: u.Theme, AutoLockMinutes: int(u.AutoLockMinutes), SemanticSuggest: semantic,
 		},
-		Identities: identities,
+		SemanticConsentSeenAt: consentSeenAt,
+		Identities:            identities,
 		Features: MeFeatures{
 			SemanticAvailable:           s.sem.Availability(ctx),
 			SemanticExternal:            s.sem.External(ctx),
@@ -419,10 +425,16 @@ type SettingsPatch struct {
 	Theme           *string
 	AutoLockMinutes *int
 	SemanticSuggest *bool
+	// SemanticConsentSeen only accepts true (plan P06 mục 2.10): the server
+	// stamps semantic_consent_seen_at itself; the client never sends a time.
+	SemanticConsentSeen *bool
 }
 
 func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch SettingsPatch) (Me, error) {
-	if patch.Locale == nil && patch.Theme == nil && patch.AutoLockMinutes == nil && patch.SemanticSuggest == nil {
+	if patch.Locale == nil && patch.Theme == nil && patch.AutoLockMinutes == nil && patch.SemanticSuggest == nil && patch.SemanticConsentSeen == nil {
+		return Me{}, ErrInvalidRequest
+	}
+	if patch.SemanticConsentSeen != nil && !*patch.SemanticConsentSeen {
 		return Me{}, ErrInvalidRequest
 	}
 	if patch.Locale != nil && *patch.Locale != "en" && *patch.Locale != "vi" {
@@ -480,6 +492,13 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 			return Me{}, err
 		}
 	}
+	// Same tx as semantic_suggest (plan P06 mục 2.10): COALESCE keeps the
+	// first server time, so repeated acknowledgements never move it.
+	if patch.SemanticConsentSeen != nil {
+		if err := q.MarkSemanticConsentSeen(ctx, p.UserID); err != nil {
+			return Me{}, err
+		}
+	}
 	var fields []string
 	if patch.Locale != nil {
 		fields = append(fields, secevent.FieldLocale)
@@ -493,12 +512,16 @@ func (s *Service) PatchSettings(ctx context.Context, p authctx.Principal, patch 
 	if patch.SemanticSuggest != nil {
 		fields = append(fields, secevent.FieldSemanticSuggest)
 	}
-	uid, sid := p.UserID, p.SessionID
-	if err := s.audit.Record(ctx, tx, secevent.Record{
-		UserID: &uid, SessionID: &sid, Event: secevent.EventSettingsChange, Result: secevent.ResultSuccess,
-		Actor: "user", Meta: secevent.Meta{Fields: fields},
-	}); err != nil {
-		return Me{}, err
+	// A consent-only acknowledgement changes no user setting, so it records no
+	// settings.change audit row (secevent has no field for it).
+	if len(fields) > 0 {
+		uid, sid := p.UserID, p.SessionID
+		if err := s.audit.Record(ctx, tx, secevent.Record{
+			UserID: &uid, SessionID: &sid, Event: secevent.EventSettingsChange, Result: secevent.ResultSuccess,
+			Actor: "user", Meta: secevent.Meta{Fields: fields},
+		}); err != nil {
+			return Me{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Me{}, err

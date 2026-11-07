@@ -44,6 +44,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/store"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
+	"github.com/zone17th/engram/apps/api/internal/item"
 	"github.com/zone17th/engram/apps/api/internal/obs"
 	"github.com/zone17th/engram/apps/api/internal/semantic"
 	"github.com/zone17th/engram/apps/api/internal/semantic/semantictest"
@@ -1231,5 +1232,83 @@ func TestPatchOffAfterProviderBeforeUpsertSkipsExternal(t *testing.T) {
 	}
 	if semStoredSemanticSuggest(t, pool, u.id) {
 		t.Error("semantic_suggest still true after PATCH false")
+	}
+}
+
+// TestSemanticConsentNoEmbedBeforeOptIn (plan P06 mục 2.10): a fresh password
+// signup gets semantic_suggest=false from the DB default, so the single enqueue
+// decision point inserts no embed_* job for the external (openai_compat)
+// generation (no metadata leaves for the provider) until the user opts in.
+func TestSemanticConsentNoEmbedBeforeOptIn(t *testing.T) {
+	ctx := context.Background()
+	pool := semNewPool(t)
+	svc := semNewService(t, pool, semRuntimeNamed(t, "row6_openai_available_external"))
+	semSeedGeneration(t, pool, 1, generation.ProviderOpenAICompat, generation.StateActive, nil)
+
+	me, issued, err := svc.Signup(ctx, auth.SignupInput{Email: "consent-embed@example.com", Password: "correcthorse", Locale: "en"})
+	if err != nil {
+		t.Fatalf("Signup: %v", err)
+	}
+	if me.Settings.SemanticSuggest || me.SemanticConsentSeenAt != nil {
+		t.Fatalf("new account semantic_suggest=%v consent_seen_at=%v, want false/nil", me.Settings.SemanticSuggest, me.SemanticConsentSeenAt)
+	}
+	userID := me.User.ID
+
+	riverc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{SkipUnknownJobCheck: true})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+	enqueue := func() {
+		t.Helper()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if err := jobs.EnqueueTx(ctx, tx, riverc, true, embedding.ProviderOpenAICompat, userID, item.EmbedKindItem, uuid.New(), "title"); err != nil {
+			t.Fatalf("EnqueueTx: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	embedJobs := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM river_job WHERE kind LIKE 'embed\_%' AND args->>'user_id' = $1`, userID.String(),
+		).Scan(&n); err != nil {
+			t.Fatalf("count embed jobs: %v", err)
+		}
+		return n
+	}
+
+	enqueue()
+	if got := embedJobs(); got != 0 {
+		t.Fatalf("embed_* jobs before opt-in = %d, want 0", got)
+	}
+
+	// Acknowledging the notice without opting in ("Để sau") keeps it off.
+	seen, off := true, false
+	if _, err := svc.PatchSettings(ctx, issued.Principal, auth.SettingsPatch{SemanticSuggest: &off, SemanticConsentSeen: &seen}); err != nil {
+		t.Fatalf("PATCH later: %v", err)
+	}
+	enqueue()
+	if got := embedJobs(); got != 0 {
+		t.Fatalf("embed_* jobs after 'later' = %d, want 0", got)
+	}
+
+	// Opt-in, then the same write enqueues for the external generation.
+	on := true
+	after, err := svc.PatchSettings(ctx, issued.Principal, auth.SettingsPatch{SemanticSuggest: &on, SemanticConsentSeen: &seen})
+	if err != nil {
+		t.Fatalf("PATCH opt-in: %v", err)
+	}
+	if !after.Settings.SemanticSuggest || after.SemanticConsentSeenAt == nil {
+		t.Fatalf("after opt-in semantic_suggest=%v consent_seen_at=%v", after.Settings.SemanticSuggest, after.SemanticConsentSeenAt)
+	}
+	enqueue()
+	if got := embedJobs(); got != 1 {
+		t.Fatalf("embed_* jobs after opt-in = %d, want 1", got)
 	}
 }
