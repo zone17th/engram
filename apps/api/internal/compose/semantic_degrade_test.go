@@ -630,6 +630,10 @@ func newDGEnv(t *testing.T, queryTimeout time.Duration) *dgEnv {
 
 	e.h = &contenttest.Harness{T: t, Server: srv, Origin: origin, Pool: e.pool}
 	jar, me := e.h.SignupUser("degrade-"+uuid.NewString()+"@example.com", "correct-horse-battery-staple-a")
+	if _, err := e.pool.Exec(context.Background(),
+		`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'true'::jsonb, true) WHERE id = $1`, me.User.ID); err != nil {
+		t.Fatalf("set semantic_suggest=true: %v", err)
+	}
 	e.jar = jar
 	e.userID = me.User.ID
 	return e

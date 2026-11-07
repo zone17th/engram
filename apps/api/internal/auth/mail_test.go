@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,5 +64,15 @@ func TestFormatPasswordResetNoticeDetail(t *testing.T) {
 		if strings.Contains(enMsg, forbidden) {
 			t.Fatalf("en notice without unlinked providers must not contain %q: %q", forbidden, enMsg)
 		}
+	}
+}
+
+func TestNoopMailer(t *testing.T) {
+	m := auth.NewNoopMailer()
+	if m.MailDeliveryAvailable() {
+		t.Fatal("NoopMailer.MailDeliveryAvailable() phải là false")
+	}
+	if err := m.Send(context.Background(), "a@example.com", auth.PurposePasswordReset, "https://x/#token=abc"); !errors.Is(err, auth.ErrMailDeliveryUnavailable) {
+		t.Fatalf("NoopMailer.Send() error = %v, muốn ErrMailDeliveryUnavailable", err)
 	}
 }

@@ -105,7 +105,7 @@ describe('problem', () => {
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
   });
 
-  it('nối đủ code P04 content và reset_token_invalid ở cuối catalog, đúng thứ tự plan P04 mục 3 và ADR 0006', () => {
+  it('nối đủ code P04 content, reset_token_invalid và P06 ở cuối catalog, đúng thứ tự plan P04/P06 và ADR 0006', () => {
     const p04 = [
       'name_invalid',
       'hint_invalid',
@@ -124,7 +124,12 @@ describe('problem', () => {
       'reorder_mismatch',
       'changes_window_expired',
     ] as const;
-    const tail = [...p04, 'reset_token_invalid'] as const;
+    const p06 = [
+      'export_not_ready',
+      'export_expired',
+      'account_delete_confirm_invalid',
+    ] as const;
+    const tail = [...p04, 'reset_token_invalid', ...p06] as const;
     expect(ERROR_CODES.slice(-tail.length)).toEqual([...tail]);
     expect(ERROR_CODES[ERROR_CODES.length - tail.length - 1]).toBe('passkey_not_found');
   });

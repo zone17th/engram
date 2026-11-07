@@ -101,6 +101,7 @@ function meFixture() {
       captcha_site_key: null,
     },
     vault: { status: 'absent' },
+    semantic_consent_seen_at: null,
   };
 }
 

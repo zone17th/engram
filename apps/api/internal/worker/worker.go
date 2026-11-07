@@ -16,7 +16,6 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
-	"github.com/zone17th/engram/apps/api/internal/auth"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
@@ -268,13 +267,9 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 		return fmt.Errorf("preflight database thất bại: %w", err)
 	}
 
-	var mail auth.Mailer
-	if dir := cfg.EffectiveMailSinkDir(); dir != "" {
-		m, err := auth.NewSinkMailer(dir)
-		if err != nil {
-			return err
-		}
-		mail = m
+	mail, err := NewWorkerMailer(cfg)
+	if err != nil {
+		return err
 	}
 
 	workerDeps := Deps{Metrics: metrics}

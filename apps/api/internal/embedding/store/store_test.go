@@ -479,6 +479,12 @@ func TestScanStaleKeysetAndUserPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := q.UpdateUserSemanticSuggest(ctx, gen.UpdateUserSemanticSuggestParams{
+		ID:              uOn.ID,
+		SemanticSuggest: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	uOff, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "scan-off@example.com", Locale: "en"})
 	if err != nil {
 		t.Fatal(err)
@@ -489,7 +495,6 @@ func TestScanStaleKeysetAndUserPolicy(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-
 	item1, err := q.InsertItem(ctx, gen.InsertItemParams{UserID: uOn.ID, Name: "Item 1", NameNormalized: "item 1", Hint: new("h1")})
 	if err != nil {
 		t.Fatal(err)

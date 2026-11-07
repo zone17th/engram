@@ -263,6 +263,7 @@ function makeMe(userId = USER_A_ID, vaultStatus: 'present' | 'absent' = 'present
       captcha_site_key: null,
     },
     vault: { status: vaultStatus },
+    semantic_consent_seen_at: null,
   };
 }
 

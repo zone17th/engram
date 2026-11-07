@@ -516,6 +516,12 @@ func seedLagUsers(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []uuid.
 		if err != nil {
 			t.Fatalf("InsertUser %d: %v", i, err)
 		}
+		if _, err := q.UpdateUserSemanticSuggest(ctx, gen.UpdateUserSemanticSuggestParams{
+			ID:              u.ID,
+			SemanticSuggest: true,
+		}); err != nil {
+			t.Fatalf("UpdateUserSemanticSuggest %d: %v", i, err)
+		}
 		ids = append(ids, u.ID)
 	}
 	return ids

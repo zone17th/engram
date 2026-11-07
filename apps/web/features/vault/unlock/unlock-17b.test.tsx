@@ -65,6 +65,7 @@ function makeMeFixture(email = 'minh@zone17th.click'): Me {
       captcha_site_key: null,
     },
     vault: { status: 'present' },
+    semantic_consent_seen_at: null,
   };
 }
 

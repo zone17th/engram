@@ -237,6 +237,12 @@ func TestEnqueueTxFanOutLockAndBootstrapPending(t *testing.T) {
 	g2OpenAIPending := seedGenerationForIdentity(t, ctx, pool, 2, openAIIdent, generation.StatePending, nil)
 
 	// User has semantic_suggest = true -> all 3 receiving generations (g1, g2, g3) receive jobs.
+	if _, err := pool.Exec(ctx,
+		`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'true'::jsonb) WHERE id = $1`,
+		user.ID,
+	); err != nil {
+		t.Fatalf("set semantic_suggest=true: %v", err)
+	}
 	tagIDOn := uuid.New()
 	txOn, err := pool.Begin(ctx)
 	if err != nil {

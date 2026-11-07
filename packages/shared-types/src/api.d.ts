@@ -603,6 +603,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Xoá vĩnh viễn tài khoản và toàn bộ dữ liệu thuộc tài khoản
+         * @description Yêu cầu session, CSRF, grant re-auth (`account.delete`), rate limit `vault_sensitive` và `Idempotency-Key`.
+         *     Nhận body `{"confirm_email":"<email>"}` (16 KiB; lệch email chuẩn hoá trả `400 account_delete_confirm_invalid`).
+         *     Trong một transaction: kiểm tra grant + email, xoá vector mọi generation, ghi nhận job cleanup file export còn sống,
+         *     ghi audit `account.delete` (`user_id=NULL`, giữ 90 ngày rồi purge), xoá `app_user` (CASCADE toàn bộ dữ liệu của user),
+         *     rồi xoá cookie auth và trả `204`.
+         */
+        delete: operations["accountDelete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/vault": {
         parameters: {
             query?: never;
@@ -1282,12 +1306,165 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Tạo hoặc nối vào job xuất bản sao lưu mã hoá (.sabk.json)
+         * @description Yêu cầu session, CSRF và `Idempotency-Key` (body `{kind:"encrypted"}`, trần 16 KiB).
+         *     Thứ tự xử lý: (0) nếu `EXPORT_CREATE_PAUSED=true` thì trả ngay `503 dependency_unavailable` kèm `Retry-After: 600` trước mọi ghi;
+         *     (1) replay idempotency cùng key; (2) giữ `pg_advisory_xact_lock` theo user; (3) nếu đã có job `queued`/`running` thì coalesce trả `202`
+         *     với job đó mà không tiêu tốn lượt quota `export_create` (3 / 60 phút / user); (4) nếu tạo job mới thì kiểm tra quota `export_create`
+         *     (`ConsumeTx`), trần spool, chốt `snapshot_vault_key_id`/`snapshot_vault_ver` và enqueue River job `export_encrypted`.
+         */
+        post: operations["exportCreate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exports/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lấy job xuất bản sao lưu gần nhất của người dùng hiện tại
+         * @description Trả về `{job: ExportJob | null}` theo `created_at DESC, id DESC LIMIT 1`.
+         *     Nếu job `ready` đã quá `expires_at` hoặc thiếu file vật lý thì lazy-expire sang `expired` trước khi trả.
+         */
+        get: operations["exportGetLatest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exports/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lấy trạng thái một job xuất bản sao lưu theo ID
+         * @description Không tồn tại hoặc của người dùng khác trả `404 not_found`.
+         */
+        get: operations["exportGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exports/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tải xuống file sao lưu mã hoá (.sabk.json) từ job đã sẵn sàng
+         * @description Giải mã lớp AEAD at-rest `ENGX1` trên đĩa rồi stream JSON `.sabk.json` với `Cache-Control: no-store, no-transform`,
+         *     `Content-Type: application/json`, `Content-Disposition: attachment; filename="engram-backup-YYYY-MM-DD.sabk.json"` và `X-Content-Type-Options: nosniff`.
+         *     Không giới hạn lượt tải khi job còn `ready` và chưa quá `expires_at`.
+         */
+        get: operations["exportDownload"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exports/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Huỷ một job xuất bản sao lưu đang chờ, đang chạy hoặc đã sẵn sàng
+         * @description Yêu cầu session, CSRF và `Idempotency-Key` (body `{}`).
+         *     Chuyển job `queued`/`running`/`ready` sang `cancelled` và xếp hàng xoá file vật lý; nếu đã `cancelled` thì trả `200` idempotent;
+         *     `failed` trả `409 export_not_ready`; `expired` trả `410 export_expired`. Không hoàn trả lượt quota `export_create`.
+         */
+        post: operations["exportCancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exports/{id}/decrypted-pages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Đọc phân trang dữ liệu từ snapshot sao lưu đã sẵn sàng để client giải mã cục bộ
+         * @description Yêu cầu session và grant re-auth (`export.decrypted`; là GET nên không kiểm CSRF) và không tính vào quota `export_create`.
+         *     Chỉ đọc từ chính file snapshot `.sabk.enc` đã giải mã lớp at-rest của job `ready` (tuyệt đối không truy vấn bảng nội dung trực tiếp),
+         *     trả từng trang ≤ 1 MiB theo thứ tự `tags` → `items` → `item_tags` → `entries` sống (`deleted_at IS NULL`) kèm cursor HMAC.
+         */
+        get: operations["exportDecryptedPages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit/export-decrypted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ghi nhận sự kiện kiểm toán sau khi client hoàn tất xuất bản JSON đã giải mã ở trình duyệt
+         * @description Yêu cầu session, CSRF, grant re-auth (`export.decrypted`) và `Idempotency-Key` (body `{}`, trần 16 KiB; field lạ trả `400 invalid_request`;
+         *     không áp rate limit phụ). Được client gọi sau khi ghi xong toàn bộ file đọc được cục bộ: ghi sự kiện `export.decrypted` (`meta="{}"`)
+         *     vào `audit_log`, tạo `user_notification`, xếp hàng email thông báo bảo mật và trả `204`.
+         */
+        post: operations["exportDecryptedAudit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        ProblemCode: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found" | "unauthenticated" | "access_expired" | "session_invalid" | "invalid_credentials" | "csrf_invalid" | "forbidden" | "reauth_required" | "reauth_invalid" | "reauth_unsupported_provider" | "rate_limited" | "captcha_required" | "email_not_verified" | "email_taken" | "identity_conflict" | "identity_last_method" | "oauth_state_invalid" | "oauth_provider_error" | "verification_invalid" | "password_weak" | "semantic_unavailable" | "mail_delivery_unavailable" | "vault_exists" | "vault_absent" | "vault_kdf_invalid" | "vault_wrap_invalid" | "vault_mutations_disabled" | "recovery_keys_count" | "recovery_key_slot_taken" | "recovery_key_invalid" | "recovery_key_conflict" | "precondition_required" | "version_mismatch" | "idempotency_conflict" | "idempotency_in_progress" | "passkey_challenge_invalid" | "passkey_attestation_invalid" | "passkey_name_invalid" | "passkey_exists" | "passkey_not_found" | "name_invalid" | "hint_invalid" | "tag_display_invalid" | "item_id_conflict" | "item_deleted" | "item_tag_limit" | "item_entry_limit" | "tag_conflict" | "entry_invalid" | "entry_too_large" | "entry_id_conflict" | "entry_key_mismatch" | "entry_nonce_reused" | "entry_restore_via_item" | "reorder_mismatch" | "changes_window_expired" | "reset_token_invalid";
+        ProblemCode: "invalid_request" | "dependency_unavailable" | "internal_error" | "not_found" | "unauthenticated" | "access_expired" | "session_invalid" | "invalid_credentials" | "csrf_invalid" | "forbidden" | "reauth_required" | "reauth_invalid" | "reauth_unsupported_provider" | "rate_limited" | "captcha_required" | "email_not_verified" | "email_taken" | "identity_conflict" | "identity_last_method" | "oauth_state_invalid" | "oauth_provider_error" | "verification_invalid" | "password_weak" | "semantic_unavailable" | "mail_delivery_unavailable" | "vault_exists" | "vault_absent" | "vault_kdf_invalid" | "vault_wrap_invalid" | "vault_mutations_disabled" | "recovery_keys_count" | "recovery_key_slot_taken" | "recovery_key_invalid" | "recovery_key_conflict" | "precondition_required" | "version_mismatch" | "idempotency_conflict" | "idempotency_in_progress" | "passkey_challenge_invalid" | "passkey_attestation_invalid" | "passkey_name_invalid" | "passkey_exists" | "passkey_not_found" | "name_invalid" | "hint_invalid" | "tag_display_invalid" | "item_id_conflict" | "item_deleted" | "item_tag_limit" | "item_entry_limit" | "tag_conflict" | "entry_invalid" | "entry_too_large" | "entry_id_conflict" | "entry_key_mismatch" | "entry_nonce_reused" | "entry_restore_via_item" | "reorder_mismatch" | "changes_window_expired" | "reset_token_invalid" | "export_not_ready" | "export_expired" | "account_delete_confirm_invalid";
         Problem: {
             /**
              * Format: uri
@@ -1370,6 +1547,11 @@ export interface components {
                  */
                 status: "absent" | "present";
             };
+            /**
+             * Format: date-time
+             * @description Thời điểm server ghi nhận người dùng đã xem lựa chọn consent tìm theo nghĩa (cuối onboarding hoặc banner một lần); `null` khi chưa xem.
+             */
+            semantic_consent_seen_at: string | null;
         };
         SignupRequest: {
             /** Format: email */
@@ -1413,6 +1595,11 @@ export interface components {
             theme?: components["schemas"]["Theme"];
             auto_lock_minutes?: components["schemas"]["AutoLockMinutes"];
             semantic_suggest?: boolean;
+            /**
+             * @description Chỉ nhận `true` (`false` trả `400 invalid_request`); server ghi `semantic_consent_seen_at = coalesce(semantic_consent_seen_at, now())` trong cùng transaction.
+             * @constant
+             */
+            semantic_consent_seen?: true;
         };
         PasswordChangeRequest: {
             new_password: string;
@@ -2071,6 +2258,75 @@ export interface components {
             near: components["schemas"]["SuggestNearRow"][];
             generation: number | null;
         };
+        AccountDeleteRequest: {
+            /**
+             * Format: email
+             * @description Địa chỉ email xác nhận xoá tài khoản (server chuẩn hoá trim+lowercase và so với `app_user.email`; lệch trả `400 account_delete_confirm_invalid`).
+             */
+            confirm_email: string;
+        };
+        /** @enum {string} */
+        ExportKind: "encrypted";
+        /** @enum {string} */
+        ExportStatus: "queued" | "running" | "ready" | "failed" | "cancelled" | "expired";
+        ExportCreateRequest: {
+            kind: components["schemas"]["ExportKind"];
+        };
+        ExportJob: {
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["ExportKind"];
+            status: components["schemas"]["ExportStatus"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            started_at?: string | null;
+            /** Format: date-time */
+            completed_at?: string | null;
+            /** Format: date-time */
+            expires_at?: string | null;
+            size_bytes?: number | null;
+            items_total?: number | null;
+            items_processed?: number | null;
+            error_code?: string | null;
+        };
+        ExportLatestResponse: {
+            job: components["schemas"]["ExportJob"] | null;
+        };
+        /** @enum {string} */
+        DecryptedExportSection: "tags" | "items" | "item_tags" | "entries";
+        DecryptedExportItemRow: {
+            /** Format: uuid */
+            id: string;
+            name: components["schemas"]["ItemName"];
+            hint: components["schemas"]["ItemHint"];
+            entry_count: number;
+            version: number;
+            /** Format: date-time */
+            last_used_at: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            tag_ids?: string[];
+        };
+        DecryptedExportItemTagRow: {
+            /** Format: uuid */
+            item_id: string;
+            /** Format: uuid */
+            tag_id: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        DecryptedExportPage: {
+            /** Format: uuid */
+            source_export_id: string;
+            vault_key_id: components["schemas"]["VaultKeyId"];
+            total_entries: number;
+            section: components["schemas"]["DecryptedExportSection"];
+            items: (components["schemas"]["Tag"] | components["schemas"]["DecryptedExportItemRow"] | components["schemas"]["DecryptedExportItemTagRow"] | components["schemas"]["Entry"])[];
+            next_cursor: string | null;
+        };
     };
     responses: {
         /** @description Lỗi RFC 9457 */
@@ -2170,6 +2426,8 @@ export interface components {
          *     thiếu `since` → `400 invalid_request`.
          */
         ChangesSince: string;
+        /** @description UUID của job xuất bản sao lưu thuộc người dùng hiện tại. */
+        ExportId: string;
     };
     requestBodies: never;
     headers: {
@@ -2178,6 +2436,10 @@ export interface components {
         NoStoreNoTransform: "no-store, no-transform";
         /** @description Giây nguyên dương tới cuối cửa sổ rate limit. */
         RetryAfter: number;
+        /** @description Tên tệp tải xuống chuẩn `attachment; filename="engram-backup-YYYY-MM-DD.sabk.json"`. */
+        ExportContentDisposition: string;
+        /** @description Chặn trình duyệt tự đoán MIME type. */
+        NoSniff: "nosniff";
     };
     pathItems: never;
 }
@@ -2922,6 +3184,7 @@ export interface operations {
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
             403: components["responses"]["Problem"];
+            /** @description Bật semantic khi `semantic_available=false` (tĩnh) hoặc breaker mở (semantic_unavailable) */
             409: components["responses"]["Problem"];
         };
     };
@@ -2984,6 +3247,52 @@ export interface operations {
             401: components["responses"]["Problem"];
             403: components["responses"]["Problem"];
             429: components["responses"]["RateLimited"];
+        };
+    };
+    accountDelete: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
+                "X-Reauth-Token": components["parameters"]["ReauthToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description Đã xoá tài khoản và xoá cookie auth */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Email xác nhận không khớp hoặc body không hợp lệ (account_delete_confirm_invalid, invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            429: components["responses"]["RateLimited"];
+            /** @description Phụ thuộc chưa sẵn sàng (dependency_unavailable) */
+            503: components["responses"]["Problem"];
         };
     };
     vaultGet: {
@@ -4698,6 +5007,286 @@ export interface operations {
             401: components["responses"]["Problem"];
             /** @description Quá giới hạn scope `search_read` (token bucket in-memory 20/s, burst 40 theo user); kèm header `Retry-After` (≥ 1 s) và `retry_after` (rate_limited) */
             429: components["responses"]["RateLimited"];
+        };
+    };
+    exportCreate: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Job xuất bản sao lưu mã hoá đã xếp hàng hoặc đang chạy */
+            202: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportJob"];
+                };
+            };
+            /** @description Yêu cầu không hợp lệ (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Chưa khởi tạo vault (vault_absent) */
+            404: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+            /** @description Quá 3 lần tạo job mới trong 60 phút (`export_create`, rate_limited) */
+            429: components["responses"]["RateLimited"];
+            /** @description Công tắc tạm dừng tạo bản sao lưu đang bật (`EXPORT_CREATE_PAUSED=true`, `Retry-After: 600` kiểm tra trước mọi ghi) hoặc phụ thuộc chưa sẵn sàng (dependency_unavailable) */
+            503: {
+                headers: {
+                    "Retry-After": components["headers"]["RetryAfter"];
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    exportGetLatest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Job xuất bản sao lưu gần nhất (hoặc null nếu chưa từng tạo) */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportLatestResponse"];
+                };
+            };
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+        };
+    };
+    exportGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID của job xuất bản sao lưu thuộc người dùng hiện tại. */
+                id: components["parameters"]["ExportId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trạng thái job xuất bản sao lưu */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportJob"];
+                };
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Không tìm thấy job (not_found) */
+            404: components["responses"]["Problem"];
+        };
+    };
+    exportDownload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID của job xuất bản sao lưu thuộc người dùng hiện tại. */
+                id: components["parameters"]["ExportId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Nội dung file sao lưu mã hoá `.sabk.json` */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStoreNoTransform"];
+                    "Content-Disposition": components["headers"]["ExportContentDisposition"];
+                    "X-Content-Type-Options": components["headers"]["NoSniff"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+            /** @description ID không phải UUID (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Không tìm thấy job (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Job chưa sẵn sàng hoặc không ở trạng thái tải được (export_not_ready) */
+            409: components["responses"]["Problem"];
+            /** @description Bản sao lưu đã hết hạn 24 giờ (export_expired) */
+            410: components["responses"]["Problem"];
+        };
+    };
+    exportCancel: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                /** @description UUID của job xuất bản sao lưu thuộc người dùng hiện tại. */
+                id: components["parameters"]["ExportId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
+        responses: {
+            /** @description Job sau khi huỷ */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportJob"];
+                };
+            };
+            /** @description ID hoặc body không hợp lệ (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực (unauthenticated, access_expired, session_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Không tìm thấy job (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Job không thể huỷ hoặc xung đột idempotency (export_not_ready, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Bản sao lưu đã hết hạn (export_expired) */
+            410: components["responses"]["Problem"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
+        };
+    };
+    exportDecryptedPages: {
+        parameters: {
+            query?: {
+                /** @description Cursor trang kế tiếp từ `next_cursor` trang trước; bỏ trống ở trang đầu. */
+                cursor?: string;
+            };
+            header: {
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
+                "X-Reauth-Token": components["parameters"]["ReauthToken"];
+            };
+            path: {
+                /** @description UUID của job xuất bản sao lưu thuộc người dùng hiện tại. */
+                id: components["parameters"]["ExportId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Một trang phần tử từ snapshot sao lưu */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecryptedExportPage"];
+                };
+            };
+            /** @description ID hoặc cursor/HMAC không hợp lệ (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Không tìm thấy job (not_found) */
+            404: components["responses"]["Problem"];
+            /** @description Job chưa sẵn sàng hoặc không ở trạng thái đọc được (export_not_ready) */
+            409: components["responses"]["Problem"];
+            /** @description Bản sao lưu đã hết hạn (export_expired) */
+            410: components["responses"]["Problem"];
+        };
+    };
+    exportDecryptedAudit: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Khoá chống lặp thao tác (16–128 ký tự `[A-Za-z0-9_-]`, UUID v4 sinh một lần cho mỗi thao tác người dùng).
+                 *     Giữ 24 giờ; fingerprint tính trên `method + concrete path + body`.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Grant re-auth HMAC stateless (`POST /auth/reauth`), TTL 5 phút, gắn `user_id + session_id + action` (thiếu/hết hạn/sai action trả 401 reauth_required hoặc reauth_invalid; khi replay idempotent một thao tác đã commit, bước 2 trả kết quả lưu trước khi kiểm tra grant nên client có thể gửi lại token cũ đã hết hạn). */
+                "X-Reauth-Token": components["parameters"]["ReauthToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
+        responses: {
+            /** @description Đã ghi nhận sự kiện kiểm toán */
+            204: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Body không hợp lệ (invalid_request) */
+            400: components["responses"]["Problem"];
+            /** @description Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid) */
+            401: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
+            403: components["responses"]["Problem"];
+            /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
+            409: components["responses"]["IdempotencyConflict"];
+            /** @description Body quá 16 KiB (invalid_request) */
+            413: components["responses"]["Problem"];
+            /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
+            415: components["responses"]["Problem"];
         };
     };
 }

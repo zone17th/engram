@@ -61,15 +61,16 @@ func (ns NullRiverJobState) Value() (driver.Value, error) {
 }
 
 type AppUser struct {
-	ID              uuid.UUID
-	Email           string
-	EmailVerifiedAt pgtype.Timestamptz
-	Locale          string
-	Theme           string
-	AutoLockMinutes int32
-	Settings        []byte
-	CreatedAt       pgtype.Timestamptz
-	DeletedAt       pgtype.Timestamptz
+	ID                    uuid.UUID
+	Email                 string
+	EmailVerifiedAt       pgtype.Timestamptz
+	Locale                string
+	Theme                 string
+	AutoLockMinutes       int32
+	Settings              []byte
+	CreatedAt             pgtype.Timestamptz
+	DeletedAt             pgtype.Timestamptz
+	SemanticConsentSeenAt pgtype.Timestamptz
 }
 
 type AuditLog struct {
@@ -165,6 +166,38 @@ type Entry struct {
 	DeletedAt          pgtype.Timestamptz
 	DeletedVia         *string
 	DeleteBatch        *uuid.UUID
+}
+
+type ExportFileCleanup struct {
+	ID        uuid.UUID
+	FileName  string
+	JobID     uuid.UUID
+	AttemptID *uuid.UUID
+	Reason    string
+	CreatedAt pgtype.Timestamptz
+	DoneAt    pgtype.Timestamptz
+	Attempts  int32
+}
+
+type ExportJob struct {
+	ID                 uuid.UUID
+	UserID             uuid.UUID
+	Kind               string
+	Status             string
+	AttemptID          *uuid.UUID
+	LeaseUntil         pgtype.Timestamptz
+	SnapshotVaultKeyID *string
+	SnapshotVaultVer   *int32
+	FileName           *string
+	SizeBytes          *int64
+	ItemsTotal         *int32
+	ItemsProcessed     *int32
+	ErrorCode          *string
+	CreatedAt          pgtype.Timestamptz
+	StartedAt          pgtype.Timestamptz
+	CompletedAt        pgtype.Timestamptz
+	CancelledAt        pgtype.Timestamptz
+	ExpiresAt          pgtype.Timestamptz
 }
 
 type IdempotencyKey struct {

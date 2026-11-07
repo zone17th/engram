@@ -155,12 +155,11 @@ func TestVaultMigration0005TablesConstraintsAndDown(t *testing.T) {
 		t.Fatalf("thiếu index idempotency_key_user_path_idx, count=%d", idxCount)
 	}
 
-	u1, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "v1@example.com", Locale: "en"})
-	if err != nil {
+	var u1, u2 gen.AppUser
+	if err := pool.QueryRow(ctx, `INSERT INTO app_user (email, locale) VALUES ($1, $2) RETURNING id`, "v1@example.com", "en").Scan(&u1.ID); err != nil {
 		t.Fatalf("InsertUser u1: %v", err)
 	}
-	u2, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "v2@example.com", Locale: "en"})
-	if err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO app_user (email, locale) VALUES ($1, $2) RETURNING id`, "v2@example.com", "en").Scan(&u2.ID); err != nil {
 		t.Fatalf("InsertUser u2: %v", err)
 	}
 
