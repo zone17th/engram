@@ -2524,7 +2524,7 @@ export function NewJsonEntryComposer({
         <span>{isArr ? tJson('colIndex') : tJson('colField')}</span>
         <span>{tJson('colValue')}</span>
         <span>{tJson('kvColType')}</span>
-        <span className="sr-only">Menu</span>
+        <span className="sr-only">{tJson('kv.colMenuSr')}</span>
       </div>
     ) : null;
 
@@ -2951,7 +2951,7 @@ export function NewJsonEntryComposer({
                           [
                             ['string', tJson('typeOptionString')],
                             ['number', tJson('typeOptionNumber')],
-                            ['boolean', 'true / false'],
+                            ['boolean', tJson('typeOptionBoolean')],
                             ['null', tJson('typeOptionNull')],
                             ['object', tJson('typeOptionObject')],
                             ['array', tJson('typeOptionArray')],

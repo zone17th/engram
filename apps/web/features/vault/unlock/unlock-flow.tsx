@@ -17,7 +17,6 @@ import {
 import { formatRetryClock, normalizeRetryAfter } from '@/lib/auth/retry-after';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { useRetryCountdown } from '@/lib/auth/use-retry-countdown';
-import { CryptoClientError } from '@/lib/crypto/client';
 import { hasLoneSurrogate } from '@/lib/crypto/protocol';
 import {
   clearDeviceUnlockFallbackNotice,
@@ -40,7 +39,7 @@ export type UnlockErrorState =
   | { kind: 'recovering' }
   | { kind: 'rate_limited'; initialSeconds: number }
   | { kind: 'session_expired' }
-  | { kind: 'network'; detail?: string };
+  | { kind: 'network' };
 
 export function VaultUnlockFlow() {
   const t = useTranslations('unlock');
@@ -261,10 +260,7 @@ export function VaultUnlockFlow() {
             return;
           }
           refocusPassphraseAfterErrorRef.current = true;
-          setErrorState({
-            kind: 'network',
-            detail: err.problem.detail ?? err.problem.title,
-          });
+          setErrorState({ kind: 'network' });
           return;
         }
 
@@ -301,10 +297,6 @@ export function VaultUnlockFlow() {
             return;
           default:
             refocusPassphraseAfterErrorRef.current = true;
-            if (err instanceof CryptoClientError) {
-              setErrorState({ kind: 'network', detail: err.message });
-              return;
-            }
             setErrorState({ kind: 'network' });
         }
       } finally {
@@ -715,7 +707,7 @@ export function VaultUnlockFlow() {
                   {t('errors.networkTitle')}
                 </p>
                 <p className="m-0 text-[13px] text-muted">
-                  {errorState.detail ?? t('errors.networkBody')}
+                  {t('errors.networkBody')}
                 </p>
               </div>
             </div>

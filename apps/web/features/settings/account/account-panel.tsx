@@ -179,8 +179,8 @@ export function AccountPanel({
             value={uiLocale}
             onChange={(v) => void patchLocale(v as Locale)}
             options={[
-              { value: 'vi', label: 'Tiếng Việt' },
-              { value: 'en', label: 'English' },
+              { value: 'vi', label: t('account.localeVi') },
+              { value: 'en', label: t('account.localeEn') },
             ]}
           />
         </div>

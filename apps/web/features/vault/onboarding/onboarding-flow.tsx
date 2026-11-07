@@ -56,7 +56,7 @@ type Step2ErrorAlert =
   | { kind: 'mutations_disabled' }
   | { kind: 'email_not_verified' }
   | { kind: 'rate_limited'; seconds: number }
-  | { kind: 'generic'; detail?: string };
+  | { kind: 'generic' };
 
 function strengthBarPercentage(score: PassphraseScore, hasInput: boolean): number {
   if (!hasInput) return 0;
@@ -347,10 +347,7 @@ export function VaultOnboardingFlow() {
           await vault.lock({ broadcast: false, reason: 'onboarding_switch_from_recovering' });
           return;
         }
-        setStep2Error({
-          kind: 'generic',
-          detail: err instanceof Error ? err.message : undefined,
-        });
+        setStep2Error({ kind: 'generic' });
       } finally {
         setDerivingKeys(false);
       }
@@ -504,10 +501,7 @@ export function VaultOnboardingFlow() {
           setStep2Error({ kind: 'rate_limited', seconds });
           return;
         }
-        setStep2Error({
-          kind: 'generic',
-          detail: err.problem.detail ?? err.problem.title,
-        });
+        setStep2Error({ kind: 'generic' });
         return;
       }
 
@@ -727,9 +721,7 @@ export function VaultOnboardingFlow() {
                       {t('errors.genericTitle')}
                     </p>
                     <p className="m-0 text-[13px] text-body">
-                      {step2Error.kind === 'generic'
-                        ? (step2Error.detail ?? t('errors.genericBody'))
-                        : t('errors.genericBody')}
+                      {t('errors.genericBody')}
                     </p>
                   </div>
                 ) : null}
@@ -885,8 +877,7 @@ export function VaultOnboardingFlow() {
                     t('errors.emailNotVerifiedBody')}
                   {step2Error.kind === 'rate_limited' &&
                     t('errors.rateLimitedBody', { seconds: step2Error.seconds })}
-                  {step2Error.kind === 'generic' &&
-                    (step2Error.detail ?? t('errors.genericBody'))}
+                  {step2Error.kind === 'generic' && t('errors.genericBody')}
                 </p>
               </div>
             ) : null}

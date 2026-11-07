@@ -14,7 +14,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('next-intl', () => ({
-  useTranslations: () => (key: string) =>
+  useLocale: () => 'en',
+  useTranslations: () => (key: string, values?: Record<string, string | number>) =>
     ({
       'common.loading': 'Loading',
       'common.loadMore': 'Load more',
@@ -26,6 +27,8 @@ vi.mock('next-intl', () => ({
       'security.currentSession': 'this session',
       'security.revoke': 'Revoke',
       'security.unknownDevice': 'Unknown device',
+      'security.lastSeenJustNow': 'just now',
+      'security.lastSeenHoursAgo': `${values?.hours ?? 0}h ago`,
       'security.notificationsTitle': 'In-app notices',
       'security.notificationsBody': 'Security alerts without secrets.',
       'notifications.empty': 'No security notices yet.',

@@ -118,6 +118,9 @@
     "errorBody": "Try again in a moment.",
     "retry": "Try again"
   },
+  "ui": {
+    "segmentedAriaLabel": "Options"
+  },
   "footer": {
     "legal": "engram — saved by keyword."
   },
@@ -582,6 +585,8 @@
       "patchFailed": "Could not save that setting. Your previous choice is still in use.",
       "localeTitle": "Language",
       "localeBody": "Applies to the interface, not entry content.",
+      "localeVi": "Tiếng Việt",
+      "localeEn": "English",
       "themeTitle": "Theme",
       "themeBody": "System, light, or dark.",
       "themeSystem": "System",
@@ -601,6 +606,8 @@
       "currentSession": "this session",
       "revoke": "Revoke",
       "unknownDevice": "Unknown device",
+      "lastSeenJustNow": "just now",
+      "lastSeenHoursAgo": "{hours}h ago",
       "auditTitle": "Security log",
       "auditBody": "Sign-ins, account and vault changes, session revokes.",
       "notificationsTitle": "In-app notices",
@@ -1768,6 +1775,7 @@
       "addFieldValueAria": "New field value",
       "typeOptionString": "Text",
       "typeOptionNumber": "Number",
+      "typeOptionBoolean": "true / false",
       "typeOptionTrue": "true",
       "typeOptionFalse": "false",
       "typeOptionNull": "null",
