@@ -2,7 +2,8 @@
 # engram WAL restore_command (P06 Task 9). Runs inside a RESTORE container (never production) as postgres:
 #   restore_command = '/etc/postgresql/engram-wal-restore.sh %f %p'
 # Finds <archive>/<ts>--<%f>.gz.gpg (the <ts>-- prefix is stripped by matching on the suffix), decrypts with the
-# private key in ENGRAM_RESTORE_GNUPGHOME, verifies the plaintext sha256 against .sha256, then writes %p.
+# private key in ENGRAM_RESTORE_GNUPGHOME after checking the encrypted digest (.sha256 line 2), verifies the plaintext
+# sha256 (.sha256 line 1), then writes %p.
 # Exit 1 when the segment is not archived (normal end of archive for Postgres). A present but corrupt/undecryptable
 # segment exits 126 so Postgres ABORTS recovery instead of silently promoting at an earlier point.
 set -euo pipefail
@@ -30,8 +31,10 @@ tmp="$dst_path.engram-restore"
 trap 'rm -f "$tmp"' EXIT
 for f in "${candidates[@]}"; do
   [ -f "$f.sha256" ] || continue
-  want="$(awk '{print $1}' "$f.sha256")"
-  if gpg --batch --quiet --decrypt "$f" 2>/dev/null | gunzip -c >"$tmp"; then
+  want="$(awk 'NR == 1 {print $1}' "$f.sha256")"
+  want_enc="$(awk 'NR == 2 {print $1}' "$f.sha256")"
+  if [ -n "$want_enc" ] && [ "$(sha256sum "$f" | awk '{print $1}')" = "$want_enc" ] \
+    && gpg --batch --quiet --decrypt "$f" 2>/dev/null | gunzip -c >"$tmp"; then
     got="$(sha256sum "$tmp" | awk '{print $1}')"
     if [ "$got" = "$want" ]; then
       mv "$tmp" "$dst_path"

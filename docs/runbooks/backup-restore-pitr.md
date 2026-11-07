@@ -15,7 +15,7 @@ out. Only the **public** key exists on `bro` (`~/engram-ops/backup/gnupg`, and i
 | --- | --- | --- | --- | --- |
 | Logical | nightly `pg_dump -Fc` → gpg | `engram-backup.timer` 03:17 UTC+7 (`infra/backup/interim/`) | `~/backups/engram/nightly/` | `engram-<YYYYmmddTHHMMSSZ>.dump.gpg` |
 | Physical base | `pg_basebackup -Ft -X fetch -z` → gpg | `engram-pitr-base.timer` 03:45 UTC+7 (`infra/backup/pitr/engram-pitr-base.sh`) | `~/backups/engram/pitr/base/` (+ `.sha256`, `pitr/last-base.json`) | `engram-base-<YYYYmmddTHHMMSSZ>.tar.gz.gpg` (start of `pg_basebackup`) |
-| WAL | `archive_command` → gzip → gpg | Postgres archiver inside `engram-db-1` (`engram-wal-archive.sh`) | `~/backups/engram/pitr/wal/` (in container `/var/lib/postgresql/wal-archive`, owner postgres, 0700) | `<ts-archive>--<walname>.gz.gpg` (+ `.sha256` of the plaintext segment) |
+| WAL | `archive_command` → gzip → gpg | Postgres archiver inside `engram-db-1` (`engram-wal-archive.sh`) | `~/backups/engram/pitr/wal/` (in container `/var/lib/postgresql/wal-archive`, owner postgres, 0700) | `<ts-archive>--<walname>.gz.gpg` (+ `.sha256`: line 1 plaintext segment digest, line 2 encrypted file digest) |
 | Off-host | owner PC pull (Advisor script) | owner PC | owner PC | same names, never renamed |
 
 Server settings (`infra/backup/pitr/postgresql-pitr.conf`, image `engram-db-pitr:<pin>-p06` from
@@ -28,8 +28,9 @@ first, so only the PITR settings change.
 Base backup auth (one path only): role `engram_replication` (LOGIN REPLICATION, SCRAM) over the local socket.
 `infra/backup/pitr/bootstrap-replication.sql` creates it idempotently on a cluster that already has data and reads the
 password **inside psql** from `/run/secrets/engram_replication.password` (read-only mount, 0600, owner postgres).
-`infra/backup/pitr/engram-pitr-hba.sh apply` puts `local replication engram_replication scram-sha-256` at the top of
-`pg_hba.conf` and reloads. `.pgpass` (`*:*:replication:engram_replication:<password>`, 0600, owner postgres) is mounted at
+`infra/backup/pitr/engram-pitr-hba.sh apply` removes every copy of `local replication engram_replication scram-sha-256`,
+puts exactly one on line 1 of `pg_hba.conf` (ahead of any generic rule such as `local replication all trust`), reloads,
+and fails unless that rule is the first one matching a local replication connection of `engram_replication`. `.pgpass` (`*:*:replication:engram_replication:<password>`, 0600, owner postgres) is mounted at
 `/run/secrets/engram_replication.pgpass`; the base script passes only that path (`PGPASSFILE`). No password in argv,
 `psql -v`, `docker -e`, repo or logs (`SET log_statement='none'`, `log_min_error_statement='panic'` in the bootstrap
 session). Rollback: `engram-pitr-hba.sh rollback` (drops the role, removes the line, reloads).
@@ -38,14 +39,18 @@ session). Rollback: `engram-pitr-hba.sh rollback` (drops the role, removes the l
 in `docs/phases/evidence/P06/ops-dr.md`). If WAL is recycled mid-base, `pg_basebackup` fails and nothing is published;
 the gzip/GPG archive is never used as a source for `-X fetch`, only for PITR replay after the base.
 
-Base publish rule: `.partial` → `sha256sum` → `.sha256` → `sync -f` → atomic `mv` → `pitr/last-base.json`
-(`ts`/`file`/`bytes`/`sha256`/`wal_start`/`ok:true`) **only after** every step succeeded. Any failure (auth, killed
-`pg_basebackup`, gpg missing, disk full, WAL recycled): `.partial` removed, no final file, `last-base.json` untouched,
-exit 1 (systemd marks the unit failed; monitor alerts on `last-base.json` age).
+Base publish rule: the producer takes `pitr/.base.lock` first (a concurrent start exits 1 and touches no file), then
+`.partial` → `sha256sum` → `.sha256` → `sync -f` → atomic `mv` → `pitr/last-base.json` (`ts`/`file`/`bytes`/`sha256`/
+`wal_start`/`ok:true`). The rename of `last-base.json` is the commit point. Any failure before it (auth, killed
+`pg_basebackup`, gpg missing, disk full, WAL recycled, a later sync/stat/JSON write): `.partial` and temporaries
+removed, and a final/`.sha256` this run already renamed is removed again; `last-base.json` untouched, exit 1 (systemd
+marks the unit failed; monitor alerts on `last-base.json` age).
 
-WAL publish rule: `.partial` (gzip → gpg) and `.sha256.partial` → `sync -f` → `mv` `.sha256` then `.gz.gpg`. A segment
-already archived (any `<ts>--` prefix) with the same plaintext checksum is a no-op (exit 0); a different checksum exits 1
-and Postgres keeps the segment and retries (watch `pg_stat_archiver.failed_count`).
+WAL publish rule: `.partial` (gzip → gpg) and `.sha256.partial` → `sync -f` → `mv` `.sha256` then `.gz.gpg`. A retry for
+a segment already archived (any `<ts>--` prefix) returns 0 only when the plaintext digest matches the live segment
+**and** the encrypted file still matches its recorded digest (checked with no private key), after syncing again; a
+corrupt/truncated copy or a different plaintext exits 1, nothing is overwritten, and Postgres keeps the segment and
+retries (watch `pg_stat_archiver.failed_count`; replace a corrupt copy by hand only after investigating).
 
 ### Retention contract (R1-09/C09, verbatim from the P06 plan, Task 9)
 
@@ -70,8 +75,11 @@ gpg -d engram-<ts>.dump.gpg | pg_restore --no-owner -d scratch_restore
 
 ### 2b. PITR (base + WAL to a target time)
 
-1. Pick the newest `engram-base-<ts>.tar.gz.gpg` whose `<ts>` is **before** the target; check
-   `sha256sum -c engram-base-<ts>.tar.gz.gpg.sha256`.
+1. Pick the newest `engram-base-<ts>.tar.gz.gpg` whose `<ts>` (start of `pg_basebackup`) is strictly **before** the
+   target; if Postgres then stops with `requested recovery stop point is before consistent recovery point` (target
+   inside that base's own run), use the next older base. No base older than the target = the target is not
+   restorable. Check `sha256sum -c engram-base-<ts>.tar.gz.gpg.sha256`. The archive must also hold a commit **after**
+   the target, otherwise recovery ends with `recovery ended before configured recovery target was reached`.
 2. Empty data volume for the restore cluster; extract the base as root, then hand it to postgres:
    ```sh
    gpg -d engram-base-<ts>.tar.gz.gpg | docker run --rm -i --user 0 -v <restore-vol>:/var/lib/postgresql/data \
@@ -80,17 +88,21 @@ gpg -d engram-<ts>.dump.gpg | pg_restore --no-owner -d scratch_restore
        chmod 0700 /var/lib/postgresql/data'
    ```
 3. Import the private key into a restore-only GNUPGHOME volume (owner postgres, 0700); never into the production image.
-4. Start the restore cluster with the WAL archive mounted read-only and archiving off:
+   Write a restore-only HBA file (`local all all trust` + `host all all samenet trust`, owner postgres, 0600) into its
+   own volume: the isolated restore cluster is opened without knowing (or changing) any archived role password.
+4. Start the restore cluster on a private network with no published port, WAL archive read-only, archiving off:
    ```sh
    docker run -d --name engram-restore -v <restore-vol>:/var/lib/postgresql/data \
      -v <wal-dir>:/var/lib/postgresql/wal-archive:ro -v <restore-gnupg>:/var/lib/postgresql/restore-gnupg \
+     -v <restore-hba>:/var/lib/postgresql/restore-hba:ro \
      -e ENGRAM_RESTORE_GNUPGHOME=/var/lib/postgresql/restore-gnupg "$POSTGRES_PITR_IMAGE" \
      postgres -c config_file=/etc/postgresql/postgresql-pitr.conf -c archive_mode=off \
+       -c hba_file=/var/lib/postgresql/restore-hba/pg_hba.conf -c 'listen_addresses=*' \
        -c 'restore_command=/etc/postgresql/engram-wal-restore.sh %f %p' \
        -c "recovery_target_time=<YYYY-MM-DD HH:MM:SS+00>" -c recovery_target_action=promote
    ```
-   `engram-wal-restore.sh` matches `*--<walname>.gz.gpg` (strips the `<ts>--` prefix), decrypts, checks the plaintext
-   sha256 and writes `%p`. Missing segment = exit 1 (end of archive). Corrupt/undecryptable segment = exit 126, which
+   `engram-wal-restore.sh` matches `*--<walname>.gz.gpg` (strips the `<ts>--` prefix), checks the encrypted digest,
+   decrypts, checks the plaintext digest and writes `%p`. Missing segment = exit 1 (end of archive). Corrupt/undecryptable segment = exit 126, which
    **aborts** recovery instead of promoting at an earlier point.
 5. Wait for `SELECT pg_is_in_recovery()` = `f`; then run the pre-open checklist (section 3).
 
@@ -136,11 +148,14 @@ A point-in-time restore rolls back **server-side vault state**, not users' memor
 
 `bash infra/backup/rehearsal/run-pitr-rehearsal.sh --scratch` (cloud runner, Docker): baseline cluster on the current
 image with seed data → switch the same volume to `engram-db-pitr` + `bootstrap-replication.sql` + HBA + `.pgpass` →
-`pg_switch_wal` and archived `.gpg`/`.sha256` → `engram-pitr-base.sh` under write load + continuous `CHECKPOINT` →
-failure cases (wrong/missing `.pgpass`, missing password file, killed `pg_basebackup`, gpg missing, disk full, WAL
-recycled) → T2 + consumed RK → `T_target` → T3 → disaster → restore → T2 100 %, T3 absent, RK stays consumed, sessions
-revoked, `migrate up`, `/readyz` 200, RPO/RTO, canary replication password absent from argv and logs. Evidence lines
-`KEY=VALUE` end with `PITR_REHEARSAL=PASS|FAIL`; results in `docs/phases/evidence/P06/ops-dr.md`.
+`pg_switch_wal` and archived `.gpg`/`.sha256` (plus idempotent/corrupt-retry checks) → `engram-pitr-base.sh` under write
+load + continuous `CHECKPOINT` → failure cases, each asserting its own cause (wrong/missing `.pgpass`, missing password
+file, killed `pg_basebackup`, gpg missing, disk full, WAL recycled, failure after publish, concurrent start) → T2 +
+consumed RK → `T_target` → T3 → later base → T4 → `T_near` → T5 → disaster → restore to `T_target` (older base
+selected) → T2 100 %, T3 absent, RK stays consumed, sessions revoked, `migrate up`, `/readyz` 200 → target older than
+every base refused → second restore to `T_near` (later base, T3+T4 present, T5 absent) → RPO/RTO (RTO is warm: images
+built and archive local before the clock starts), canary replication password absent from argv and logs. Evidence
+lines `KEY=VALUE` end with `PITR_REHEARSAL=PASS|FAIL`; results in `docs/phases/evidence/P06/ops-dr.md`.
 
 Day-to-day checks on bro (read-only):
 

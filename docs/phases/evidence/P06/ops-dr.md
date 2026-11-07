@@ -19,24 +19,33 @@ install them under separate GOs). Production-archive rehearsal is Task 21c evide
 ## Scratch rehearsal results
 
 Run: `bash infra/backup/rehearsal/run-pitr-rehearsal.sh --scratch`. Throwaway GPG test key, containers/volumes
-`engram-dr-<id>-*`, all removed at exit.
+`engram-dr-<id>-*`, all removed at exit. Raw logs live in the run folder `reports/ops-dr/` (not in the repo).
 
-| Check | bro dev smoke (2026-11-07, pre-commit tree) | Cursor cloud runner (final SHA) |
+Round 1 (`02cbcf2`, before review r1): bro smoke `bro-smoke-4.log` and cloud `cloud-test-1.md` both
+`PITR_REHEARSAL=PASS` (RPO 294 s; RTO 99 s bro / 89 s cloud). Review r1 (R1-01..R1-10) tightened the harness; the
+round-2 results below supersede round 1.
+
+| Check (round 2, review fixes) | bro dev smoke (`bro-smoke-7.log`, tree == fix commit) | Cursor cloud runner |
 | --- | --- | --- |
-| Exit / verdict | `0` / `PITR_REHEARSAL=PASS` | `0` / `PITR_REHEARSAL=PASS` (round 1 @ `02cbcf2`, also `OPSDR_LINT_EXIT=0`, `OPSDR_IMAGE_EXIT=0`) |
-| `archived_count` before → after switch → end | `0` → `1` → `440`, `failed_count` `0` | `0` → `1` → `634`, `failed_count` `0` |
-| Archive file `<ts>--<wal>.gz.gpg` + `.sha256`, restore_command round trip | PASS / PASS | PASS / PASS |
-| Base under write load + continuous `CHECKPOINT` | 4 s, 33.4 MB encrypted, `ok:true`, sha256 file verifies, not plain gzip | 2 s, same checks PASS |
-| Failure cases (exit ≠ 0, no final file, no `.partial`, `last-base.json` unchanged) | wrong `.pgpass` PASS, missing `.pgpass` PASS, gpg missing PASS, `pg_basebackup` killed PASS, disk full (1 MiB tmpfs) PASS, WAL recycled (`requested WAL segment … has already been removed`, no archive fallback) PASS, bootstrap without password file (exit 3, no password set) PASS | all 7 PASS (same messages) |
-| Canary `CANARY_REPL_PW_<rand>` in host+container argv, container log, run/case/bootstrap/base logs | 0 hits (182 373 argv samples) | 0 hits (93 574 argv samples); runner logs grep 0 |
-| T1 / T2 / T3 after restore to `T_target` | 1000/1000, 500/500 (100 %), 0 (absent) | 1000/1000, 500/500, 0 |
-| RK consumed before `T_target` | stays consumed | stays consumed |
-| Sessions active after revoke / `migrate up` / `/api/v1/readyz` | 0 / exit 0 / 200 | 0 / exit 0 / 200 |
-| RPO (T3 commit → archived by `archive_timeout` alone, no manual switch) | 294 s (≤ 15 min) | 294 s |
-| RTO (source destroyed → `/readyz` 200; base decrypt + WAL replay + migrate + api) | 99 s (≤ 2 h) | 89 s |
+| Exit / verdict | `0` / `PITR_REHEARSAL=PASS` | see `reports/ops-dr/merge-ready.md` |
+| HBA: generic `local replication all trust` on line 1 + owned rule at the end → `apply` | owned rule moved to line 1, single copy, precedence verified (`HBA_APPLY_PRECEDENCE`, `HBA_APPLY_IDEMPOTENT`) | |
+| Archive: `<ts>--<wal>.gz.gpg` + `.sha256` (plaintext + encrypted digests), archiver advances | PASS, `failed_count` 0 | |
+| Archive retry: idempotent; truncated ciphertext / different plaintext NOT acknowledged | PASS (no private key used) | |
+| restore_command round trip; corrupt copy → exit 126 (abort) | PASS / PASS | |
+| Base under write load + continuous `CHECKPOINT` | 3 s, `ok:true`, sha256 verifies, not plain gzip | |
+| Failure cases, each with its own cause in its own log, nothing published | wrong `.pgpass` (`password authentication failed`), missing `.pgpass` (`no password supplied`), gpg missing, `pg_basebackup` killed (1 process killed while streaming), disk full (`No space left on device`), WAL recycled (`requested WAL segment … has already been removed`), failure after publish (final + `.sha256` rolled back, marker kept), concurrent start (refused; running base's `.partial` intact, it publishes), bootstrap without password file — all PASS; cause matrix discriminates | |
+| Canary: one argv log for the whole run (bootstrap + every base), container/run/case/base/bootstrap/migrate logs | 0 hits in 24 files; sampler saw the `pg_basebackup` command line and (enforced) the bootstrap `psql`; scanner self-test PASS | |
+| Restore to `T_target` from an archive with 3 bases (one after the target) | newest base before the target selected; T1 1000/1000, T2 500/500, T3 0, RK stays consumed | |
+| Restored roles keep a non-fixture password; restore-only HBA | sessions revoked (0 active), `migrate up` exit 0, `/readyz` 200 | |
+| Target older than every base | refused (no base selected, restore exit 3) | |
+| Second restore, same directory, `T_near` | later base selected; T3 + T4 present, T5 absent; post-restore checks PASS | |
+| Negative control: dirty migration on a pingable restored DB | `NEGCTL_MIGRATE_UP=FAIL` counted → verdict would fail (`NEGATIVE_CONTROL_MIGRATE_FAILURE_FAILS_VERDICT=PASS`) | |
+| RPO (T3 commit → archived by `archive_timeout` alone, no manual switch) | 295 s (≤ 15 min) | |
+| RTO, warm (source destroyed → `/readyz` 200: base decrypt + WAL replay + revoke + migrate + api; images built and archive local beforehand) | 7 s (selected base is minutes old; round 1 with a 10-minute-old base and 440 segments: 99 s) | |
 
-The bro row is a development smoke (scratch only, throwaway key, no production data, under `heavy.lock`); the cloud
-row is the evidence of record (`reports/ops-dr/cloud-test-1.md`, raw logs `cloud-test-1.logs/{a,b,c}.log`; the final-SHA round is listed in `reports/ops-dr/merge-ready.md`).
+The bro rows are a development smoke (scratch only, throwaway key, no production data, under `heavy.lock`); the cloud
+round on the fix SHA is the evidence of record. RTO is a warm, local-archive figure; a cold disaster adds image pulls
+and copying the archive from off-host.
 
 ## `wal_keep_size` sizing (R4-03)
 

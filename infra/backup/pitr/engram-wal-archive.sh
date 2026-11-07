@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # engram WAL archive_command (P06 Task 9). Runs INSIDE the DB container as user postgres:
 #   archive_command = '/etc/postgresql/engram-wal-archive.sh %p %f'
-# Writes <archive>/<ts-archive>--<walname>.gz.gpg plus .sha256 (sha256 of the plaintext segment).
+# Writes <archive>/<ts-archive>--<walname>.gz.gpg plus <same>.sha256 with two sha256sum lines:
+#   line 1: sha256 of the PLAINTEXT segment   "<sha>  <walname>"          (checked after decrypt on restore)
+#   line 2: sha256 of the ENCRYPTED file      "<sha>  <ts>--<walname>.gz.gpg" (checked without any private key)
 # <ts-archive> = UTC time this command runs (>= last write in the segment); retention ages files by this
 # name timestamp only, never by mtime. Any non-zero exit makes Postgres keep the segment and retry.
 set -euo pipefail
@@ -22,32 +24,43 @@ case "$wal_name" in
 esac
 [ -d "$ARCHIVE_DIR" ] || { echo "engram-wal-archive: missing $ARCHIVE_DIR" >&2; exit 1; }
 
-sha="$(sha256sum "$src_path" | awk '{print $1}')"
+plain_sha="$(sha256sum "$src_path" | awk '{print $1}')"
 
-# Never overwrite: an archived copy of this segment (any ts prefix) with a matching checksum = done;
-# a mismatching one = error (Postgres retries; operator investigates).
+# Never overwrite. An archived copy of this segment (any ts prefix) is acknowledged only when its plaintext
+# digest matches the live segment AND its encrypted bytes still match the recorded ciphertext digest; the
+# files and directory are synced again before returning 0. Anything else = error (Postgres retries).
 shopt -s nullglob
 existing=("$ARCHIVE_DIR"/*--"$wal_name".gz.gpg)
 shopt -u nullglob
 if [ "${#existing[@]}" -gt 0 ]; then
   for f in "${existing[@]}"; do
-    if [ -f "$f.sha256" ] && [ "$(awk '{print $1}' "$f.sha256")" = "$sha" ]; then
+    [ -f "$f.sha256" ] || continue
+    want_plain="$(awk 'NR == 1 {print $1}' "$f.sha256")"
+    want_enc="$(awk 'NR == 2 {print $1}' "$f.sha256")"
+    [ "$want_plain" = "$plain_sha" ] || continue
+    if [ -n "$want_enc" ] && [ "$(sha256sum "$f" | awk '{print $1}')" = "$want_enc" ]; then
+      sync -f "$f" "$f.sha256"
+      sync -f "$ARCHIVE_DIR"
       exit 0
     fi
+    echo "engram-wal-archive: $f is corrupt (encrypted digest mismatch); not acknowledging $wal_name" >&2
+    exit 1
   done
-  echo "engram-wal-archive: $wal_name already archived with a different checksum" >&2
+  echo "engram-wal-archive: $wal_name already archived with a different or missing checksum" >&2
   exit 1
 fi
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
-final="$ARCHIVE_DIR/$ts--$wal_name.gz.gpg"
+base="$ts--$wal_name.gz.gpg"
+final="$ARCHIVE_DIR/$base"
 partial="$final.partial"
 sha_partial="$final.sha256.partial"
 trap 'rm -f "$partial" "$sha_partial"' EXIT
 
 gzip -c "$src_path" \
   | gpg --batch --yes --quiet --trust-model always --encrypt --recipient "$RECIPIENT" --output "$partial"
-printf '%s  %s\n' "$sha" "$wal_name" >"$sha_partial"
+enc_sha="$(sha256sum "$partial" | awk '{print $1}')"
+printf '%s  %s\n%s  %s\n' "$plain_sha" "$wal_name" "$enc_sha" "$base" >"$sha_partial"
 sync -f "$partial" "$sha_partial"
 mv -n "$sha_partial" "$final.sha256"
 mv -n "$partial" "$final"
