@@ -1,8 +1,20 @@
 'use client';
 
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
+import { useTranslations } from 'next-intl';
 import { cn } from '@/lib/cn';
 
+function useSegmentedDefaultAriaLabel(): string {
+  try {
+    const t = useTranslations('ui');
+    return t('segmentedAriaLabel');
+  } catch {
+    if (typeof document !== 'undefined' && document.documentElement.lang === 'vi') {
+      return 'Lựa chọn';
+    }
+    return 'Options';
+  }
+}
 export interface SegmentedOption {
   value: string;
   label: string;
@@ -23,6 +35,8 @@ export function Segmented({
   disabled?: boolean;
   ariaLabel?: string;
 }) {
+  const defaultAriaLabel = useSegmentedDefaultAriaLabel();
+  const resolvedAriaLabel = ariaLabel ?? defaultAriaLabel;
   return (
     <ToggleGroup.Root
       type="single"
@@ -32,7 +46,7 @@ export function Segmented({
       }}
       disabled={disabled}
       className={cn('seg', className)}
-      aria-label={ariaLabel ?? 'Lựa chọn'}
+      aria-label={resolvedAriaLabel}
     >
       {options.map((option) => (
         <ToggleGroup.Item

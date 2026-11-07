@@ -1,3 +1,4 @@
+import { ProblemError } from '@engram/shared-types';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,6 +35,9 @@ vi.mock('next-intl', () => ({
     if (key === 'dialogs.reauth.password') return 'Password';
     if (key === 'dialogs.link.title') return `Link ${values?.provider ?? 'provider'}`;
     if (key === 'dialogs.unlink.title') return `Unlink ${values?.provider ?? 'provider'}`;
+    if (key === 'account.linkRequiresVerifiedEmail')
+      return 'Verify your current account email address before linking a new sign-in method.';
+    if (key === 'errors.generic') return 'Something went wrong. Try again.';
     return key;
   },
 }));
@@ -243,5 +247,31 @@ describe('AccountDialogs reauthentication', () => {
     await user.click(screen.getByRole('button', { name: 'Open link' }));
     await user.click(await screen.findByRole('button', { name: 'Continue' }));
     expect(screen.getByLabelText('Password')).toHaveValue('');
+  });
+
+  it('maps ProblemError on handleReauthSubmit to settings.errors.generic without leaking raw problem.detail', async () => {
+    const user = userEvent.setup();
+    mocks.changePassword.mockRejectedValueOnce(
+      new ProblemError({
+        type: 'https://engram.zone17.click/problems/rate_limited',
+        title: 'SERIOUSLY_RAW_SERVER_TITLE_DO_NOT_RENDER',
+        detail: 'SERIOUSLY_RAW_SERVER_DETAIL_DO_NOT_RENDER',
+        status: 429,
+        code: 'rate_limited',
+      }),
+    );
+    render(<Harness />);
+
+    await user.click(screen.getByRole('button', { name: 'Open password' }));
+    await user.type(screen.getByLabelText('New password'), 'new-password-12');
+    await user.type(screen.getByLabelText('Confirm password'), 'new-password-12');
+    await user.click(screen.getByRole('button', { name: 'Save password' }));
+    await user.type(screen.getByLabelText('Password'), 'current-password');
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Something went wrong. Try again.'),
+    );
+    expect(screen.queryByText(/SERIOUSLY_RAW_SERVER/)).not.toBeInTheDocument();
   });
 });

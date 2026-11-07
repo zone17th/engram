@@ -142,12 +142,8 @@ export function AccountDialogs({
             await runMutation(grantToken, kind);
           } catch (err) {
             setError(
-              err instanceof ProblemError
-                ? err.problem.code === 'email_not_verified'
-                  ? t('account.linkRequiresVerifiedEmail')
-                  : kind === 'link'
-                    ? t('errors.generic')
-                    : (err.problem.detail ?? err.problem.title)
+              err instanceof ProblemError && err.problem.code === 'email_not_verified'
+                ? t('account.linkRequiresVerifiedEmail')
                 : t('errors.generic'),
             );
           } finally {
@@ -171,10 +167,8 @@ export function AccountDialogs({
       await runMutation(grantResult.grant, pendingKind);
     } catch (err) {
       setError(
-        err instanceof ProblemError
-          ? err.problem.code === 'email_not_verified'
-            ? t('account.linkRequiresVerifiedEmail')
-            : (err.problem.detail ?? err.problem.title)
+        err instanceof ProblemError && err.problem.code === 'email_not_verified'
+          ? t('account.linkRequiresVerifiedEmail')
           : t('errors.generic'),
       );
     } finally {

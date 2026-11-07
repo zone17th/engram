@@ -1,6 +1,5 @@
 'use client';
 
-import { ProblemError } from '@engram/shared-types';
 import { useTranslations } from 'next-intl';
 import Link from 'next/link';
 import { useEffect, useRef, useState, type RefObject } from 'react';
@@ -125,9 +124,8 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
     setOauthError(null);
     try {
       await reauth.startOauthReauth('google', returnPath);
-    } catch (err) {
-      const detail = err instanceof ProblemError ? err.problem.detail ?? err.problem.title : null;
-      setOauthError(detail || t('add.oauthStartFailed'));
+    } catch {
+      setOauthError(t('add.oauthStartFailed'));
     } finally {
       setOauthPending(false);
     }
