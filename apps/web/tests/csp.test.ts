@@ -40,8 +40,7 @@ import AppLayout from '../app/app/layout';
 import { resolveAppLocale } from '../i18n/app-locale';
 import {
   NOT_FOUND_ROUTE_KEY,
-  STATIC_DOTTED_CSP_HEADER_VALUE,
-  STATIC_DOTTED_PATH_SOURCE,
+  STATIC_ASSET_EXTENSIONS_PATTERN,
   resetCspManifestCacheForTests,
 } from '../lib/csp/manifest';
 import middleware, { config as middlewareConfig } from '../middleware';
@@ -115,30 +114,26 @@ describe('CSP single emitter & production script-src hardening (SPEC §10.2, P06
     resetCspManifestCacheForTests();
   });
 
-  it('keeps middleware and next.config.ts headers() CSP sources strictly disjoint across middleware routes and dotted non-_next paths (R1-4, advisor-dec-P06-024)', async () => {
+  it('uses middleware as the single CSP emitter, covers non-asset dotted paths (/foo.php, /vi/x.y), and leaves static asset extensions untouched (advisor-dec-P06-028)', async () => {
     const rules = await (nextConfig.headers?.() ?? Promise.resolve([]));
-    const cspRules = rules.filter((rule) =>
-      rule.headers.some((h) => h.key.toLowerCase() === 'content-security-policy'),
-    );
-    expect(cspRules).toHaveLength(1);
-    expect(cspRules[0]?.source).toBe(STATIC_DOTTED_PATH_SOURCE);
+    for (const rule of rules) {
+      expect(
+        rule.headers.some((h) => h.key.toLowerCase() === 'content-security-policy'),
+        `next.config.ts headers() rule "${rule.source}" must not emit Content-Security-Policy`,
+      ).toBe(false);
+    }
 
-    const staticCspValue = cspRules[0]?.headers.find(
-      (h) => h.key.toLowerCase() === 'content-security-policy',
-    )?.value;
-    expect(staticCspValue).toBe(
-      "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
-    );
-    expect(staticCspValue).toBe(STATIC_DOTTED_CSP_HEADER_VALUE);
+    const expectedMatcher = `/((?!api|_next|_vercel|.*\\.(?:${STATIC_ASSET_EXTENSIONS_PATTERN})$).*)`;
+    expect(middlewareConfig.runtime).toBe('nodejs');
+    expect(middlewareConfig.matcher).toEqual([expectedMatcher]);
 
     const middlewarePattern = new RegExp(`^${middlewareConfig.matcher[0]}$`);
-    const staticDottedPattern = compileNextHeaderSource(cspRules[0]!.source);
 
     const pathTable: ReadonlyArray<{
       path: string;
-      expectedEmitter: 'middleware' | 'static-headers' | 'none';
+      expectedEmitter: 'middleware' | 'none';
     }> = [
-      // Middleware-handled routes (marketing + /app): ONLY middleware emits CSP
+      // Middleware-handled routes (marketing + /app + unknown/dotted non-asset 404 paths)
       { path: '/', expectedEmitter: 'middleware' },
       { path: '/vi', expectedEmitter: 'middleware' },
       { path: '/vi/privacy', expectedEmitter: 'middleware' },
@@ -147,13 +142,33 @@ describe('CSP single emitter & production script-src hardening (SPEC §10.2, P06
       { path: '/app/auth/login', expectedEmitter: 'middleware' },
       { path: '/app/auth/reset-password', expectedEmitter: 'middleware' },
       { path: '/nonexistent-route', expectedEmitter: 'middleware' },
-      // Dotted non-_next paths (including HTML 404 dotted paths): ONLY static headers() emits CSP
-      { path: '/foo.php', expectedEmitter: 'static-headers' },
-      { path: '/vi/x.y', expectedEmitter: 'static-headers' },
-      { path: '/app/unknown.html', expectedEmitter: 'static-headers' },
-      { path: '/favicon.ico', expectedEmitter: 'static-headers' },
-      { path: '/.well-known/csp-hashes.json', expectedEmitter: 'static-headers' },
-      // Excluded internal/API prefixes: neither middleware nor static dotted CSP rule matches
+      { path: '/foo.php', expectedEmitter: 'middleware' },
+      { path: '/vi/x.y', expectedEmitter: 'middleware' },
+      { path: '/app/unknown.html', expectedEmitter: 'middleware' },
+      // Static asset extensions and excluded prefixes: middleware does NOT run, no CSP from next.config.ts
+      // (including missing static assets like /missing.png -> 404 without CSP, accepted residual per dec-028)
+      { path: '/favicon.ico', expectedEmitter: 'none' },
+      { path: '/icon.svg', expectedEmitter: 'none' },
+      { path: '/apple-icon.png', expectedEmitter: 'none' },
+      { path: '/manifest.webmanifest', expectedEmitter: 'none' },
+      { path: '/.well-known/csp-hashes.json', expectedEmitter: 'none' },
+      { path: '/.well-known/build-manifest.json', expectedEmitter: 'none' },
+      { path: '/missing.png', expectedEmitter: 'none' },
+      { path: '/photo.jpg', expectedEmitter: 'none' },
+      { path: '/photo.jpeg', expectedEmitter: 'none' },
+      { path: '/banner.webp', expectedEmitter: 'none' },
+      { path: '/anim.gif', expectedEmitter: 'none' },
+      { path: '/robots.txt', expectedEmitter: 'none' },
+      { path: '/sitemap.xml', expectedEmitter: 'none' },
+      { path: '/bundle.js', expectedEmitter: 'none' },
+      { path: '/worker.mjs', expectedEmitter: 'none' },
+      { path: '/styles.css', expectedEmitter: 'none' },
+      { path: '/chunk.js.map', expectedEmitter: 'none' },
+      { path: '/sodium.wasm', expectedEmitter: 'none' },
+      { path: '/font.woff', expectedEmitter: 'none' },
+      { path: '/font.woff2', expectedEmitter: 'none' },
+      { path: '/font.ttf', expectedEmitter: 'none' },
+      { path: '/guide.pdf', expectedEmitter: 'none' },
       { path: '/_next/static/chunks/main.js', expectedEmitter: 'none' },
       { path: '/api/v1/auth/me', expectedEmitter: 'none' },
       { path: '/api/v1/export.json', expectedEmitter: 'none' },
@@ -162,34 +177,26 @@ describe('CSP single emitter & production script-src hardening (SPEC §10.2, P06
 
     for (const { path: candidate, expectedEmitter } of pathTable) {
       const matchesMiddleware = middlewarePattern.test(candidate);
-      const matchesStaticHeaders = staticDottedPattern.test(candidate);
-      // Disjoint invariant: no path may ever match both CSP emitters
-      expect(
-        matchesMiddleware && matchesStaticHeaders,
-        `path ${candidate} matched both middleware and next.config.ts CSP rules`,
-      ).toBe(false);
+      const staticHeaders = await effectiveStaticHeadersFor(candidate);
+      expect(staticHeaders.get('Content-Security-Policy')).toBeUndefined();
+      // Static headers() never touches Cache-Control on assets/pages (only /app/auth/reset-password sets no-store)
+      if (candidate !== '/app/auth/reset-password') {
+        expect(staticHeaders.get('Cache-Control')).toBeUndefined();
+      }
 
       if (expectedEmitter === 'middleware') {
         expect(matchesMiddleware, `expected middleware to match ${candidate}`).toBe(true);
-        expect(matchesStaticHeaders, `expected static CSP not to match ${candidate}`).toBe(false);
-        expect((await effectiveStaticHeadersFor(candidate)).get('Content-Security-Policy')).toBeUndefined();
-      } else if (expectedEmitter === 'static-headers') {
-        expect(matchesMiddleware, `expected middleware not to match ${candidate}`).toBe(false);
-        expect(matchesStaticHeaders, `expected static CSP to match ${candidate}`).toBe(true);
-        expect((await effectiveStaticHeadersFor(candidate)).get('Content-Security-Policy')).toBe(
-          STATIC_DOTTED_CSP_HEADER_VALUE,
-        );
       } else {
         expect(matchesMiddleware, `expected middleware not to match ${candidate}`).toBe(false);
-        expect(matchesStaticHeaders, `expected static CSP not to match ${candidate}`).toBe(false);
-        expect((await effectiveStaticHeadersFor(candidate)).get('Content-Security-Policy')).toBeUndefined();
       }
     }
   });
 
-  it('declares Node.js runtime and a matcher that includes /app/* while excluding /api, /_next, and static files', () => {
+  it('declares Node.js runtime and a matcher that includes /app/* and dotted non-asset routes while excluding /api, /_next, and static asset extensions', () => {
     expect(middlewareConfig.runtime).toBe('nodejs');
-    expect(middlewareConfig.matcher).toEqual(['/((?!api|_next|_vercel|.*\\..*).*)']);
+    expect(middlewareConfig.matcher).toEqual([
+      '/((?!api|_next|_vercel|.*\\.(?:ico|png|jpe?g|webp|svg|gif|txt|xml|json|webmanifest|js|mjs|css|map|wasm|woff2?|ttf|pdf)$).*)',
+    ]);
 
     const pattern = new RegExp(`^${middlewareConfig.matcher[0]}$`);
     expect(pattern.test('/')).toBe(true);
@@ -200,11 +207,14 @@ describe('CSP single emitter & production script-src hardening (SPEC §10.2, P06
     expect(pattern.test('/app/settings')).toBe(true);
     expect(pattern.test('/app/auth/login')).toBe(true);
     expect(pattern.test('/app/auth/reset-password')).toBe(true);
+    expect(pattern.test('/foo.php')).toBe(true);
+    expect(pattern.test('/vi/x.y')).toBe(true);
 
     expect(pattern.test('/api/v1/auth/me')).toBe(false);
     expect(pattern.test('/_next/static/chunks/main.js')).toBe(false);
     expect(pattern.test('/_vercel/insights')).toBe(false);
     expect(pattern.test('/favicon.ico')).toBe(false);
+    expect(pattern.test('/missing.png')).toBe(false);
     expect(pattern.test('/.well-known/csp-hashes.json')).toBe(false);
     expect(pattern.test('/.well-known/build-manifest.json')).toBe(false);
   });
@@ -345,12 +355,13 @@ describe('CSP single emitter & production script-src hardening (SPEC §10.2, P06
     // scanner hits rate-limit to a single warn and do not touch console.error.
     const scan1 = middleware(makeRequest('/wp-login'));
     const scan2 = middleware(makeRequest('/vi/nonexistent-page'));
-    expect(getScriptSrcDirective(scan1.headers.get('Content-Security-Policy') ?? '')).toBe(
-      `script-src 'self' ${SAMPLE_NOT_FOUND_HASH}`,
-    );
-    expect(getScriptSrcDirective(scan2.headers.get('Content-Security-Policy') ?? '')).toBe(
-      `script-src 'self' ${SAMPLE_NOT_FOUND_HASH}`,
-    );
+    const scanDotted1 = middleware(makeRequest('/foo.php'));
+    const scanDotted2 = middleware(makeRequest('/vi/x.y'));
+    for (const res of [scan1, scan2, scanDotted1, scanDotted2]) {
+      expect(getScriptSrcDirective(res.headers.get('Content-Security-Policy') ?? '')).toBe(
+        `script-src 'self' ${SAMPLE_NOT_FOUND_HASH}`,
+      );
+    }
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy).not.toHaveBeenCalled();
 

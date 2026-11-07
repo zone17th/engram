@@ -234,11 +234,43 @@ test.describe('HTTPS auth transport', () => {
     await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
     cspMonitor.assertClean('/vi/privacy');
 
-    // 2. Build manifest & CSP hash manifest are served under /.well-known/
+    // 2. Build manifest & CSP hash manifest are served under /.well-known/; static assets
+    // (`/favicon.ico`, `/_next/static/...`) and missing static-asset extensions (`/missing.png`)
+    // bypass middleware (no CSP header, static cache headers intact), whereas non-asset dotted
+    // 404 paths (`/foo.php`) go through middleware, receive the not-found shell hash CSP,
+    // render visible 404 text, and emit 0 CSP violations (advisor-dec-P06-028).
     const buildManifestRes = await page.request.get('/.well-known/build-manifest.json');
     expect(buildManifestRes.status()).toBe(200);
+    expect(buildManifestRes.headers()['content-security-policy']).toBeUndefined();
     const buildManifestJson = (await buildManifestRes.json()) as { chunks?: Record<string, string> };
-    expect(Object.keys(buildManifestJson.chunks ?? {}).length).toBeGreaterThan(0);
+    const chunkPaths = Object.keys(buildManifestJson.chunks ?? {});
+    expect(chunkPaths.length).toBeGreaterThan(0);
+
+    const faviconRes = await page.request.get('/favicon.ico');
+    expect(faviconRes.status()).toBe(200);
+    expect(faviconRes.headers()['content-security-policy']).toBeUndefined();
+    expect(faviconRes.headers()['cache-control'] ?? '').toContain('max-age=');
+
+    const staticChunkRes = await page.request.get(chunkPaths[0]!);
+    expect(staticChunkRes.status()).toBe(200);
+    expect(staticChunkRes.headers()['content-security-policy']).toBeUndefined();
+    expect(staticChunkRes.headers()['cache-control'] ?? '').toContain('immutable');
+
+    const missingAssetRes = await page.request.get('/missing.png');
+    expect(missingAssetRes.status()).toBe(404);
+    expect(missingAssetRes.headers()['content-security-policy']).toBeUndefined();
+
+    const dotted404Response = await page.goto('/foo.php', { waitUntil: 'networkidle' });
+    expect(dotted404Response?.status()).toBe(404);
+    expect(await dotted404Response?.headerValues('content-security-policy')).toHaveLength(1);
+    const dotted404Headers = await responseHeaders(dotted404Response);
+    const dotted404Csp = dotted404Headers['content-security-policy'] ?? '';
+    const dotted404ScriptSrc = extractScriptSrc(dotted404Csp);
+    expect(dotted404ScriptSrc).toMatch(/'sha256-[A-Za-z0-9+/=]+'/);
+    expect(dotted404ScriptSrc).not.toContain("'unsafe-inline'");
+    expect(dotted404ScriptSrc).not.toContain("'unsafe-eval'");
+    await expect(page.locator('body')).toContainText(/This page could not be found|Không có trang này/i);
+    cspMonitor.assertClean('/foo.php');
     // 3. `/app/auth/login` (Turnstile nonce) across 2 requests -> distinct nonces, no unsafe-inline
     const authResponse1 = await page.goto('/app/auth/login', { waitUntil: 'domcontentloaded' });
     expect(authResponse1?.status()).toBe(200);

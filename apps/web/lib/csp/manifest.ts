@@ -8,10 +8,8 @@ export const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com';
 export const HSTS_HEADER_VALUE = 'max-age=31536000; includeSubDomains';
 export const PERMISSIONS_POLICY_HEADER_VALUE =
   'camera=(), microphone=(), geolocation=(), payment=(), usb=(), publickey-credentials-get=(self), publickey-credentials-create=(self)';
-export const STATIC_DOTTED_PATH_SOURCE = '/:path((?!api|_next|_vercel).*\\..*)';
-export const STATIC_DOTTED_CSP_HEADER_VALUE =
-  "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
-
+export const STATIC_ASSET_EXTENSIONS_PATTERN =
+  'ico|png|jpe?g|webp|svg|gif|txt|xml|json|webmanifest|js|mjs|css|map|wasm|woff2?|ttf|pdf';
 const SHA256_TOKEN_RE = /^'sha256-[A-Za-z0-9+/]+={0,2}'$/;
 
 /**

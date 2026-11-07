@@ -36,9 +36,11 @@ describe('cấu trúc route (P01-A3)', () => {
 
     // `/api`, `/_next` và file tĩnh bị loại ngay ở matcher nên không đi qua middleware/i18n
     expect(pattern.test('/api/v1/me')).toBe(false);
+    expect(pattern.test('/api/v1/export.json')).toBe(false);
     expect(pattern.test('/_next/static/chunks/main.js')).toBe(false);
     expect(pattern.test('/favicon.ico')).toBe(false);
-
+    expect(pattern.test('/missing.png')).toBe(false);
+    expect(pattern.test('/foo.php')).toBe(true);
     // `/app/*` khớp matcher để nhận CSP nonce nhưng hoàn toàn bỏ qua intlMiddleware
     expect(pattern.test('/app/settings')).toBe(true);
     const makeReq = (pathname: string) =>

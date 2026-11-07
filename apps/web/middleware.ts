@@ -49,7 +49,11 @@ export default function middleware(request: NextRequest) {
 
 export const config = {
   runtime: 'nodejs',
-  // Bao gồm cả `/app/*` (để phát CSP nonce mà không chạy `intlMiddleware`),
-  // loại trừ `/api` (proxy sang Go), asset của Next và file tĩnh.
-  matcher: ['/((?!api|_next|_vercel|.*\\..*).*)'],
+  // Bao gồm cả `/app/*` (để phát CSP nonce mà không chạy `intlMiddleware`) và các
+  // đường dẫn có dấu chấm không phải asset tĩnh (ví dụ `/foo.php`, `/vi/x.y` để
+  // trang 404 nhận hash CSP của not-found shell — advisor-dec-P06-028). Loại trừ
+  // `/api`, `/_next`, `/_vercel` và các phần mở rộng file tĩnh.
+  matcher: [
+    '/((?!api|_next|_vercel|.*\\.(?:ico|png|jpe?g|webp|svg|gif|txt|xml|json|webmanifest|js|mjs|css|map|wasm|woff2?|ttf|pdf)$).*)',
+  ],
 };
