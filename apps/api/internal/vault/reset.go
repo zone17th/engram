@@ -47,11 +47,9 @@ func (s *Service) Reset(ctx context.Context, p authctx.Principal, in ResetInput)
 
 	q := s.q.WithTx(tx)
 
-	// 1. Lock app_user -> vault FOR UPDATE (same lock order as export Finalize CAS
-	// and DELETE /me, plan P06 mục 2.4, 2.9) and verify If-Match.
-	if _, err := q.LockExportOwnerForUpdate(ctx, p.UserID); err != nil {
-		return err
-	}
+	// 1. Lock vault row FOR UPDATE and verify If-Match (404 vault_absent takes
+	// precedence over 412 version_mismatch; export Finalize CAS also locks vault
+	// FOR SHARE -> export_job FOR UPDATE, plan P06 mục 2.4).
 	if _, err := LockVaultAndCheckIfMatch(ctx, q, p.UserID, in.IfMatch); err != nil {
 		return err
 	}
