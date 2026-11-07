@@ -1,0 +1,6 @@
+# engram CI group: go-race-integration (mirrors api-check integration tests, content-perf, and embedding-lag in .github/workflows/ci.yml).
+# Requires a running Docker daemon for Testcontainers Postgres + pgvector.
+# One shell command per line, executed from the repository root in its own `bash -c`.
+(cd apps/api && CGO_ENABLED=1 go test ./... -race -count=1 -timeout 10m); rc=$?; echo; echo GO_INTEGRATION_EXIT=$rc; exit $rc
+(cd apps/api && CGO_ENABLED=1 go test -tags perf ./internal/perf/... -count=1 -timeout 18m -v); rc=$?; echo; echo CONTENT_PERF_EXIT=$rc; exit $rc
+(set -o pipefail && cd apps/api && rm -f lag.log && CGO_ENABLED=1 go test -tags lagperf ./internal/perf/... -run '^TestEmbeddingLagP95$' -count=1 -timeout 35m -v | tee lag.log && grep -q -- '--- PASS: TestEmbeddingLagP95' lag.log); rc=$?; rm -f apps/api/lag.log; echo; echo EMBEDDING_LAG_EXIT=$rc; exit $rc
