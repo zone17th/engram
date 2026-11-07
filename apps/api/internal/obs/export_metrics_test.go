@@ -24,7 +24,8 @@ func (r fakeAgeRow) Scan(dest ...any) error {
 	if r.err != nil {
 		return r.err
 	}
-	*(dest[0].(*float64)) = r.age
+	dst := dest[0].(*float64)
+	*dst = r.age
 	return nil
 }
 
