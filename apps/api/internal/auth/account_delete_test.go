@@ -113,7 +113,7 @@ VALUES ($1, '{}'::jsonb, $2, '\x01', '\x02', '\x03', '\x04')`, u.id, vkID); err 
 	if _, err := q.AssignItemTag(ctx, gen.AssignItemTagParams{UserID: u.id, ItemID: itemID, TagID: tagID}); err != nil {
 		t.Fatalf("AssignItemTag: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO entry (user_id, item_id, ciphertext, nonce, vault_key_id) VALUES ($1, $2, '\x01', '\x02', $3)`, u.id, itemID, vkID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO entry (id, user_id, item_id, type, envelope, ciphertext, plaintext_len_bucket) VALUES ($1, $2, $3, 'text', '{}'::jsonb, $4, 256)`, uuid.New(), u.id, itemID, make([]byte, 32)); err != nil {
 		t.Fatalf("insert entry: %v", err)
 	}
 	if rc != nil {

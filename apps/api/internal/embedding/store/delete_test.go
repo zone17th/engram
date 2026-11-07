@@ -19,9 +19,9 @@ func TestDeleteUserAllGenerations(t *testing.T) {
 	q := gen.New(pool)
 
 	expired := time.Now().Add(-48 * time.Hour)
+	g3 := seedGenerationWithTables(t, ctx, pool, 3, generation.ProviderTEI, 3, 4, generation.StateRetired, &expired)
 	g1 := seedGenerationWithTables(t, ctx, pool, 1, generation.ProviderTEI, 3, 4, generation.StateActive, nil)
 	g2 := seedGenerationWithTables(t, ctx, pool, 2, generation.ProviderOpenAICompat, 3, 4, generation.StatePending, nil)
-	g3 := seedGenerationWithTables(t, ctx, pool, 3, generation.ProviderTEI, 3, 4, generation.StateRetired, &expired)
 	gens := []generation.Generation{g1, g2, g3}
 
 	u1, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "u1-all@example.com", Locale: "en"})

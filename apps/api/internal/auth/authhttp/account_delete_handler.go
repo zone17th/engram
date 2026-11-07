@@ -1,13 +1,26 @@
 package authhttp
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/zone17th/engram/apps/api/internal/auth"
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
 )
+
+type accountDeleteReauth struct {
+	httpx.ReauthVerifier
+}
+
+func (r accountDeleteReauth) VerifyReauth(ctx context.Context, p authctx.Principal, action, token string) error {
+	if strings.TrimSpace(token) == "" {
+		return &httpx.AuthError{Code: "reauth_required"}
+	}
+	return r.ReauthVerifier.VerifyReauth(ctx, p, action, token)
+}
 
 // AccountDeleteRoute builds DELETE /api/v1/me (`accountDelete`, plan P06 mục
 // 2.9, 3): RequireOrigin + RequireSession + RequireCSRF + RequireJSONContent +
@@ -18,13 +31,17 @@ func (a *API) AccountDeleteRoute(d httpx.Deps) http.Handler {
 	if d.Config != nil {
 		origin = d.Config.AppOrigin
 	}
+	var reauth httpx.ReauthVerifier
+	if d.Reauth != nil {
+		reauth = accountDeleteReauth{d.Reauth}
+	}
 	pool, clk := a.svc.Pool(), a.svc.Clock()
 	return httpx.ChainIdempotencyMiddleware(httpx.IdempotencyRouteConfig{
 		AppOrigin:     origin,
 		Authenticator: d.Authenticator,
 		CSRF:          d.CSRF,
 		Idempotency:   httpx.NewIdempotency(pool, clk),
-		Reauth:        d.Reauth,
+		Reauth:        reauth,
 		ReauthAction:  "account.delete",
 		RateLimit:     httpx.NewUserLimiter(pool, clk).Middleware(httpx.ScopeVaultSensitive),
 		BodyLimit:     httpx.IdempotencyBodyLimit{Bytes: httpx.AuthJSONLimit},
