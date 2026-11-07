@@ -22,12 +22,15 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const API = "https://api.cursor.com/v1";
+const RAW_API = process.env.CLOUD_RUNNER_API_URL || "https://api.cursor.com/v1";
+const API = /^https:\/\/api\.cursor\.com\/v1\/?$|^http:\/\/127\.0\.0\.1:\d+(?:\/v1)?\/?$/.test(RAW_API)
+  ? RAW_API.replace(/\/+$/, "")
+  : "https://api.cursor.com/v1";
 const REPO_URL = "https://github.com/zone17th/engram";
 const REPOS = {
   engram: { url: REPO_URL, profile: "engram" },
@@ -40,8 +43,8 @@ const ALLOWED_LOG_REPOS = [
   "https://github.com/zone17th/engram-test-logs",
   "https://github.com/UNIAI-TEAM/uniwork",
 ];
-const LOG_REPO_URL = process.env.CLOUD_RUNNER_LOG_REPO || ALLOWED_LOG_REPOS[0];
-const BOOT_REPO_URL = process.env.CLOUD_RUNNER_BOOT_REPO || ALLOWED_LOG_REPOS[1];
+const RAW_LOG_REPO_URL = process.env.CLOUD_RUNNER_LOG_REPO || ALLOWED_LOG_REPOS[0];
+const RAW_BOOT_REPO_URL = process.env.CLOUD_RUNNER_BOOT_REPO || ALLOWED_LOG_REPOS[1];
 const BOOT_BRANCH = process.env.CLOUD_RUNNER_BOOT_BRANCH || "test/cursor-cloud-env";
 const LOG_PREFIX = "refs/test-results/engram";
 // The engram branch whose .cursor/cloud the VM runs; develop once merged.
@@ -57,6 +60,7 @@ const normUrl = (u) => String(u ?? "").trim()
   .toLowerCase();
 
 const ALLOWED_LOG_NORMS = new Set(ALLOWED_LOG_REPOS.map(normUrl));
+const canonicalLogRepo = (u) => ALLOWED_LOG_REPOS.find((a) => normUrl(a) === normUrl(u)) || null;
 
 function usage(msg) {
   if (msg) console.error(`cloud-runner: ${msg}`);
@@ -64,11 +68,13 @@ function usage(msg) {
   process.exit(2);
 }
 
-if (!ALLOWED_LOG_NORMS.has(normUrl(LOG_REPO_URL))) {
-  usage(`untrusted CLOUD_RUNNER_LOG_REPO ${LOG_REPO_URL}; allowed private repos: ${ALLOWED_LOG_REPOS.join(", ")}`);
+const LOG_REPO_URL = canonicalLogRepo(RAW_LOG_REPO_URL);
+if (!LOG_REPO_URL) {
+  usage(`untrusted CLOUD_RUNNER_LOG_REPO ${RAW_LOG_REPO_URL.replace(/(\/\/[^/\s:@]*:)[^@\s]+@/g, "$1[REDACTED]@")}; allowed private repos: ${ALLOWED_LOG_REPOS.join(", ")}`);
 }
-if (!ALLOWED_LOG_NORMS.has(normUrl(BOOT_REPO_URL))) {
-  usage(`untrusted CLOUD_RUNNER_BOOT_REPO ${BOOT_REPO_URL}; allowed private repos: ${ALLOWED_LOG_REPOS.join(", ")}`);
+const BOOT_REPO_URL = canonicalLogRepo(RAW_BOOT_REPO_URL);
+if (!BOOT_REPO_URL) {
+  usage(`untrusted CLOUD_RUNNER_BOOT_REPO ${RAW_BOOT_REPO_URL.replace(/(\/\/[^/\s:@]*:)[^@\s]+@/g, "$1[REDACTED]@")}; allowed private repos: ${ALLOWED_LOG_REPOS.join(", ")}`);
 }
 
 // POSIX single-quote shell escaping so dynamic values are never parsed as syntax.
@@ -251,8 +257,11 @@ function trackLogRepos(state, ...extra) {
   ].filter(Boolean);
   const byNorm = new Map();
   for (const u of candidates) {
-    const n = normUrl(u);
-    if (ALLOWED_LOG_NORMS.has(n) && !byNorm.has(n)) byNorm.set(n, u);
+    const canon = canonicalLogRepo(u);
+    if (canon) {
+      const n = normUrl(canon);
+      if (!byNorm.has(n)) byNorm.set(n, canon);
+    }
   }
   return [...byNorm.values()];
 }
@@ -400,11 +409,33 @@ async function costCents(agentId) {
 function scrubText(text) {
   return String(text ?? "")
     .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|key_[A-Za-z0-9]{20,})\b/g, "[REDACTED]")
-    .replace(/(https?:\/\/[^/\s:@]*:)[^@\s]+@/gi, "$1[REDACTED]@");
+    .replace(/(\/\/[^/\s:@]*:)[^@\s]+@/g, "$1[REDACTED]@");
 }
 
 function logsPath(out) {
   return /\.md$/i.test(out) ? out.replace(/\.md$/i, ".logs") : `${out}.logs`;
+}
+
+function logsDigest(dir) {
+  try {
+    if (!dir || !existsSync(dir) || !lstatSync(dir).isDirectory()) return null;
+    const entries = readdirSync(dir).sort();
+    if (entries.length === 0) return null;
+    const h = createHash("sha256");
+    let count = 0;
+    for (const name of entries) {
+      const p = join(dir, name);
+      const st = lstatSync(p);
+      if (!st.isFile() || st.isSymbolicLink()) return null;
+      h.update(`${name}\0`);
+      h.update(createHash("sha256").update(readFileSync(p)).digest("hex"));
+      h.update("\n");
+      count += 1;
+    }
+    return count > 0 ? h.digest("hex") : null;
+  } catch {
+    return null;
+  }
 }
 
 function writeReport(out, meta, rep, rawResult) {
@@ -510,7 +541,7 @@ async function cmdEnsure(opts) {
     ({ agentId, runId, via } = await createAgent(branch, model, (v) => ensurePrompt(branch, v)));
     state = {
       agentId, via, branch, model, lane, lanes: trackLane(state, lane),
-      logRepos: trackLogRepos({ via }), shard: shardName(opts.shard), provisioned: false, provisionRunId: runId,
+      logRepos: trackLogRepos({ ...state, via }), shard: shardName(opts.shard), provisioned: false, provisionRunId: runId,
       createdAt: new Date().toISOString(),
     };
   }
@@ -533,7 +564,7 @@ async function cmdTest(opts) {
     .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
   if (commands.length === 0) usage("spec has no commands");
   const branch = validBranch(git("rev-parse", "--abbrev-ref", "HEAD"));
-  const sha = git("rev-parse", "--short=8", "HEAD");
+  const sha = git("rev-parse", "HEAD").toLowerCase().slice(0, 8);
   const remote = git("ls-remote", REPO.remote, `refs/heads/${branch}`).split(/\s+/)[0] ?? "";
   if (!remote.startsWith(git("rev-parse", "HEAD").slice(0, 12))) {
     usage(`engram:${branch} is not at HEAD ${sha}; push the branch first`);
@@ -577,7 +608,7 @@ async function cmdTest(opts) {
     }
     state.pending = {
       runId, sha, branch, lane, specRef: spec.ref,
-      expectedCount: commands.length, expectedCommands: commands.map(scrubText),
+      expectedCount: commands.length, expectedCommands: commands.map(scrubText), specSha256: spec.sha256,
       costBefore: before,
       out: resolve(opts.out || join("reports", lane, `cloud-test-${sha}.md`)),
       timeoutS, startedAt,
@@ -623,20 +654,23 @@ async function finishPending(state, shard, timeoutOverride) {
   const shaMatch = Boolean(rep && String(rep.sha ?? "").toLowerCase() === String(p.sha ?? "").toLowerCase()
     && /^[0-9a-f]{7,40}$/i.test(String(p.sha)));
   const countMatch = Boolean(rep && Array.isArray(rep.ran) && rep.ran.length > 0
-    && (Array.isArray(p.expectedCommands)
-      ? rep.ran.length === p.expectedCommands.length && rep.ran.every((r, i) => scrubText(r?.cmd) === p.expectedCommands[i])
-      : (p.expectedCount == null || rep.ran.length === p.expectedCount)));
+    && Array.isArray(p.expectedCommands) && p.expectedCommands.length > 0
+    && rep.ran.length === p.expectedCommands.length
+    && rep.ran.every((r, i) => scrubText(r?.cmd) === p.expectedCommands[i]));
   const stageOk = Boolean(rep && rep.stage_outcome === "succeeded" && (rep.test_verdict === "pass" || rep.test_verdict === "fail"));
-  const logRemote = rep?.log_repo ? ALLOWED_LOG_REPOS.find((u) => normUrl(u) === normUrl(rep.log_repo)) : null;
+  const logRemote = rep?.log_repo ? canonicalLogRepo(rep.log_repo) : null;
   const expectedRef = /^[0-9a-f]{7,40}$/i.test(String(p.sha)) ? `${LOG_PREFIX}/${p.lane}/${p.sha}` : null;
   const refMatch = Boolean(expectedRef && rep?.log_ref === expectedRef);
 
-  let logsDir = p.logsDir && existsSync(p.logsDir) ? p.logsDir : null;
+  let logsDir = p.logsDir && p.logsDigest && logsDigest(p.logsDir) === p.logsDigest ? p.logsDir : null;
   let retryableLogFailure = false;
   if (runStatus === "FINISHED" && shaMatch && countMatch && stageOk && logRemote && refMatch && !logsDir) {
-    logsDir = fetchLogs(expectedRef, logsPath(p.out), logRemote, expectedRef);
-    if (logsDir) {
-      p.logsDir = logsDir;
+    const fetchedDir = fetchLogs(expectedRef, logsPath(p.out), logRemote, expectedRef);
+    const digest = fetchedDir ? logsDigest(fetchedDir) : null;
+    if (fetchedDir && digest) {
+      logsDir = fetchedDir;
+      p.logsDir = fetchedDir;
+      p.logsDigest = digest;
       state.logRepos = trackLogRepos(state, logRemote);
       saveState(state, shard);
     } else {
@@ -714,8 +748,8 @@ async function cmdStatus() {
   for (const [, p] of states) {
     const state = JSON.parse(readFileSync(p, "utf8"));
     const a = await api("GET", `/agents/${state.agentId}`).catch((e) => ({ status: `gone (${e.status})` }));
-    console.log(JSON.stringify({ ...state, status: a.status, latestRunId: a.latestRunId,
-      costCents: await costCents(state.agentId) }, null, 2));
+    console.log(scrubText(JSON.stringify({ ...state, status: a.status, latestRunId: a.latestRunId,
+      costCents: await costCents(state.agentId) }, null, 2)));
   }
   return 0;
 }
@@ -793,7 +827,7 @@ async function cmdSuite(opts) {
   const specs = opts.specs.split(",").map((x) => x.trim()).filter(Boolean);
   if (specs.length === 0) usage("suite needs at least one spec");
   const branch = validBranch(git("rev-parse", "--abbrev-ref", "HEAD"));
-  const sha = git("rev-parse", "--short=8", "HEAD");
+  const sha = git("rev-parse", "HEAD").toLowerCase().slice(0, 8);
   const outDir = resolve(opts["out-dir"] || join("reports", laneSlug({ lane: opts.lane }, branch)));
   const shards = specs.map((spec) => ({
     spec,

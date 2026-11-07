@@ -17,7 +17,12 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 state=~/.engram-cloud/state
-results=/tmp/test-results
+work_tmp=$(mktemp -d "${TMPDIR:-/tmp}/engram-run-tests.XXXXXXXXXX")
+results="$work_tmp/results"
+ran_file="$work_tmp/ran.jsonl"
+: > "$ran_file"
+spec_file=""
+trap 'rm -rf "$work_tmp" "${spec_file:-}"' EXIT
 mkdir -p "$state"
 
 branch="" sha="" lane="" spec_ref="" spec_sha="" provision_only=false profile=engram log_repo_url="" repo_url=""
@@ -67,7 +72,6 @@ for s in $secret_names; do
 done
 
 provisioned=false fresh_install=false start_seconds=0 head="" notes="" log_repo=""
-ran_file=$(mktemp)
 
 report() { # stage_outcome test_verdict log_ref
   STAGE=$1 VERDICT=$2 LOGREF=$3 LOGREPO=$log_repo HEAD_SHA=$head PROV=$provisioned START=$start_seconds \
@@ -130,7 +134,7 @@ if [ -n "$repo_url" ]; then
   clone=~/work/$(basename "$repo_url" .git)
   if [ ! -d "$clone/.git" ]; then
     rm -rf "$clone" && mkdir -p ~/work
-    if ! env "${unset_args[@]}" git clone -q "$repo_url" "$clone" > /tmp/runner-clone.log 2>&1; then
+    if ! env "${unset_args[@]}" git clone -q "$repo_url" "$clone" > "$work_tmp/runner-clone.log" 2>&1; then
       notes="could not clone $repo_url"
       report failed blocked ""
       exit 0
@@ -148,9 +152,14 @@ if [ -n "$branch" ]; then
   fi
   git clean -qfdx -e .env -e node_modules -e '**/node_modules'
 fi
-head=$(git rev-parse --short=8 HEAD)
-if [ -n "$sha" ] && [ "${head,,}" != "${sha,,}" ]; then
-  notes="sha mismatch: HEAD $head, wanted $sha"; report failed blocked ""; exit 0
+full_head=$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')
+head=${full_head:0:8}
+if [ -n "$sha" ]; then
+  sha_lc=$(printf '%s' "$sha" | tr '[:upper:]' '[:lower:]')
+  if [ "${#sha_lc}" -lt 8 ] || [ "${#sha_lc}" -gt 40 ] || [ "${full_head:0:${#sha_lc}}" != "$sha_lc" ]; then
+    notes="sha mismatch: HEAD $full_head, wanted $sha"; report failed blocked ""; exit 0
+  fi
+  head=$sha_lc
 fi
 
 # Fingerprint both the provision script and the repo files from which it reads
@@ -169,34 +178,34 @@ prov_manifest=$(sha256sum "${provision_inputs[@]}")
 locks_manifest=$(sha256sum "${locks[@]}")
 
 if [ ! -f "$state/installed" ]; then
-  if ! env "${unset_args[@]}" bash "$here/$install_sh" > /tmp/runner-install.log 2>&1; then
-    notes="$install_sh failed: $(tail -3 /tmp/runner-install.log | tr '\n' ' ')"; report failed blocked ""; exit 0
+  if ! env "${unset_args[@]}" bash "$here/$install_sh" > "$work_tmp/runner-install.log" 2>&1; then
+    notes="$install_sh failed: $(tail -3 "$work_tmp/runner-install.log" | tr '\n' ' ')"; report failed blocked ""; exit 0
   fi
   touch "$state/installed"; provisioned=true; fresh_install=true
   printf '%s\n' "$locks_manifest" > "$state/locks"
   printf '%s\n' "$prov_manifest" > "$state/provision"
 elif [ "$(cat "$state/provision" 2>/dev/null || true)" != "$prov_manifest" ]; then
-  if ! env "${unset_args[@]}" bash "$here/$provision_sh" > /tmp/runner-provision.log 2>&1; then
-    notes="$provision_sh failed: $(tail -3 /tmp/runner-provision.log | tr '\n' ' ')"; report failed blocked ""; exit 0
+  if ! env "${unset_args[@]}" bash "$here/$provision_sh" > "$work_tmp/runner-provision.log" 2>&1; then
+    notes="$provision_sh failed: $(tail -3 "$work_tmp/runner-provision.log" | tr '\n' ' ')"; report failed blocked ""; exit 0
   fi
   printf '%s\n' "$prov_manifest" > "$state/provision"; provisioned=true
 fi
 if [ "$fresh_install" = false ] && [ "$(cat "$state/locks" 2>/dev/null || true)" != "$locks_manifest" ]; then
-  if ! env "${unset_args[@]}" bash -c 'pnpm install --frozen-lockfile && (cd apps/api && go mod download)' > /tmp/runner-deps.log 2>&1; then
-    notes="dependency refresh failed: $(tail -3 /tmp/runner-deps.log | tr '\n' ' ')"; report failed blocked ""; exit 0
+  if ! env "${unset_args[@]}" bash -c 'pnpm install --frozen-lockfile && (cd apps/api && go mod download)' > "$work_tmp/runner-deps.log" 2>&1; then
+    notes="dependency refresh failed: $(tail -3 "$work_tmp/runner-deps.log" | tr '\n' ' ')"; report failed blocked ""; exit 0
   fi
   printf '%s\n' "$locks_manifest" > "$state/locks"
 fi
 
 t0=$(date +%s)
-if ! env "${unset_args[@]}" bash "$here/$start_sh" > /tmp/runner-start.log 2>&1; then
-  notes="$start_sh failed: $(tail -3 /tmp/runner-start.log | tr '\n' ' ')"; report failed blocked ""; exit 0
+if ! env "${unset_args[@]}" bash "$here/$start_sh" > "$work_tmp/runner-start.log" 2>&1; then
+  notes="$start_sh failed: $(tail -3 "$work_tmp/runner-start.log" | tr '\n' ' ')"; report failed blocked ""; exit 0
 fi
 start_seconds=$(( $(date +%s) - t0 ))
 
 if $provision_only; then report succeeded not_run ""; exit 0; fi
 
-spec_file=$(mktemp)
+spec_file="$work_tmp/spec.txt"
 if ! env "${unset_args[@]}" git fetch -q origin "$spec_ref" || ! git show FETCH_HEAD:spec.txt > "$spec_file" 2> /dev/null; then
   rm -f "$spec_file"
   notes="could not fetch spec $spec_ref"; report failed blocked ""; exit 0
@@ -247,10 +256,10 @@ while IFS= read -r cmd <&3 || [ -n "$cmd" ]; do
   dur=$(( $(date +%s) - t ))
   # Scrub the log file BEFORE extracting failure snippets, and fail closed if
   # the scrubber fails so unsanitized output can never enter ran_file or git.
-  if ! scrub_results_dir > /tmp/runner-scrub.log 2>&1; then
+  if ! scrub_results_dir > "$work_tmp/runner-scrub.log" 2>&1; then
     rm -f "$spec_file"
     rm -rf "$results"
-    notes="log scrubber failed: $(tail -2 /tmp/runner-scrub.log | tr '\n' ' ')"
+    notes="log scrubber failed: $(tail -2 "$work_tmp/runner-scrub.log" | tr '\n' ' ')"
     report failed blocked ""
     exit 0
   fi
@@ -284,15 +293,15 @@ rm -f "$spec_file"
 
 if [ "$n" -eq 0 ]; then notes="spec has no commands"; report failed blocked ""; exit 0; fi
 
-if ! scrub_results_dir > /tmp/runner-scrub.log 2>&1; then
+if ! scrub_results_dir > "$work_tmp/runner-scrub.log" 2>&1; then
   rm -rf "$results"
-  notes="final log scrubber failed: $(tail -2 /tmp/runner-scrub.log | tr '\n' ' ')"
+  notes="final log scrubber failed: $(tail -2 "$work_tmp/runner-scrub.log" | tr '\n' ' ')"
   report failed blocked ""
   exit 0
 fi
 
 log_ref="refs/test-results/engram/$lane/$head"
-push_logs() { # $1 = target repo url -> writes chosen url to /tmp/runner-log-repo
+push_logs() { # $1 = target repo url -> writes chosen url to $work_tmp/runner-log-repo
   local target=${1:-} tried="" name val
   [ -n "$target" ] || return 1
   if ! is_allowed_log_repo "$target"; then
@@ -300,7 +309,7 @@ push_logs() { # $1 = target repo url -> writes chosen url to /tmp/runner-log-rep
     return 1
   fi
   if GIT_TERMINAL_PROMPT=0 git push -qf "$target" "HEAD:$log_ref"; then
-    echo "$target" > /tmp/runner-log-repo; return 0
+    echo "$target" > "$work_tmp/runner-log-repo"; return 0
   fi
   for name in $(printf '%s\n' $secret_names | awk '!seen[$0]++'); do
     val=${!name:-}
@@ -312,14 +321,14 @@ push_logs() { # $1 = target repo url -> writes chosen url to /tmp/runner-log-rep
     if PUSH_TOKEN=$val GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ASKPASS= GIT_CONFIG_COUNT=0 \
       git -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$PUSH_TOKEN"; }; f' \
       push -qf "$target" "HEAD:$log_ref"; then
-      echo "$target" > /tmp/runner-log-repo; return 0
+      echo "$target" > "$work_tmp/runner-log-repo"; return 0
     fi
   done
   echo "log push to $target failed; tokens seen:${tried:- none}"
   return 1
 }
 
-rm -f /tmp/runner-log-repo
+rm -f "$work_tmp/runner-log-repo"
 fallback_origin=""
 if [ -n "$home_origin" ] && is_allowed_log_repo "$home_origin"; then
   fallback_origin=$home_origin
@@ -334,15 +343,15 @@ fi
 
 if ! (cd "$results" && git init -q && git add -A \
       && git -c user.name=runner -c user.email=runner@local commit -qm "$lane $head" \
-      && { push_logs "$log_repo_url" || push_logs "$fallback_origin"; }) > /tmp/runner-push.log 2>&1; then
-  notes="log push failed: $(tail -2 /tmp/runner-push.log | tr '\n' ' ')"
-  rm -f /tmp/runner-log-repo
+      && { push_logs "$log_repo_url" || push_logs "$fallback_origin"; }) > "$work_tmp/runner-push.log" 2>&1; then
+  notes="log push failed: $(tail -2 "$work_tmp/runner-push.log" | tr '\n' ' ')"
+  rm -f "$work_tmp/runner-log-repo"
   report failed blocked ""
   exit 0
 fi
 
-log_repo=$(sed -E "s#//[^/@]*@#//#" /tmp/runner-log-repo)
-rm -f /tmp/runner-log-repo
+log_repo=$(sed -E "s#//[^/@]*@#//#" "$work_tmp/runner-log-repo")
+rm -f "$work_tmp/runner-log-repo"
 
 $any_fail && verdict=fail || verdict=pass
 report succeeded "$verdict" "$log_ref"

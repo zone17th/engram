@@ -145,6 +145,10 @@ if [ -f infra/image-pins.env ]; then
   fi
 fi
 
+if [ -f infra/image-pins.env ] && [ -f infra/docker-compose.yml ]; then
+  COMPOSE_PROFILES=semantic,semantic-fake docker compose --env-file infra/image-pins.env -f infra/docker-compose.yml down --volumes --remove-orphans >/dev/null 2>&1 || true
+fi
+
 mkdir -p .data/mail-sink
 chmod 0777 .data/mail-sink 2>/dev/null || $SUDO chmod 0777 .data/mail-sink
 

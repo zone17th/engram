@@ -68,12 +68,15 @@ a line that ends with `printf '\nNAME_EXIT=%s\n' "$rc"` (shell exit 0) still fai
 | spec | ci.yml job(s) |
 | --- | --- |
 | `go-unit.txt` | Go checks: gofmt, short race tests, vet, golangci-lint, govulncheck, build |
-| `go-race-integration.txt` | Go integration tests (Testcontainers), Content perf, Embedding lag perf |
+| `go-race-integration.txt` | Go integration tests (Testcontainers) and Content perf |
 | `gen-nodiff.txt` | sqlc drift, OpenAPI client no-diff, Compose config and migration |
 | `web-unit.txt` | Web checks: lint, typecheck, vitest, build |
-| `e2e.txt` | every Playwright job (browser smoke, auth/journey/content/a11y verify-true, semantic) |
-| `full.txt` | all of the above in one round |
+| `e2e.txt` | `e2e-browser` job: E2E harness check, browser smoke + a11y, and `vault-prod` CSP check |
+| `full.txt` | all five groups above in one round |
+| `e2e-verify-true.txt` | optional shard: `e2e-auth-verify-true`, `e2e-journey-verify-true`, `e2e-content-verify-true`, `e2e-content-a11y`, `e2e-search-semantic` |
+| `go-embedding-lag.txt` | optional benchmark shard: `embedding-lag` (`TestEmbeddingLagP95`) |
 
+Runner self-test (no VM required): `node --test .cursor/cloud/runner.test.mjs`.
 `suite` runs one VM per spec in parallel (faster, costs one VM each).
 
 ## Exit codes and reading results
