@@ -21,7 +21,7 @@ import { CryptoBenchClient } from '../app/dev/crypto-bench/bench-client';
 import { CryptoHarnessClient } from '../app/dev/crypto-bench/harness-client';
 import { withRequestOrigin } from '../i18n/internal-rewrite';
 import { routing } from '../i18n/routing';
-import middleware from '../middleware';
+import middleware, { config as middlewareConfig } from '../middleware';
 const WEB = resolve(__dirname, '..');
 
 describe('cấu trúc route (P01-A3)', () => {
@@ -31,8 +31,31 @@ describe('cấu trúc route (P01-A3)', () => {
   });
 
   it('middleware i18n không chạm /api và /app', () => {
-    const mw = readFileSync(resolve(WEB, 'middleware.ts'), 'utf8');
-    expect(mw).toContain('?!api|app');
+    intlCalls.length = 0;
+    const pattern = new RegExp(`^${middlewareConfig.matcher[0]}$`);
+
+    // `/api`, `/_next` và file tĩnh bị loại ngay ở matcher nên không đi qua middleware/i18n
+    expect(pattern.test('/api/v1/me')).toBe(false);
+    expect(pattern.test('/api/v1/export.json')).toBe(false);
+    expect(pattern.test('/_next/static/chunks/main.js')).toBe(false);
+    expect(pattern.test('/favicon.ico')).toBe(false);
+    expect(pattern.test('/missing.png')).toBe(false);
+    expect(pattern.test('/foo.php')).toBe(true);
+    // `/app/*` khớp matcher để nhận CSP nonce nhưng hoàn toàn bỏ qua intlMiddleware
+    expect(pattern.test('/app/settings')).toBe(true);
+    const makeReq = (pathname: string) =>
+      ({
+        url: `http://localhost:3040${pathname}`,
+        headers: new Headers(),
+        nextUrl: new URL(`http://localhost:3040${pathname}`),
+      }) as unknown as Parameters<typeof middleware>[0];
+
+    const appRes = middleware(makeReq('/app/settings'));
+    expect(intlCalls).toEqual([]);
+    expect(appRes.headers.get('Content-Security-Policy')).toContain("'nonce-");
+    expect(appRes.headers.get('x-middleware-rewrite')).toBeNull();
+    expect(appRes.headers.get('location')).toBeNull();
+    expect(appRes.headers.get('set-cookie')).toBeNull();
   });
 
   it('giữ origin của rewrite và redirect khi Next chuẩn hoá loopback', () => {
