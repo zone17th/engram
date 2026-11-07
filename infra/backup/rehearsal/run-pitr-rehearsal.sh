@@ -13,9 +13,11 @@
 #          restore again to T_near from the same directory (picks the later base)
 #       -> RPO/RTO; canary replication password never in argv/logs.
 #   run-pitr-rehearsal.sh --from-decrypted-stream --archive-dir DIR --gnupghome DIR --target-time TS
-#       Owner PC only (R1-11, Task 21c): DIR holds base/ and wal/ already re-encrypted to the test key in
-#       --gnupghome. Restores to TS with a restore-only HBA (no production credential needed), then the same
-#       mandatory post-restore assertions (sessions revoked, migrate up exit 0, /readyz 200, RTO <= 2h).
+#                         [--capture-time TS [--source-last-commit TS]]
+#       Owner PC only (R1-11, Task 21c): DIR holds base/ and wal/ converted to the test key in --gnupghome by
+#       convert-archive-to-test-key.sh. Restores to TS with a restore-only HBA (no production credential needed),
+#       then the same mandatory post-restore assertions (sessions revoked, migrate up exit 0, /readyz 200,
+#       RTO <= 2h) and the RPO protocol (rpo_eval): without --capture-time RPO_ACCEPTANCE=PENDING.
 #   run-pitr-rehearsal.sh --from-prod-archive   always refused: production archives are never restored on bro or
 #       a runner (the production private key never leaves the owner PC).
 #
@@ -35,6 +37,8 @@ mode=scratch
 archive_in=""
 gnupg_in=""
 target_in=""
+capture_in=""
+srclast_in=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --scratch) mode=scratch ;;
@@ -43,7 +47,9 @@ while [ "$#" -gt 0 ]; do
     --archive-dir) archive_in="$2"; shift ;;
     --gnupghome) gnupg_in="$2"; shift ;;
     --target-time) target_in="$2"; shift ;;
-    -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
+    --capture-time) capture_in="$2"; shift ;;
+    --source-last-commit) srclast_in="$2"; shift ;;
+    -h | --help) sed -n '2,/^# shellcheck/p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -117,7 +123,7 @@ cleanup() {
   [ -n "$load_pid" ] && kill "$load_pid" 2>/dev/null
   docker rm -f "$API" "$SRC" "$DST" "$P-pwmiss" >/dev/null 2>&1
   # Archive files are owned by the container's postgres uid; remove them from a container.
-  [ -d "$WORK" ] && docker run --rm --user 0 -v "$WORK:/w" --entrypoint sh "$POSTGRES_IMAGE" -c 'rm -rf /w/pitr' >/dev/null 2>&1
+  [ -d "$WORK" ] && docker run --rm --user 0 -v "$WORK:/w" --entrypoint sh "$POSTGRES_IMAGE" -c 'rm -rf /w/pitr /w/conv' >/dev/null 2>&1
   [ -n "$tmpfs_dir" ] && sudo -n umount "$tmpfs_dir" 2>/dev/null
   docker volume rm -f "$VOL_SRC" "$VOL_DST" "$VOL_SEC" "$VOL_RGPG" "$VOL_RHBA" "$P-pwmissdata" >/dev/null 2>&1
   docker network rm "$NET" >/dev/null 2>&1
@@ -166,6 +172,13 @@ build_images() {
 # container is started with its own HBA (trust on the socket and on the private scratch network only).
 db_url() { printf 'postgres://%s@%s:5432/%s?sslmode=disable' "$DB_USER" "$1" "$DB_NAME"; }
 migrate_up() { docker run --rm --network "$NET" -e DATABASE_URL="$(db_url "$1")" "$APP_IMAGE" /app/migrate up; }
+
+make_key() { # homedir uid-label -> prints fingerprint
+  mkdir -p "$1"; chmod 700 "$1"
+  GNUPGHOME="$1" gpg --batch --quiet --pinentry-mode loopback --passphrase '' \
+    --quick-gen-key "engram-dr-$2-$rid <dr-test@invalid>" default default never 2>/dev/null
+  GNUPGHOME="$1" gpg --batch --with-colons --list-keys | awk -F: '$1=="fpr"{print $10; exit}'
+}
 
 make_test_key() {
   mkdir -p "$TESTGPG"
@@ -461,46 +474,61 @@ bases_before() { # root target
   done
 }
 
+# Every restore attempt starts from scratch: previous restore/api containers and volumes must be GONE (verified),
+# then a fresh restore-only keyring volume and HBA volume are created. Each mandatory step returns non-zero
+# explicitly: these functions are called from `|| rc=$?` / `if` contexts where errexit does not apply.
 prepare_restore_volumes() { # gnupghome
   docker rm -f "$API" "$DST" >/dev/null 2>&1 || true
-  docker volume rm -f "$VOL_DST" >/dev/null 2>&1 || true
-  if ! docker volume inspect "$VOL_RGPG" >/dev/null 2>&1; then
-    GNUPGHOME="$1" gpg --batch --quiet --pinentry-mode loopback --passphrase '' --export-secret-keys \
-      | docker run --rm -i --user 0 -v "$VOL_RGPG:/g" --entrypoint sh "$PITR_IMAGE" -c '
-          set -e; chown postgres:postgres /g; chmod 0700 /g
-          gosu postgres env GNUPGHOME=/g gpg --batch --quiet --import'
-    printf 'local all all trust\nhost all all samenet trust\n' \
-      | docker run --rm -i --user 0 -v "$VOL_RHBA:/h" --entrypoint sh "$PITR_IMAGE" -c '
-          set -e; cat >/h/pg_hba.conf; chown -R postgres:postgres /h; chmod 0700 /h; chmod 0600 /h/pg_hba.conf'
+  if docker inspect "$DST" >/dev/null 2>&1 || docker inspect "$API" >/dev/null 2>&1; then
+    say "previous restore container still present"; return 1
   fi
+  docker volume rm -f "$VOL_DST" "$VOL_RGPG" "$VOL_RHBA" >/dev/null 2>&1 || true
+  if docker volume inspect "$VOL_DST" >/dev/null 2>&1 || docker volume inspect "$VOL_RGPG" >/dev/null 2>&1 \
+    || docker volume inspect "$VOL_RHBA" >/dev/null 2>&1; then
+    say "previous restore volume still present"; return 1
+  fi
+  GNUPGHOME="$1" gpg --batch --quiet --pinentry-mode loopback --passphrase '' --export-secret-keys \
+    | docker run --rm -i --user 0 -v "$VOL_RGPG:/g" --entrypoint sh "$PITR_IMAGE" -c '
+        set -e; chown postgres:postgres /g; chmod 0700 /g
+        gosu postgres env GNUPGHOME=/g gpg --batch --quiet --import
+        gosu postgres env GNUPGHOME=/g gpg --batch --list-secret-keys --with-colons | grep -q "^sec"' \
+    || { say "restore key import failed"; return 1; }
+  printf 'local all all trust\nhost all all samenet trust\n' \
+    | docker run --rm -i --user 0 -v "$VOL_RHBA:/h" --entrypoint sh "$PITR_IMAGE" -c '
+        set -e; cat >/h/pg_hba.conf; chown -R postgres:postgres /h; chmod 0700 /h; chmod 0600 /h/pg_hba.conf' \
+    || { say "restore HBA volume failed"; return 1; }
 }
 
 restore_one() { # base gnupghome archive_root target -> 0 promoted, 2 base not consistent before target, 1 error
-  local base="$1" gpgdir="$2" root="$3" target="$4"
+  local base="$1" gpgdir="$2" root="$3" target="$4" cid
   (cd "$(dirname "$base")" && sha256sum -c --quiet "$(basename "$base").sha256") || { say "checksum mismatch $base"; return 1; }
-  prepare_restore_volumes "$gpgdir"
+  prepare_restore_volumes "$gpgdir" || return 1
   GNUPGHOME="$gpgdir" gpg --batch --quiet --decrypt "$base" \
     | docker run --rm -i --user 0 -v "$VOL_DST:/var/lib/postgresql/data" --entrypoint sh "$PITR_IMAGE" -c '
         set -e
         tar -xzf - -C /var/lib/postgresql/data
+        test -f /var/lib/postgresql/data/PG_VERSION
         touch /var/lib/postgresql/data/recovery.signal
         chown -R postgres:postgres /var/lib/postgresql/data
-        chmod 0700 /var/lib/postgresql/data'
-  docker run -d --name "$DST" --network "$NET" \
+        chmod 0700 /var/lib/postgresql/data' \
+    || { say "base decrypt/extract failed for $(basename "$base")"; return 1; }
+  cid="$(docker run -d --name "$DST" --network "$NET" \
     -v "$VOL_DST:/var/lib/postgresql/data" -v "$root/wal:$ARCH_IN_CT:ro" \
     -v "$VOL_RGPG:/var/lib/postgresql/restore-gnupg" -v "$VOL_RHBA:/var/lib/postgresql/restore-hba:ro" \
     -e ENGRAM_RESTORE_GNUPGHOME=/var/lib/postgresql/restore-gnupg \
     "$PITR_IMAGE" postgres -c config_file=/etc/postgresql/postgresql-pitr.conf -c archive_mode=off \
     -c hba_file=/var/lib/postgresql/restore-hba/pg_hba.conf -c 'listen_addresses=*' \
     -c "restore_command=/etc/postgresql/engram-wal-restore.sh %f %p" \
-    -c "recovery_target_time=$target" -c recovery_target_action=promote >/dev/null
+    -c "recovery_target_time=$target" -c recovery_target_action=promote)" || { say "restore container did not start"; return 1; }
+  [ -n "$cid" ] || return 1
+  # Poll THIS attempt's container id, never the name (a stale container can't satisfy the check).
   for _ in $(seq 1 7200); do
-    if docker exec -u postgres "$DST" psql -X -At -U "$DB_USER" -d "$DB_NAME" -c 'SELECT pg_is_in_recovery()' 2>/dev/null | grep -qx f; then
+    if docker exec -u postgres "$cid" psql -X -At -U "$DB_USER" -d "$DB_NAME" -c 'SELECT pg_is_in_recovery()' 2>/dev/null | grep -qx f; then
       return 0
     fi
-    if ! docker inspect -f '{{.State.Running}}' "$DST" | grep -qx true; then
-      if docker logs "$DST" 2>&1 | grep -q 'before consistent recovery point'; then return 2; fi
-      docker logs --tail 40 "$DST"
+    if ! docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null | grep -qx true; then
+      if docker logs "$cid" 2>&1 | grep -q 'before consistent recovery point'; then return 2; fi
+      docker logs --tail 20 "$cid" 2>&1 | sed 's/^/    restore: /'
       return 1
     fi
     sleep 1
@@ -559,32 +587,67 @@ finish() {
   exit 1
 }
 
-# =====================================================================================
-if [ "$mode" = decrypted ]; then
-  if [ ! -d "$archive_in/base" ] || [ ! -d "$archive_in/wal" ] || [ ! -d "$gnupg_in" ] || [ -z "$target_in" ]; then
-    echo "--from-decrypted-stream needs --archive-dir (base/, wal/), --gnupghome, --target-time" >&2
-    exit 2
+compact_to_epoch() { local t="$1"; date -u -d "${t:0:4}-${t:4:2}-${t:6:2} ${t:9:2}:${t:11:2}:${t:13:2}Z" +%s; }
+
+# RPO protocol for an off-host archive copy (owner PC, Task 21c). Inputs:
+#   capture   = when the copy was taken from bro (the simulated disaster instant), required for any RPO claim;
+#   src_last  = optional newest commit time read on the SOURCE at capture (proves inactivity when it is older
+#               than the newest archived WAL).
+# Archive freshness = capture - source timestamp of the newest archived WAL file (its name), i.e. how much
+# committed time could be missing from the copy. RPO_ACCEPTANCE: PASS (<= 900 s, or proven inactive),
+# FAIL (> 900 s), PENDING (no capture time: nothing claimed). A six-day target is a rollback, not RPO.
+rpo_eval() { # archive_root capture src_last target
+  local newest cap_e new_e bound
+  newest="$(find "$1/wal" -maxdepth 1 -name '*--*.gz.gpg' -printf '%f\n' | sort | tail -n 1)"
+  newest="${newest%%--*}"
+  ev ARCHIVE_NEWEST_WAL_TS "${newest:-none}"
+  if [ -n "$2" ] && [ -n "$4" ]; then ev ROLLBACK_SECONDS "$(( $(date -u -d "$2" +%s) - $(date -u -d "$4" +%s) ))"; fi
+  if [ -z "$2" ]; then
+    ev RPO_ACCEPTANCE PENDING
+    ev RPO_NOTE "no capture time given: RPO not measured, nothing claimed"
+    return 0
   fi
-  docker network create "$NET" >/dev/null
-  build_images
-  ev TARGET_TIME "$target_in"
+  if [ -z "$newest" ]; then ev RPO_ACCEPTANCE FAIL; return 1; fi
+  cap_e="$(date -u -d "$2" +%s)"; new_e="$(compact_to_epoch "$newest")"
+  bound=$((cap_e - new_e))
+  ev RPO_UPPER_BOUND_SECONDS "$bound"
+  if [ -n "$3" ] && [ "$(date -u -d "$3" +%s)" -le "$new_e" ]; then
+    ev RPO_NOTE "source had no commit after the newest archived WAL: nothing lost (inactive)"
+    ev RPO_ACCEPTANCE PASS
+    return 0
+  fi
+  if [ "$bound" -le 900 ]; then ev RPO_ACCEPTANCE PASS; return 0; fi
+  ev RPO_ACCEPTANCE FAIL
+  return 1
+}
+
+owner_flow() { # archive_root gnupghome target capture src_last
+  local t_start rc rto
+  ev TARGET_TIME "$3"
   t_start="$(epoch)"
-  rc=0; restore_from "$archive_in" "$gnupg_in" "$target_in" || rc=$?
-  [ "$rc" -eq 0 ] || die "restore to $target_in failed (rc=$rc)"
+  rc=0; restore_from "$1" "$2" "$3" || rc=$?
+  if [ "$rc" -ne 0 ]; then ev RESTORE_RC "$rc"; check RESTORED false; return 0; fi
+  check RESTORED true
   ev BASE_SELECTED "$BASE_SELECTED"
   ev RESTORED_TABLES "$(psql_dst "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
   ev RESTORED_USERS "$(psql_dst 'SELECT count(*) FROM app_user')"
-  latest="$(psql_dst "SELECT coalesce(to_char(max(t) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || '+00', 'none') FROM (
-    SELECT max(created_at) t FROM audit_log UNION ALL SELECT max(last_seen_at) FROM session
-    UNION ALL SELECT max(updated_at) FROM vault) x")"
-  ev RESTORED_LATEST_ACTIVITY "$latest"
-  if [ "$latest" != none ]; then
-    ev TARGET_MINUS_LATEST_ACTIVITY_SECONDS "$(( $(date -u -d "$target_in" +%s) - $(date -u -d "$latest" +%s) ))"
-  fi
+  ev RECOVERED_LAST_REPLAYED_COMMIT "$(psql_dst "SELECT coalesce(to_char(pg_last_xact_replay_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || '+00', 'none')")"
   post_restore_open
   rto=$(( $(epoch) - t_start ))
   ev RTO_SECONDS "$rto"
   check RTO_LE_2H test "$rto" -le 7200
+  check RPO_NOT_FAILED rpo_eval "$1" "$4" "$5" "$3"
+}
+
+# =====================================================================================
+if [ "$mode" = decrypted ]; then
+  if [ ! -d "$archive_in/base" ] || [ ! -d "$archive_in/wal" ] || [ ! -d "$gnupg_in" ] || [ -z "$target_in" ]; then
+    echo "--from-decrypted-stream needs --archive-dir (base/, wal/), --gnupghome, --target-time [--capture-time, --source-last-commit]" >&2
+    exit 2
+  fi
+  docker network create "$NET" >/dev/null
+  build_images
+  owner_flow "$archive_in" "$gnupg_in" "$target_in" "$capture_in" "$srclast_in"
   finish
 fi
 
@@ -668,6 +731,21 @@ docker exec -u postgres "$SRC" sh -ec 'f=/var/lib/postgresql/data/pg_hba.conf
 psql_src 'SELECT pg_reload_conf()' >/dev/null
 check HBA_APPLY_PRECEDENCE env ENGRAM_DB_CONTAINER="$SRC" bash "$pitr_src/engram-pitr-hba.sh" apply
 check HBA_APPLY_IDEMPOTENT env ENGRAM_DB_CONTAINER="$SRC" bash "$pitr_src/engram-pitr-hba.sh" apply
+# Failure before publication (stale temporary in place): apply must fail and leave the live file byte-identical.
+hba_failure_keeps_live_file() {
+  local f=/var/lib/postgresql/data/pg_hba.conf before after
+  before="$(docker exec -u postgres "$SRC" sha256sum "$f")"
+  docker exec -u postgres "$SRC" mkdir "$f.engram-new"
+  if ENGRAM_DB_CONTAINER="$SRC" bash "$pitr_src/engram-pitr-hba.sh" apply >"$WORK/hba-fail.log" 2>&1; then
+    docker exec -u postgres "$SRC" rmdir "$f.engram-new"; return 1
+  fi
+  after="$(docker exec -u postgres "$SRC" sha256sum "$f")"
+  docker exec -u postgres "$SRC" rmdir "$f.engram-new"
+  sed 's/^/    /' "$WORK/hba-fail.log"
+  [ "$before" = "$after" ] && grep -q 'live file untouched' "$WORK/hba-fail.log"
+}
+check HBA_FAILURE_KEEPS_LIVE_FILE hba_failure_keeps_live_file
+check HBA_APPLY_AFTER_FAILED_ATTEMPT env ENGRAM_DB_CONTAINER="$SRC" bash "$pitr_src/engram-pitr-hba.sh" apply
 ev HBA_RULE_LINES "$(docker exec -u postgres "$SRC" grep -cxF 'local replication engram_replication scram-sha-256' /var/lib/postgresql/data/pg_hba.conf)"
 ev HBA_LINE1 "$(docker exec -u postgres "$SRC" head -n 1 /var/lib/postgresql/data/pg_hba.conf)"
 ev REPL_ROLE_SCRAM "$(psql_src "SELECT count(*) FROM pg_authid WHERE rolname='engram_replication' AND rolreplication AND rolpassword LIKE 'SCRAM-SHA-256%'")"
@@ -812,6 +890,11 @@ rc=0; restore_from "$PITR_DIR" "$TESTGPG" "$T_TARGET" || rc=$?
 [ "$rc" -eq 0 ] || die "restore to T_target failed (rc=$rc)"
 ev BASE_SELECTED_FOR_T_TARGET "$BASE_SELECTED"
 check BASE_SELECTED_BEFORE_TARGET test "$BASE_SELECTED" = "$expect_base_target" -a "$BASE_SELECTED" != "$late_base"
+# Restore DB reachable only on the dedicated network: a peer on the default bridge must not reach it.
+dst_ip="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$DST")"
+ev RESTORE_DB_IP_ON_PRIVATE_NET "$dst_ip"
+check RESTORE_DB_UNREACHABLE_FROM_DEFAULT_BRIDGE bash -c '! docker run --rm --entrypoint pg_isready "$1" -h "$2" -p 5432 -t 3' _ "$POSTGRES_IMAGE" "$dst_ip"
+check RESTORE_DB_REACHABLE_ON_PRIVATE_NET docker run --rm --network "$NET" --entrypoint pg_isready "$POSTGRES_IMAGE" -h "$DST" -p 5432 -t 10
 
 t1_got="$(psql_dst "SELECT count(*) FROM dr_marker WHERE phase = 'T1'")"
 t2_got="$(psql_dst "SELECT count(*) FROM dr_marker WHERE phase = 'T2'")"
@@ -863,5 +946,63 @@ neg_failures=$((failures - saved_failures))
 failures="$saved_failures"
 psql_dst 'UPDATE schema_migrations SET dirty = false' >/dev/null
 check NEGATIVE_CONTROL_MIGRATE_FAILURE_FAILS_VERDICT bash -c '[ "$1" -ge 1 ] && grep -qx "NEGCTL_MIGRATE_UP=FAIL" "$2"' _ "$neg_failures" "$EVID"
+
+# Restore negative controls (a promoted restore from the step above is still running when the first starts):
+# each must return non-zero and leave no promoted restore container behind.
+no_promoted_dst() {
+  ! docker exec -u postgres "$DST" psql -X -At -U "$DB_USER" -d "$DB_NAME" -c 'SELECT pg_is_in_recovery()' 2>/dev/null | grep -qx f
+}
+restore_must_fail() { # base gnupghome target
+  local rc=0
+  restore_one "$1" "$2" "$PITR_DIR" "$3" </dev/null >"$WORK/negrestore.log" 2>&1 || rc=$?
+  sed 's/^/    /' "$WORK/negrestore.log" | tail -n 2
+  [ "$rc" -ne 0 ] && no_promoted_dst
+}
+mkdir -p "$WORK/emptygpg" "$WORK/fake/base"; chmod 700 "$WORK/emptygpg"
+fake="$WORK/fake/base/engram-base-20000101T000000Z.tar.gz.gpg"
+head -c 65536 /dev/urandom | GNUPGHOME="$TESTGPG" gpg --batch --quiet --trust-model always --encrypt --recipient "$TEST_FPR" --output "$fake"
+(cd "$WORK/fake/base" && sha256sum "$(basename "$fake")" >"$(basename "$fake").sha256")
+check NEG_RESTORE_KEY_IMPORT_FAILS restore_must_fail "$PITR_DIR/base/$late_base" "$WORK/emptygpg" "$T_NEAR"
+check NEG_RESTORE_EXTRACT_FAILS restore_must_fail "$fake" "$TESTGPG" "$T_NEAR"
+check NEG_RESTORE_START_FAILS restore_must_fail "$PITR_DIR/base/$late_base" "$TESTGPG" "not-a-time"
+
+# Owner procedure simulation (R1-11/R2-03): convert the archive from key A (scratch key) to key B with
+# convert-archive-to-test-key.sh, then run the owner flow using ONLY key B, with the RPO protocol.
+say "owner simulation: convert archive key A -> key B, restore with key B only"
+TESTGPG_B="$WORK/gnupg-b"
+FPR_B="$(make_key "$TESTGPG_B" keyb)"
+ev OWNERSIM_KEY_B_FPR "$FPR_B"
+mkdir -p "$WORK/conv"
+docker run --rm --user 0 -v "$PITR_DIR:/src:ro" -v "$WORK/conv:/dst" -v "$TESTGPG:/ga" -v "$TESTGPG_B:/gb" \
+  -v "$here/convert-archive-to-test-key.sh:/convert.sh:ro" -e SRC_GNUPGHOME=/ga -e DST_GNUPGHOME=/gb \
+  --entrypoint bash "$PITR_IMAGE" -c "bash /convert.sh /src /dst $FPR_B; rc=\$?; rm -f /ga/S.* /gb/S.*; \
+    chown -R $(id -u):$(id -g) /ga /gb /dst; chown -R 999:999 /dst/wal; chmod 0755 /dst/wal; chmod 0644 /dst/wal/*; exit \$rc" \
+  >"$WORK/convert.log" 2>&1 || { cat "$WORK/convert.log"; die "archive conversion failed"; }
+sed 's/^/    /' "$WORK/convert.log" | tail -n 1
+check OWNERSIM_CONVERTED_ARCHIVE_ONLY_KEY_B bash -c '! GNUPGHOME="$1" gpg --batch --list-secret-keys "$2" >/dev/null 2>&1' _ "$TESTGPG_B" "$TEST_FPR"
+newest_wal="$(find "$WORK/conv/wal" -maxdepth 1 -name '*--*.gz.gpg' -printf '%f\n' 2>/dev/null | sort | tail -n 1)"
+[ -n "$newest_wal" ] || die "converted archive has no WAL"
+newest_e="$(compact_to_epoch "${newest_wal%%--*}")"
+capture_ok="$(date -u -d "@$((newest_e + 60))" '+%Y-%m-%d %H:%M:%S+00')"
+saved_failures="$failures"
+ev_prefix="OWNERSIM_"
+owner_flow "$WORK/conv" "$TESTGPG_B" "$T_NEAR" "$capture_ok" ""
+ev T3_T4_PRESENT "$(psql_dst "SELECT count(*) FROM dr_marker WHERE phase IN ('T3','T4')")"
+ev_prefix=""
+ownersim_failures=$((failures - saved_failures))
+failures="$saved_failures"
+check OWNERSIM_FLOW_PASS test "$ownersim_failures" -eq 0
+check OWNERSIM_RPO_PASS grep -qx 'OWNERSIM_RPO_ACCEPTANCE=PASS' "$EVID"
+check OWNERSIM_T3_T4_PRESENT grep -qx 'OWNERSIM_T3_T4_PRESENT=500' "$EVID"
+
+# RPO protocol cases on the same converted archive (no restore): missing capture, over bound, proven inactive.
+ev_prefix="RPOSIM_MISSING_"; rpo_eval "$WORK/conv" "" "" "$T_NEAR" || true
+ev_prefix="RPOSIM_OVER_"; rpo_eval "$WORK/conv" "$(date -u -d "@$((newest_e + 2000))" '+%Y-%m-%d %H:%M:%S+00')" "" "$T_NEAR" || true
+ev_prefix="RPOSIM_INACTIVE_"; rpo_eval "$WORK/conv" "$(date -u -d "@$((newest_e + 2000))" '+%Y-%m-%d %H:%M:%S+00')" \
+  "$(date -u -d "@$((newest_e - 10))" '+%Y-%m-%d %H:%M:%S+00')" "$T_NEAR" || true
+ev_prefix=""
+check RPO_MISSING_CAPTURE_IS_PENDING grep -qx 'RPOSIM_MISSING_RPO_ACCEPTANCE=PENDING' "$EVID"
+check RPO_OVER_BOUND_FAILS grep -qx 'RPOSIM_OVER_RPO_ACCEPTANCE=FAIL' "$EVID"
+check RPO_PROVEN_INACTIVE_PASSES grep -qx 'RPOSIM_INACTIVE_RPO_ACCEPTANCE=PASS' "$EVID"
 
 finish

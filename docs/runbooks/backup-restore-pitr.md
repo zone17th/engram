@@ -90,9 +90,12 @@ gpg -d engram-<ts>.dump.gpg | pg_restore --no-owner -d scratch_restore
 3. Import the private key into a restore-only GNUPGHOME volume (owner postgres, 0700); never into the production image.
    Write a restore-only HBA file (`local all all trust` + `host all all samenet trust`, owner postgres, 0600) into its
    own volume: the isolated restore cluster is opened without knowing (or changing) any archived role password.
-4. Start the restore cluster on a private network with no published port, WAL archive read-only, archiving off:
+4. Create a dedicated network (nothing else attached; the trust HBA must never be reachable from the default bridge or
+   any shared network), then start the restore cluster on it with no published port, WAL archive read-only, archiving
+   off. Every client (migrate, api) joins the same network; remove the network when done:
    ```sh
-   docker run -d --name engram-restore -v <restore-vol>:/var/lib/postgresql/data \
+   docker network create engram-restore-net
+   docker run -d --name engram-restore --network engram-restore-net -v <restore-vol>:/var/lib/postgresql/data \
      -v <wal-dir>:/var/lib/postgresql/wal-archive:ro -v <restore-gnupg>:/var/lib/postgresql/restore-gnupg \
      -v <restore-hba>:/var/lib/postgresql/restore-hba:ro \
      -e ENGRAM_RESTORE_GNUPGHOME=/var/lib/postgresql/restore-gnupg "$POSTGRES_PITR_IMAGE" \
@@ -104,7 +107,10 @@ gpg -d engram-<ts>.dump.gpg | pg_restore --no-owner -d scratch_restore
    `engram-wal-restore.sh` matches `*--<walname>.gz.gpg` (strips the `<ts>--` prefix), checks the encrypted digest,
    decrypts, checks the plaintext digest and writes `%p`. Missing segment = exit 1 (end of archive). Corrupt/undecryptable segment = exit 126, which
    **aborts** recovery instead of promoting at an earlier point.
-5. Wait for `SELECT pg_is_in_recovery()` = `f`; then run the pre-open checklist (section 3).
+5. Wait for `SELECT pg_is_in_recovery()` = `f`; then run the pre-open checklist (section 3), with clients on the same
+   network, e.g.
+   `docker run --rm --network engram-restore-net -e DATABASE_URL='postgres://engram@engram-restore:5432/engram?sslmode=disable' <api-image> /app/migrate up`.
+6. Tear down: `docker rm -f engram-restore <clients>; docker network rm engram-restore-net`; delete the restore volumes.
 
 The same flow is automated end to end in `infra/backup/rehearsal/run-pitr-rehearsal.sh` (section 6).
 
@@ -135,10 +141,23 @@ A point-in-time restore rolls back **server-side vault state**, not users' memor
 
 ## 5. Restoring a production archive (R1-11)
 
-- A production archive is restored **only on the owner PC**: the owner decrypts the `*.gpg` locally with the production
-  private key, immediately re-encrypts the stream to a throwaway test key, and runs
-  `run-pitr-rehearsal.sh --from-decrypted-stream --archive-dir <dir with base/ and wal/> --gnupghome <test key dir>
-  --target-time <ts>` against a scratch cluster. Plaintext and the test key are deleted afterwards.
+- A production archive is restored **only on the owner PC**. Convert a COPY to a throwaway test key with
+  `infra/backup/rehearsal/convert-archive-to-test-key.sh <pulled-archive> <converted-dir> <test-fpr>`
+  (`SRC_GNUPGHOME` = production private keyring on the owner PC, `DST_GNUPGHOME` = test keyring). For every file it
+  first verifies the ORIGINAL sidecar (base: encrypted digest; WAL: encrypted digest on line 2, plaintext digest on line
+  1 while streaming), decrypts → re-encrypts to the test key in a pipe (no plaintext on disk), writes a NEW sidecar for
+  the test copy (base: new encrypted digest; WAL: same plaintext digest + new encrypted digest) and publishes it under the
+  SAME source-timestamped name. Copying the production sidecars unchanged would fail (re-encryption changes the encrypted
+  bytes), so always use the converter. The pulled originals are only read.
+- Then run `run-pitr-rehearsal.sh --from-decrypted-stream --archive-dir <converted-dir> --gnupghome <test keyring>
+  --target-time <ts> [--capture-time <when the copy was pulled from bro> [--source-last-commit <newest commit on bro at
+  that moment>]]` against a scratch cluster, once with `now − 6d` and once near `now`. Delete the converted copy and the
+  test key afterwards.
+- RPO protocol (`RPO_ACCEPTANCE`): archive freshness = capture time − source timestamp of the newest archived WAL file;
+  PASS when ≤ 900 s, or when `--source-last-commit` is not newer than that WAL (nothing committed since: inactivity, no
+  loss); FAIL when larger; PENDING when no capture time is given (no RPO claimed). The `now − 6d` run measures a
+  deliberate rollback (`ROLLBACK_SECONDS`), not RPO. The target must be earlier than some archived commit, otherwise
+  recovery stops with `recovery ended before configured recovery target was reached`.
 - The production private key **never** goes to `bro` or to any cloud runner. `run-pitr-rehearsal.sh` refuses
   `--from-prod-archive` everywhere and refuses `--from-decrypted-stream` on the production host.
 - Task 21c records this run (targets `now − 6d` and near `now`, key fingerprint `F2C47029…`, table counts, RPO/RTO) in
@@ -156,6 +175,10 @@ selected) → T2 100 %, T3 absent, RK stays consumed, sessions revoked, `migrate
 every base refused → second restore to `T_near` (later base, T3+T4 present, T5 absent) → RPO/RTO (RTO is warm: images
 built and archive local before the clock starts), canary replication password absent from argv and logs. Evidence
 lines `KEY=VALUE` end with `PITR_REHEARSAL=PASS|FAIL`; results in `docs/phases/evidence/P06/ops-dr.md`.
+Also exercised: HBA apply failing before publication leaves the live file byte-identical; the restore DB is unreachable
+from the default bridge; restore negative controls (key import, extraction, start) fail with no promoted container; a
+key A → key B conversion with `convert-archive-to-test-key.sh` followed by the owner flow using only key B, and the RPO
+protocol's PASS / FAIL / PENDING / inactive cases.
 
 Day-to-day checks on bro (read-only):
 
