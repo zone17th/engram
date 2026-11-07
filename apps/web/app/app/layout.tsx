@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { NextIntlClientProvider } from 'next-intl';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import type { ReactNode } from 'react';
 import { fontVariables } from '@/app/fonts';
 import { QueryProvider } from '@/components/query-provider';
@@ -13,6 +13,7 @@ import { SessionProvider } from '@/features/auth/session-provider';
 import { ReauthMessagesProvider } from '@/features/auth/use-reauth';
 import { VaultProvider } from '@/features/vault/vault-provider';
 import { resolveAppLocale } from '@/i18n/app-locale';
+import { CSP_NONCE_HEADER } from '@/lib/csp/manifest';
 import { THEME_COOKIE, resolveInitialTheme, themeToDataAttribute } from '@/lib/preferences/cookies';
 import '@/app/globals.css';
 
@@ -23,6 +24,8 @@ export const metadata: Metadata = {
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const cookieStore = await cookies();
+  const headerStore = await headers();
+  const nonce = headerStore.get(CSP_NONCE_HEADER) ?? undefined;
   const locale = await resolveAppLocale();
   const themePref = resolveInitialTheme({
     cookieTheme: cookieStore.get(THEME_COOKIE)?.value ?? null,
@@ -34,7 +37,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       : (await import('../../messages/en.json')).default;
 
   return (
-    <html lang={locale} data-theme={initialResolved} className={fontVariables}>
+    <html lang={locale} data-theme={initialResolved} className={fontVariables} data-csp-nonce={nonce}>
       <body className="bg-canvas font-sans text-body antialiased">
         <NextIntlClientProvider locale={locale} messages={messages}>
           <ThemeProvider initialTheme={themePref} initialLocale={locale}>
