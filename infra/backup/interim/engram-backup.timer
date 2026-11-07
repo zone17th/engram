@@ -1,0 +1,9 @@
+[Unit]
+Description=engram nightly backup at 03:17 Asia/Ho_Chi_Minh
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 Asia/Ho_Chi_Minh
+Persistent=true
+
+[Install]
+WantedBy=timers.target
