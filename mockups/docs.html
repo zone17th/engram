@@ -361,7 +361,7 @@
               <strong>2. Xuất bản đọc được (không mã hoá, <span class="mono">.json</span>):</strong> cần kho đang mở và xác nhận lại tài khoản. Trình duyệt tự giải mã mọi entry (giữ nguyên cả số dài và khoá trùng trong JSON) thành file văn bản rõ không đi qua máy chủ. <strong>Cảnh báo:</strong> bất kỳ ai có file này đều đọc được toàn bộ nội dung ngay lập tức.
             </p>
             <p class="text-[13px] m-0" style="color:var(--muted)">
-              Cả hai định dạng gồm các mục đang dùng và các mục mới xoá chưa quá 30 ngày (chưa bị dọn vĩnh viễn). Giới hạn tối đa <strong>3 lần xuất mỗi giờ</strong> (tính cả lượt bị huỷ giữa chừng). File bản sao lưu giữ trên máy chủ tối đa <strong>24 giờ</strong> để chỉ mình bạn tải lại khi đã đăng nhập, và tự xoá khi hết hạn, bị huỷ hoặc khi bạn tạo bản mới.
+              Bản sao lưu mã hoá (<span class="mono">.sabk.json</span>) gồm các mục đang dùng và các mục mới xoá chưa quá 30 ngày; bản đọc được (<span class="mono">.json</span>) chỉ gồm các mục đang dùng. Mỗi lần tạo bản sao lưu mới hoặc bản đọc được mới tính 1 lượt; tối đa <strong>3 lượt mỗi giờ</strong>, kể cả lượt đã huỷ. File bản sao lưu giữ trên máy chủ tối đa <strong>24 giờ</strong> để chỉ mình bạn tải lại khi đã đăng nhập, và tự xoá khi hết hạn, bị huỷ hoặc khi bạn tạo bản mới.
             </p>
           </div>
 
@@ -384,9 +384,9 @@
         <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
           <p class="t-label mb-2" style="color:var(--muted)">Export Formats, Account Deletion &amp; Retention · English</p>
           <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
-            <strong>Two export formats (rate-limited to 3 per hour, including cancelled jobs):</strong>
+            <strong>Two export formats (each new backup or readable export counts as 1; up to 3 per hour, including cancelled ones):</strong>
             (1) <strong>Encrypted backup (<span class="mono">.sabk.json</span>, recommended)</strong> requires only an active sign-in session and packages your items, tags, encrypted entry bodies, and key wrappers so you can unlock the backup offline with your passphrase or recovery key.
-            (2) <strong>Readable export (unencrypted <span class="mono">.json</span>)</strong> requires an unlocked vault and account re-authentication; your browser decrypts entries locally (preserving exact JSON numbers and duplicate keys) without uploading plaintext to the server. Store readable exports carefully—anyone with the file can read every note. Both formats include active items and recently deleted items not yet purged (under 30 days). Generated encrypted backup files stay available for up to <strong>24 hours</strong> to the signed-in owner and are deleted on expiry, cancellation, or replacement.
+            (2) <strong>Readable export (unencrypted <span class="mono">.json</span>)</strong> requires an unlocked vault and account re-authentication; your browser decrypts entries locally (preserving exact JSON numbers and duplicate keys) without uploading plaintext to the server. Store readable exports carefully—anyone with the file can read every note. Encrypted backups include active items and recently deleted items not yet purged (under 30 days); readable exports include active items only. Generated encrypted backup files stay available for up to <strong>24 hours</strong> to the signed-in owner and are deleted on expiry, cancellation, or replacement.
           </p>
           <p class="text-[13px] m-0" style="color:var(--body)">
             <strong>Reset vault vs. Delete account &amp; backup retention:</strong> <em>Reset vault</em> deletes only encrypted entry bodies and vault keys while keeping your account, item names, and tags. <em>Delete account</em> (requires re-authentication and typing your email) permanently removes your account, sessions, vault, keys, items, tags, entries, and vectors from the live database, and signs you out immediately. Security audit records (unlinked from your user ID and containing no secrets) are retained for <strong>90 days</strong>, and encrypted system database backups age out automatically within <strong>7 days</strong>.
@@ -412,12 +412,15 @@
           <li class="t-body" style="color:var(--body)">
             <strong>Không bán dữ liệu, chưa có chia sẻ mục:</strong> kho là của riêng bạn; chúng tôi không dùng quảng cáo và không bán dữ liệu. Tính năng nhập lại file sao lưu trên giao diện, xoay khoá giải mã chính và chia sẻ mục nằm ở các bản nâng cấp tiếp theo.
           </li>
+          <li class="t-body" style="color:var(--body)">
+            <strong>Giới hạn tạo bản xuất dữ liệu:</strong> mỗi lần tạo bản sao lưu mới hoặc bản đọc được mới tính 1 lượt; tối đa <strong>3 lượt mỗi giờ</strong>, kể cả lượt đã huỷ.
+          </li>
         </ul>
 
         <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
           <p class="t-label mb-2" style="color:var(--muted)">Known Limits · English</p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            <strong>Size &amp; platform limits:</strong> Each entry is up to <span class="mono">256 KiB</span>, with up to <strong>200 entries</strong> and <strong>20 tags</strong> per item. Encryption (<span class="mono">Argon2id 64 MiB</span>) and passkey unlock (<span class="mono">WebAuthn PRF</span>) run in modern browsers and require an internet connection to search and save. We never sell your data or run ads; UI backup import, vault key rotation, and item sharing are planned for later releases.
+            <strong>Size, platform &amp; export limits:</strong> Each entry is up to <span class="mono">256 KiB</span>, with up to <strong>200 entries</strong> and <strong>20 tags</strong> per item. Each new backup or readable export counts as 1; up to <strong>3 per hour</strong>, including cancelled ones. Encryption (<span class="mono">Argon2id 64 MiB</span>) and passkey unlock (<span class="mono">WebAuthn PRF</span>) run in modern browsers and require an internet connection to search and save. We never sell your data or run ads; UI backup import, vault key rotation, and item sharing are planned for later releases.
           </p>
         </div>
       </section>

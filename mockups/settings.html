@@ -421,9 +421,9 @@
           <summary class="cursor-pointer py-1 min-h-[24px]" style="color:var(--body)">Chi tiết · <span lang="en">Details</span></summary>
           <ul class="mt-2 mb-0 pl-5 list-disc" style="color:var(--muted)">
             <li>File <span class="mono">.sabk.json</span>: mục, tag, entry ở dạng mã hoá, và các khoá đã bọc (passphrase, recovery key, passkey) để khôi phục độc lập; tính năng nhập lại trên giao diện sẽ có ở bản cập nhật tiếp theo. <span lang="en">Items, tags, encrypted entries and wrapped keys for independent recovery; in-app backup import arrives in a later update.</span></li>
-            <li>Gồm mục đang dùng và thùng rác chưa xoá hẳn. <span lang="en">Includes active items and trash not yet purged.</span></li>
+            <li>Bản sao lưu mã hoá gồm các mục đang dùng và các mục mới xoá chưa quá 30 ngày; bản đọc được chỉ gồm các mục đang dùng. <span lang="en">Encrypted backups include active items and items deleted within the last 30 days; readable exports include active items only.</span></li>
             <li>Tên mục, gợi nhớ và tag ở dạng đọc được trong file (giống trên máy chủ). <span lang="en">Item names, hints and tags are readable in the file, as on the server.</span></li>
-            <li>Tối đa 3 lần/giờ. File giữ 24 giờ, chỉ bạn tải được khi đã đăng nhập; tạo bản mới sẽ thay bản cũ. <span lang="en">Up to 3 per hour. Kept 24 hours, downloadable only by you while signed in; a new backup replaces the old one.</span></li>
+            <li>Mỗi lần tạo bản sao lưu mới hoặc bản đọc được mới tính 1 lượt; tối đa 3 lượt mỗi giờ, kể cả lượt đã huỷ. File giữ 24 giờ, chỉ bạn tải được khi đã đăng nhập; tạo bản mới sẽ thay bản cũ. <span lang="en">Each new backup or readable export counts as 1; up to 3 per hour, including cancelled ones. Kept 24 hours, downloadable only by you while signed in; a new backup replaces the old one.</span></li>
           </ul>
         </details>
 
@@ -1138,7 +1138,7 @@
   <div class="panel" style="width:min(560px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
     <h2 id="plainDlgTitle" class="t-title-sm mb-1">Xuất bản đọc được · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Readable export</span></h2>
     <!-- Production focus note: [data-seg] does not exist in apps/web; initial focus lands on password input (plainDlg) or "Giữ tài khoản" (deleteDlg). -->
-    <p class="t-body mb-4" style="color:var(--muted)">File được giải mã ngay trên máy này (gồm mục đang dùng và thùng rác chưa xoá hẳn; tính vào giới hạn 3 lần xuất/giờ); nội dung không gửi lên máy chủ. <span lang="en" class="block text-[12px] mt-1">Decrypted on this device (includes active items and unpurged trash; counts toward the 3/hour limit); contents are never uploaded.</span></p>
+    <p class="t-body mb-4" style="color:var(--muted)">File được giải mã ngay trên máy này (chỉ gồm các mục đang dùng; mỗi lần tạo bản sao lưu mới hoặc bản đọc được mới tính 1 lượt, tối đa 3 lượt mỗi giờ kể cả lượt đã huỷ); nội dung không gửi lên máy chủ. <span lang="en" class="block text-[12px] mt-1">Decrypted on this device (active items only; each new backup or readable export counts as 1, up to 3 per hour including cancelled ones); contents are never uploaded.</span></p>
     <div class="seg mb-5 flex-wrap" data-seg aria-label="Review states">
       <button type="button" data-target="pl-confirm" aria-pressed="true">Xác nhận</button>
       <button type="button" data-target="pl-locked" aria-pressed="false">Vault khoá</button>
@@ -1148,6 +1148,7 @@
       <button type="button" data-target="pl-limit" aria-pressed="false">429 giới hạn</button>
       <button type="button" data-target="pl-offline" aria-pressed="false">Offline</button>
       <button type="button" data-target="pl-reauth-expired" aria-pressed="false">Hết hạn re-auth</button>
+      <button type="button" data-target="pl-too-large" aria-pressed="false">Quá lớn</button>
     </div>
     <section data-view="pl-confirm">
       <div class="rounded-md p-3.5 mb-4" style="background:var(--pale-orange)">
@@ -1207,6 +1208,10 @@
           <button type="button" class="btn btn-primary">Tiếp tục · <span lang="en" class="font-semibold">Continue</span></button>
         </div>
       </div>
+    </section>
+    <section data-view="pl-too-large" hidden>
+      <div role="alert" class="auth-alert mb-3">Bản xuất đọc được quá lớn cho trình duyệt này — dùng Chrome/Edge trên máy tính, hoặc tải bản sao lưu mã hoá. <span lang="en" class="block">This readable export is too large for this browser — use Chrome or Edge on a computer, or download an encrypted backup instead.</span></div>
+      <div class="flex justify-end"><button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button></div>
     </section>
   </div>
 </dialog>

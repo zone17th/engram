@@ -9,7 +9,9 @@
     "recovery": "Recovery",
     "openApp": "Open engram",
     "signIn": "Sign in",
-    "signUp": "Create account"
+    "signUp": "Create account",
+    "help": "Docs & privacy",
+    "skipToContent": "Skip to main content"
   },
   "localeSwitch": {
     "label": "Language",
@@ -104,7 +106,9 @@
       "lockedAndUnlock": "Vault locked — Unlock vault",
       "unlockVaultNamed": "{state} — Unlock vault",
       "settings": "Settings",
-      "settingsDone": "Done"
+      "settingsDone": "Done",
+      "help": "Docs & privacy",
+      "skipToContent": "Skip to main content"
     },
     "preview": {
       "label": "Preview",
@@ -116,7 +120,33 @@
     "emptyBody": "Save your first item by typing a keyword and pressing Enter.",
     "errorTitle": "Could not load",
     "errorBody": "Try again in a moment.",
-    "retry": "Try again"
+    "retry": "Try again",
+    "vaultLocked": "Vault locked. Unlock to see entry contents.",
+    "vaultLockedTitle": "Vault locked",
+    "vaultLockedBody": "Unlock to see entry contents.",
+    "vaultLockedCta": "Unlock vault",
+    "server500Title": "Could not process request",
+    "server500Body": "We could not process the request right now. Your draft is still here — please retry.",
+    "notFoundTitle": "Not found",
+    "notFoundBody": "This item was deleted or does not belong to your account.",
+    "backToList": "Back to list",
+    "sessionExpiredTitle": "Session expired",
+    "sessionExpiredBody": "Sign in again to continue. Unsaved secrets in memory were cleared.",
+    "sessionExpiredCta": "Sign in again"
+  },
+  "offline": {
+    "banner": "You are offline — changes are not saved",
+    "bannerTitle": "You're offline.",
+    "bannerBody": "You can still view what is already loaded. Creating and editing are paused until you reconnect.",
+    "reconnectedTitle": "Back online.",
+    "reconnectedBody": "Your list has been refreshed.",
+    "saveDeferredTitle": "Cannot save right now",
+    "saveDeferredBody": "What you typed stays in the editor until the vault locks (locking the vault clears unsaved drafts). Retry once connectivity returns.",
+    "retrySave": "Retry save",
+    "searchUnavailableTitle": "Search needs a connection",
+    "searchUnavailableBody": "Offline search is not available yet. Browse the items already loaded while you wait.",
+    "exportUnavailableTitle": "Backup needs a connection",
+    "exportUnavailableBody": "You're offline. Reconnect to create or download a backup."
   },
   "ui": {
     "segmentedAriaLabel": "Options"
@@ -198,6 +228,7 @@
   "onboarding": {
     "title": "Create your vault",
     "settings": "Account settings",
+    "settingUp": "Setting up",
     "stepperLabel": "Vault setup steps",
     "steps": {
       "passphrase": "1 · Passphrase",
@@ -292,7 +323,13 @@
       "genericTitle": "Could not create vault",
       "genericBody": "Something went wrong while saving your vault. You can retry safely.",
       "retry": "Retry"
-    }
+    },
+    "semanticConsent": "Enable meaning-based search? Item names, hints, tags, and search text are sent to an external embedding service to compute vectors; entry contents are never sent.",
+    "semanticConsentTitle": "Meaning-based search (optional)",
+    "semanticConsentBody": "Item names, hints, tags, and the text you type when searching are sent to an external embedding service to compute vectors. Entry content is never sent — it is encrypted before leaving your device.",
+    "semanticConsentEnable": "Enable meaning search",
+    "semanticConsentLater": "Maybe later",
+    "semanticConsentError": "Could not save your choice. Try again."
   },
   "auth": {
     "nav": {
@@ -394,7 +431,8 @@
       "submitting": "Creating account…",
       "haveAccount": "Have an account?",
       "signInLink": "Sign in",
-      "privacyNote": "We cannot read the contents of your entries. If you lose every way to unlock, we cannot recover them for you."
+      "privacyNote": "We cannot read the contents of your entries. If you lose every way to unlock, we cannot recover them for you.",
+      "mailResetUnavailable": "Email password reset is not enabled on this server yet — save your login password carefully."
     },
     "forgot": {
       "title": "Reset login password",
@@ -418,7 +456,9 @@
       "mailUnavailableOauthHint": "If your account is linked to Google or GitHub, you can still sign in with that provider.",
       "sentTitle": "If an account uses this email address, we have sent the next steps. Please check your inbox and spam folder.",
       "sentBody": "Check the inbox (and spam folder) for the address you entered and follow the instructions in the email.",
-      "tryAnotherEmail": "Try another email"
+      "tryAnotherEmail": "Try another email",
+      "contactIssues": "Contact (GitHub Issues)",
+      "contactHref": "https://github.com/zone17th/engram/issues"
     },
     "reset": {
       "title": "Set new login password",
@@ -475,6 +515,7 @@
       "title": "Confirm it is you",
       "subtitle": "Some actions need fresh proof even while signed in.",
       "pending": "Pending action",
+      "pendingAction": "{action}",
       "confirm": "Confirm",
       "submitting": "Confirming…",
       "google": "Confirm with Google",
@@ -487,7 +528,9 @@
         "account_password_change": "Change password",
         "account_identity_link": "Link provider",
         "account_identity_unlink": "Unlink provider",
-        "session_revoke_others": "Sign out elsewhere"
+        "session_revoke_others": "Sign out elsewhere",
+        "export_decrypted": "Export readable file",
+        "account_delete": "Delete account"
       }
     },
     "oauthCallback": {
@@ -531,6 +574,19 @@
     "common": {
       "cancel": "Cancel",
       "logout": "Sign out"
+    }
+  },
+  "reauth": {
+    "pendingAction": "{action}"
+  },
+  "passkey": {
+    "add": {
+      "timeout": "The passkey prompt timed out after 60 seconds. Try again or cancel."
+    }
+  },
+  "home": {
+    "examples": {
+      "fillHint": "Click an example to fill the input box"
     }
   },
   "settings": {
@@ -595,7 +651,8 @@
       "passwordHint": "At least 12 characters.",
       "passwordTooShort": "Password must be at least 12 characters.",
       "passwordMismatch": "Passwords do not match.",
-      "linkRequiresVerifiedEmail": "Verify your current account email address before linking a new sign-in method."
+      "linkRequiresVerifiedEmail": "Verify your current account email address before linking a new sign-in method.",
+      "oauthUnavailable": "Sign-in provider is not configured on this server yet."
     },
     "security": {
       "heading": "Security",
@@ -905,13 +962,18 @@
       "semanticEntryNeverSent": "Entry content is never sent — it is encrypted before leaving your device.",
       "semanticServerOff": "Meaning-based search is not enabled on this server",
       "semanticEnable409": "Couldn't turn on meaning-based search",
-      "semanticSaveFailed": "Couldn't save the change. Try again later."
+      "semanticSaveFailed": "Couldn't save the change. Try again later.",
+      "privacyLink": "How search & privacy work"
+    },
+    "data": {
+      "docsLink": "How backups, exports & deletion work"
     }
   },
   "vault": {
     "state": {
       "noVault": "No vault yet",
       "onboarding": "Setting up vault…",
+      "settingUp": "Setting up",
       "locked": "Vault locked",
       "unlocking": "Unlocking vault…",
       "unlocked": "Vault open",
@@ -925,6 +987,7 @@
     "locked": {
       "bannerTitle": "Vault locked",
       "bannerBody": "Decryption keys and cached entry contents in memory were cleared. You can still browse and search item names and tags; unlock again to view entry contents.",
+      "neutralBanner": "Vault locked. Unlock to see entry contents.",
       "unlockCta": "Unlock vault",
       "maskLabel": "Entry content is locked. Unlock the vault to view it.",
       "bodyLoading": "Decrypting entry content…",
@@ -989,7 +1052,8 @@
         "showPassword": "Show password",
         "hidePassword": "Hide password",
         "cancel": "Cancel",
-        "continue": "Continue"
+        "continue": "Continue",
+        "timeout": "The passkey prompt timed out after 60 seconds. Try again or cancel."
       },
       "unlock": {
         "button": "Unlock with passkey",
@@ -1091,6 +1155,7 @@
     "hidePassphrase": "Hide passphrase",
     "submit": "Unlock",
     "submitting": "Unlocking…",
+    "deriving": "Deriving key in your browser…",
     "caption": "Slow devices may take a few seconds. Key derivation runs entirely inside your browser.",
     "forgotPassphrase": "I forgot my passphrase",
     "rememberDeviceLabel": "Remember this device",
@@ -1542,9 +1607,13 @@
         "title": "Nothing here yet",
         "body": "Type idea: first sentence or import JSON. Save your first note, JSON block, or anything you might forget — name it by a keyword you will remember.",
         "examplesLabel": "Try typing:",
+        "fillHint": "Click an example to fill the input box",
         "example1": "idea: first sentence",
         "example2": "wifi #home: SSID Zone17th / pass 8chars",
         "example3": "api-config #ops: https://engram.zone17.click"
+      },
+      "examples": {
+        "fillHint": "Click an example to fill the input box"
       },
       "filteredEmpty": {
         "eyebrow": "Unused tag",
@@ -1563,6 +1632,11 @@
       "placeholder": "Search or name: content",
       "searchHint": "Text you type to search is sent to the server, not encrypted. To save content, type <mono>name:</mono> first.",
       "tagHint": "Enter: filter by tag — typed text is sent to the server, not encrypted",
+      "similarMeaningLabel": "Similar meaning",
+      "similarMeaningTooltip": "Similar meaning (≈): suggests items by meaning",
+      "privacyHint1": "Typed search text is sent to the server unencrypted.",
+      "privacyHint2": "When ≈ is on, item names, tags, hints, and search text are sent to an external embedding service.",
+      "privacyHint3": "To save encrypted content, type name: first.",
       "guardTitle": "Add a name and : to save",
       "guardBody": "Multi-line or > 200-character input is never sent as a search query. Prefix with name: on the first line to encrypt and save.",
       "tagGuardTitle": "Tag filter query must be at most 50 characters",
@@ -2000,10 +2074,15 @@
     "help": {
       "sentToServer": "Text you type to search is sent to the server, not encrypted. To save content, type <mono>name:</mono> first.",
       "sentToServerExternal": "Text you type to search is sent to the server, and to an external embedding service when ≈ is on, not encrypted. To save content, type <mono>name:</mono> first.",
-      "enterToSearch": "Press Enter to search; the text is sent to the server, not encrypted."
+      "enterToSearch": "Press Enter to search; the text is sent to the server, not encrypted.",
+      "privacyHint1": "Typed search text is sent to the server unencrypted.",
+      "privacyHint2": "When ≈ is on, item names, tags, hints, and search text are sent to an external embedding service.",
+      "privacyHint3": "To save encrypted content, type name: first."
     },
     "toggle": {
-      "semanticAriaLabel": "Meaning-based search"
+      "semanticAriaLabel": "Meaning-based search",
+      "similarMeaningLabel": "Similar meaning",
+      "similarMeaningTooltip": "Similar meaning (≈): suggests items by meaning"
     },
     "listbox": {
       "regionAriaLabel": "Search dropdown, scrollable",
@@ -2052,6 +2131,17 @@
     "tab": {
       "cannotFill": "Cannot fill with Tab",
       "pinned": "Existing item selected"
-    }
+    },
+    "similarMeaningLabel": "Similar meaning",
+    "similarMeaningTooltip": "Similar meaning (≈): suggests items by meaning",
+    "privacyHint1": "Typed search text is sent to the server unencrypted.",
+    "privacyHint2": "When ≈ is on, item names, tags, hints, and search text are sent to an external embedding service.",
+    "privacyHint3": "To save encrypted content, type name: first.",
+    "consentBanner": "Meaning-based search (≈) sends item names, hints, tags, and search text to an external embedding service; entry contents are never sent.",
+    "consentBannerTitle": "Meaning-based search (≈) is on",
+    "consentBannerBody": "Item names, hints, tags, and the text you type when searching are sent to an external embedding service to compute vectors. Entry content is never sent.",
+    "consentBannerTurnOff": "Turn off",
+    "consentBannerAcknowledge": "Got it",
+    "consentBannerError": "Could not save your choice. Try again."
   }
 }
