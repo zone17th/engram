@@ -110,13 +110,13 @@ func TestProductionRejectsMissingSecretsAndHTTP(t *testing.T) {
 
 func TestProductionAcceptsHTTPSAndDistinctSecrets(t *testing.T) {
 	setEnv(t, map[string]string{
-		"APP_ENV":            "production",
-		"APP_ORIGIN":         "https://engram.zone17.click",
-		"AUTH_JWT_SECRET":    b64(32),
-		"AUTH_CSRF_SECRET":   b64(33),
-		"AUTH_REAUTH_SECRET": b64(34),
-		"AUTH_IP_PEPPER":     b64(35),
-		"AUTH_EMAIL_PEPPER":  b64(36),
+		"APP_ENV":               "production",
+		"APP_ORIGIN":            "https://engram.zone17.click",
+		"AUTH_JWT_SECRET":       b64(32),
+		"AUTH_CSRF_SECRET":      b64(33),
+		"AUTH_REAUTH_SECRET":    b64(34),
+		"AUTH_IP_PEPPER":        b64(35),
+		"AUTH_EMAIL_PEPPER":     b64(36),
 		"EXPORT_AT_REST_SECRET": b64(37),
 	})
 	cfg, err := config.Load()
@@ -150,14 +150,14 @@ func TestRejectsSharedSecrets(t *testing.T) {
 
 func TestFakeOAuthRejectedInProduction(t *testing.T) {
 	setEnv(t, map[string]string{
-		"APP_ENV":            "production",
-		"APP_ORIGIN":         "https://engram.zone17.click",
-		"AUTH_FAKE_OAUTH":    "true",
-		"AUTH_JWT_SECRET":    b64(32),
-		"AUTH_CSRF_SECRET":   b64(33),
-		"AUTH_REAUTH_SECRET": b64(34),
-		"AUTH_IP_PEPPER":     b64(35),
-		"AUTH_EMAIL_PEPPER":  b64(36),
+		"APP_ENV":               "production",
+		"APP_ORIGIN":            "https://engram.zone17.click",
+		"AUTH_FAKE_OAUTH":       "true",
+		"AUTH_JWT_SECRET":       b64(32),
+		"AUTH_CSRF_SECRET":      b64(33),
+		"AUTH_REAUTH_SECRET":    b64(34),
+		"AUTH_IP_PEPPER":        b64(35),
+		"AUTH_EMAIL_PEPPER":     b64(36),
 		"EXPORT_AT_REST_SECRET": b64(37),
 	})
 	if _, err := config.Load(); err == nil {
@@ -341,13 +341,13 @@ func TestEffectiveMailSinkDir(t *testing.T) {
 
 func TestWebAuthnRPBootValidation(t *testing.T) {
 	prodSecrets := map[string]string{
-		"APP_ENV":            "production",
-		"APP_ORIGIN":         "https://engram.zone17.click",
-		"AUTH_JWT_SECRET":    b64(32),
-		"AUTH_CSRF_SECRET":   b64(33),
-		"AUTH_REAUTH_SECRET": b64(34),
-		"AUTH_IP_PEPPER":     b64(35),
-		"AUTH_EMAIL_PEPPER":  b64(36),
+		"APP_ENV":               "production",
+		"APP_ORIGIN":            "https://engram.zone17.click",
+		"AUTH_JWT_SECRET":       b64(32),
+		"AUTH_CSRF_SECRET":      b64(33),
+		"AUTH_REAUTH_SECRET":    b64(34),
+		"AUTH_IP_PEPPER":        b64(35),
+		"AUTH_EMAIL_PEPPER":     b64(36),
 		"EXPORT_AT_REST_SECRET": b64(37),
 	}
 
@@ -514,12 +514,12 @@ func TestWebAuthnRPBootValidation(t *testing.T) {
 // tố của host), nên chúng chỉ đỏ nhờ kiểm PSL. Ngoại lệ tường minh duy nhất là localhost.
 func TestWebAuthnRPIDPublicSuffixBoot(t *testing.T) {
 	prodSecrets := map[string]string{
-		"APP_ENV":            "production",
-		"AUTH_JWT_SECRET":    b64(32),
-		"AUTH_CSRF_SECRET":   b64(33),
-		"AUTH_REAUTH_SECRET": b64(34),
-		"AUTH_IP_PEPPER":     b64(35),
-		"AUTH_EMAIL_PEPPER":  b64(36),
+		"APP_ENV":               "production",
+		"AUTH_JWT_SECRET":       b64(32),
+		"AUTH_CSRF_SECRET":      b64(33),
+		"AUTH_REAUTH_SECRET":    b64(34),
+		"AUTH_IP_PEPPER":        b64(35),
+		"AUTH_EMAIL_PEPPER":     b64(36),
 		"EXPORT_AT_REST_SECRET": b64(37),
 	}
 	prod := func(origin, rpID string) map[string]string {
@@ -605,13 +605,13 @@ func fmtMap(m map[string]any) string {
 // development luôn rơi về default còn production luôn trống).
 func TestTrustedProxyCIDRsLoaded(t *testing.T) {
 	prod := map[string]string{
-		"APP_ENV":            "production",
-		"APP_ORIGIN":         "https://engram.zone17.click",
-		"AUTH_JWT_SECRET":    b64(32),
-		"AUTH_CSRF_SECRET":   b64(33),
-		"AUTH_REAUTH_SECRET": b64(34),
-		"AUTH_IP_PEPPER":     b64(35),
-		"AUTH_EMAIL_PEPPER":  b64(36),
+		"APP_ENV":               "production",
+		"APP_ORIGIN":            "https://engram.zone17.click",
+		"AUTH_JWT_SECRET":       b64(32),
+		"AUTH_CSRF_SECRET":      b64(33),
+		"AUTH_REAUTH_SECRET":    b64(34),
+		"AUTH_IP_PEPPER":        b64(35),
+		"AUTH_EMAIL_PEPPER":     b64(36),
 		"EXPORT_AT_REST_SECRET": b64(37),
 	}
 	dev := map[string]string{"APP_ENV": "development"}
@@ -705,7 +705,7 @@ func TestMailCaptureAsDeliveryFailClosedAndRejectedInProduction(t *testing.T) {
 				"AUTH_REAUTH_SECRET":            b64(34),
 				"AUTH_IP_PEPPER":                b64(35),
 				"AUTH_EMAIL_PEPPER":             b64(36),
-				"EXPORT_AT_REST_SECRET":        b64(37),
+				"EXPORT_AT_REST_SECRET":         b64(37),
 			})
 			if _, err := config.Load(); err == nil {
 				t.Fatalf("%s must refuse boot when AUTH_MAIL_CAPTURE_AS_DELIVERY=true", envName)

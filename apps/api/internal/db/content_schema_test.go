@@ -167,11 +167,11 @@ func TestContentMigration0006CleanAndFrom0005WithData(t *testing.T) {
 	poolUpgrade := dbtest.Pool(t, dsnUpgrade)
 	qUpgrade := gen.New(poolUpgrade)
 
-	uP03, err := qUpgrade.InsertUser(ctx, gen.InsertUserParams{
-		Email:  "p03-survivor@example.com",
-		Locale: "vi",
-	})
-	if err != nil {
+	var uP03 gen.AppUser
+	if err := poolUpgrade.QueryRow(ctx,
+		`INSERT INTO app_user (email, locale) VALUES ($1, $2) RETURNING id, email`,
+		"p03-survivor@example.com", "vi",
+	).Scan(&uP03.ID, &uP03.Email); err != nil {
 		t.Fatalf("InsertUser at v5: %v", err)
 	}
 
@@ -223,9 +223,9 @@ func TestContentMigration0006CleanAndFrom0005WithData(t *testing.T) {
 	}
 
 	// Verify P03 rows survive after 0006 migration.
-	gotUser, err := qUpgrade.GetUserByID(ctx, uP03.ID)
-	if err != nil || gotUser.Email != uP03.Email {
-		t.Fatalf("GetUserByID after 0006: got=%+v err=%v", gotUser, err)
+	var gotUserEmail string
+	if err := poolUpgrade.QueryRow(ctx, `SELECT email FROM app_user WHERE id = $1`, uP03.ID).Scan(&gotUserEmail); err != nil || gotUserEmail != uP03.Email {
+		t.Fatalf("GetUserByID after 0006: got=%q err=%v", gotUserEmail, err)
 	}
 	gotVault, err := qUpgrade.GetVaultByUser(ctx, uP03.ID)
 	if err != nil || gotVault.VaultKeyID != vaultP03.VaultKeyID || gotVault.Version != 1 {

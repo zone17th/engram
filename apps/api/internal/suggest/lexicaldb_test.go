@@ -1546,11 +1546,11 @@ func TestMigration0008UpDown(t *testing.T) {
 	pool := dbtest.Pool(t, dsn)
 	q := gen.New(pool)
 
-	u, err := q.InsertUser(ctx, gen.InsertUserParams{
-		Email:  "mig0008@example.com",
-		Locale: "vi",
-	})
-	if err != nil {
+	var u gen.AppUser
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO app_user (email, locale) VALUES ($1, $2) RETURNING id, email`,
+		"mig0008@example.com", "vi",
+	).Scan(&u.ID, &u.Email); err != nil {
 		t.Fatalf("InsertUser at v7: %v", err)
 	}
 	it, err := q.InsertItem(ctx, gen.InsertItemParams{

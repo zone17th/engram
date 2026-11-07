@@ -332,6 +332,10 @@ func mxNewEnv(t *testing.T, dep mxDeployment) *mxEnv {
 
 	e.h = &contenttest.Harness{T: t, Server: srv, Origin: origin, Pool: e.pool}
 	jar, me := e.h.SignupUser("mx-"+uuid.NewString()+"@example.com", "correct-horse-battery-staple-a")
+	if _, err := e.pool.Exec(context.Background(),
+		`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'true'::jsonb, true) WHERE id = $1`, me.User.ID); err != nil {
+		t.Fatalf("set semantic_suggest=true: %v", err)
+	}
 	e.jar = jar
 	e.userID = me.User.ID
 	return e
@@ -358,6 +362,10 @@ func (e *mxEnv) doAs(jar contenttest.CookieJar, method, path, body, ifMatch stri
 func (e *mxEnv) signup(label string) (contenttest.CookieJar, uuid.UUID) {
 	e.t.Helper()
 	jar, me := e.h.SignupUser(label+"-"+uuid.NewString()+"@example.com", "correct-horse-battery-staple-b")
+	if _, err := e.pool.Exec(context.Background(),
+		`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'true'::jsonb, true) WHERE id = $1`, me.User.ID); err != nil {
+		e.t.Fatalf("set semantic_suggest=true: %v", err)
+	}
 	return jar, me.User.ID
 }
 

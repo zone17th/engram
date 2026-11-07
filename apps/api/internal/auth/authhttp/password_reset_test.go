@@ -2194,8 +2194,11 @@ func TestMigration0007UpDownWithP03AndP04DataAndPrune(t *testing.T) {
 	pool := dbtest.Pool(t, dsn)
 	q := gen.New(pool)
 
-	u, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "mig0007@example.com", Locale: "vi"})
-	if err != nil {
+	var u gen.AppUser
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO app_user (email, locale) VALUES ($1, $2) RETURNING id, email`,
+		"mig0007@example.com", "vi",
+	).Scan(&u.ID, &u.Email); err != nil {
 		t.Fatalf("InsertUser at v6: %v", err)
 	}
 	kdfJSON := []byte(`{"alg":"argon2id13","ops":3,"mem":67108864,"parallelism":1,"salt":"AAAAAAAAAAAAAAAAAAAAAA"}`)
