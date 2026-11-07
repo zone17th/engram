@@ -1,6 +1,11 @@
 import createNextIntlPlugin from 'next-intl/plugin';
 import type { NextConfig } from 'next';
-import { HSTS_HEADER_VALUE, PERMISSIONS_POLICY_HEADER_VALUE } from './lib/csp/manifest';
+import {
+  HSTS_HEADER_VALUE,
+  PERMISSIONS_POLICY_HEADER_VALUE,
+  STATIC_DOTTED_CSP_HEADER_VALUE,
+  STATIC_DOTTED_PATH_SOURCE,
+} from './lib/csp/manifest';
 
 const withNextIntl = createNextIntlPlugin('./i18n/request.ts');
 
@@ -23,10 +28,12 @@ const nextConfig: NextConfig = {
     ];
   },
   async headers() {
-    // Nguồn: SPEC §10.2 & P06 Task 8 (FE-R1-09, OQ-P06-4).
-    // Content-Security-Policy được phát từ một emitter duy nhất là `middleware.ts`
-    // (Node runtime): `/app/*` nhận nonce mỗi request, còn trang marketing/SSG
-    // nhận danh sách `sha256-` đọc từ `public/.well-known/csp-hashes.json`.
+    // Nguồn: SPEC §10.2 & P06 Task 8 (FE-R1-09, OQ-P06-4, advisor-dec-P06-024).
+    // Các route không có dấu chấm đi qua `middleware.ts` (Node runtime): `/app/*`
+    // nhận nonce mỗi request, còn trang marketing/SSG nhận danh sách `sha256-`.
+    // Các đường dẫn có dấu chấm ngoài `_next`/`api`/`_vercel` (ví dụ `/foo.php`,
+    // `/vi/x.y`) bị matcher của middleware bỏ qua nên nhận CSP tĩnh fail-closed
+    // từ `headers()` với tập nguồn hoàn toàn rời nhau (disjoint).
     return [
       {
         source: '/:path*',
@@ -57,6 +64,12 @@ const nextConfig: NextConfig = {
           { key: 'X-Frame-Options', value: 'DENY' },
           { key: 'Strict-Transport-Security', value: HSTS_HEADER_VALUE },
           { key: 'Permissions-Policy', value: PERMISSIONS_POLICY_HEADER_VALUE },
+        ],
+      },
+      {
+        source: STATIC_DOTTED_PATH_SOURCE,
+        headers: [
+          { key: 'Content-Security-Policy', value: STATIC_DOTTED_CSP_HEADER_VALUE },
         ],
       },
     ];

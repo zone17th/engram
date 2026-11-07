@@ -40,6 +40,8 @@ import AppLayout from '../app/app/layout';
 import { resolveAppLocale } from '../i18n/app-locale';
 import {
   NOT_FOUND_ROUTE_KEY,
+  STATIC_DOTTED_CSP_HEADER_VALUE,
+  STATIC_DOTTED_PATH_SOURCE,
   resetCspManifestCacheForTests,
 } from '../lib/csp/manifest';
 import middleware, { config as middlewareConfig } from '../middleware';
@@ -70,16 +72,21 @@ function makeRequest(pathname: string, headersInit?: Record<string, string>): Ne
   } as unknown as NextRequest;
 }
 
-function matchesSource(source: string, pathname: string): boolean {
-  if (source === '/:path*') return true;
-  if (source === '/app/auth/:path*') return pathname.startsWith('/app/auth/');
-  return source === pathname;
+function compileNextHeaderSource(source: string): RegExp {
+  if (source === '/:path*') return /^\/.*$/;
+  if (source === '/app/auth/:path*') return /^\/app\/auth\/.*$/;
+  // Next.js custom regex parameter `/:name(pattern)`
+  const customParam = source.match(/^\/:[A-Za-z0-9_]+\((.+)\)$/);
+  if (customParam) {
+    return new RegExp(`^/${customParam[1]}$`);
+  }
+  return new RegExp(`^${source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 }
 
 async function effectiveStaticHeadersFor(pathname: string): Promise<Map<string, string>> {
   const effective = new Map<string, string>();
   for (const rule of await (nextConfig.headers?.() ?? Promise.resolve([]))) {
-    if (!matchesSource(rule.source, pathname)) continue;
+    if (!compileNextHeaderSource(rule.source).test(pathname)) continue;
     for (const header of rule.headers) effective.set(header.key, header.value);
   }
   return effective;
@@ -108,12 +115,75 @@ describe('CSP single emitter & production script-src hardening (SPEC §10.2, P06
     resetCspManifestCacheForTests();
   });
 
-  it('removes Content-Security-Policy from next.config.ts headers() so middleware is the single CSP emitter', async () => {
+  it('keeps middleware and next.config.ts headers() CSP sources strictly disjoint across middleware routes and dotted non-_next paths (R1-4, advisor-dec-P06-024)', async () => {
     const rules = await (nextConfig.headers?.() ?? Promise.resolve([]));
-    expect(rules.length).toBeGreaterThan(0);
-    for (const rule of rules) {
-      const keys = rule.headers.map((h) => h.key.toLowerCase());
-      expect(keys).not.toContain('content-security-policy');
+    const cspRules = rules.filter((rule) =>
+      rule.headers.some((h) => h.key.toLowerCase() === 'content-security-policy'),
+    );
+    expect(cspRules).toHaveLength(1);
+    expect(cspRules[0]?.source).toBe(STATIC_DOTTED_PATH_SOURCE);
+
+    const staticCspValue = cspRules[0]?.headers.find(
+      (h) => h.key.toLowerCase() === 'content-security-policy',
+    )?.value;
+    expect(staticCspValue).toBe(
+      "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
+    );
+    expect(staticCspValue).toBe(STATIC_DOTTED_CSP_HEADER_VALUE);
+
+    const middlewarePattern = new RegExp(`^${middlewareConfig.matcher[0]}$`);
+    const staticDottedPattern = compileNextHeaderSource(cspRules[0]!.source);
+
+    const pathTable: ReadonlyArray<{
+      path: string;
+      expectedEmitter: 'middleware' | 'static-headers' | 'none';
+    }> = [
+      // Middleware-handled routes (marketing + /app): ONLY middleware emits CSP
+      { path: '/', expectedEmitter: 'middleware' },
+      { path: '/vi', expectedEmitter: 'middleware' },
+      { path: '/vi/privacy', expectedEmitter: 'middleware' },
+      { path: '/app', expectedEmitter: 'middleware' },
+      { path: '/app/unlock', expectedEmitter: 'middleware' },
+      { path: '/app/auth/login', expectedEmitter: 'middleware' },
+      { path: '/app/auth/reset-password', expectedEmitter: 'middleware' },
+      { path: '/nonexistent-route', expectedEmitter: 'middleware' },
+      // Dotted non-_next paths (including HTML 404 dotted paths): ONLY static headers() emits CSP
+      { path: '/foo.php', expectedEmitter: 'static-headers' },
+      { path: '/vi/x.y', expectedEmitter: 'static-headers' },
+      { path: '/app/unknown.html', expectedEmitter: 'static-headers' },
+      { path: '/favicon.ico', expectedEmitter: 'static-headers' },
+      { path: '/.well-known/csp-hashes.json', expectedEmitter: 'static-headers' },
+      // Excluded internal/API prefixes: neither middleware nor static dotted CSP rule matches
+      { path: '/_next/static/chunks/main.js', expectedEmitter: 'none' },
+      { path: '/api/v1/auth/me', expectedEmitter: 'none' },
+      { path: '/api/v1/export.json', expectedEmitter: 'none' },
+      { path: '/_vercel/insights/script.js', expectedEmitter: 'none' },
+    ];
+
+    for (const { path: candidate, expectedEmitter } of pathTable) {
+      const matchesMiddleware = middlewarePattern.test(candidate);
+      const matchesStaticHeaders = staticDottedPattern.test(candidate);
+      // Disjoint invariant: no path may ever match both CSP emitters
+      expect(
+        matchesMiddleware && matchesStaticHeaders,
+        `path ${candidate} matched both middleware and next.config.ts CSP rules`,
+      ).toBe(false);
+
+      if (expectedEmitter === 'middleware') {
+        expect(matchesMiddleware, `expected middleware to match ${candidate}`).toBe(true);
+        expect(matchesStaticHeaders, `expected static CSP not to match ${candidate}`).toBe(false);
+        expect((await effectiveStaticHeadersFor(candidate)).get('Content-Security-Policy')).toBeUndefined();
+      } else if (expectedEmitter === 'static-headers') {
+        expect(matchesMiddleware, `expected middleware not to match ${candidate}`).toBe(false);
+        expect(matchesStaticHeaders, `expected static CSP to match ${candidate}`).toBe(true);
+        expect((await effectiveStaticHeadersFor(candidate)).get('Content-Security-Policy')).toBe(
+          STATIC_DOTTED_CSP_HEADER_VALUE,
+        );
+      } else {
+        expect(matchesMiddleware, `expected middleware not to match ${candidate}`).toBe(false);
+        expect(matchesStaticHeaders, `expected static CSP not to match ${candidate}`).toBe(false);
+        expect((await effectiveStaticHeadersFor(candidate)).get('Content-Security-Policy')).toBeUndefined();
+      }
     }
   });
 

@@ -22,3 +22,5 @@ test-results/
 
 # Cursor cloud runner: local key/env file, never committed
 .cursor/cloud/cloud.env
+apps/web/public/.well-known/csp-hashes.json
+apps/web/public/.well-known/build-manifest.json
