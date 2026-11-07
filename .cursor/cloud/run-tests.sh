@@ -23,7 +23,7 @@ state=~/.engram-cloud/state
 results=/tmp/test-results
 mkdir -p "$state"
 
-branch="" sha="" lane="" spec_ref="" spec_sha="" provision_only=false log_repo_url=""
+branch="" sha="" lane="" spec_ref="" spec_sha="" provision_only=false log_repo_url="" repo_url=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --branch) branch=$2; shift 2 ;;
@@ -33,6 +33,7 @@ while [ $# -gt 0 ]; do
     --spec-sha256) spec_sha=$2; shift 2 ;;
     --provision-only) provision_only=true; shift ;;
     --log-repo) log_repo_url=$2; shift 2 ;;
+    --repo-url) repo_url=$2; shift 2 ;;
     *) echo "run-tests.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -40,6 +41,21 @@ done
 provision_sh=provision-engram.sh install_sh=install-engram.sh start_sh=start-engram.sh
 locks=(pnpm-lock.yaml apps/api/go.sum)
 
+# --repo-url: Cursor could not open engram, so the VM booted on the private boot
+# repository; work in a clone of engram under ~/work instead (once per VM). The
+# boot checkout's origin is kept as a private fallback log destination.
+home_origin=""
+if [ "$repo_url" ]; then
+  home_origin=$(git remote get-url origin 2> /dev/null)
+  clone=~/work/$(basename "$repo_url" .git)
+  if [ ! -d "$clone/.git" ]; then
+    rm -rf "$clone" && mkdir -p ~/work
+    if ! git clone -q "$repo_url" "$clone" > /tmp/runner-clone.log 2>&1; then
+      echo "{\"stage_outcome\":\"failed\",\"test_verdict\":\"blocked\",\"notes\":\"could not clone $repo_url\"}"; exit 0
+    fi
+  fi
+  cd "$clone"
+fi
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH
@@ -196,9 +212,12 @@ log_ref="refs/test-results/engram/$lane/$head"
 # every secret holding a GitHub token is tried through a credential helper with
 # no global or system config, so no token is on a command line or in a log; the
 # notes name what was tried by variable and prefix only.
-push_logs() {
-  GIT_TERMINAL_PROMPT=0 git push -qf "$log_repo_url" "HEAD:$log_ref" && return 0
-  local tried="" name val
+push_logs() { # $1 = target repo url -> writes chosen url to /tmp/runner-log-repo
+  local target=$1 tried="" name val
+  [ -n "$target" ] || return 1
+  if GIT_TERMINAL_PROMPT=0 git push -qf "$target" "HEAD:$log_ref"; then
+    echo "$target" > /tmp/runner-log-repo; return 0
+  fi
   for name in $(printf '%s\n' GH_TOKEN GITHUB_TOKEN ${CLOUD_AGENT_ALL_SECRET_NAMES//,/ } | awk '!seen[$0]++'); do
     val=${!name:-}
     case "$val" in
@@ -208,19 +227,24 @@ push_logs() {
     esac
     if PUSH_TOKEN=$val GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ASKPASS= GIT_CONFIG_COUNT=0 \
       git -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$PUSH_TOKEN"; }; f' \
-      push -qf "$log_repo_url" "HEAD:$log_ref"; then return 0; fi
+      push -qf "$target" "HEAD:$log_ref"; then
+      echo "$target" > /tmp/runner-log-repo; return 0
+    fi
   done
-  echo "log push failed; tokens seen:${tried:- none}"
+  echo "log push to $target failed; tokens seen:${tried:- none}"
   return 1
 }
-if [ -z "$log_repo_url" ]; then
-  notes="no --log-repo given; logs not published"; log_ref=""
+rm -f /tmp/runner-log-repo
+if [ -z "$log_repo_url" ] && [ -z "$home_origin" ]; then
+  notes="no private log repo; logs not published"; log_ref=""
 elif ! (cd "$results" && git init -q && git add -A \
-      && git -c user.name=runner -c user.email=runner@local commit -qm "$lane $head" && push_logs) > /tmp/runner-push.log 2>&1; then
+      && git -c user.name=runner -c user.email=runner@local commit -qm "$lane $head" \
+      && { push_logs "$log_repo_url" || push_logs "$home_origin"; }) > /tmp/runner-push.log 2>&1; then
   notes="log push failed: $(tail -2 /tmp/runner-push.log | tr '\n' ' ')"; log_ref=""
 else
-  log_repo=$(printf '%s' "$log_repo_url" | sed -E "s#//[^/@]*@#//#")  # never a credential in the report
+  log_repo=$(sed -E "s#//[^/@]*@#//#" /tmp/runner-log-repo)  # never a credential in the report
 fi
+rm -f /tmp/runner-log-repo
 
 $any_fail && verdict=fail || verdict=pass
 report succeeded "$verdict" "$log_ref"

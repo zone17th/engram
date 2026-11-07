@@ -43,10 +43,16 @@ import { basename, dirname, join, resolve } from "node:path";
 
 const API = "https://api.cursor.com/v1";
 const REPO_URL = "https://github.com/zone17th/engram";
-// Private: runner logs never land in the public repository (advisor-dec-P06-002).
-const LOG_REPO_URL = "https://github.com/zone17th/engram-test-logs";
+// Private log repositories: runner logs never land in the public repository
+// (advisor-dec-P06-002). When Cursor's SCM app cannot open zone17th/engram, the
+// VM boots on BOOT_REPO_URL ("clone" mode, like uniwork-office) and clones
+// engram (public); its app token can push logs to BOOT_REPO_URL if LOG_REPO_URL
+// is unreachable. Both are private.
+const LOG_REPO_URL = process.env.CLOUD_RUNNER_LOG_REPO || "https://github.com/zone17th/engram-test-logs";
+const BOOT_REPO_URL = process.env.CLOUD_RUNNER_BOOT_REPO || "https://github.com/UNIAI-TEAM/uniwork";
+const BOOT_BRANCH = process.env.CLOUD_RUNNER_BOOT_BRANCH || "test/cursor-cloud-env";
 const LOG_PREFIX = "refs/test-results/engram";
-// The branch whose .cursor/cloud the VM runs; develop once this lane merges.
+// The engram branch whose .cursor/cloud the VM runs; develop once merged.
 const ENV_BRANCH = process.env.CLOUD_RUNNER_ENV_BRANCH || "phase06/cloudrun";
 // Same default as the uniwork runner (user 2026-10-02). --model takes
 // "<id>[:param=value,...]", e.g. "composer-2.5" or "grok-4.6:effort=medium".
@@ -65,10 +71,11 @@ const POLL_MS = Number(process.env.CLOUD_RUNNER_POLL_MS || 20_000);
 // Refreshes the runner scripts from ENV_BRANCH into ~/.engram-cloud (nothing
 // lands in the tested checkout), then hands the whole round to run-tests.sh,
 // so the agent makes one tool call per round.
+const ENV_GIT = "~/.engram-cloud/env.git";
 const REFRESH = [
-  "mkdir -p ~/.engram-cloud",
-  `git fetch -q origin ${ENV_BRANCH}`,
-  "git archive FETCH_HEAD .cursor/cloud | tar -x -C ~/.engram-cloud",
+  `mkdir -p ~/.engram-cloud && git init -q --bare ${ENV_GIT}`,
+  `git -C ${ENV_GIT} fetch -q --depth 1 ${REPO_URL} ${ENV_BRANCH}`,
+  `git -C ${ENV_GIT} archive FETCH_HEAD .cursor/cloud | tar -x -C ~/.engram-cloud`,
 ].join(" && ");
 
 function usage(msg) {
@@ -226,17 +233,29 @@ async function agentAlive(state) {
   }
 }
 
-// Returns { agentId, runId } of a new agent on engram at `branch`.
-async function createAgent(branch, model, prompt) {
-  const r = await api("POST", "/agents", {
+// Returns { agentId, runId, via }. When Cursor's SCM app has no access to
+// zone17th/engram (400 "does not have access" / "verify existence"), the VM
+// boots on BOOT_REPO_URL and run-tests.sh clones engram itself.
+async function createAgent(branch, model, promptFor) {
+  const create = (repo, via) => api("POST", "/agents", {
     name: `runner engram ${branch}`.slice(0, 80),
-    prompt: { text: prompt },
+    prompt: { text: promptFor(via) },
     model: modelSpec(model),
-    repos: [{ url: REPO_URL, startingRef: branch }],
+    repos: [repo],
     env: { type: "cloud" },
     autoCreatePR: false,
   });
-  return { agentId: r.agent.id, runId: r.run.id };
+  let r;
+  let via = "direct";
+  try {
+    r = await create({ url: REPO_URL, startingRef: branch }, via);
+  } catch (e) {
+    if (e.status !== 400 || !/verify|access to repository/i.test(e.message)) throw e;
+    console.error(`cloud-runner: Cursor SCM cannot open ${REPO_URL}; booting on private boot repo and cloning engram`);
+    via = "clone";
+    r = await create({ url: BOOT_REPO_URL, startingRef: BOOT_BRANCH }, via);
+  }
+  return { agentId: r.agent.id, runId: r.run.id, via };
 }
 
 async function sendRun(agentId, prompt) {
@@ -251,21 +270,22 @@ async function sendRun(agentId, prompt) {
   }
 }
 
-function oneCommandPrompt(args) {
+function oneCommandPrompt(args, via = "direct") {
+  const extra = via === "clone" ? ` --repo-url ${REPO_URL}` : "";
   return `You are a test runner. Run exactly one command, from the repository root,
 and wait for it to finish (up to 45 minutes on a new VM). Do not run anything
 else, do not edit, commit or push any file, do not open a PR, and do not look
 into failures:
 
-    ${REFRESH} && bash ~/.engram-cloud/.cursor/cloud/run-tests.sh ${args} --log-repo ${LOG_REPO_URL}
+    ${REFRESH} && bash ~/.engram-cloud/.cursor/cloud/run-tests.sh ${args}${extra} --log-repo ${LOG_REPO_URL}
 
 The last line it prints is a JSON object. Reply with only that object, unchanged,
 inside one \`\`\`json fence. If it printed no JSON, reply inside the fence with
 {"stage_outcome": "failed", "test_verdict": "blocked", "notes": "<its last 3 output lines>"}.`;
 }
 
-function ensurePrompt(branch) {
-  return oneCommandPrompt(`--branch ${branch} --provision-only`);
+function ensurePrompt(branch, via) {
+  return oneCommandPrompt(`--branch ${branch} --provision-only`, via);
 }
 
 // Publishes the spec as refs/test-specs/<lane>/<sha> (a one-file commit) so the
@@ -283,8 +303,8 @@ function publishSpec(lane, sha, commands) {
   return { ref, sha256: createHash("sha256").update(text).digest("hex") };
 }
 
-function testPrompt({ branch, sha, lane, spec }) {
-  return oneCommandPrompt(`--branch ${branch} --sha ${sha} --lane ${lane} --spec-ref ${spec.ref} --spec-sha256 ${spec.sha256}`);
+function testPrompt({ branch, sha, lane, spec }, via) {
+  return oneCommandPrompt(`--branch ${branch} --sha ${sha} --lane ${lane} --spec-ref ${spec.ref} --spec-sha256 ${spec.sha256}`, via);
 }
 
 function extractReport(result) {
@@ -349,8 +369,7 @@ ${rep ? JSON.stringify(rep, null, 2) : String(rawResult ?? "").slice(0, 4000)}
 // Fetches the results commit from the private log repository, writes each file
 // with `git show` (no tar: Windows' bsdtar does not read stdin by default), then
 // deletes the ref locally and in the log repository.
-function fetchLogs(ref, dir) {
-  const remote = LOG_REPO_URL;
+function fetchLogs(ref, dir, remote = LOG_REPO_URL) {
   try {
     // Shards of one suite fetch from the same repository at once; retry a
     // fetch that lost a lock race.
@@ -385,8 +404,8 @@ async function cmdEnsure(opts) {
     return 0;
   }
   const model = opts.model || DEFAULT_MODEL;
-  const { agentId, runId } = await createAgent(branch, model, ensurePrompt(branch));
-  state = { agentId, branch, model, lane: laneSlug(opts, branch), shard: shardName(opts.shard), createdAt: new Date().toISOString() };
+  const { agentId, runId, via } = await createAgent(branch, model, (v) => ensurePrompt(branch, v));
+  state = { agentId, via, branch, model, lane: laneSlug(opts, branch), shard: shardName(opts.shard), createdAt: new Date().toISOString() };
   saveState(state, opts.shard);
   console.log(`runner created: ${agentId}; provisioning (about 10 min)`);
   const run = await waitRun(agentId, runId, Number(opts.timeout || 1800));
@@ -412,17 +431,18 @@ async function cmdTest(opts) {
   }
   const lane = laneSlug(opts, branch);
   const spec = publishSpec(lane, sha, commands);
-  const prompt = testPrompt({ branch, sha, lane, spec });
+  const promptFor = (via) => testPrompt({ branch, sha, lane, spec }, via);
   const alive = await agentAlive(state);
   const before = alive ? await costCents(state.agentId) : 0;
   let agentId;
   let runId;
+  let via = state?.via ?? "direct";
   try {
     if (alive) {
       agentId = state.agentId;
-      runId = await sendRun(agentId, prompt);
+      runId = await sendRun(agentId, promptFor(via));
     } else {
-      ({ agentId, runId } = await createAgent(branch, opts.model || DEFAULT_MODEL, prompt));
+      ({ agentId, runId, via } = await createAgent(branch, opts.model || DEFAULT_MODEL, promptFor));
     }
   } catch (e) {
     // No run will read the spec: drop its ref.
@@ -430,7 +450,7 @@ async function cmdTest(opts) {
     throw e;
   }
   if (!alive) {
-    state = { agentId, branch, model: opts.model || DEFAULT_MODEL, lane, shard: shardName(opts.shard), createdAt: new Date().toISOString() };
+    state = { agentId, via, branch, model: opts.model || DEFAULT_MODEL, lane, shard: shardName(opts.shard), createdAt: new Date().toISOString() };
   }
   // Saved before any wait: this is what collect resumes after a crash or shutdown.
   state.pending = {
@@ -455,9 +475,11 @@ async function finishPending(state, shard, timeoutOverride) {
   const rep = extractReport(run.result);
   const after = await costCents(state.agentId);
   let logsDir = null;
-  // Only the private log repository is trusted as a log source.
+  // Only the private log repositories are trusted as a log source (never public engram).
+  const allowedLogs = [LOG_REPO_URL, BOOT_REPO_URL];
+  const logRemote = allowedLogs.find((u) => rep?.log_repo && normUrl(u) === normUrl(rep.log_repo)) || LOG_REPO_URL;
   if (rep?.log_ref && rep.log_ref.startsWith(`${LOG_PREFIX}/`)) {
-    logsDir = fetchLogs(rep.log_ref, p.out.replace(/\.md$/, ".logs"));
+    logsDir = fetchLogs(rep.log_ref, p.out.replace(/\.md$/, ".logs"), logRemote);
   }
   try { git("push", "-q", REMOTE, `:${p.specRef}`); } catch { /* best effort */ }
   const valid = rep && String(rep.sha ?? "").slice(0, 7) === p.sha.slice(0, 7);
@@ -523,10 +545,13 @@ async function closeOne(shard, laneOpt) {
     const specs = git("ls-remote", REMOTE, `refs/test-specs/${lane}/*`)
       .split("\n").map((l) => l.split(/\s+/)[1]).filter(Boolean);
     if (specs.length) git("push", "-q", REMOTE, ...specs.map((r) => `:${r}`));
-    const logs = git("ls-remote", LOG_REPO_URL, `${LOG_PREFIX}/${lane}/*`)
-      .split("\n").map((l) => l.split(/\s+/)[1]).filter(Boolean);
-    if (logs.length) git("push", "-q", LOG_REPO_URL, ...logs.map((r) => `:${r}`));
-    console.log(`deleted ${specs.length} spec refs (engram) and ${logs.length} results refs (log repo) for ${lane}`);
+    for (const repo of [LOG_REPO_URL, BOOT_REPO_URL]) {
+      const logs = git("ls-remote", repo, `${LOG_PREFIX}/${lane}/*`)
+        .split("\n").map((l) => l.split(/\s+/)[1]).filter(Boolean);
+      if (logs.length) git("push", "-q", repo, ...logs.map((r) => `:${r}`));
+      console.log(`deleted ${logs.length} results refs in ${repo} for ${lane}`);
+    }
+    console.log(`deleted ${specs.length} spec refs in engram for ${lane}`);
   }
   if (existsSync(statePath(shard))) rmSync(statePath(shard));
 }
