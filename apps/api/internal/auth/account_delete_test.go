@@ -1,7 +1,8 @@
 package auth_test
 
 import (
-	"context"
+	"encoding/base64"
+	"errors"
 	"errors"
 	"fmt"
 	"testing"
@@ -97,7 +98,7 @@ func delSeedUser(t *testing.T, pool *pgxpool.Pool, svc *auth.Service, rc *river.
 	ctx := context.Background()
 	u := semNewUser(t, pool, svc, email, true)
 	q := gen.New(pool)
-	vkID := fmt.Sprintf("vk:AAECAwQFBgcICQoLDA0OD%d", n)
+	vkID := "vk:" + base64.RawURLEncoding.EncodeToString([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, byte(n)})
 	if _, err := pool.Exec(ctx, `INSERT INTO vault (user_id, kdf, vault_key_id, vault_key_wrapped_by_kek, x25519_public, ed25519_public, private_keys_wrapped)
 VALUES ($1, '{}'::jsonb, $2, '\x01', '\x02', '\x03', '\x04')`, u.id, vkID); err != nil {
 		t.Fatalf("insert vault: %v", err)
