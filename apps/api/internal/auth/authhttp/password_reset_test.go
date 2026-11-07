@@ -2223,10 +2223,10 @@ func TestMigration0007UpDownWithP03AndP04DataAndPrune(t *testing.T) {
 	}
 
 	// Migrate up to 0007.
-	dbtest.MigrateUp(t, dsn)
+	migrateToTarget(t, dsn, 7)
 	v, dirty, err := db.Version(dsn)
-	if err != nil || dirty || v < 7 {
-		t.Fatalf("after MigrateUp to 0007: v=%d dirty=%v err=%v", v, dirty, err)
+	if err != nil || dirty || v != 7 {
+		t.Fatalf("after Migrate(7) to 0007: v=%d dirty=%v err=%v", v, dirty, err)
 	}
 
 	// Verify CHECK constraints on password_reset_token (32-byte hashes required).
@@ -2281,7 +2281,11 @@ func TestMigration0007UpDownWithP03AndP04DataAndPrune(t *testing.T) {
 	}
 
 	// Re-apply 0007 up cleanly.
-	dbtest.MigrateUp(t, dsn)
+	migrateToTarget(t, dsn, 7)
+	vReapply, dirtyReapply, err := db.Version(dsn)
+	if err != nil || dirtyReapply || vReapply != 7 {
+		t.Fatalf("after reapply Migrate(7) to 0007: v=%d dirty=%v err=%v", vReapply, dirtyReapply, err)
+	}
 }
 
 func migrateToTarget(t *testing.T, dsn string, target uint) {
