@@ -910,8 +910,7 @@ func TestExportDecryptedPages(t *testing.T) {
 	}
 
 	tracer.reset()
-	var seenSections []string
-	seenSections = append(seenSections, p1.Section)
+	seenSections := []string{p1.Section}
 	cur := *p1.NextCursor
 	var entryItems []json.RawMessage
 	for cur != "" {
@@ -927,6 +926,9 @@ func TestExportDecryptedPages(t *testing.T) {
 			break
 		}
 		cur = *page.NextCursor
+	}
+	if len(seenSections) < 4 {
+		t.Fatalf("seenSections = %v, want at least 4 section pages", seenSections)
 	}
 	if len(entryItems) != 1 {
 		t.Fatalf("expected 1 active entry (soft-deleted filtered), got %d", len(entryItems))

@@ -463,6 +463,7 @@ type offsetLineReader struct {
 func newOffsetLineReader(r io.Reader, start int64) *offsetLineReader {
 	return &offsetLineReader{r: r, buf: make([]byte, 0, 8192), offset: start}
 }
+
 func (l *offsetLineReader) readLine() ([]byte, error) {
 	var out []byte
 	for {

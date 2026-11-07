@@ -300,7 +300,7 @@ func (w *ExportWorker) handleUnclaimed(ctx context.Context, jobID uuid.UUID) err
 }
 
 func (w *ExportWorker) failOrRetry(ctx context.Context, rjob *river.Job[ExportEncryptedArgs], jobID, userID, attemptID uuid.UUID, code string, cause error) error {
-	_ = w.unlinkAttemptFiles(jobID, attemptID)
+	w.unlinkAttemptFiles(jobID, attemptID)
 	maxAttempts := ExportMaxAttempts
 	if rjob.MaxAttempts > 0 {
 		maxAttempts = rjob.MaxAttempts
@@ -344,13 +344,12 @@ func (w *ExportWorker) markAttemptFailed(ctx context.Context, jobID, userID, att
 	_ = tx.Commit(ctx)
 }
 
-func (w *ExportWorker) unlinkAttemptFiles(jobID, attemptID uuid.UUID) error {
+func (w *ExportWorker) unlinkAttemptFiles(jobID, attemptID uuid.UUID) {
 	for _, ext := range []string{"tmp", "sabk.enc"} {
 		if p, err := joinSafePath(w.storageDir, SafeFileName(jobID, attemptID, ext)); err == nil {
 			_ = os.Remove(p)
 		}
 	}
-	return nil
 }
 
 func (w *ExportWorker) writeSnapshotFile(ctx context.Context, jobID, userID, attemptID uuid.UUID, tmpPath, finalPath string) (gen.Vault, int64, error) {
