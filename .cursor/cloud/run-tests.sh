@@ -150,16 +150,17 @@ if [ -n "$branch" ]; then
   if ! env "${unset_args[@]}" git fetch -q origin "$branch" || ! git reset -q --hard "origin/$branch"; then
     notes="could not check out origin/$branch"; report failed blocked ""; exit 0
   fi
-  git clean -qfdx -e .env -e node_modules -e '**/node_modules'
+  if ! git clean -qfdx -e .env -e node_modules -e '**/node_modules' 2>/dev/null; then
+    sudo chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
+    git clean -qfdx -e .env -e node_modules -e '**/node_modules'
+  fi
 fi
-full_head=$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')
-head=${full_head:0:8}
+head=$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')
 if [ -n "$sha" ]; then
   sha_lc=$(printf '%s' "$sha" | tr '[:upper:]' '[:lower:]')
-  if [ "${#sha_lc}" -lt 8 ] || [ "${#sha_lc}" -gt 40 ] || [ "${full_head:0:${#sha_lc}}" != "$sha_lc" ]; then
-    notes="sha mismatch: HEAD $full_head, wanted $sha"; report failed blocked ""; exit 0
+  if [ "${#sha_lc}" -ne 40 ] || [ "$head" != "$sha_lc" ]; then
+    notes="sha mismatch: HEAD $head, wanted $sha"; report failed blocked ""; exit 0
   fi
-  head=$sha_lc
 fi
 
 # Fingerprint both the provision script and the repo files from which it reads

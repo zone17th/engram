@@ -550,7 +550,7 @@ async function cmdEnsure(opts) {
   const run = await waitRun(agentId, runId, timeoutS, startedAt);
   const rep = extractReport(run.result);
   const ok = run.status === "FINISHED" && rep?.stage_outcome === "succeeded"
-    && String(rep?.sha ?? "").slice(0, 7) === String(rep?.sha ?? "x").slice(0, 7);
+    && /^[0-9a-f]{40}$/i.test(String(rep?.sha ?? ""));
   delete state.provisionRunId;
   state.provisioned = Boolean(ok);
   saveState(state, opts.shard);
@@ -564,9 +564,9 @@ async function cmdTest(opts) {
     .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
   if (commands.length === 0) usage("spec has no commands");
   const branch = validBranch(git("rev-parse", "--abbrev-ref", "HEAD"));
-  const sha = git("rev-parse", "HEAD").toLowerCase().slice(0, 8);
-  const remote = git("ls-remote", REPO.remote, `refs/heads/${branch}`).split(/\s+/)[0] ?? "";
-  if (!remote.startsWith(git("rev-parse", "HEAD").slice(0, 12))) {
+  const sha = git("rev-parse", "HEAD").toLowerCase();
+  const remote = (git("ls-remote", REPO.remote, `refs/heads/${branch}`).split(/\s+/)[0] ?? "").toLowerCase();
+  if (remote !== sha) {
     usage(`engram:${branch} is not at HEAD ${sha}; push the branch first`);
   }
   let state = loadState(opts.shard);
@@ -610,7 +610,7 @@ async function cmdTest(opts) {
       runId, sha, branch, lane, specRef: spec.ref,
       expectedCount: commands.length, expectedCommands: commands.map(scrubText), specSha256: spec.sha256,
       costBefore: before,
-      out: resolve(opts.out || join("reports", lane, `cloud-test-${sha}.md`)),
+      out: resolve(opts.out || join("reports", lane, `cloud-test-${sha.slice(0, 8)}.md`)),
       timeoutS, startedAt,
     };
     saveState(state, opts.shard);
@@ -651,15 +651,15 @@ async function finishPending(state, shard, timeoutOverride) {
     saveState(state, shard);
   }
   const rep = extractReport(rawResult);
-  const shaMatch = Boolean(rep && String(rep.sha ?? "").toLowerCase() === String(p.sha ?? "").toLowerCase()
-    && /^[0-9a-f]{7,40}$/i.test(String(p.sha)));
+  const shaMatch = Boolean(rep && /^[0-9a-f]{40}$/i.test(String(p.sha ?? ""))
+    && String(rep.sha ?? "").toLowerCase() === String(p.sha ?? "").toLowerCase());
   const countMatch = Boolean(rep && Array.isArray(rep.ran) && rep.ran.length > 0
     && Array.isArray(p.expectedCommands) && p.expectedCommands.length > 0
     && rep.ran.length === p.expectedCommands.length
-    && rep.ran.every((r, i) => scrubText(r?.cmd) === p.expectedCommands[i]));
+    && rep.ran.every((r, i) => scrubText(r?.cmd) === scrubText(p.expectedCommands[i])));
   const stageOk = Boolean(rep && rep.stage_outcome === "succeeded" && (rep.test_verdict === "pass" || rep.test_verdict === "fail"));
   const logRemote = rep?.log_repo ? canonicalLogRepo(rep.log_repo) : null;
-  const expectedRef = /^[0-9a-f]{7,40}$/i.test(String(p.sha)) ? `${LOG_PREFIX}/${p.lane}/${p.sha}` : null;
+  const expectedRef = /^[0-9a-f]{40}$/i.test(String(p.sha ?? "")) ? `${LOG_PREFIX}/${p.lane}/${String(p.sha).toLowerCase()}` : null;
   const refMatch = Boolean(expectedRef && rep?.log_ref === expectedRef);
 
   let logsDir = p.logsDir && p.logsDigest && logsDigest(p.logsDir) === p.logsDigest ? p.logsDir : null;

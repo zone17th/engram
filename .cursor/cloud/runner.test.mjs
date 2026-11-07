@@ -50,7 +50,7 @@ function setupVmSandbox(specLines, extraEnv = {}) {
   execFileSync("git", ["add", "-A"], { cwd: repoDir });
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@local", "commit", "-qm", "init"], { cwd: repoDir });
   const fullSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).trim().toLowerCase();
-  const sha = fullSha.slice(0, 8);
+  const sha = fullSha;
 
   const specText = `${specLines.join("\n")}\n`;
   const specFile = join(root, "spec.txt");
@@ -274,7 +274,7 @@ exec "${realGit}" "\${args[@]}"
           lane: "cloudrun",
           specRef: `refs/test-specs/cloudrun/${sb.sha}`,
           expectedCount: 1,
-          expectedCommands: [scrubbedCmd],
+          expectedCommands: [cmd],
           costBefore: 0,
           out: outMd,
           timeoutS: 60,
@@ -298,8 +298,8 @@ exec "${realGit}" "\${args[@]}"
       r = spawnSync(process.execPath, [CLOUD_RUNNER_MJS, "collect"], { cwd: wt, env, encoding: "utf8" });
       assert.equal(r.status, 2);
 
-      // 3) 8th SHA char mismatch rejected with exit 2 before fetch (R1-9)
-      const wrongSha = sb.sha.slice(0, 7) + (sb.sha[7] === "0" ? "1" : "0");
+      // 3) Full 40-char SHA collision (same 8-char prefix, different 40th char) rejected with exit 2 before fetch (R1-9, R4-1)
+      const wrongSha = sb.sha.slice(0, 39) + (sb.sha[39] === "0" ? "1" : "0");
       writeFileSync(stateFile, JSON.stringify(makePending({}, { sha: wrongSha, log_ref: `refs/test-results/engram/cloudrun/${wrongSha}` })));
       r = spawnSync(process.execPath, [CLOUD_RUNNER_MJS, "collect"], { cwd: wt, env, encoding: "utf8" });
       assert.equal(r.status, 2);
@@ -326,25 +326,33 @@ exec "${realGit}" "\${args[@]}"
 });
 
 test("old cache schema migration, workspace manifest refresh, nested runner isolation, and SHA prefix matching (R1-14, R3-4, R3-6, R3-7)", () => {
-  const innerSb = setupVmSandbox(['false; rc=$?; printf "\\nRED_EXIT=%s\\n" "$rc"']);
+  const innerCmd = 'false; rc=$?; printf "\\nRED_EXIT=%s\\n" "$rc"';
+  const innerSb = setupVmSandbox([innerCmd]);
+  const innerOutFile = join(innerSb.root, "inner-report.out");
   const outerSb = setupVmSandbox([
-    `bash "${join(innerSb.cloudDir, "run-tests.sh")}" --branch phase06/cloudrun --sha ${innerSb.sha} --lane inner --spec-ref refs/test-specs/inner/${innerSb.sha} --spec-sha256 ${createHash("sha256").update('false; rc=$?; printf "\\nRED_EXIT=%s\\n" "$rc"\n').digest("hex")} --log-repo https://github.com/zone17th/engram-test-logs >/dev/null`,
+    `(cd "${innerSb.repoDir}" && HOME="${innerSb.home}" PATH="${innerSb.binDir}:$PATH" bash "${join(innerSb.cloudDir, "run-tests.sh")}" --branch phase06/cloudrun --sha ${innerSb.sha} --lane inner --spec-ref refs/test-specs/inner/${innerSb.sha} --spec-sha256 ${createHash("sha256").update(`${innerCmd}\n`).digest("hex")} --log-repo https://github.com/zone17th/engram-test-logs > "${innerOutFile}")`,
   ]);
   try {
-    // Seed an R1-shaped old cache (single-file provision checksum, two-file locks checksum)
+    // Seed valid R1-shaped legacy checksum files (real sha256sum of the old subset of paths, so legacy sha256sum -c would pass!)
     writeFileSync(join(outerSb.stateDir, "installed"), "");
-    writeFileSync(join(outerSb.stateDir, "provision"), "0000  old\n");
-    writeFileSync(join(outerSb.stateDir, "locks"), "0000  pnpm-lock.yaml\n");
+    const legacyProv = execFileSync("sha256sum", [join(outerSb.cloudDir, "provision-engram.sh")], { cwd: outerSb.repoDir, encoding: "utf8" });
+    const legacyLocks = execFileSync("sha256sum", ["pnpm-lock.yaml", "apps/api/go.sum"], { cwd: outerSb.repoDir, encoding: "utf8" });
+    writeFileSync(join(outerSb.stateDir, "provision"), legacyProv);
+    writeFileSync(join(outerSb.stateDir, "locks"), legacyLocks);
 
-    // Run with a 10-char SHA prefix of fullSha (R3-6) while running nested innerSb inside the spec command (R3-4)
-    const sha10 = outerSb.fullSha.slice(0, 10);
-    const { status, report, events } = outerSb.run(["--sha", sha10]);
+    const { status, report, events } = outerSb.run();
     assert.equal(status, 0);
     assert.equal(report.stage_outcome, "succeeded");
     assert.equal(report.test_verdict, "pass", `nested inner runner must not corrupt outer results: ${JSON.stringify(report)}`);
-    assert.equal(report.sha, sha10);
-    assert.equal(events.some((e) => e.includes("provision-engram.sh")), true, "old provision schema must trigger provision");
-    assert.equal(events.some((e) => e.includes("pnpm install --frozen-lockfile")), true, "old locks schema must trigger pnpm refresh");
+    assert.equal(report.sha, outerSb.fullSha);
+    const innerLines = readFileSync(innerOutFile, "utf8").trim().split("\n").filter(Boolean);
+    const innerReport = JSON.parse(innerLines.at(-1));
+    assert.equal(innerReport.stage_outcome, "succeeded", "inner runner must execute its spec");
+    assert.equal(innerReport.test_verdict, "fail", "inner runner must record deliberate marker failure");
+    assert.equal(innerReport.ran.length, 1);
+    assert.equal(innerReport.ran[0].exit_code, 1);
+    assert.equal(events.some((e) => e.includes("provision-engram.sh")), true, "legacy provision subset must trigger provision");
+    assert.equal(events.some((e) => e.includes("pnpm install --frozen-lockfile")), true, "legacy locks subset must trigger pnpm refresh");
 
     // Modifying packages/crypto-vectors/package.json triggers dependency refresh on the next warm round
     writeFileSync(outerSb.eventsLog, "");
@@ -353,9 +361,9 @@ test("old cache schema migration, workspace manifest refresh, nested runner isol
     assert.equal(warm.report.test_verdict, "pass");
     assert.equal(warm.events.some((e) => e.includes("pnpm install --frozen-lockfile")), true, "crypto-vectors manifest change must refresh deps");
 
-    // Mismatched 9th SHA character is rejected before running
-    const wrong9 = outerSb.fullSha.slice(0, 8) + (outerSb.fullSha[8] === "0" ? "1" : "0");
-    const badSha = outerSb.run(["--sha", wrong9]);
+    // Different 40-char commit sharing the first 8 hex characters is rejected before running (R4-1)
+    const collidingSha = outerSb.fullSha.slice(0, 39) + (outerSb.fullSha[39] === "0" ? "1" : "0");
+    const badSha = outerSb.run(["--sha", collidingSha]);
     assert.equal(badSha.report.stage_outcome, "failed");
     assert.equal(badSha.report.test_verdict, "blocked");
   } finally {
@@ -426,7 +434,7 @@ exec "${realGit}" "$@"
           return;
         }
         if (req.method === "GET" && req.url === "/v1/agents/bc-new/runs/run-prov-1") {
-          res.end(JSON.stringify({ status: "FINISHED", result: '```json\n{"sha":"12345678","stage_outcome":"succeeded","test_verdict":"not_run"}\n```' }));
+          res.end(JSON.stringify({ status: "FINISHED", result: '```json\n{"sha":"1234567890abcdef1234567890abcdef12345678","stage_outcome":"succeeded","test_verdict":"not_run"}\n```' }));
           return;
         }
       } else {
@@ -436,7 +444,7 @@ exec "${realGit}" "$@"
         }
         if (req.method === "POST" && req.url === "/v1/agents/bc-busy/runs") {
           postRuns += 1;
-          if (postRuns === 1) {
+          if (postRuns <= 3) {
             res.statusCode = 409;
             res.end(JSON.stringify({ error: "agent_busy" }));
           } else {
@@ -501,7 +509,7 @@ exec "${realGit}" "$@"
       const busyEnsure = await runAsync(["ensure", "--timeout", "1"]);
       const elapsedMs = Date.now() - t0;
       assert.equal(busyEnsure.status, 2);
-      assert.equal(elapsedMs < 1800, true, `warm ensure must share 1s timeout budget across 409 + polling (took ${elapsedMs}ms)`);
+      assert.equal(elapsedMs < 1500, true, `warm ensure must share 1s timeout budget across 3x409 (750ms) + polling (took ${elapsedMs}ms)`);
     } finally {
       apiSrv.closeAllConnections?.();
       apiSrv.close();
