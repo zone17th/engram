@@ -11,7 +11,6 @@
 | `DELETE /api/v1/me` (`accountDelete`) + mount 1 dòng | `apps/api/internal/auth/authhttp/account_delete_handler.go`, `apps/api/internal/auth/authhttp/account_delete_handler_test.go`, `apps/api/internal/auth/authhttp/routes.go` | Hoàn tất: `RequireOrigin` + `RequireSession` + `RequireCSRF` + `RequireJSONContent` + trần 16 KiB + `Idempotency.Lookup` + `RequireReauth("account.delete")` + `UserLimiter(ScopeVaultSensitive)` + `Idempotency.Claim` → `ClearAuthCookies` + `Cache-Control: no-store` + `204`. |
 | Admin CLI `account-delete --email <email> --confirm` + Dockerfile `/app/admin` (`N-07`) | `apps/api/cmd/admin/main.go`, `apps/api/cmd/admin/account_delete.go`, `apps/api/cmd/admin/account_delete_test.go`, `apps/api/Dockerfile` | Hoàn tất: thiếu `--confirm` / `--email` / email sai định dạng → exit `2` trước khi chạm DB; có `--confirm` gọi `Service.DeleteAccountByEmail` (cùng transaction), chỉ in `user_id=<uuid> audit_id=<id>` (không in email/PII). Stage `build` trong `apps/api/Dockerfile` build thêm `/out/admin` → image runtime có `/app/admin` cạnh `/app/api`, `/app/worker`, `/app/migrate`. |
 
-## 2. Kiểm tra nghiệm thu Task 3
 ## 2. Kiểm tra nghiệm thu Task 3 (`44e75ad`)
 
 | Kiểm tra | Lệnh | Host | Kết quả |
