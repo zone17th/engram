@@ -2518,7 +2518,7 @@ Mockup thắng về thị giác, spec thắng hành vi/dữ liệu (§7.0). Mọ
 | U14 | Import JSON thành một entry | `item.html` | §7.5, §3.6 | P04 |
 | U15 | Lexical + vùng Gần nghĩa | `index.html` | §7.2, §6.4 | P05 |
 | U16 | Settings · Tìm kiếm | `settings.html` | §6.10, §7.6 | P05 |
-| U17 | Export và xoá tài khoản | `settings.html` + encrypted/progress/confirm cần bổ sung | §3.11, §7.6 | P06 |
+| U17 | Export và xoá tài khoản | `settings.html` `#dulieu` (`exp-*`), `#plainDlg` (`pl-*`), `#xoataikhoan` + `#deleteDlg` (`del-*`) | §3.11, §7.6 | P06 |
 | U18 | Empty/error/offline/degraded/conflict | `states.html` | §7.7, §6.8 | P02–P05 theo tính năng; P06 rà đủ |
 | U19 | Signup/login/forgot & reset password/OAuth return/re-auth + Terms/Privacy | `auth.html`, `legal.html` | §3.1, §3.2, §3.16, §9.1 | P02; hoàn thiện authui & forgot/reset P04 |
 | U20 | Docs/privacy/help | `docs.html` | §10.4, §11.1 | P06 |

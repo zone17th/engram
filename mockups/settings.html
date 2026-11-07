@@ -393,7 +393,7 @@
         </section>
 
         <section data-view="exp-ready" hidden>
-          <div role="status" class="auth-status mb-3">Bản sao lưu đã sẵn sàng · tải trước 14:30 hôm nay (còn 59 phút). <span lang="en" class="block">Your backup is ready · download before 14:30 today (59 min left).</span></div>
+          <div role="status" class="auth-status mb-3">Bản sao lưu đã sẵn sàng · có hiệu lực đến 14:12 ngày mai. Tải lại bao nhiêu lần cũng được. <span lang="en" class="block">Your backup is ready · available until 14:12 tomorrow. Download it as often as you need.</span></div>
           <a href="#" class="btn btn-primary no-underline" download>Tải file (2,4 MB) · <span lang="en" class="font-semibold">Download file</span></a>
         </section>
 
@@ -403,7 +403,7 @@
         </section>
 
         <section data-view="exp-expired" hidden>
-          <div role="status" class="auth-status mb-3">Link tải đã hết hạn (giữ 1 giờ để an toàn). Tạo bản mới chỉ mất một lần bấm. <span lang="en" class="block">The download link expired (kept 1 hour for safety). One click makes a new one.</span></div>
+          <div role="status" class="auth-status mb-3">Bản sao lưu đã hết hạn và được xoá (giữ 24 giờ để an toàn). Tạo bản mới chỉ mất một lần bấm. <span lang="en" class="block">The backup expired and was deleted (kept 24 hours for safety). One click makes a new one.</span></div>
           <button type="button" class="btn btn-primary">Tạo bản mới · <span lang="en" class="font-semibold">Make a new backup</span></button>
         </section>
 
@@ -424,7 +424,7 @@
             <li>File <span class="mono">.sabk.json</span>: mục, tag, entry ở dạng mã hoá, và các khoá đã bọc (passphrase, recovery key, passkey) để mở lại không cần máy chủ. <span lang="en">Items, tags, encrypted entries and wrapped keys, so it opens without the server.</span></li>
             <li>Gồm mục đang dùng và thùng rác chưa xoá hẳn. <span lang="en">Includes active items and trash not yet purged.</span></li>
             <li>Tên mục, gợi ý và tag ở dạng đọc được trong file (giống trên máy chủ). <span lang="en">Item names, hints and tags are readable in the file, as on the server.</span></li>
-            <li>Tối đa 3 lần/giờ. Link tải dùng một lần, hết hạn sau 1 giờ. <span lang="en">Up to 3 per hour. Single-use link, expires after 1 hour.</span></li>
+            <li>Tối đa 3 lần/giờ. File giữ 24 giờ, chỉ bạn tải được khi đã đăng nhập; tạo bản mới sẽ thay bản cũ. <span lang="en">Up to 3 per hour. Kept 24 hours, downloadable only by you while signed in; a new backup replaces the old one.</span></li>
           </ul>
         </details>
 
