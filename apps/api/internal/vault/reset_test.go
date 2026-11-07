@@ -265,3 +265,76 @@ func TestServiceResetHookRollbackOtherUserIsolationAndNewVaultKeyID(t *testing.T
 		t.Fatalf("Reset with old vault_key_id after recreate = %v (%+v), want 412 version_mismatch(current=1)", err, ve)
 	}
 }
+
+// TestResetCancelsExportJobsAndRecordsCleanup verifies (plan P06 mục 2.4, 2.9,
+// Task 2) that DELETE /vault cancels queued/running/ready export jobs of the
+// user and records export_file_cleanup rows for their attempt files inside the
+// same transaction.
+func TestResetCancelsExportJobsAndRecordsCleanup(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("APP_ORIGIN", "http://localhost:3000")
+	t.Setenv("APP_ENV", "development")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+	clk := clock.NewFixed(time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC))
+	aud := audit.NewStore(pool)
+	notes := notification.NewStore(pool, nil)
+	_, obsMetrics := obs.NewRegistry()
+	svc, err := vault.NewService(cfg, pool, clk, aud, notes, nil, vault.MetricsFromObs(obsMetrics), nil, logger)
+	if err != nil {
+		t.Fatalf("vault.NewService: %v", err)
+	}
+
+	q := gen.New(pool)
+	user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "reset-export@example.com", Locale: "en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := authctx.Principal{UserID: user.ID, SessionID: uuid.New()}
+	created, err := svc.Create(ctx, p, makeValidCreateInput(t, 0x41))
+	if err != nil {
+		t.Fatalf("Create vault: %v", err)
+	}
+
+	attID := uuid.New()
+	readyJobID := uuid.New()
+	readyFile := readyJobID.String() + "." + attID.String() + ".sabk.enc"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO export_job (id, user_id, kind, status, attempt_id, file_name, size_bytes, completed_at, expires_at)
+		VALUES ($1, $2, 'encrypted', 'ready', $3, $4, 128, now(), now() + interval '24 hours')
+	`, readyJobID, user.ID, attID, readyFile); err != nil {
+		t.Fatalf("insert ready export_job: %v", err)
+	}
+
+	if err := svc.Reset(ctx, p, vault.ResetInput{
+		IfMatch: httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 1},
+		IP:      "127.0.0.1",
+		UA:      "reset-export-test",
+	}); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM export_job WHERE id = $1`, readyJobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("export_job status after Reset = %q, want cancelled", status)
+	}
+	var cleanupCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM export_file_cleanup WHERE job_id = $1 AND reason = 'reset'`, readyJobID).Scan(&cleanupCount); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupCount != 2 {
+		t.Fatalf("cleanup rows after Reset = %d, want 2 (.tmp and .sabk.enc)", cleanupCount)
+	}
+}

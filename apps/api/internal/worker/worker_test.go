@@ -19,6 +19,8 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db"
 	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
+	"github.com/zone17th/engram/apps/api/internal/export"
+	"github.com/zone17th/engram/apps/api/internal/jobs/exportcleanup"
 	"github.com/zone17th/engram/apps/api/internal/notification"
 	"github.com/zone17th/engram/apps/api/internal/secevent"
 	"github.com/zone17th/engram/apps/api/internal/worker"
@@ -337,5 +339,31 @@ func TestSecurityNoticeWorkerContextQueryFailureReturnsErrorForRetry(t *testing.
 	}
 	if secMails, _ := sink.EntriesFor(email, "security"); len(secMails) != 0 {
 		t.Fatalf("must not silently downgrade to generic security mail on JSON decode error, got %d", len(secMails))
+	}
+}
+
+// TestExportWorkersRegistered verifies that worker.NewWithMail registers
+// export_encrypted, export_file_cleanup, and export_prune without panicking or
+// rejecting River insert/start.
+func TestExportWorkersRegistered(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	client, err := worker.NewWithMail(pool, silentLogger(), 90, nil, worker.Deps{
+		Export: &worker.ExportDeps{
+			StorageDir: t.TempDir(),
+			Secret:     config.NewSecretBytes([]byte(config.DevExportAtRestSecret)),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithMail: %v", err)
+	}
+	if _, err := client.Insert(ctx, exportcleanup.Args{CleanupID: uuid.New()}, nil); err != nil {
+		t.Fatalf("Insert exportcleanup.Args: %v", err)
+	}
+	if _, err := client.Insert(ctx, export.ExportPruneArgs{}, nil); err != nil {
+		t.Fatalf("Insert ExportPruneArgs: %v", err)
 	}
 }

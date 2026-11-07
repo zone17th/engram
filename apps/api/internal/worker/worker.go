@@ -25,6 +25,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/lifecycle"
 	"github.com/zone17th/engram/apps/api/internal/entry"
+	"github.com/zone17th/engram/apps/api/internal/export"
 	"github.com/zone17th/engram/apps/api/internal/obs"
 )
 
@@ -44,11 +45,20 @@ type EmbeddingDeps struct {
 	BootstrapFlipInterval time.Duration
 }
 
-// Deps gom các phụ thuộc mở rộng của NewWithMail (metrics và embedding). Giá trị
-// zero tương đương hành vi P04.
+// ExportDeps configures the P06 export workers (export_encrypted,
+// export_file_cleanup, export_prune). Zero values fall back to development/test
+// defaults so New(pool, logger) remains a one-line call in unit tests.
+type ExportDeps struct {
+	StorageDir string
+	Secret     config.Secret
+}
+
+// Deps gom các phụ thuộc mở rộng của NewWithMail (metrics, embedding, export).
+// Giá trị zero tương đương hành vi P04.
 type Deps struct {
 	Metrics   *obs.Metrics
 	Embedding *EmbeddingDeps
+	Export    *ExportDeps
 }
 
 // RunOptions cấu hình tuỳ chọn cho Run (plan P05 Task 11a, FS-35).
@@ -104,6 +114,21 @@ func NewWithMail(
 	if err := river.AddWorkerSafely(workers, entry.NewContentPurgeWorker(pool, nil)); err != nil {
 		return nil, fmt.Errorf("đăng ký content purge: %w", err)
 	}
+	exportDir, exportSecret := resolveExportDeps(deps.Export)
+	if err := river.AddWorkerSafely(workers, export.NewExportWorker(export.WorkerDeps{
+		Pool:       pool,
+		StorageDir: exportDir,
+		Secret:     exportSecret,
+		Logger:     logger,
+	})); err != nil {
+		return nil, fmt.Errorf("đăng ký export_encrypted: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, export.NewCleanupWorker(pool, exportDir, logger)); err != nil {
+		return nil, fmt.Errorf("đăng ký export_file_cleanup: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, export.NewPruneWorker(pool, exportDir, nil, logger)); err != nil {
+		return nil, fmt.Errorf("đăng ký export_prune: %w", err)
+	}
 	if mail != nil {
 		if err := river.AddWorkerSafely(workers, NewSecurityNoticeWorker(pool, mailAdapter{mail}, logger)); err != nil {
 			return nil, fmt.Errorf("đăng ký notice: %w", err)
@@ -143,6 +168,13 @@ func NewWithMail(
 			river.PeriodicInterval(time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return entry.ContentPurgeArgs{}, nil
+			},
+			nil,
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(export.ExportPruneInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return export.ExportPruneArgs{}, nil
 			},
 			nil,
 		),
@@ -223,6 +255,22 @@ func NewWithMail(
 	return client, nil
 }
 
+func resolveExportDeps(ed *ExportDeps) (string, config.Secret) {
+	var dir string
+	var sec config.Secret
+	if ed != nil {
+		dir = ed.StorageDir
+		sec = ed.Secret
+	}
+	if dir == "" {
+		dir = os.TempDir() + "/engram-exports"
+	}
+	if sec.IsEmpty() {
+		sec = config.NewSecretBytes([]byte(config.DevExportAtRestSecret))
+	}
+	return dir, sec
+}
+
 type mailAdapter struct {
 	fn interface {
 		Send(ctx context.Context, recipient, purpose, link string) error
@@ -272,7 +320,13 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 		return err
 	}
 
-	workerDeps := Deps{Metrics: metrics}
+	workerDeps := Deps{
+		Metrics: metrics,
+		Export: &ExportDeps{
+			StorageDir: cfg.ExportStorageDir,
+			Secret:     cfg.ExportAtRestSecret,
+		},
+	}
 	if cfg.SearchSemanticEnabled && cfg.EmbeddingProvider != "" && cfg.EmbeddingProvider != embedding.ProviderNoop {
 		var shadowPtr *embedding.ClientConfig
 		if shadowCfg, ok := cfg.EmbeddingShadow(); ok {
