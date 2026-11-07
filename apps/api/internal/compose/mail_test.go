@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/big"
 	"net"
@@ -235,14 +234,34 @@ func TestProductionBootNoSMTP(t *testing.T) {
 	})
 }
 
+type readyLogWriter struct {
+	once  sync.Once
+	ready chan struct{}
+}
+
+func (w *readyLogWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "worker đang chạy") {
+		w.once.Do(func() { close(w.ready) })
+	}
+	return len(p), nil
+}
+
 func startWorker(t *testing.T, ctx context.Context, cfg *config.Config) (context.CancelFunc, <-chan error) {
 	t.Helper()
 	wctx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
+	rw := &readyLogWriter{ready: make(chan struct{})}
 	go func() {
-		done <- worker.Run(wctx, cfg, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		done <- worker.Run(wctx, cfg, slog.New(slog.NewJSONHandler(rw, nil)))
 	}()
 	t.Cleanup(cancel)
+	select {
+	case <-rw.ready:
+	case err := <-done:
+		t.Fatalf("worker exited before ready: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for worker.Run ready")
+	}
 	return cancel, done
 }
 
