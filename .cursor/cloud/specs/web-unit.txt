@@ -1,0 +1,6 @@
+# engram CI group: web-unit (mirrors .github/workflows/ci.yml job web-check).
+# One shell command per line, executed from the repository root in its own `bash -c`.
+pnpm -r lint; rc=$?; echo; echo WEB_LINT_EXIT=$rc; exit $rc
+pnpm -r typecheck; rc=$?; echo; echo WEB_TYPECHECK_EXIT=$rc; exit $rc
+pnpm -r test; rc=$?; echo; echo WEB_TEST_EXIT=$rc; exit $rc
+pnpm --filter @engram/web build; rc=$?; echo; echo WEB_BUILD_EXIT=$rc; exit $rc

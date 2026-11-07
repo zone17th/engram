@@ -1,0 +1,9 @@
+# engram CI group: go-unit (mirrors .github/workflows/ci.yml job api-check fast steps).
+# One shell command per line, executed from the repository root in its own `bash -c`.
+# Capture `rc=$?` before `echo` so the bare newline echo never resets `$?` to 0.
+(cd apps/api && test -z "$(gofmt -l .)"); rc=$?; echo; echo GOFMT_EXIT=$rc; exit $rc
+(cd apps/api && CGO_ENABLED=1 go test ./... -short -race -count=1); rc=$?; echo; echo GO_UNIT_EXIT=$rc; exit $rc
+(cd apps/api && CGO_ENABLED=1 go vet ./...); rc=$?; echo; echo GO_VET_EXIT=$rc; exit $rc
+(cd apps/api && CGO_ENABLED=1 golangci-lint run); rc=$?; echo; echo GOLANGCI_LINT_EXIT=$rc; exit $rc
+(cd apps/api && CGO_ENABLED=1 govulncheck ./...); rc=$?; echo; echo GOVULNCHECK_EXIT=$rc; exit $rc
+(cd apps/api && CGO_ENABLED=1 go build ./...); rc=$?; echo; echo GO_BUILD_EXIT=$rc; exit $rc
