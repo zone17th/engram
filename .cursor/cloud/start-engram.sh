@@ -123,7 +123,7 @@ if [ -f infra/image-pins.env ]; then
       srv_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' engram-probe-srv 2>/dev/null || true)
       local ok=1
       if docker run --rm --name engram-probe-cli --network engram-probe-net "$NODE_IMAGE" \
-        node -e "const s=require('net').connect(5432,'${srv_ip:-engram-probe-srv}',()=>{s.on('data',()=>process.exit(0))});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),4000)" >/dev/null 2>&1; then
+        node -e "const net=require('net'),deadline=Date.now()+4000,host='${srv_ip:-engram-probe-srv}';(function dial(){const s=net.connect(5432,host,()=>{s.on('data',()=>process.exit(0))});s.on('error',()=>{if(Date.now()>=deadline)process.exit(1);setTimeout(dial,100)});setTimeout(()=>process.exit(1),4000)})()" >/dev/null 2>&1; then
         ok=0
       fi
       docker rm -f engram-probe-srv engram-probe-cli >/dev/null 2>&1 || true

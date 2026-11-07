@@ -242,6 +242,21 @@ function trackLane(state, lane) {
   return [...set];
 }
 
+function trackLogRepos(state, ...extra) {
+  const candidates = [
+    ...(state?.logRepos || []),
+    LOG_REPO_URL,
+    ...(state?.via === "clone" ? [BOOT_REPO_URL] : []),
+    ...extra,
+  ].filter(Boolean);
+  const byNorm = new Map();
+  for (const u of candidates) {
+    const n = normUrl(u);
+    if (ALLOWED_LOG_NORMS.has(n) && !byNorm.has(n)) byNorm.set(n, u);
+  }
+  return [...byNorm.values()];
+}
+
 async function waitRun(agentId, runId, timeoutS, startedAt = Date.now()) {
   const deadline = startedAt + timeoutS * 1000;
   for (;;) {
@@ -433,7 +448,8 @@ ${scrubText(rep ? JSON.stringify(rep, null, 2) : String(rawResult ?? "").slice(0
 }
 
 // Fetches the results commit from an allowlisted private log repository into a
-// fresh directory (replacing any prior logs atomically), then deletes the ref.
+// fresh directory (replacing any prior logs atomically) and removes the local
+// ref. Remote ref deletion is deferred until the report and state are saved.
 function fetchLogs(ref, dir, remote, expectedRef) {
   if (!ref || ref !== expectedRef || !ALLOWED_LOG_NORMS.has(normUrl(remote))) {
     console.error(`cloud-runner: refusing untrusted log ref/repo (${ref} vs ${expectedRef} on ${remote})`);
@@ -461,7 +477,6 @@ function fetchLogs(ref, dir, remote, expectedRef) {
     rmSync(dir, { recursive: true, force: true });
     renameSync(tmpDir, dir);
     git("update-ref", "-d", ref);
-    try { git("push", "-q", remote, `:${ref}`); } catch { /* close retries */ }
     return dir;
   } catch (e) {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -474,7 +489,8 @@ function fetchLogs(ref, dir, remote, expectedRef) {
 async function cmdEnsure(opts) {
   const branch = validBranch(opts.branch || git("rev-parse", "--abbrev-ref", "HEAD"));
   const timeoutS = Number(opts.timeout || 1800);
-  const deadline = Date.now() + timeoutS * 1000;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutS * 1000;
   let state = loadState(opts.shard);
   const alive = await agentAlive(state);
   if (alive && state.provisioned === true && !state.pending && !state.provisionRunId) {
@@ -489,18 +505,18 @@ async function cmdEnsure(opts) {
   if (alive) {
     agentId = state.agentId;
     runId = state.provisionRunId || await sendRun(agentId, ensurePrompt(branch, via), deadline);
-    state = { ...state, branch, lane, lanes: trackLane(state, lane), provisioned: false, provisionRunId: runId };
+    state = { ...state, branch, lane, lanes: trackLane(state, lane), logRepos: trackLogRepos(state), provisioned: false, provisionRunId: runId };
   } else {
     ({ agentId, runId, via } = await createAgent(branch, model, (v) => ensurePrompt(branch, v)));
     state = {
       agentId, via, branch, model, lane, lanes: trackLane(state, lane),
-      shard: shardName(opts.shard), provisioned: false, provisionRunId: runId,
+      logRepos: trackLogRepos({ via }), shard: shardName(opts.shard), provisioned: false, provisionRunId: runId,
       createdAt: new Date().toISOString(),
     };
   }
   saveState(state, opts.shard);
   console.log(`runner ${agentId}; provisioning (about 10 min)`);
-  const run = await waitRun(agentId, runId, timeoutS);
+  const run = await waitRun(agentId, runId, timeoutS, startedAt);
   const rep = extractReport(run.result);
   const ok = run.status === "FINISHED" && rep?.stage_outcome === "succeeded"
     && String(rep?.sha ?? "").slice(0, 7) === String(rep?.sha ?? "x").slice(0, 7);
@@ -547,18 +563,22 @@ async function cmdTest(opts) {
       ({ agentId, runId, via } = await createAgent(branch, opts.model || DEFAULT_MODEL, promptFor));
     }
     const lanes = trackLane(state, lane);
+    const logRepos = trackLogRepos({ ...state, via });
     if (!alive) {
       state = {
         agentId, via, branch, model: opts.model || DEFAULT_MODEL,
-        lane, lanes, shard: shardName(opts.shard), provisioned: false,
+        lane, lanes, logRepos, shard: shardName(opts.shard), provisioned: false,
         createdAt: new Date().toISOString(),
       };
     } else {
       state.lane = lane;
       state.lanes = lanes;
+      state.logRepos = logRepos;
     }
     state.pending = {
-      runId, sha, branch, lane, specRef: spec.ref, expectedCount: commands.length, costBefore: before,
+      runId, sha, branch, lane, specRef: spec.ref,
+      expectedCount: commands.length, expectedCommands: commands.map(scrubText),
+      costBefore: before,
       out: resolve(opts.out || join("reports", lane, `cloud-test-${sha}.md`)),
       timeoutS, startedAt,
     };
@@ -600,19 +620,28 @@ async function finishPending(state, shard, timeoutOverride) {
     saveState(state, shard);
   }
   const rep = extractReport(rawResult);
-  const shaMatch = Boolean(rep && String(rep.sha ?? "").slice(0, 7) === p.sha.slice(0, 7) && /^[0-9a-f]{7,40}$/i.test(String(rep.sha)));
+  const shaMatch = Boolean(rep && String(rep.sha ?? "").toLowerCase() === String(p.sha ?? "").toLowerCase()
+    && /^[0-9a-f]{7,40}$/i.test(String(p.sha)));
   const countMatch = Boolean(rep && Array.isArray(rep.ran) && rep.ran.length > 0
-    && (p.expectedCount == null || rep.ran.length === p.expectedCount));
+    && (Array.isArray(p.expectedCommands)
+      ? rep.ran.length === p.expectedCommands.length && rep.ran.every((r, i) => scrubText(r?.cmd) === p.expectedCommands[i])
+      : (p.expectedCount == null || rep.ran.length === p.expectedCount)));
   const stageOk = Boolean(rep && rep.stage_outcome === "succeeded" && (rep.test_verdict === "pass" || rep.test_verdict === "fail"));
   const logRemote = rep?.log_repo ? ALLOWED_LOG_REPOS.find((u) => normUrl(u) === normUrl(rep.log_repo)) : null;
-  const expectedRef = shaMatch ? `${LOG_PREFIX}/${p.lane}/${rep.sha}` : null;
+  const expectedRef = /^[0-9a-f]{7,40}$/i.test(String(p.sha)) ? `${LOG_PREFIX}/${p.lane}/${p.sha}` : null;
   const refMatch = Boolean(expectedRef && rep?.log_ref === expectedRef);
 
-  let logsDir = null;
+  let logsDir = p.logsDir && existsSync(p.logsDir) ? p.logsDir : null;
   let retryableLogFailure = false;
-  if (runStatus === "FINISHED" && shaMatch && countMatch && stageOk && logRemote && refMatch) {
-    logsDir = fetchLogs(rep.log_ref, logsPath(p.out), logRemote, expectedRef);
-    if (!logsDir) retryableLogFailure = true;
+  if (runStatus === "FINISHED" && shaMatch && countMatch && stageOk && logRemote && refMatch && !logsDir) {
+    logsDir = fetchLogs(expectedRef, logsPath(p.out), logRemote, expectedRef);
+    if (logsDir) {
+      p.logsDir = logsDir;
+      state.logRepos = trackLogRepos(state, logRemote);
+      saveState(state, shard);
+    } else {
+      retryableLogFailure = true;
+    }
   }
 
   const valid = Boolean(runStatus === "FINISHED" && shaMatch && countMatch && stageOk && logRemote && refMatch && logsDir);
@@ -621,7 +650,7 @@ async function finishPending(state, shard, timeoutOverride) {
   if (!rep) problems.push("no JSON report");
   else {
     if (!shaMatch) problems.push(`sha mismatch (${rep.sha ?? "none"} vs ${p.sha})`);
-    if (!countMatch) problems.push(`ran count ${Array.isArray(rep.ran) ? rep.ran.length : 0} != expected ${p.expectedCount ?? "?"}`);
+    if (!countMatch) problems.push(`ran commands do not match submitted spec (${Array.isArray(rep.ran) ? rep.ran.length : 0} vs ${p.expectedCount ?? "?"})`);
     if (!stageOk) problems.push(`stage_outcome=${rep.stage_outcome} verdict=${rep.test_verdict}`);
     if (!logRemote) problems.push(`untrusted or missing log_repo (${rep.log_repo ?? "none"})`);
     if (!refMatch) problems.push(`unexpected log_ref (${rep.log_ref ?? "none"}, wanted ${expectedRef ?? "none"})`);
@@ -644,9 +673,13 @@ async function finishPending(state, shard, timeoutOverride) {
     return 2;
   }
   if (valid) state.provisioned = true;
+  if (logRemote) state.logRepos = trackLogRepos(state, logRemote);
   state.last = { runId: p.runId, sha: p.sha, out: p.out, runStatus, verdict: valid ? rep.test_verdict : "blocked" };
   delete state.pending;
   saveState(state, shard);
+  if (valid && logRemote && expectedRef) {
+    try { git("push", "-q", logRemote, `:${expectedRef}`); } catch { /* close retries */ }
+  }
   if (!valid) return 2;
   return rep.test_verdict === "pass" ? 0 : rep.test_verdict === "fail" ? 1 : 2;
 }
@@ -718,7 +751,8 @@ async function closeOne(shard, laneOpt) {
       laneFailed = true;
       errors.push(`spec refs (${lane}): ${e.message}`);
     }
-    for (const repo of ALLOWED_LOG_REPOS) {
+    const reposToClean = trackLogRepos(state);
+    for (const repo of reposToClean) {
       try {
         const logs = git("ls-remote", repo, `${LOG_PREFIX}/${lane}/*`)
           .split("\n").map((l) => l.split(/\s+/)[1]).filter(Boolean);

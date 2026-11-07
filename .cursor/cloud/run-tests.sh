@@ -149,40 +149,43 @@ if [ -n "$branch" ]; then
   git clean -qfdx -e .env -e node_modules -e '**/node_modules'
 fi
 head=$(git rev-parse --short=8 HEAD)
-if [ -n "$sha" ] && [ "${head:0:7}" != "${sha:0:7}" ]; then
+if [ -n "$sha" ] && [ "${head,,}" != "${sha,,}" ]; then
   notes="sha mismatch: HEAD $head, wanted $sha"; report failed blocked ""; exit 0
 fi
 
 # Fingerprint both the provision script and the repo files from which it reads
-# toolchain / image pins, plus all workspace manifests and lockfiles.
+# toolchain / image pins, plus all workspace manifests and lockfiles. Compare the
+# full computed manifest text directly against the saved state file so added or
+# removed input paths (or an older state schema) always invalidate the cache.
 provision_inputs=("$here/$provision_sh")
-for f in .github/workflows/ci.yml package.json apps/api/go.mod infra/image-pins.env; do
+for f in .github/workflows/ci.yml package.json pnpm-workspace.yaml apps/api/go.mod infra/image-pins.env; do
   [ -f "$f" ] && provision_inputs+=("$f")
 done
 locks=()
-for f in package.json pnpm-workspace.yaml pnpm-lock.yaml apps/api/go.mod apps/api/go.sum apps/web/package.json packages/shared-types/package.json; do
+for f in package.json pnpm-workspace.yaml pnpm-lock.yaml apps/api/go.mod apps/api/go.sum apps/*/package.json packages/*/package.json; do
   [ -f "$f" ] && locks+=("$f")
 done
+prov_manifest=$(sha256sum "${provision_inputs[@]}")
+locks_manifest=$(sha256sum "${locks[@]}")
 
 if [ ! -f "$state/installed" ]; then
   if ! env "${unset_args[@]}" bash "$here/$install_sh" > /tmp/runner-install.log 2>&1; then
     notes="$install_sh failed: $(tail -3 /tmp/runner-install.log | tr '\n' ' ')"; report failed blocked ""; exit 0
   fi
   touch "$state/installed"; provisioned=true; fresh_install=true
-  sha256sum "${locks[@]}" > "$state/locks"
-  sha256sum "${provision_inputs[@]}" > "$state/provision"
-elif ! sha256sum -c --quiet "$state/provision" > /dev/null 2>&1; then
+  printf '%s\n' "$locks_manifest" > "$state/locks"
+  printf '%s\n' "$prov_manifest" > "$state/provision"
+elif [ "$(cat "$state/provision" 2>/dev/null || true)" != "$prov_manifest" ]; then
   if ! env "${unset_args[@]}" bash "$here/$provision_sh" > /tmp/runner-provision.log 2>&1; then
     notes="$provision_sh failed: $(tail -3 /tmp/runner-provision.log | tr '\n' ' ')"; report failed blocked ""; exit 0
   fi
-  sha256sum "${provision_inputs[@]}" > "$state/provision"; provisioned=true
+  printf '%s\n' "$prov_manifest" > "$state/provision"; provisioned=true
 fi
-if [ "$fresh_install" = false ] && ! sha256sum -c --quiet "$state/locks" > /dev/null 2>&1; then
-  refresh_deps() { pnpm install --frozen-lockfile && (cd apps/api && go mod download); }
+if [ "$fresh_install" = false ] && [ "$(cat "$state/locks" 2>/dev/null || true)" != "$locks_manifest" ]; then
   if ! env "${unset_args[@]}" bash -c 'pnpm install --frozen-lockfile && (cd apps/api && go mod download)' > /tmp/runner-deps.log 2>&1; then
     notes="dependency refresh failed: $(tail -3 /tmp/runner-deps.log | tr '\n' ' ')"; report failed blocked ""; exit 0
   fi
-  sha256sum "${locks[@]}" > "$state/locks"
+  printf '%s\n' "$locks_manifest" > "$state/locks"
 fi
 
 t0=$(date +%s)
