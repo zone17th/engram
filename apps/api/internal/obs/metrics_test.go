@@ -650,6 +650,14 @@ func TestMetricsHaveNoUserOrQueryLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterGauges: %v", err)
 	}
+	if err := obs.RegisterExportCleanupGauge(reg, &fakeAgeQuerier{row: fakeAgeRow{age: 0}}); err != nil {
+		t.Fatalf("RegisterExportCleanupGauge: %v", err)
+	}
+	// Producer gọi nhầm với dữ liệu người dùng không được sinh series mới.
+	m.Export.ObserveJob("user@example.com", "ready", 0)
+	m.Export.ObserveJob("encrypted", "0b7a4c1e-0000-4000-8000-000000000000", 0)
+	m.Export.IncDecryptedAudit("/var/lib/engram-exports/x.sabk.enc")
+	m.Export.IncAccountDeletion("user@example.com")
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -714,6 +722,41 @@ func TestMetricsHaveNoUserOrQueryLabels(t *testing.T) {
 	}{
 		keys:   []string{"generation"},
 		tuples: cartesianTuples([]string{"1"}),
+	}
+	expectedSchemas["export_jobs_total"] = struct {
+		keys   []string
+		tuples map[string]bool
+	}{
+		keys:   []string{"kind", "outcome"},
+		tuples: cartesianTuples(obs.ExportKinds, obs.ExportJobOutcomes),
+	}
+	expectedSchemas["export_job_duration_seconds"] = struct {
+		keys   []string
+		tuples map[string]bool
+	}{
+		keys:   []string{"kind", "outcome"},
+		tuples: cartesianTuples(obs.ExportKinds, obs.ExportJobOutcomes),
+	}
+	expectedSchemas["export_decrypted_audit_total"] = struct {
+		keys   []string
+		tuples map[string]bool
+	}{
+		keys:   []string{"outcome"},
+		tuples: cartesianTuples(obs.ExportDecryptedAuditOutcomes),
+	}
+	expectedSchemas["account_deletions_total"] = struct {
+		keys   []string
+		tuples map[string]bool
+	}{
+		keys:   []string{"outcome"},
+		tuples: cartesianTuples(obs.AccountDeletionOutcomes),
+	}
+	expectedSchemas["export_cleanup_pending_age_seconds"] = struct {
+		keys   []string
+		tuples map[string]bool
+	}{
+		keys:   nil,
+		tuples: cartesianTuples(),
 	}
 
 	seen := 0

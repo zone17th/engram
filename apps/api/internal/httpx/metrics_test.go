@@ -31,7 +31,9 @@ func TestMetricsEndpointExposesRequestDuration(t *testing.T) {
 	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/healthz", nil))
 
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil)
+	req.RemoteAddr = "127.0.0.1:41000" // /metrics chỉ mở cho loopback/nội bộ (P06 Task 4).
+	r.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, muốn 200", rec.Code)

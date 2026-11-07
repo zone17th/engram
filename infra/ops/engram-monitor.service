@@ -1,0 +1,8 @@
+[Unit]
+Description=engram production monitor & alerting (P06 Task 4, C20)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/home/ubuntu/engram-ops/monitor/monitor.env
+ExecStart=/home/ubuntu/engram-ops/monitor/engram-monitor.sh
