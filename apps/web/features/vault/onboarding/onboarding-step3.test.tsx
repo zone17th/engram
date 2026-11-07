@@ -77,6 +77,7 @@ function makeMeFixture(
       captcha_site_key: null,
     },
     vault: { status: vaultStatus },
+    semantic_consent_seen_at: null,
   };
 }
 

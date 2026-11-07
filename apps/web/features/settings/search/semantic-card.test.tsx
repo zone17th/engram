@@ -50,6 +50,7 @@ function makeMe(overrides: {
       status: 'present',
     },
     features,
+    semantic_consent_seen_at: null,
   };
 }
 

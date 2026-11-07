@@ -1318,9 +1318,10 @@ export interface paths {
         /**
          * Tạo hoặc nối vào job xuất bản sao lưu mã hoá (.sabk.json)
          * @description Yêu cầu session, CSRF và `Idempotency-Key` (body `{kind:"encrypted"}`, trần 16 KiB).
-         *     Giữ `pg_advisory_xact_lock` theo user: nếu đã có job `queued`/`running` thì coalesce trả `202` với job đó mà không tiêu tốn lượt quota
-         *     `export_create` (3 / 60 phút / user); nếu tạo job mới thì kiểm tra quota `export_create`, trần spool và `EXPORT_CREATE_PAUSED`,
-         *     chốt `snapshot_vault_key_id`/`snapshot_vault_ver` và enqueue River job `export_encrypted`.
+         *     Thứ tự xử lý: (0) nếu `EXPORT_CREATE_PAUSED=true` thì trả ngay `503 dependency_unavailable` kèm `Retry-After: 600` trước mọi ghi;
+         *     (1) replay idempotency cùng key; (2) giữ `pg_advisory_xact_lock` theo user; (3) nếu đã có job `queued`/`running` thì coalesce trả `202`
+         *     với job đó mà không tiêu tốn lượt quota `export_create` (3 / 60 phút / user); (4) nếu tạo job mới thì kiểm tra quota `export_create`
+         *     (`ConsumeTx`), trần spool, chốt `snapshot_vault_key_id`/`snapshot_vault_ver` và enqueue River job `export_encrypted`.
          */
         post: operations["exportCreate"];
         delete?: never;
@@ -1424,8 +1425,8 @@ export interface paths {
         /**
          * Đọc phân trang dữ liệu từ snapshot sao lưu đã sẵn sàng để client giải mã cục bộ
          * @description Yêu cầu session và grant re-auth (`export.decrypted`; là GET nên không kiểm CSRF) và không tính vào quota `export_create`.
-         *     Chỉ đọc từ chính file snapshot `.sabk.enc` đã giải mã lớp at-rest của job `ready`, trả từng trang ≤ 1 MiB theo thứ tự
-         *     `tags` → `items` → `entries` sống (`deleted_at IS NULL`) kèm cursor HMAC.
+         *     Chỉ đọc từ chính file snapshot `.sabk.enc` đã giải mã lớp at-rest của job `ready` (tuyệt đối không truy vấn bảng nội dung trực tiếp),
+         *     trả từng trang ≤ 1 MiB theo thứ tự `tags` → `items` → `item_tags` → `entries` sống (`deleted_at IS NULL`) kèm cursor HMAC.
          */
         get: operations["exportDecryptedPages"];
         put?: never;
@@ -1446,9 +1447,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Ghi nhận sự kiện kiểm toán trước khi bắt đầu xuất bản JSON đã giải mã ở trình duyệt
-         * @description Yêu cầu session, CSRF, grant re-auth (`export.decrypted`), `Idempotency-Key` và giới hạn tốc độ `export_decrypted_audit`
-         *     (5 / 15 phút / user). Ghi sự kiện `export.decrypted` vào `audit_log` và trả `204`.
+         * Ghi nhận sự kiện kiểm toán sau khi client hoàn tất xuất bản JSON đã giải mã ở trình duyệt
+         * @description Yêu cầu session, CSRF, grant re-auth (`export.decrypted`) và `Idempotency-Key` (body `{}`, trần 16 KiB; field lạ trả `400 invalid_request`;
+         *     không áp rate limit phụ). Được client gọi sau khi ghi xong toàn bộ file đọc được cục bộ: ghi sự kiện `export.decrypted` (`meta="{}"`)
+         *     vào `audit_log`, tạo `user_notification`, xếp hàng email thông báo bảo mật và trả `204`.
          */
         post: operations["exportDecryptedAudit"];
         delete?: never;
@@ -1549,7 +1551,7 @@ export interface components {
              * Format: date-time
              * @description Thời điểm server ghi nhận người dùng đã xem lựa chọn consent tìm theo nghĩa (cuối onboarding hoặc banner một lần); `null` khi chưa xem.
              */
-            semantic_consent_seen_at?: string | null;
+            semantic_consent_seen_at: string | null;
         };
         SignupRequest: {
             /** Format: email */
@@ -2292,13 +2294,13 @@ export interface components {
             job: components["schemas"]["ExportJob"] | null;
         };
         /** @enum {string} */
-        DecryptedExportSection: "tags" | "items" | "entries";
+        DecryptedExportSection: "tags" | "items" | "item_tags" | "entries";
         DecryptedExportItemRow: {
             /** Format: uuid */
             id: string;
             name: components["schemas"]["ItemName"];
             hint: components["schemas"]["ItemHint"];
-            tag_ids: string[];
+            entry_count: number;
             version: number;
             /** Format: date-time */
             last_used_at: string;
@@ -2306,6 +2308,15 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+            tag_ids?: string[];
+        };
+        DecryptedExportItemTagRow: {
+            /** Format: uuid */
+            item_id: string;
+            /** Format: uuid */
+            tag_id: string;
+            /** Format: date-time */
+            created_at: string;
         };
         DecryptedExportPage: {
             /** Format: uuid */
@@ -2313,7 +2324,7 @@ export interface components {
             vault_key_id: components["schemas"]["VaultKeyId"];
             total_entries: number;
             section: components["schemas"]["DecryptedExportSection"];
-            items: (components["schemas"]["Tag"] | components["schemas"]["DecryptedExportItemRow"] | components["schemas"]["Entry"])[];
+            items: (components["schemas"]["Tag"] | components["schemas"]["DecryptedExportItemRow"] | components["schemas"]["DecryptedExportItemTagRow"] | components["schemas"]["Entry"])[];
             next_cursor: string | null;
         };
     };
@@ -2425,7 +2436,7 @@ export interface components {
         NoStoreNoTransform: "no-store, no-transform";
         /** @description Giây nguyên dương tới cuối cửa sổ rate limit. */
         RetryAfter: number;
-        /** @description Tên tệp tải xuống chuẩn `attachment; filename="engram-backup-YYYYMMDD-HHMMSSZ.sabk.json"`. */
+        /** @description Tên tệp tải xuống chuẩn `attachment; filename="engram-backup-YYYY-MM-DD.sabk.json"`. */
         ExportContentDisposition: string;
         /** @description Chặn trình duyệt tự đoán MIME type. */
         NoSniff: "nosniff";
@@ -5043,8 +5054,17 @@ export interface operations {
             415: components["responses"]["Problem"];
             /** @description Quá 3 lần tạo job mới trong 60 phút (`export_create`, rate_limited) */
             429: components["responses"]["RateLimited"];
-            /** @description Công tắc tạm dừng tạo bản sao lưu đang bật hoặc phụ thuộc chưa sẵn sàng (dependency_unavailable) */
-            503: components["responses"]["Problem"];
+            /** @description Công tắc tạm dừng tạo bản sao lưu đang bật (`EXPORT_CREATE_PAUSED=true`, `Retry-After: 600` kiểm tra trước mọi ghi) hoặc phụ thuộc chưa sẵn sàng (dependency_unavailable) */
+            503: {
+                headers: {
+                    "Retry-After": components["headers"]["RetryAfter"];
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     exportGetLatest: {
@@ -5261,15 +5281,12 @@ export interface operations {
             401: components["responses"]["Problem"];
             /** @description Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden) */
             403: components["responses"]["Problem"];
-            /** @description Chưa khởi tạo vault (vault_absent) */
-            404: components["responses"]["Problem"];
             /** @description Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1) */
             409: components["responses"]["IdempotencyConflict"];
             /** @description Body quá 16 KiB (invalid_request) */
             413: components["responses"]["Problem"];
             /** @description Thiếu hoặc sai `Content-Type: application/json` (invalid_request) */
             415: components["responses"]["Problem"];
-            429: components["responses"]["RateLimited"];
         };
     };
 }

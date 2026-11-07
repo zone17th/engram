@@ -2849,9 +2849,10 @@ paths:
       summary: Tạo hoặc nối vào job xuất bản sao lưu mã hoá (.sabk.json)
       description: |
         Yêu cầu session, CSRF và `Idempotency-Key` (body `{kind:"encrypted"}`, trần 16 KiB).
-        Giữ `pg_advisory_xact_lock` theo user: nếu đã có job `queued`/`running` thì coalesce trả `202` với job đó mà không tiêu tốn lượt quota
-        `export_create` (3 / 60 phút / user); nếu tạo job mới thì kiểm tra quota `export_create`, trần spool và `EXPORT_CREATE_PAUSED`,
-        chốt `snapshot_vault_key_id`/`snapshot_vault_ver` và enqueue River job `export_encrypted`.
+        Thứ tự xử lý: (0) nếu `EXPORT_CREATE_PAUSED=true` thì trả ngay `503 dependency_unavailable` kèm `Retry-After: 600` trước mọi ghi;
+        (1) replay idempotency cùng key; (2) giữ `pg_advisory_xact_lock` theo user; (3) nếu đã có job `queued`/`running` thì coalesce trả `202`
+        với job đó mà không tiêu tốn lượt quota `export_create` (3 / 60 phút / user); (4) nếu tạo job mới thì kiểm tra quota `export_create`
+        (`ConsumeTx`), trần spool, chốt `snapshot_vault_key_id`/`snapshot_vault_ver` và enqueue River job `export_encrypted`.
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -2898,8 +2899,16 @@ paths:
           description: 'Quá 3 lần tạo job mới trong 60 phút (`export_create`, rate_limited)'
           $ref: '#/components/responses/RateLimited'
         '503':
-          description: Công tắc tạm dừng tạo bản sao lưu đang bật hoặc phụ thuộc chưa sẵn sàng (dependency_unavailable)
-          $ref: '#/components/responses/Problem'
+          description: 'Công tắc tạm dừng tạo bản sao lưu đang bật (`EXPORT_CREATE_PAUSED=true`, `Retry-After: 600` kiểm tra trước mọi ghi) hoặc phụ thuộc chưa sẵn sàng (dependency_unavailable)'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 
   /exports/latest:
     get:
@@ -3062,8 +3071,8 @@ paths:
       summary: Đọc phân trang dữ liệu từ snapshot sao lưu đã sẵn sàng để client giải mã cục bộ
       description: |
         Yêu cầu session và grant re-auth (`export.decrypted`; là GET nên không kiểm CSRF) và không tính vào quota `export_create`.
-        Chỉ đọc từ chính file snapshot `.sabk.enc` đã giải mã lớp at-rest của job `ready`, trả từng trang ≤ 1 MiB theo thứ tự
-        `tags` → `items` → `entries` sống (`deleted_at IS NULL`) kèm cursor HMAC.
+        Chỉ đọc từ chính file snapshot `.sabk.enc` đã giải mã lớp at-rest của job `ready` (tuyệt đối không truy vấn bảng nội dung trực tiếp),
+        trả từng trang ≤ 1 MiB theo thứ tự `tags` → `items` → `item_tags` → `entries` sống (`deleted_at IS NULL`) kèm cursor HMAC.
       security:
         - sessionCookie: []
           reauthHeader: []
@@ -3106,10 +3115,11 @@ paths:
     post:
       operationId: exportDecryptedAudit
       tags: [exports]
-      summary: Ghi nhận sự kiện kiểm toán trước khi bắt đầu xuất bản JSON đã giải mã ở trình duyệt
+      summary: Ghi nhận sự kiện kiểm toán sau khi client hoàn tất xuất bản JSON đã giải mã ở trình duyệt
       description: |
-        Yêu cầu session, CSRF, grant re-auth (`export.decrypted`), `Idempotency-Key` và giới hạn tốc độ `export_decrypted_audit`
-        (5 / 15 phút / user). Ghi sự kiện `export.decrypted` vào `audit_log` và trả `204`.
+        Yêu cầu session, CSRF, grant re-auth (`export.decrypted`) và `Idempotency-Key` (body `{}`, trần 16 KiB; field lạ trả `400 invalid_request`;
+        không áp rate limit phụ). Được client gọi sau khi ghi xong toàn bộ file đọc được cục bộ: ghi sự kiện `export.decrypted` (`meta="{}"`)
+        vào `audit_log`, tạo `user_notification`, xếp hàng email thông báo bảo mật và trả `204`.
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -3138,9 +3148,6 @@ paths:
         '403':
           description: Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden)
           $ref: '#/components/responses/Problem'
-        '404':
-          description: Chưa khởi tạo vault (vault_absent)
-          $ref: '#/components/responses/Problem'
         '409':
           description: 'Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
           $ref: '#/components/responses/IdempotencyConflict'
@@ -3150,9 +3157,6 @@ paths:
         '415':
           description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
           $ref: '#/components/responses/Problem'
-        '429':
-          $ref: '#/components/responses/RateLimited'
-
 components:
   securitySchemes:
     sessionCookie:
@@ -3187,7 +3191,7 @@ components:
         type: integer
         minimum: 1
     ExportContentDisposition:
-      description: Tên tệp tải xuống chuẩn `attachment; filename="engram-backup-YYYYMMDD-HHMMSSZ.sabk.json"`.
+      description: Tên tệp tải xuống chuẩn `attachment; filename="engram-backup-YYYY-MM-DD.sabk.json"`.
       schema:
         type: string
     NoSniff:
@@ -3585,7 +3589,7 @@ components:
     Me:
       type: object
       additionalProperties: false
-      required: [user, settings, identities, features, vault]
+      required: [user, settings, identities, features, vault, semantic_consent_seen_at]
       properties:
         user:
           type: object
@@ -5162,11 +5166,11 @@ components:
             - type: 'null'
     DecryptedExportSection:
       type: string
-      enum: [tags, items, entries]
+      enum: [tags, items, item_tags, entries]
     DecryptedExportItemRow:
       type: object
       additionalProperties: false
-      required: [id, name, hint, tag_ids, version, last_used_at, created_at, updated_at]
+      required: [id, name, hint, entry_count, version, last_used_at, created_at, updated_at]
       properties:
         id:
           type: string
@@ -5175,11 +5179,9 @@ components:
           $ref: '#/components/schemas/ItemName'
         hint:
           $ref: '#/components/schemas/ItemHint'
-        tag_ids:
-          type: array
-          items:
-            type: string
-            format: uuid
+        entry_count:
+          type: integer
+          minimum: 0
         version:
           type: integer
           minimum: 1
@@ -5190,6 +5192,25 @@ components:
           type: string
           format: date-time
         updated_at:
+          type: string
+          format: date-time
+        tag_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+    DecryptedExportItemTagRow:
+      type: object
+      additionalProperties: false
+      required: [item_id, tag_id, created_at]
+      properties:
+        item_id:
+          type: string
+          format: uuid
+        tag_id:
+          type: string
+          format: uuid
+        created_at:
           type: string
           format: date-time
     DecryptedExportPage:
@@ -5213,6 +5234,7 @@ components:
             oneOf:
               - $ref: '#/components/schemas/Tag'
               - $ref: '#/components/schemas/DecryptedExportItemRow'
+              - $ref: '#/components/schemas/DecryptedExportItemTagRow'
               - $ref: '#/components/schemas/Entry'
         next_cursor:
           type: [string, 'null']

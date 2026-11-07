@@ -55,6 +55,7 @@ function fixture(overrides: {
       ...overrides.features,
     },
     vault: overrides.vault ?? { status: 'absent' },
+    semantic_consent_seen_at: null,
   };
 }
 

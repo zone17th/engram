@@ -650,4 +650,36 @@ func TestOpenAPIOperationIDs(t *testing.T) {
 	if !strings.Contains(settingsPatchOp, "semantic_unavailable") || strings.Contains(settingsPatchOp, "provider probe") {
 		t.Error("meSettingsPatch 409 phải ghi nhận semantic_unavailable (không còn 'provider probe', FU-T13-OAS)")
 	}
+
+	exportCreateOp := openAPIOperation(t, spec, "exportCreate")
+	if !strings.Contains(exportCreateOp, "'503':") || !strings.Contains(exportCreateOp, "$ref: '#/components/headers/RetryAfter'") {
+		t.Error("exportCreate 503 phải khai báo header Retry-After")
+	}
+
+	auditOp := openAPIOperation(t, spec, "exportDecryptedAudit")
+	if strings.Contains(auditOp, "export_decrypted_audit") || strings.Contains(auditOp, "'429':") || strings.Contains(auditOp, "vault_absent") {
+		t.Error("exportDecryptedAudit không được có limiter phụ export_decrypted_audit, 429 hoặc 404 vault_absent")
+	}
+	if !strings.Contains(auditOp, "user_notification") {
+		t.Error("exportDecryptedAudit phải ghi nhận side effect user_notification")
+	}
+
+	sectionBlock := openAPIBlock(t, spec, "    DecryptedExportSection:")
+	if !strings.Contains(sectionBlock, "item_tags") {
+		t.Error("DecryptedExportSection phải bao gồm item_tags")
+	}
+	pageBlock := openAPIBlock(t, spec, "    DecryptedExportPage:")
+	if !strings.Contains(pageBlock, "DecryptedExportItemTagRow") {
+		t.Error("DecryptedExportPage.items phải bao gồm DecryptedExportItemTagRow")
+	}
+
+	meBlock := openAPIBlock(t, spec, "    Me:")
+	if !strings.Contains(meBlock, "required: [user, settings, identities, features, vault, semantic_consent_seen_at]") {
+		t.Error("Me.required phải bao gồm semantic_consent_seen_at")
+	}
+
+	dispBlock := openAPIBlock(t, spec, "    ExportContentDisposition:")
+	if !strings.Contains(dispBlock, `engram-backup-YYYY-MM-DD.sabk.json`) || strings.Contains(dispBlock, "HHMMSSZ") {
+		t.Error("ExportContentDisposition phải dùng tên chuẩn engram-backup-YYYY-MM-DD.sabk.json")
+	}
 }
