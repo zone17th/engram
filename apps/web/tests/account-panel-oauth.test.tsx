@@ -36,6 +36,7 @@ function meWith(oauthProviders: Me['features']['oauth_providers']): Me {
       captcha_site_key: null,
     },
     vault: { status: 'absent' },
+    semantic_consent_seen_at: null,
   } as Me;
 }
 
