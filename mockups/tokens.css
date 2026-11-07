@@ -1784,7 +1784,7 @@ textarea.kv-input {
 
 /* P06 U17/U18/U20 visual & a11y fixes (B2, B3, B4, FE-08, N1) */
 dialog { color: var(--body); }
-.text-link { color: var(--link-ink); }
+dialog .text-link, .text-link { color: var(--link-ink) !important; }
 .auth-warning {
   font-size: 13px; line-height: 1.45; border-radius: var(--r-md); padding: 10px 12px;
   background: color-mix(in srgb, var(--warning) 10%, var(--canvas));
