@@ -23,6 +23,10 @@
         "value": "160f439a3298a671454777fd31d72a02d312abe717cf511a16c99b3338cefc2a"
       },
       {
+        "name": "engram:workspace_components_count",
+        "value": "4"
+      },
+      {
         "name": "engram:image_pins_count",
         "value": "6"
       },
@@ -37,6 +41,30 @@
     ]
   },
   "components": [
+    {
+      "type": "application",
+      "bom-ref": "engram:apps/api",
+      "name": "github.com/zone17th/engram/apps/api",
+      "version": "0.6.0-beta"
+    },
+    {
+      "type": "application",
+      "bom-ref": "engram:apps/web",
+      "name": "@engram/web",
+      "version": "0.1.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "engram:packages/crypto-vectors",
+      "name": "@engram/crypto-vectors",
+      "version": "0.1.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "engram:packages/shared-types",
+      "name": "@engram/shared-types",
+      "version": "0.1.0"
+    },
     {
       "type": "library",
       "bom-ref": "golang:dario.cat/mergo@v1.0.2",
@@ -11311,12 +11339,14 @@
       "dependsOn": [
         "engram:apps/api",
         "engram:apps/web",
-        "oci:POSTGRES_IMAGE:pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
-        "oci:TEI_IMAGE:ghcr.io/huggingface/text-embeddings-inference@sha256:b717eba54b2b66be5d43109fbdc7a0eb85a115553a0537873284472a2f2aef12",
+        "engram:packages/crypto-vectors",
+        "engram:packages/shared-types",
+        "oci:DISTROLESS_IMAGE:gcr.io/distroless/static-debian12@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab",
         "oci:GO_BUILD_IMAGE:golang@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125",
         "oci:NODE_IMAGE:node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
-        "oci:DISTROLESS_IMAGE:gcr.io/distroless/static-debian12@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab",
-        "oci:PLAYWRIGHT_IMAGE:mcr.microsoft.com/playwright@sha256:35246d87a7c88ea9b771c65d33171b2611b02a8253b4b12ce6f94376c55f99f2"
+        "oci:PLAYWRIGHT_IMAGE:mcr.microsoft.com/playwright@sha256:35246d87a7c88ea9b771c65d33171b2611b02a8253b4b12ce6f94376c55f99f2",
+        "oci:POSTGRES_IMAGE:pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+        "oci:TEI_IMAGE:ghcr.io/huggingface/text-embeddings-inference@sha256:b717eba54b2b66be5d43109fbdc7a0eb85a115553a0537873284472a2f2aef12"
       ]
     },
     {
@@ -11346,6 +11376,7 @@
     {
       "ref": "engram:apps/web",
       "dependsOn": [
+        "engram:packages/shared-types",
         "npm:@axe-core/playwright@4.10.0",
         "npm:@eslint/eslintrc@3.3.7",
         "npm:@playwright/test@1.56.0",
@@ -11372,11 +11403,23 @@
         "npm:libsodium-wrappers-sumo@0.8.4",
         "npm:next-intl@4.14.5",
         "npm:next@15.5.25",
-        "npm:postcss@8.4.31",
+        "npm:postcss@8.5.28",
         "npm:react-dom@19.1.0",
         "npm:react@19.1.0",
         "npm:tailwind-merge@3.7.0",
         "npm:tailwindcss@3.4.19",
+        "npm:typescript@5.9.3",
+        "npm:vitest@3.2.7"
+      ]
+    },
+    {
+      "ref": "engram:packages/crypto-vectors",
+      "dependsOn": []
+    },
+    {
+      "ref": "engram:packages/shared-types",
+      "dependsOn": [
+        "npm:openapi-typescript@7.13.0",
         "npm:typescript@5.9.3",
         "npm:vitest@3.2.7"
       ]
