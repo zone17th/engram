@@ -1,62 +1,98 @@
 #!/usr/bin/env node
 // Drives one Cursor cloud agent per git worktree of zone17th/engram as a test
 // runner, through the Cloud Agents API v1. Ported from the uniwork runner
-// (same commands, state, pending/collect and exit codes); engram-only.
+// (same commands, state, pending/collect and exit codes).
 //
 // The worktree pushes its branch; this script publishes the spec as
 // refs/test-specs/<lane>/<sha> on engram (commands only, deleted after the
 // round), asks the runner VM to check out that exact commit, run the listed
 // commands and answer with one JSON block. engram is PUBLIC, so the VM pushes
-// its logs to the PRIVATE log repository (LOG_REPO_URL) as
-// refs/test-results/engram/<lane>/<sha>; this script fetches them, writes a
-// Markdown report and deletes the ref.
+// its logs only to an allowlisted PRIVATE log repository as
+// refs/test-results/engram/<lane>/<sha>; this script validates the repo and
+// ref, fetches the logs, writes a Markdown report and deletes the ref.
 //
-//   node cloud-runner.mjs ensure  [--branch b] [--model m]
+//   node cloud-runner.mjs ensure  [--repo engram|url] [--branch b] [--model m]
 //   node cloud-runner.mjs test    --spec file [--lane slug] [--shard name] [--out report.md] [--timeout s] [--detach yes]
 //   node cloud-runner.mjs suite   --specs a.txt,b.txt,... [--lane slug] [--out-dir dir] [--timeout s] [--detach yes]
 //   node cloud-runner.mjs collect [--shard name | --all yes] [--timeout s]
 //   node cloud-runner.mjs status
 //   node cloud-runner.mjs close   [--lane slug] [--shard name | --all yes]
 //
-// A started round is recorded as `pending` in the state file before anything
-// waits on it, so the cloud run survives this machine going down: `collect`
-// (from the same worktree) waits for or reads that run, pulls its logs and
-// writes the report the interrupted `test` would have written. `--detach yes`
-// starts the round(s) and exits at once; collect them later.
-//
-// Run it from inside an engram worktree. State lives in that worktree's git dir
-// (cloud-runner.json, or cloud-runner.<shard>.json for a shard), so it
-// disappears with the worktree. A shard is a separate agent (its own VM) of the
-// same worktree and publishes to refs/test-results/engram/<lane>-<shard>/<sha>;
-// suite runs one shard per spec file in parallel and exits with the worst
-// result. A fresh VM provisions itself (install-engram.sh) on its first run;
-// later runs are follow-ups on the same warm VM. The VM takes the runner
-// scripts from ENV_BRANCH of engram (CLOUD_RUNNER_ENV_BRANCH overrides), so
-// lane branches that predate .cursor/cloud still run.
-//
 // Exit codes: 0 pass, 1 tests failed, 2 blocked or runner error.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
+const HERE = dirname(fileURLToPath(import.meta.url));
 const API = "https://api.cursor.com/v1";
 const REPO_URL = "https://github.com/zone17th/engram";
-// Private log repositories: runner logs never land in the public repository
-// (advisor-dec-P06-002). When Cursor's SCM app cannot open zone17th/engram, the
-// VM boots on BOOT_REPO_URL ("clone" mode, like uniwork-office) and clones
-// engram (public); its app token can push logs to BOOT_REPO_URL if LOG_REPO_URL
-// is unreachable. Both are private.
-const LOG_REPO_URL = process.env.CLOUD_RUNNER_LOG_REPO || "https://github.com/zone17th/engram-test-logs";
-const BOOT_REPO_URL = process.env.CLOUD_RUNNER_BOOT_REPO || "https://github.com/UNIAI-TEAM/uniwork";
+const REPOS = {
+  engram: { url: REPO_URL, profile: "engram" },
+};
+const DEFAULT_REPO = "engram";
+
+// Fixed allowlist of PRIVATE log repositories (advisor-dec-P06-002). Environment
+// overrides may select between them, never add an unapproved or public URL.
+const ALLOWED_LOG_REPOS = [
+  "https://github.com/zone17th/engram-test-logs",
+  "https://github.com/UNIAI-TEAM/uniwork",
+];
+const LOG_REPO_URL = process.env.CLOUD_RUNNER_LOG_REPO || ALLOWED_LOG_REPOS[0];
+const BOOT_REPO_URL = process.env.CLOUD_RUNNER_BOOT_REPO || ALLOWED_LOG_REPOS[1];
 const BOOT_BRANCH = process.env.CLOUD_RUNNER_BOOT_BRANCH || "test/cursor-cloud-env";
 const LOG_PREFIX = "refs/test-results/engram";
 // The engram branch whose .cursor/cloud the VM runs; develop once merged.
 const ENV_BRANCH = process.env.CLOUD_RUNNER_ENV_BRANCH || "phase06/cloudrun";
-// Same default as the uniwork runner (user 2026-10-02). --model takes
-// "<id>[:param=value,...]", e.g. "composer-2.5" or "grok-4.6:effort=medium".
 const DEFAULT_MODEL = "grok-4.6:effort=high,fast=false";
+const POLL_MS = Number(process.env.CLOUD_RUNNER_POLL_MS || 20_000);
+
+const normUrl = (u) => String(u ?? "").trim()
+  .replace(/^https?:\/\/[^/\s:@]+(?::[^@\s/]*)?@/i, "https://")
+  .replace(/^git@github\.com:/i, "https://github.com/")
+  .replace(/\.git$/i, "")
+  .replace(/\/+$/, "")
+  .toLowerCase();
+
+const ALLOWED_LOG_NORMS = new Set(ALLOWED_LOG_REPOS.map(normUrl));
+
+function usage(msg) {
+  if (msg) console.error(`cloud-runner: ${msg}`);
+  console.error("usage: cloud-runner.mjs ensure|test|suite|collect|status|close [--repo engram|url] [--branch b] [--spec f] [--specs a,b] [--lane s] [--shard n] [--out f] [--out-dir d] [--model m] [--timeout s] [--all yes] [--detach yes]");
+  process.exit(2);
+}
+
+if (!ALLOWED_LOG_NORMS.has(normUrl(LOG_REPO_URL))) {
+  usage(`untrusted CLOUD_RUNNER_LOG_REPO ${LOG_REPO_URL}; allowed private repos: ${ALLOWED_LOG_REPOS.join(", ")}`);
+}
+if (!ALLOWED_LOG_NORMS.has(normUrl(BOOT_REPO_URL))) {
+  usage(`untrusted CLOUD_RUNNER_BOOT_REPO ${BOOT_REPO_URL}; allowed private repos: ${ALLOWED_LOG_REPOS.join(", ")}`);
+}
+
+// POSIX single-quote shell escaping so dynamic values are never parsed as syntax.
+const shQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+
+function validBranch(b, label = "branch") {
+  const s = String(b ?? "");
+  if (!/^[A-Za-z0-9._/-]{1,120}$/.test(s) || s.startsWith("-") || s.startsWith("/") || s.endsWith("/")
+      || s.includes("..") || s.includes("//") || s.endsWith(".lock")) {
+    usage(`invalid ${label}: ${s}`);
+  }
+  return s;
+}
+
+function validLane(l, label = "lane") {
+  const s = String(l ?? "");
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(s) || s.startsWith("-") || s.includes("..")) {
+    usage(`invalid ${label}: ${s}`);
+  }
+  return s;
+}
+
+validBranch(ENV_BRANCH, "CLOUD_RUNNER_ENV_BRANCH");
+validBranch(BOOT_BRANCH, "CLOUD_RUNNER_BOOT_BRANCH");
 
 function modelSpec(text) {
   const [id, params = ""] = text.split(":");
@@ -66,30 +102,22 @@ function modelSpec(text) {
   });
   return list.length ? { id, params: list } : { id };
 }
-const POLL_MS = Number(process.env.CLOUD_RUNNER_POLL_MS || 20_000);
 
 // Refreshes the runner scripts from ENV_BRANCH into ~/.engram-cloud (nothing
-// lands in the tested checkout), then hands the whole round to run-tests.sh,
-// so the agent makes one tool call per round.
+// lands in the tested checkout), then hands the whole round to run-tests.sh.
 const ENV_GIT = "~/.engram-cloud/env.git";
 const REFRESH = [
   `mkdir -p ~/.engram-cloud && git init -q --bare ${ENV_GIT}`,
-  `git -C ${ENV_GIT} fetch -q --depth 1 ${REPO_URL} ${ENV_BRANCH}`,
+  `git -C ${ENV_GIT} fetch -q --depth 1 ${shQuote(REPO_URL)} ${shQuote(ENV_BRANCH)}`,
   `git -C ${ENV_GIT} archive FETCH_HEAD .cursor/cloud | tar -x -C ~/.engram-cloud`,
 ].join(" && ");
-
-function usage(msg) {
-  if (msg) console.error(`cloud-runner: ${msg}`);
-  console.error("usage: cloud-runner.mjs ensure|test|suite|collect|status|close [--branch b] [--spec f] [--specs a,b] [--lane s] [--shard n] [--out f] [--out-dir d] [--model m] [--timeout s] [--all yes] [--detach yes]");
-  process.exit(2);
-}
 
 function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   const opts = {};
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
-    if (!a.startsWith("--")) usage(`unexpected argument ${a}`);
+    if (!a.startsWith("--") || i + 1 >= rest.length) usage(`unexpected argument ${a}`);
     opts[a.slice(2)] = rest[i + 1];
     i += 1;
   }
@@ -100,25 +128,31 @@ function git(...args) {
   return execFileSync("git", args, { encoding: "utf8" }).trim();
 }
 
-const normUrl = (u) => String(u).trim().replace(/^git@github\.com:/i, "https://github.com/")
-  .replace(/\.git$/i, "").replace(/\/+$/, "").toLowerCase();
-
-// "origin" when the cwd's origin is engram, else its URL, so spec refs always
-// reach the repository the VM checks out.
-function repoRemote() {
-  let origin = "";
-  try { origin = git("remote", "get-url", "origin"); } catch { /* no origin */ }
-  return origin && normUrl(origin) === normUrl(REPO_URL) ? "origin" : REPO_URL;
+function originUrl() {
+  try { return git("remote", "get-url", "origin"); } catch { return ""; }
 }
-const REMOTE = repoRemote();
+
+function repoInfo(name) {
+  const { url, profile } = REPOS[name];
+  const origin = originUrl();
+  return { name, url, profile, remote: origin && normUrl(origin) === normUrl(url) ? "origin" : url };
+}
+
+function resolveRepo(opts) {
+  const byUrl = (u) => Object.keys(REPOS).find((n) => normUrl(REPOS[n].url) === normUrl(u));
+  if (!opts.repo) return repoInfo(byUrl(originUrl()) || DEFAULT_REPO);
+  const name = REPOS[opts.repo] ? opts.repo : byUrl(opts.repo);
+  if (!name) usage(`unknown repo ${opts.repo}; known: ${Object.keys(REPOS).join(", ")} or their URLs`);
+  return repoInfo(name);
+}
 
 // CURSOR_API_KEY from the environment, else from cloud.env beside this script
 // (gitignored, mode 600; `CURSOR_API_KEY=...` line), else the Windows user scope.
 function apiKey() {
   if (process.env.CURSOR_API_KEY) return process.env.CURSOR_API_KEY;
-  const envFile = join(dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "cloud.env");
+  const envFile = join(HERE, "cloud.env");
   if (existsSync(envFile)) {
-    const m = /^\s*CURSOR_API_KEY\s*=\s*"?([^"\s]+)"?\s*$/m.exec(readFileSync(envFile, "utf8"));
+    const m = /^\s*CURSOR_API_KEY\s*=\s*"?([^"\s#]+)"?\s*$/m.exec(readFileSync(envFile, "utf8"));
     if (m) return m[1];
   }
   if (process.platform === "win32") {
@@ -146,7 +180,6 @@ async function api(method, path, body) {
   try {
     data = text ? JSON.parse(text) : {};
   } catch {
-    // A proxy page ("upstream connect error ...") instead of the API's JSON.
     const err = new Error(`${method} ${path} -> ${res.status} non-JSON ${text.slice(0, 120)}`);
     err.status = res.ok ? 502 : res.status;
     throw err;
@@ -162,7 +195,9 @@ async function api(method, path, body) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function shardName(shard) {
-  if (shard && !/^[A-Za-z0-9._-]{1,30}$/.test(shard)) usage(`bad shard name ${shard}`);
+  if (shard && (!/^[A-Za-z0-9._-]{1,30}$/.test(shard) || shard.startsWith("-") || shard.includes(".."))) {
+    usage(`bad shard name ${shard}`);
+  }
   return shard || "";
 }
 
@@ -184,8 +219,6 @@ function saveState(s, shard) {
   writeFileSync(statePath(shard), `${JSON.stringify(s, null, 2)}\n`);
 }
 
-// Every runner state file of this worktree for the selected repository as
-// [shard ("" = default runner), path].
 function allStates() {
   const dir = resolve(git("rev-parse", "--git-dir"));
   const prefix = statePrefix();
@@ -197,8 +230,16 @@ function allStates() {
 }
 
 function laneSlug(opts, branch) {
-  const base = opts.lane || branch.replace(/^[a-z]+\//, "").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 60);
-  return opts.shard ? `${base}-${opts.shard}` : base;
+  const base = opts.lane
+    ? validLane(opts.lane, "lane")
+    : branch.replace(/^[a-z]+\//, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "lane";
+  const slug = opts.shard ? `${base}-${shardName(opts.shard)}` : base;
+  return validLane(slug, "lane");
+}
+
+function trackLane(state, lane) {
+  const set = new Set([...(state?.lanes || []), state?.lane, state?.pending?.lane, lane].filter(Boolean));
+  return [...set];
 }
 
 async function waitRun(agentId, runId, timeoutS, startedAt = Date.now()) {
@@ -208,7 +249,6 @@ async function waitRun(agentId, runId, timeoutS, startedAt = Date.now()) {
     try {
       run = await api("GET", `/agents/${agentId}/runs/${runId}`);
     } catch (e) {
-      // Transient API or network failure: the run goes on, keep polling until the deadline.
       if (e.status && e.status < 500 && e.status !== 429) throw e;
       console.error(`cloud-runner: poll failed (${e.message.slice(0, 120)}); retrying`);
       run = { status: "UNKNOWN" };
@@ -233,10 +273,8 @@ async function agentAlive(state) {
   }
 }
 
-// Returns { agentId, runId, via }. When Cursor's SCM app has no access to
-// zone17th/engram (400 "does not have access" / "verify existence"), the VM
-// boots on BOOT_REPO_URL and run-tests.sh clones engram itself.
 async function createAgent(branch, model, promptFor) {
+  validBranch(branch);
   const create = (repo, via) => api("POST", "/agents", {
     name: `runner engram ${branch}`.slice(0, 80),
     prompt: { text: promptFor(via) },
@@ -248,36 +286,44 @@ async function createAgent(branch, model, promptFor) {
   let r;
   let via = "direct";
   try {
-    r = await create({ url: REPO_URL, startingRef: branch }, via);
+    r = await create({ url: REPO.url, startingRef: branch }, via);
   } catch (e) {
     if (e.status !== 400 || !/verify|access to repository/i.test(e.message)) throw e;
-    console.error(`cloud-runner: Cursor SCM cannot open ${REPO_URL}; booting on private boot repo and cloning engram`);
+    console.error(`cloud-runner: Cursor SCM cannot open ${REPO.url}; booting on private boot repo and cloning engram`);
     via = "clone";
     r = await create({ url: BOOT_REPO_URL, startingRef: BOOT_BRANCH }, via);
   }
   return { agentId: r.agent.id, runId: r.run.id, via };
 }
 
-async function sendRun(agentId, prompt) {
+async function sendRun(agentId, prompt, deadline = Infinity) {
   for (;;) {
     try {
       const r = await api("POST", `/agents/${agentId}/runs`, { prompt: { text: prompt } });
       return (r.run ?? r).id;
     } catch (e) {
       if (e.status !== 409) throw e;
-      await sleep(POLL_MS); // agent_busy: one run at a time
+      if (Date.now() + POLL_MS > deadline) {
+        const err = new Error(`agent ${agentId} remained busy (HTTP 409) past timeout`);
+        err.status = 409;
+        throw err;
+      }
+      await sleep(POLL_MS);
     }
   }
 }
 
-function oneCommandPrompt(args, via = "direct") {
-  const extra = via === "clone" ? ` --repo-url ${REPO_URL}` : "";
+function oneCommandPrompt(argPairs, via = "direct") {
+  const fullPairs = [...argPairs, ["--profile", REPO.profile]];
+  if (via === "clone") fullPairs.push(["--repo-url", REPO.url]);
+  fullPairs.push(["--log-repo", LOG_REPO_URL]);
+  const quotedArgs = fullPairs.flat().map((a) => shQuote(a)).join(" ");
   return `You are a test runner. Run exactly one command, from the repository root,
 and wait for it to finish (up to 45 minutes on a new VM). Do not run anything
 else, do not edit, commit or push any file, do not open a PR, and do not look
 into failures:
 
-    ${REFRESH} && bash ~/.engram-cloud/.cursor/cloud/run-tests.sh ${args}${extra} --log-repo ${LOG_REPO_URL}
+    ${REFRESH} && bash ~/.engram-cloud/.cursor/cloud/run-tests.sh ${quotedArgs}
 
 The last line it prints is a JSON object. Reply with only that object, unchanged,
 inside one \`\`\`json fence. If it printed no JSON, reply inside the fence with
@@ -285,13 +331,13 @@ inside one \`\`\`json fence. If it printed no JSON, reply inside the fence with
 }
 
 function ensurePrompt(branch, via) {
-  return oneCommandPrompt(`--branch ${branch} --provision-only`, via);
+  validBranch(branch);
+  return oneCommandPrompt([["--branch", branch], ["--provision-only"]], via);
 }
 
-// Publishes the spec as refs/test-specs/<lane>/<sha> (a one-file commit) so the
-// agent passes a short ref and a hash instead of retyping a long base64 string,
-// which a model can corrupt. Returns { ref, sha256 }.
 function publishSpec(lane, sha, commands) {
+  validLane(lane);
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) usage(`invalid sha: ${sha}`);
   const text = `${commands.join("\n")}\n`;
   const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { input: text, encoding: "utf8" }).trim();
   const tree = execFileSync("git", ["mktree"], { input: `100644 blob ${blob}\tspec.txt\n`, encoding: "utf8" }).trim();
@@ -299,12 +345,22 @@ function publishSpec(lane, sha, commands) {
     { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "runner", GIT_AUTHOR_EMAIL: "runner@local",
       GIT_COMMITTER_NAME: "runner", GIT_COMMITTER_EMAIL: "runner@local" } }).trim();
   const ref = `refs/test-specs/${lane}/${sha}`;
-  git("push", "-q", "-f", REMOTE, `${commit}:${ref}`);
+  git("push", "-q", "-f", REPO.remote, `${commit}:${ref}`);
   return { ref, sha256: createHash("sha256").update(text).digest("hex") };
 }
 
 function testPrompt({ branch, sha, lane, spec }, via) {
-  return oneCommandPrompt(`--branch ${branch} --sha ${sha} --lane ${lane} --spec-ref ${spec.ref} --spec-sha256 ${spec.sha256}`, via);
+  validBranch(branch);
+  validLane(lane);
+  if (!/^refs\/test-specs\/[A-Za-z0-9._-]+\/[0-9a-f]{7,40}$/i.test(spec.ref)) usage(`invalid spec ref: ${spec.ref}`);
+  if (!/^[0-9a-f]{64}$/i.test(spec.sha256)) usage(`invalid spec sha256: ${spec.sha256}`);
+  return oneCommandPrompt([
+    ["--branch", branch],
+    ["--sha", sha],
+    ["--lane", lane],
+    ["--spec-ref", spec.ref],
+    ["--spec-sha256", spec.sha256],
+  ], via);
 }
 
 function extractReport(result) {
@@ -326,9 +382,19 @@ async function costCents(agentId) {
   }
 }
 
+function scrubText(text) {
+  return String(text ?? "")
+    .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|key_[A-Za-z0-9]{20,})\b/g, "[REDACTED]")
+    .replace(/(https?:\/\/[^/\s:@]*:)[^@\s]+@/gi, "$1[REDACTED]@");
+}
+
+function logsPath(out) {
+  return /\.md$/i.test(out) ? out.replace(/\.md$/i, ".logs") : `${out}.logs`;
+}
+
 function writeReport(out, meta, rep, rawResult) {
-  const rows = (rep?.ran ?? []).map((r) => `| \`${r.cmd}\` | ${r.result} | ${r.duration_s} |`).join("\n");
-  const fails = (rep?.failures ?? []).map((f) => `- \`${f.test}\` ${f.file ?? ""}: ${f.msg}`).join("\n");
+  const rows = (rep?.ran ?? []).map((r) => `| \`${scrubText(r.cmd)}\` | ${scrubText(r.result)} | ${r.duration_s} |`).join("\n");
+  const fails = (rep?.failures ?? []).map((f) => `- \`${scrubText(f.test)}\` ${scrubText(f.file ?? "")}: ${scrubText(f.msg)}`).join("\n");
   const md = `# Cloud test report: ${meta.lane} @ ${meta.sha}
 
 - stage_outcome: **${rep?.stage_outcome ?? "failed"}**
@@ -350,29 +416,31 @@ ${fails || "None reported."}
 
 ## Not run
 
-${(rep?.not_run ?? []).map((n) => `- ${n}`).join("\n") || "Nothing."}
+${(rep?.not_run ?? []).map((n) => `- ${scrubText(n)}`).join("\n") || "Nothing."}
 
 ## Notes
 
-${rep?.notes || "None."}
+${scrubText(rep?.notes) || "None."}
 
 ## Raw report
 
 \`\`\`json
-${rep ? JSON.stringify(rep, null, 2) : String(rawResult ?? "").slice(0, 4000)}
+${scrubText(rep ? JSON.stringify(rep, null, 2) : String(rawResult ?? "").slice(0, 4000))}
 \`\`\`
 `;
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, md);
 }
 
-// Fetches the results commit from the private log repository, writes each file
-// with `git show` (no tar: Windows' bsdtar does not read stdin by default), then
-// deletes the ref locally and in the log repository.
-function fetchLogs(ref, dir, remote = LOG_REPO_URL) {
+// Fetches the results commit from an allowlisted private log repository into a
+// fresh directory (replacing any prior logs atomically), then deletes the ref.
+function fetchLogs(ref, dir, remote, expectedRef) {
+  if (!ref || ref !== expectedRef || !ALLOWED_LOG_NORMS.has(normUrl(remote))) {
+    console.error(`cloud-runner: refusing untrusted log ref/repo (${ref} vs ${expectedRef} on ${remote})`);
+    return null;
+  }
+  const tmpDir = `${dir}.tmp-${process.pid}-${Date.now()}`;
   try {
-    // Shards of one suite fetch from the same repository at once; retry a
-    // fetch that lost a lock race.
     for (let attempt = 1; ; attempt += 1) {
       try {
         git("fetch", "-q", remote, `${ref}:${ref}`);
@@ -382,36 +450,65 @@ function fetchLogs(ref, dir, remote = LOG_REPO_URL) {
         execFileSync(process.execPath, ["-e", `setTimeout(() => {}, ${attempt * 3000})`]);
       }
     }
-    for (const name of git("ls-tree", "-r", "--name-only", ref).split("\n").filter(Boolean)) {
-      const file = join(dir, name);
+    const files = git("ls-tree", "-r", "--name-only", ref).split("\n").filter(Boolean);
+    if (files.length === 0) throw new Error("results commit has no log files");
+    mkdirSync(tmpDir, { recursive: true });
+    for (const name of files) {
+      const file = join(tmpDir, name);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, execFileSync("git", ["show", `${ref}:${name}`], { maxBuffer: 1 << 30 }));
     }
+    rmSync(dir, { recursive: true, force: true });
+    renameSync(tmpDir, dir);
     git("update-ref", "-d", ref);
     try { git("push", "-q", remote, `:${ref}`); } catch { /* close retries */ }
     return dir;
   } catch (e) {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { git("update-ref", "-d", ref); } catch { /* ignore */ }
     console.error(`cloud-runner: could not fetch logs from ${ref}: ${e.message}`);
     return null;
   }
 }
 
 async function cmdEnsure(opts) {
-  const branch = opts.branch || git("rev-parse", "--abbrev-ref", "HEAD");
+  const branch = validBranch(opts.branch || git("rev-parse", "--abbrev-ref", "HEAD"));
+  const timeoutS = Number(opts.timeout || 1800);
+  const deadline = Date.now() + timeoutS * 1000;
   let state = loadState(opts.shard);
-  if (await agentAlive(state)) {
+  const alive = await agentAlive(state);
+  if (alive && state.provisioned === true && !state.pending && !state.provisionRunId) {
     console.log(`runner ready: ${state.agentId} (${state.branch})`);
     return 0;
   }
   const model = opts.model || DEFAULT_MODEL;
-  const { agentId, runId, via } = await createAgent(branch, model, (v) => ensurePrompt(branch, v));
-  state = { agentId, via, branch, model, lane: laneSlug(opts, branch), shard: shardName(opts.shard), createdAt: new Date().toISOString() };
+  const lane = laneSlug(opts, branch);
+  let agentId;
+  let runId;
+  let via = state?.via ?? "direct";
+  if (alive) {
+    agentId = state.agentId;
+    runId = state.provisionRunId || await sendRun(agentId, ensurePrompt(branch, via), deadline);
+    state = { ...state, branch, lane, lanes: trackLane(state, lane), provisioned: false, provisionRunId: runId };
+  } else {
+    ({ agentId, runId, via } = await createAgent(branch, model, (v) => ensurePrompt(branch, v)));
+    state = {
+      agentId, via, branch, model, lane, lanes: trackLane(state, lane),
+      shard: shardName(opts.shard), provisioned: false, provisionRunId: runId,
+      createdAt: new Date().toISOString(),
+    };
+  }
   saveState(state, opts.shard);
-  console.log(`runner created: ${agentId}; provisioning (about 10 min)`);
-  const run = await waitRun(agentId, runId, Number(opts.timeout || 1800));
+  console.log(`runner ${agentId}; provisioning (about 10 min)`);
+  const run = await waitRun(agentId, runId, timeoutS);
   const rep = extractReport(run.result);
+  const ok = run.status === "FINISHED" && rep?.stage_outcome === "succeeded"
+    && String(rep?.sha ?? "").slice(0, 7) === String(rep?.sha ?? "x").slice(0, 7);
+  delete state.provisionRunId;
+  state.provisioned = Boolean(ok);
+  saveState(state, opts.shard);
   console.log(`provision: ${run.status} ${rep?.stage_outcome ?? "no report"} ${rep?.notes ?? ""}`);
-  return run.status === "FINISHED" && rep?.stage_outcome === "succeeded" ? 0 : 2;
+  return ok ? 0 : 2;
 }
 
 async function cmdTest(opts) {
@@ -419,9 +516,9 @@ async function cmdTest(opts) {
   const commands = readFileSync(opts.spec === "-" ? 0 : opts.spec, "utf8")
     .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
   if (commands.length === 0) usage("spec has no commands");
-  const branch = git("rev-parse", "--abbrev-ref", "HEAD");
+  const branch = validBranch(git("rev-parse", "--abbrev-ref", "HEAD"));
   const sha = git("rev-parse", "--short=8", "HEAD");
-  const remote = git("ls-remote", REMOTE, `refs/heads/${branch}`).split(/\s+/)[0] ?? "";
+  const remote = git("ls-remote", REPO.remote, `refs/heads/${branch}`).split(/\s+/)[0] ?? "";
   if (!remote.startsWith(git("rev-parse", "HEAD").slice(0, 12))) {
     usage(`engram:${branch} is not at HEAD ${sha}; push the branch first`);
   }
@@ -429,36 +526,47 @@ async function cmdTest(opts) {
   if (state?.pending) {
     usage(`${shardName(opts.shard) || "default runner"} has an uncollected run ${state.pending.runId} (${state.pending.sha}); run collect first`);
   }
+  const timeoutS = Number(opts.timeout || 3600);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutS * 1000;
   const lane = laneSlug(opts, branch);
-  const spec = publishSpec(lane, sha, commands);
-  const promptFor = (via) => testPrompt({ branch, sha, lane, spec }, via);
+  // Resolve liveness and usage before publishing the spec ref so a lookup error
+  // never leaves an unreferenced spec ref on the public repository.
   const alive = await agentAlive(state);
   const before = alive ? await costCents(state.agentId) : 0;
+  const spec = publishSpec(lane, sha, commands);
+  const promptFor = (via) => testPrompt({ branch, sha, lane, spec }, via);
   let agentId;
   let runId;
   let via = state?.via ?? "direct";
   try {
     if (alive) {
       agentId = state.agentId;
-      runId = await sendRun(agentId, promptFor(via));
+      runId = await sendRun(agentId, promptFor(via), deadline);
     } else {
       ({ agentId, runId, via } = await createAgent(branch, opts.model || DEFAULT_MODEL, promptFor));
     }
+    const lanes = trackLane(state, lane);
+    if (!alive) {
+      state = {
+        agentId, via, branch, model: opts.model || DEFAULT_MODEL,
+        lane, lanes, shard: shardName(opts.shard), provisioned: false,
+        createdAt: new Date().toISOString(),
+      };
+    } else {
+      state.lane = lane;
+      state.lanes = lanes;
+    }
+    state.pending = {
+      runId, sha, branch, lane, specRef: spec.ref, expectedCount: commands.length, costBefore: before,
+      out: resolve(opts.out || join("reports", lane, `cloud-test-${sha}.md`)),
+      timeoutS, startedAt,
+    };
+    saveState(state, opts.shard);
   } catch (e) {
-    // No run will read the spec: drop its ref.
-    try { git("push", "-q", REMOTE, `:${spec.ref}`); } catch { /* best effort */ }
+    try { git("push", "-q", REPO.remote, `:${spec.ref}`); } catch { /* best effort */ }
     throw e;
   }
-  if (!alive) {
-    state = { agentId, via, branch, model: opts.model || DEFAULT_MODEL, lane, shard: shardName(opts.shard), createdAt: new Date().toISOString() };
-  }
-  // Saved before any wait: this is what collect resumes after a crash or shutdown.
-  state.pending = {
-    runId, sha, branch, lane, specRef: spec.ref, costBefore: before,
-    out: resolve(opts.out || join("reports", lane, `cloud-test-${sha}.md`)),
-    timeoutS: Number(opts.timeout || 3600), startedAt: Date.now(),
-  };
-  saveState(state, opts.shard);
   console.log(`run ${runId} on ${agentId} for ${sha}`);
   if (opts.detach) {
     console.log(`detached; collect later with: node ${process.argv[1]} collect${opts.shard ? ` --shard ${opts.shard}` : ""}`);
@@ -467,37 +575,82 @@ async function cmdTest(opts) {
   return finishPending(state, opts.shard);
 }
 
-// Waits for the state's pending run (its own deadline counts from the start),
-// pulls the logs, writes the report and clears `pending`. Exit code as test.
+// Waits for the state's pending run, validates the report and log repository,
+// pulls the logs, writes the report and clears `pending`. If log retrieval
+// fails transiently after a finished run, `pending` is retained so `collect`
+// can retry without re-running the VM.
 async function finishPending(state, shard, timeoutOverride) {
   const p = state.pending;
-  const run = await waitRun(state.agentId, p.runId, Number(timeoutOverride || p.timeoutS), timeoutOverride ? Date.now() : p.startedAt);
-  const rep = extractReport(run.result);
-  const after = await costCents(state.agentId);
-  let logsDir = null;
-  // Only the private log repositories are trusted as a log source (never public engram).
-  const allowedLogs = [LOG_REPO_URL, BOOT_REPO_URL];
-  const logRemote = allowedLogs.find((u) => rep?.log_repo && normUrl(u) === normUrl(rep.log_repo)) || LOG_REPO_URL;
-  if (rep?.log_ref && rep.log_ref.startsWith(`${LOG_PREFIX}/`)) {
-    logsDir = fetchLogs(rep.log_ref, p.out.replace(/\.md$/, ".logs"), logRemote);
+  let runStatus = p.runStatus;
+  let durationMs = p.durationMs;
+  let rawResult = p.rawResult;
+  let after = p.costAfter;
+  if (!p.runFinished) {
+    const run = await waitRun(state.agentId, p.runId, Number(timeoutOverride || p.timeoutS), timeoutOverride ? Date.now() : p.startedAt);
+    runStatus = run.status;
+    durationMs = run.durationMs;
+    rawResult = run.result;
+    after = await costCents(state.agentId);
+    try { git("push", "-q", REPO.remote, `:${p.specRef}`); } catch { /* best effort */ }
+    p.runFinished = true;
+    p.runStatus = runStatus;
+    p.durationMs = durationMs;
+    p.rawResult = rawResult;
+    p.costAfter = after;
+    saveState(state, shard);
   }
-  try { git("push", "-q", REMOTE, `:${p.specRef}`); } catch { /* best effort */ }
-  const valid = rep && String(rep.sha ?? "").slice(0, 7) === p.sha.slice(0, 7);
+  const rep = extractReport(rawResult);
+  const shaMatch = Boolean(rep && String(rep.sha ?? "").slice(0, 7) === p.sha.slice(0, 7) && /^[0-9a-f]{7,40}$/i.test(String(rep.sha)));
+  const countMatch = Boolean(rep && Array.isArray(rep.ran) && rep.ran.length > 0
+    && (p.expectedCount == null || rep.ran.length === p.expectedCount));
+  const stageOk = Boolean(rep && rep.stage_outcome === "succeeded" && (rep.test_verdict === "pass" || rep.test_verdict === "fail"));
+  const logRemote = rep?.log_repo ? ALLOWED_LOG_REPOS.find((u) => normUrl(u) === normUrl(rep.log_repo)) : null;
+  const expectedRef = shaMatch ? `${LOG_PREFIX}/${p.lane}/${rep.sha}` : null;
+  const refMatch = Boolean(expectedRef && rep?.log_ref === expectedRef);
+
+  let logsDir = null;
+  let retryableLogFailure = false;
+  if (runStatus === "FINISHED" && shaMatch && countMatch && stageOk && logRemote && refMatch) {
+    logsDir = fetchLogs(rep.log_ref, logsPath(p.out), logRemote, expectedRef);
+    if (!logsDir) retryableLogFailure = true;
+  }
+
+  const valid = Boolean(runStatus === "FINISHED" && shaMatch && countMatch && stageOk && logRemote && refMatch && logsDir);
+  const problems = [];
+  if (runStatus !== "FINISHED") problems.push(`run ${runStatus}`);
+  if (!rep) problems.push("no JSON report");
+  else {
+    if (!shaMatch) problems.push(`sha mismatch (${rep.sha ?? "none"} vs ${p.sha})`);
+    if (!countMatch) problems.push(`ran count ${Array.isArray(rep.ran) ? rep.ran.length : 0} != expected ${p.expectedCount ?? "?"}`);
+    if (!stageOk) problems.push(`stage_outcome=${rep.stage_outcome} verdict=${rep.test_verdict}`);
+    if (!logRemote) problems.push(`untrusted or missing log_repo (${rep.log_repo ?? "none"})`);
+    if (!refMatch) problems.push(`unexpected log_ref (${rep.log_ref ?? "none"}, wanted ${expectedRef ?? "none"})`);
+    if (retryableLogFailure) problems.push("log fetch failed (pending retained for collect retry)");
+  }
+
   writeReport(p.out, {
-    lane: p.lane, sha: p.sha, branch: p.branch, agentId: state.agentId, runId: p.runId, runStatus: run.status,
-    durationMs: run.durationMs, costCents: after == null || p.costBefore == null ? null : after - p.costBefore, logsDir,
-  }, valid ? rep : { ...(rep ?? {}), stage_outcome: "failed", test_verdict: "blocked",
-    notes: `${rep ? `sha mismatch (${rep.sha})` : "no JSON report"}; run ${run.status}. ${rep?.notes ?? ""}` }, run.result);
+    lane: p.lane, sha: p.sha, branch: p.branch, agentId: state.agentId, runId: p.runId, runStatus,
+    durationMs, costCents: after == null || p.costBefore == null ? null : after - p.costBefore, logsDir,
+  }, valid ? rep : {
+    ...(rep ?? {}),
+    stage_outcome: "failed",
+    test_verdict: "blocked",
+    notes: `${problems.join("; ")}. ${rep?.notes ?? ""}`.trim(),
+  }, rawResult);
   console.log(`report: ${p.out}`);
-  state.last = { runId: p.runId, sha: p.sha, out: p.out, runStatus: run.status, verdict: valid ? rep.test_verdict : "blocked" };
+
+  if (retryableLogFailure) {
+    saveState(state, shard);
+    return 2;
+  }
+  if (valid) state.provisioned = true;
+  state.last = { runId: p.runId, sha: p.sha, out: p.out, runStatus, verdict: valid ? rep.test_verdict : "blocked" };
   delete state.pending;
   saveState(state, shard);
-  if (!valid || run.status !== "FINISHED" || rep.stage_outcome !== "succeeded") return 2;
+  if (!valid) return 2;
   return rep.test_verdict === "pass" ? 0 : rep.test_verdict === "fail" ? 1 : 2;
 }
 
-// Resumes every pending run of this worktree (or one shard): waits if it is
-// still running, then reports. Exit code is the worst one (2 over 1 over 0).
 async function cmdCollect(opts) {
   const targets = opts.all ? allStates() : [[shardName(opts.shard), statePath(opts.shard)]];
   const names = ["pass", "fail", "blocked"];
@@ -536,46 +689,85 @@ async function cmdStatus() {
 
 async function closeOne(shard, laneOpt) {
   const state = loadState(shard);
+  const errors = [];
   if (state?.agentId) {
-    await api("DELETE", `/agents/${state.agentId}`).catch((e) => { if (e.status !== 404) throw e; });
-    console.log(`deleted ${state.agentId}${shard ? ` (shard ${shard})` : ""}`);
-  }
-  const lane = laneOpt ? (shard ? `${laneOpt}-${shard}` : laneOpt) : state?.lane;
-  if (lane) {
-    const specs = git("ls-remote", REMOTE, `refs/test-specs/${lane}/*`)
-      .split("\n").map((l) => l.split(/\s+/)[1]).filter(Boolean);
-    if (specs.length) git("push", "-q", REMOTE, ...specs.map((r) => `:${r}`));
-    for (const repo of [LOG_REPO_URL, BOOT_REPO_URL]) {
-      const logs = git("ls-remote", repo, `${LOG_PREFIX}/${lane}/*`)
-        .split("\n").map((l) => l.split(/\s+/)[1]).filter(Boolean);
-      if (logs.length) git("push", "-q", repo, ...logs.map((r) => `:${r}`));
-      console.log(`deleted ${logs.length} results refs in ${repo} for ${lane}`);
+    try {
+      await api("DELETE", `/agents/${state.agentId}`);
+      console.log(`deleted ${state.agentId}${shard ? ` (shard ${shard})` : ""}`);
+      delete state.agentId;
+    } catch (e) {
+      if (e.status === 404) {
+        delete state.agentId;
+      } else {
+        errors.push(`delete agent ${state.agentId}: ${e.message}`);
+      }
     }
-    console.log(`deleted ${specs.length} spec refs in engram for ${lane}`);
   }
-  if (existsSync(statePath(shard))) rmSync(statePath(shard));
+  const explicitLane = laneOpt ? validLane(shard ? `${laneOpt}-${shard}` : laneOpt) : null;
+  const lanes = [...new Set([explicitLane, state?.lane, state?.pending?.lane, ...(state?.lanes || [])].filter(Boolean))];
+  const remainingLanes = [];
+  for (const lane of lanes) {
+    validLane(lane);
+    let laneFailed = false;
+    try {
+      const specs = git("ls-remote", REPO.remote, `refs/test-specs/${lane}/*`)
+        .split("\n").map((l) => l.split(/\s+/)[1]).filter(Boolean);
+      if (specs.length) git("push", "-q", REPO.remote, ...specs.map((r) => `:${r}`));
+      console.log(`deleted ${specs.length} spec refs in engram for ${lane}`);
+    } catch (e) {
+      laneFailed = true;
+      errors.push(`spec refs (${lane}): ${e.message}`);
+    }
+    for (const repo of ALLOWED_LOG_REPOS) {
+      try {
+        const logs = git("ls-remote", repo, `${LOG_PREFIX}/${lane}/*`)
+          .split("\n").map((l) => l.split(/\s+/)[1]).filter(Boolean);
+        if (logs.length) git("push", "-q", repo, ...logs.map((r) => `:${r}`));
+        console.log(`deleted ${logs.length} results refs in ${repo} for ${lane}`);
+      } catch (e) {
+        laneFailed = true;
+        errors.push(`log refs (${lane} in ${repo}): ${e.message}`);
+      }
+    }
+    if (laneFailed) remainingLanes.push(lane);
+  }
+  if (errors.length === 0) {
+    if (existsSync(statePath(shard))) rmSync(statePath(shard));
+    return true;
+  }
+  if (state) {
+    state.lanes = remainingLanes;
+    saveState(state, shard);
+  }
+  for (const msg of errors) console.error(`cloud-runner close: ${msg}`);
+  return false;
 }
 
 async function cmdClose(opts) {
   const shards = opts.all ? allStates().map(([s]) => s) : [shardName(opts.shard)];
   if (shards.length === 0) shards.push("");
-  for (const shard of shards) await closeOne(shard, opts.lane);
-  return 0;
+  let allOk = true;
+  for (const shard of shards) {
+    const ok = await closeOne(shard, opts.lane);
+    if (!ok) allOk = false;
+  }
+  return allOk ? 0 : 2;
 }
 
-// Runs one shard per spec file in parallel, each on its own agent and VM, then
-// writes a summary. The exit code is the worst shard's (2 over 1 over 0).
 async function cmdSuite(opts) {
   if (!opts.specs) usage("suite needs --specs a.txt,b.txt");
   const specs = opts.specs.split(",").map((x) => x.trim()).filter(Boolean);
-  const branch = git("rev-parse", "--abbrev-ref", "HEAD");
+  if (specs.length === 0) usage("suite needs at least one spec");
+  const branch = validBranch(git("rev-parse", "--abbrev-ref", "HEAD"));
   const sha = git("rev-parse", "--short=8", "HEAD");
   const outDir = resolve(opts["out-dir"] || join("reports", laneSlug({ lane: opts.lane }, branch)));
   const shards = specs.map((spec) => ({
     spec,
-    shard: basename(spec).replace(/\.[^.]*$/, "").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 30),
+    shard: shardName(basename(spec).replace(/\.[^.]*$/, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30)),
   }));
-  if (new Set(shards.map((x) => x.shard)).size !== shards.length) usage("spec file names must give distinct shard names");
+  if (shards.some((x) => !x.shard) || new Set(shards.map((x) => x.shard)).size !== shards.length) {
+    usage("spec file names must give distinct non-empty shard names");
+  }
   const names = ["pass", "fail", "blocked"];
   const results = await Promise.all(shards.map(({ spec, shard }) => new Promise((done) => {
     const out = join(outDir, `cloud-suite-${sha}-${shard}.md`);
@@ -611,7 +803,8 @@ ${rows}
 }
 
 const { cmd, opts } = parseArgs(process.argv.slice(2));
-const handlers = { ensure: cmdEnsure, test: cmdTest, suite: cmdSuite, collect: cmdCollect, status: cmdStatus, close: cmdClose };
+const REPO = resolveRepo(opts);
+const handlers = { ensure: cmdEnsure, test: cmdTest, suite: cmdSuite, collect: cmdCollect, status: cmdCollect && cmdStatus, close: cmdClose };
 if (!handlers[cmd]) usage(cmd ? `unknown command ${cmd}` : undefined);
 handlers[cmd](opts).then((code) => process.exit(code), (e) => {
   console.error(`cloud-runner: ${e.message}`);

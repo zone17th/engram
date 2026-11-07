@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # First-use install on a Cursor cloud runner VM for zone17th/engram:
 # provisions system toolchains, starts dockerd, installs workspace JS and Go
-# dependencies, and warms the pinned Postgres + Playwright images from
-# infra/image-pins.env. Idempotent; acts on the current git checkout.
+# dependencies, warms the pinned images from infra/image-pins.env, and verifies
+# inter-container bridge networking. Idempotent; acts on the current checkout.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -22,10 +22,14 @@ if [ -f infra/image-pins.env ]; then
   # shellcheck disable=SC1091
   . infra/image-pins.env
   set +a
-  for img in "${POSTGRES_IMAGE:-}" "${PLAYWRIGHT_IMAGE:-}"; do
+  for img in "${NODE_IMAGE:-}" "${POSTGRES_IMAGE:-}" "${PLAYWRIGHT_IMAGE:-}"; do
     [ -n "$img" ] || continue
     docker image inspect "$img" >/dev/null 2>&1 || docker pull "$img"
   done
 fi
+
+# Re-run start-engram.sh now that NODE_IMAGE is pulled so the inter-container
+# bridge probe runs and verifies container-to-container TCP connectivity.
+bash "$here/start-engram.sh"
 
 echo "cloud install (engram): done"

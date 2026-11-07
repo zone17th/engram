@@ -57,10 +57,13 @@ Other commands: `ensure` (provision ahead, about 10 minutes), `collect [--shard 
 ## Spec format
 
 One shell command per line, `#` comments, run from the repository root, each in its own
-`bash -c` (no state between lines). End each line with `; echo; echo NAME_EXIT=$?` so the
-marker sits on its own line. A line fails when its exit code is non-zero OR its log holds
-a `*_EXIT=<n>` marker with n > 0 (worst marker wins), so a line that ends with `echo`
-still reports the real result.
+`bash -c` (no state between lines, stdin `/dev/null`). Capture `rc=$?` immediately before
+printing the newline and marker (`; rc=$?; echo; echo NAME_EXIT=$rc; exit $rc` or
+`; rc=$?; printf '\nNAME_EXIT=%s\n' "$rc"`) — never `; echo; echo NAME_EXIT=$?`, because
+the bare `echo` resets `$?` to `0`. A line fails when its exit code is non-zero OR its log
+holds a standalone `^[A-Z][A-Z0-9_]*_EXIT=<n>$` line with `n > 0` (worst marker wins), so
+a line that ends with `printf '\nNAME_EXIT=%s\n' "$rc"` (shell exit 0) still fails when
+`rc != 0`.
 
 | spec | ci.yml job(s) |
 | --- | --- |
