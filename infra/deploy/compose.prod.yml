@@ -1,0 +1,116 @@
+# engram production override for VPS bro (DEPLOY-P03; advisor-dec-085/086; P06-PRODHYGIENE log rotation).
+# Committed template/mirror of `.data/deploy/compose.prod.yml` on bro.
+# Values come from `.env.production` via `--env-file`; this file holds no secret.
+# Run from ~/projects/engram:
+#   docker compose -p engram --env-file infra/image-pins.env --env-file .env.production \
+#     -f infra/docker-compose.yml -f infra/deploy/compose.prod.yml up -d
+# (or copy `infra/deploy/compose.prod.yml` to `.data/deploy/compose.prod.yml` and keep `.data/deploy/compose-cmd.txt`).
+#
+# APP_ENV stays "development" (advisor-dec-086): the repo has no production mailer and production rejects
+# the mail sink. Every dev-only default is neutralised by an explicit value below.
+
+x-engram-logging: &engram-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-engram-app-env: &engram-app-env
+  APP_ENV: development
+  APP_ORIGIN: ${APP_ORIGIN:?APP_ORIGIN missing}
+  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:?WEBAUTHN_RP_ID missing}
+  WEBAUTHN_RP_ORIGIN: ${WEBAUTHN_RP_ORIGIN:?WEBAUTHN_RP_ORIGIN missing}
+  DATABASE_URL: postgres://engram:${ENGRAM_DB_PASSWORD:?ENGRAM_DB_PASSWORD missing}@db:5432/engram?sslmode=disable
+  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?AUTH_JWT_SECRET missing}
+  AUTH_CSRF_SECRET: ${AUTH_CSRF_SECRET:?AUTH_CSRF_SECRET missing}
+  AUTH_REAUTH_SECRET: ${AUTH_REAUTH_SECRET:?AUTH_REAUTH_SECRET missing}
+  AUTH_IP_PEPPER: ${AUTH_IP_PEPPER:?AUTH_IP_PEPPER missing}
+  AUTH_EMAIL_PEPPER: ${AUTH_EMAIL_PEPPER:?AUTH_EMAIL_PEPPER missing}
+  # selfio_backend (global_nginx hop) + engram's own pinned network (web -> api hop). No dev default ranges.
+  AUTH_TRUSTED_PROXY_CIDRS: 172.18.0.0/16,172.30.17.0/24
+  AUTH_FAKE_OAUTH: 'false'
+  AUTH_REQUIRE_EMAIL_VERIFICATION: ${AUTH_REQUIRE_EMAIL_VERIFICATION:-false}
+  AUTH_GOOGLE_REAUTH_ENABLED: 'false'
+  OAUTH_GOOGLE_CLIENT_ID: ''
+  OAUTH_GOOGLE_CLIENT_SECRET: ''
+  OAUTH_GITHUB_CLIENT_ID: ''
+  OAUTH_GITHUB_CLIENT_SECRET: ''
+  AUTH_MAIL_SINK_DIR: /var/lib/engram-mail
+  # P05-T24-2 S2 (advisor-dec-362/364, ADR 0004): openai_compat via the 9router container on the docker bridge gateway (private).
+  EMBEDDING_PROVIDER: openai_compat
+  EMBEDDING_BASE_URL: http://172.17.0.1:20128/v1
+  EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:?EMBEDDING_API_KEY missing}
+  EMBEDDING_MODEL: openrouter/qwen/qwen3-embedding-8b
+  EMBEDDING_DIMENSIONS: "1024"
+  EMBEDDING_QUERY_TIMEOUT: 8s  # advisor-dec-365: router latency 2.6-4.2 s
+  TEI_URL: ''
+
+services:
+  db:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${ENGRAM_DB_PASSWORD:?ENGRAM_DB_PASSWORD missing}
+    restart: unless-stopped
+    logging: *engram-logging
+
+  migrate:
+    environment:
+      DATABASE_URL: postgres://engram:${ENGRAM_DB_PASSWORD:?ENGRAM_DB_PASSWORD missing}@db:5432/engram?sslmode=disable
+    logging: *engram-logging
+
+  # Mail sink on an engram-only named volume, owned by distroless nonroot (65532), mode 700. Never served.
+  mail-sink-perms:
+    volumes: !override
+      - engram-mail:/sink
+    command: ['sh', '-c', 'chown 65532:65532 /sink && chmod 0700 /sink']
+    logging: *engram-logging
+
+  api:
+    ports: !reset []
+    environment:
+      <<: *engram-app-env
+      HTTP_ADDR: 0.0.0.0:8080
+    volumes: !override
+      - engram-mail:/var/lib/engram-mail
+    restart: unless-stopped
+    logging: *engram-logging
+    networks:
+      default:
+        aliases: [engram-api]
+
+  worker:
+    environment:
+      <<: *engram-app-env
+    volumes: !override
+      - engram-mail:/var/lib/engram-mail
+    restart: unless-stopped
+    logging: *engram-logging
+
+  web:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *engram-logging
+    networks:
+      default: {}
+      edge:
+        aliases: [engram-web]
+
+  tei:
+    profiles: ['semantic']
+    logging: *engram-logging
+
+  fakeembed:
+    profiles: ['semantic-fake']
+    logging: *engram-logging
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.17.0/24
+  edge:
+    name: selfio_backend
+    external: true
+
+volumes:
+  engram-mail:
