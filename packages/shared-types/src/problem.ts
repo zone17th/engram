@@ -63,6 +63,9 @@ export const ERROR_CODES = [
   'reorder_mismatch',
   'changes_window_expired',
   'reset_token_invalid',
+  'export_not_ready',
+  'export_expired',
+  'account_delete_confirm_invalid',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

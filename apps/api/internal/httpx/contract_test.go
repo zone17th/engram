@@ -189,8 +189,8 @@ func TestOpenAPIP03ContractInvariants(t *testing.T) {
 	}
 
 	re401Reauth := regexp.MustCompile(`(?m)'401':\r?\n[ \t]*description:.*reauth_required, reauth_invalid`)
-	if got := len(re401Reauth.FindAllString(spec, -1)); got != 7 {
-		t.Errorf("phải có đúng 7 operation có A ghi nhận reauth_required, reauth_invalid dưới 401, tìm thấy %d", got)
+	if got := len(re401Reauth.FindAllString(spec, -1)); got != 10 {
+		t.Errorf("phải có đúng 10 operation có A (P03 7 + P06 3) ghi nhận reauth_required, reauth_invalid dưới 401, tìm thấy %d", got)
 	}
 
 	// Số operation có I tham chiếu IdempotencyConflict (P03 7 + P04 16) kiểm ở TestOpenAPIP04ContractInvariants.
@@ -236,6 +236,28 @@ var p04AuthUIOperationIDs = []string{
 var p05OperationIDs = []string{
 	"suggest",
 	"search",
+}
+
+// p06OperationIDs là các operation export và xoá tài khoản của plan P06 mục 3.
+var p06OperationIDs = []string{
+	"exportCreate",
+	"exportGetLatest",
+	"exportGet",
+	"exportDownload",
+	"exportCancel",
+	"exportDecryptedPages",
+	"exportDecryptedAudit",
+	"accountDelete",
+}
+
+// p06ProblemStatus là bảng 3 mã lỗi mới của plan P06 mục 3, đúng thứ tự thêm cuối catalog.
+var p06ProblemStatus = []struct {
+	code   string
+	status int
+}{
+	{"export_not_ready", 409},
+	{"export_expired", 410},
+	{"account_delete_confirm_invalid", 400},
 }
 
 // p04ProblemStatus là bảng mã lỗi mới của plan P04 mục 3, đúng thứ tự thêm cuối catalog.
@@ -310,21 +332,22 @@ func TestOpenAPIHasUniqueP04OperationIDs(t *testing.T) {
 			t.Errorf("operationId %s bị trùng (%d)", id, seen[id])
 		}
 	}
-	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + len(p04AuthUIOperationIDs) + len(p05OperationIDs) + 3; len(seen) != total {
-		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04 + authui + P05) có %d", len(seen), total)
+	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + len(p04AuthUIOperationIDs) + len(p05OperationIDs) + len(p06OperationIDs) + 3; len(seen) != total {
+		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04 + authui + P05 + P06) có %d", len(seen), total)
 	}
 }
 
 func TestProblemCatalogP04AppendedAtEnd(t *testing.T) {
 	n := len(p04ProblemStatus)
 	const authUITail = 1 // reset_token_invalid (ADR 0006) nối sau khối P04 content.
-	if len(httpx.ProblemCodes) < n+authUITail {
+	p06Tail := len(p06ProblemStatus)
+	if len(httpx.ProblemCodes) < n+authUITail+p06Tail {
 		t.Fatalf("catalog quá ngắn: %d", len(httpx.ProblemCodes))
 	}
-	if got := httpx.ProblemCodes[len(httpx.ProblemCodes)-1]; got != "reset_token_invalid" {
-		t.Errorf("mã cuối catalog phải là reset_token_invalid (ADR 0006), có %s", got)
+	p04Start := len(httpx.ProblemCodes) - n - authUITail - p06Tail
+	if got := httpx.ProblemCodes[p04Start+n]; got != "reset_token_invalid" {
+		t.Errorf("mã ngay sau khối P04 phải là reset_token_invalid (ADR 0006), có %s", got)
 	}
-	p04Start := len(httpx.ProblemCodes) - n - authUITail
 	tail := httpx.ProblemCodes[p04Start : p04Start+n]
 	for i, want := range p04ProblemStatus {
 		if tail[i] != want.code {
@@ -366,11 +389,11 @@ func TestContentProblemStatusMatchesPlan(t *testing.T) {
 func TestOpenAPIP04ContractInvariants(t *testing.T) {
 	spec := readOpenAPI(t)
 
-	// Mọi operation có Idempotency-Key (P03 7 + P04 16) khai báo 409 qua IdempotencyConflict.
+	// Mọi operation có Idempotency-Key (P03 7 + P04 16 + P06 4) khai báo 409 qua IdempotencyConflict.
 	keyRefs := strings.Count(spec, "$ref: '#/components/parameters/IdempotencyKey'")
 	conflictRefs := strings.Count(spec, "$ref: '#/components/responses/IdempotencyConflict'")
-	if keyRefs != 23 || conflictRefs != 23 {
-		t.Errorf("phải có đúng 23 operation có I (P03 7 + P04 16) tham chiếu IdempotencyKey và IdempotencyConflict, có %d / %d", keyRefs, conflictRefs)
+	if keyRefs != 27 || conflictRefs != 27 {
+		t.Errorf("phải có đúng 27 operation có I (P03 7 + P04 16 + P06 4) tham chiếu IdempotencyKey và IdempotencyConflict, có %d / %d", keyRefs, conflictRefs)
 	}
 
 	// If-Match version của content tách khỏi pattern vault.
@@ -551,8 +574,8 @@ func TestOpenAPIHasUniqueP05OperationIDs(t *testing.T) {
 	if len(p05OperationIDs) != 2 {
 		t.Fatalf("catalog test phải đủ 2 operation P05 (plan P05 mục 3), có %d", len(p05OperationIDs))
 	}
-	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + len(p04AuthUIOperationIDs) + len(p05OperationIDs) + 3; len(seen) != total {
-		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04 + authui + P05) có %d", len(seen), total)
+	if total := len(p02OperationIDs) + len(p03OperationIDs) + len(p04OperationIDs) + len(p04AuthUIOperationIDs) + len(p05OperationIDs) + len(p06OperationIDs) + 3; len(seen) != total {
+		t.Errorf("openapi.yaml có %d operationId, catalog test (P01 3 + P02 + P03 + P04 + authui + P05 + P06) có %d", len(seen), total)
 	}
 }
 
@@ -584,5 +607,47 @@ func TestOpenAPIP05ContractInvariants(t *testing.T) {
 		if !strings.Contains(op, "search_read") {
 			t.Errorf("%s phải nêu scope rate limit search_read", id)
 		}
+	}
+}
+
+func TestOpenAPIProblemCodesMatchCatalog(t *testing.T) {
+	TestProblemCatalogParityWithOpenAPI(t)
+}
+
+func TestOpenAPIOperationIDs(t *testing.T) {
+	spec := readOpenAPI(t)
+	seen := map[string]int{}
+	re := regexp.MustCompile(`(?m)^[ \t]*operationId: ([A-Za-z][A-Za-z0-9]+)\s*$`)
+	for _, m := range re.FindAllStringSubmatch(spec, -1) {
+		seen[m[1]]++
+	}
+	for _, id := range p06OperationIDs {
+		if seen[id] == 0 {
+			t.Errorf("thiếu operationId %s", id)
+		}
+		if seen[id] > 1 {
+			t.Errorf("operationId %s bị trùng (%d)", id, seen[id])
+		}
+	}
+	if len(p06OperationIDs) != 8 {
+		t.Fatalf("catalog test phải đủ 8 operation P06 (plan P06 mục 3), có %d", len(p06OperationIDs))
+	}
+
+	p06Start := len(httpx.ProblemCodes) - len(p06ProblemStatus)
+	if httpx.ProblemCodes[p06Start-1] != "reset_token_invalid" {
+		t.Errorf("khối mã P06 phải nối ngay sau reset_token_invalid, có %s", httpx.ProblemCodes[p06Start-1])
+	}
+	for i, want := range p06ProblemStatus {
+		if got := httpx.ProblemCodes[p06Start+i]; got != want.code {
+			t.Errorf("mã P06 thứ %d = %s, muốn %s", i, got, want.code)
+		}
+		if got := httpx.ContentProblemStatus(want.code); got != want.status {
+			t.Errorf("ContentProblemStatus(%s) = %d, muốn %d", want.code, got, want.status)
+		}
+	}
+
+	settingsPatchOp := openAPIOperation(t, spec, "meSettingsPatch")
+	if !strings.Contains(settingsPatchOp, "semantic_unavailable") || strings.Contains(settingsPatchOp, "provider probe") {
+		t.Error("meSettingsPatch 409 phải ghi nhận semantic_unavailable (không còn 'provider probe', FU-T13-OAS)")
 	}
 }

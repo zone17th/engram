@@ -25,6 +25,9 @@ const (
 	EventOAuthLogin          = "auth.oauth.login"
 	EventReauth              = "auth.reauth"
 
+	EventExportEncrypted     = "export.encrypted"
+	EventExportDecrypted     = "export.decrypted"
+	EventAccountDelete       = "account.delete"
 	NoticeSecurity = "security"
 
 	ProviderPassword = "password"

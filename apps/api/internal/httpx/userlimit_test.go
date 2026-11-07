@@ -1023,3 +1023,59 @@ func TestUserLimit_ClockSampledAfterAdvisoryLockWait(t *testing.T) {
 		t.Fatalf("Allow thứ hai retryAfter = %d, muốn 840 (14 phút)", retry2)
 	}
 }
+
+func TestUserLimiter_ExportCreateScope60m(t *testing.T) {
+	rules := httpx.DefaultUserLimitRules()
+	exportCreate, ok := rules[httpx.ScopeExportCreate]
+	if !ok || exportCreate.Limit != 3 || exportCreate.Window != 60*time.Minute {
+		t.Fatalf("ScopeExportCreate rule = %+v (ok=%v), muốn Limit=3 Window=60m", exportCreate, ok)
+	}
+	if httpx.MaxRateLimitWindow != 60*time.Minute {
+		t.Fatalf("MaxRateLimitWindow = %v, muốn 60m", httpx.MaxRateLimitWindow)
+	}
+}
+
+func TestConsumeTx_ExportCreateCoalesce(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	userID, _ := seedRateLimitUser(t, pool, "export-coalesce@example.com")
+	t0 := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(t0)
+	limiter := httpx.NewUserLimiter(pool, clk)
+
+	// 3 lần tạo job mới tiêu hết 3 lượt trong 60 phút.
+	for i := range 3 {
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			t.Fatalf("BeginTx %d: %v", i+1, err)
+		}
+		ok, retry, err := limiter.ConsumeTx(ctx, tx, httpx.ScopeExportCreate, userID)
+		if err != nil || !ok || retry != 0 {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("ConsumeTx %d: ok=%v retry=%d err=%v, muốn ok=true", i+1, ok, retry, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("Commit %d: %v", i+1, err)
+		}
+		clk.Advance(10 * time.Minute)
+	}
+
+	// Lần thứ 4 tạo mới tại t0+30m bị chặn (retryAfter = 30m = 1800s) và không ghi thêm rate_event.
+	tx4, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("BeginTx 4: %v", err)
+	}
+	ok4, retry4, err4 := limiter.ConsumeTx(ctx, tx4, httpx.ScopeExportCreate, userID)
+	if err4 != nil || ok4 || retry4 != 30*60 {
+		_ = tx4.Rollback(ctx)
+		t.Fatalf("ConsumeTx 4: ok=%v retry=%d err=%v, muốn ok=false retry=1800", ok4, retry4, err4)
+	}
+	_ = tx4.Rollback(ctx)
+
+	if got := countRateEvents(t, pool, httpx.ScopeExportCreate, userID); got != 3 {
+		t.Fatalf("countRateEvents = %d, muốn 3", got)
+	}
+}

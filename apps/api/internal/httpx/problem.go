@@ -96,6 +96,10 @@ var problemTitles = map[string]string{
 	"changes_window_expired": "Mốc thay đổi đã quá cửa sổ lưu",
 	// P04 authui (ADR 0006).
 	"reset_token_invalid": "Mã đặt lại mật khẩu không hợp lệ",
+	// P06 export (plan P06 mục 3).
+	"export_not_ready":               "Bản sao lưu chưa sẵn sàng",
+	"export_expired":                 "Bản sao lưu đã hết hạn",
+	"account_delete_confirm_invalid": "Email xác nhận xoá tài khoản không khớp",
 }
 
 // contentProblemStatus là HTTP status cố định của mọi code mà API content P04
@@ -132,6 +136,9 @@ var contentProblemStatus = map[string]int{
 	"entry_restore_via_item":  http.StatusConflict,
 	"reorder_mismatch":        http.StatusConflict,
 	"changes_window_expired":  http.StatusGone,
+	"export_not_ready":               http.StatusConflict,
+	"export_expired":                 http.StatusGone,
+	"account_delete_confirm_invalid": http.StatusBadRequest,
 }
 
 // ContentProblemStatus trả HTTP status của một code lỗi API content P04 (plan P04

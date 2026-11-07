@@ -65,6 +65,10 @@ var ProblemCodes = []string{
 	"changes_window_expired",
 	// P04 authui (ADR 0006): đặt lại mật khẩu tài khoản, nối cuối catalog.
 	"reset_token_invalid",
+	// P06 export (plan P06 mục 3): thêm cuối catalog, thứ tự cố định.
+	"export_not_ready",
+	"export_expired",
+	"account_delete_confirm_invalid",
 }
 
 // SessionInvalidReason là extension `reason` khi code = session_invalid.

@@ -24,9 +24,10 @@ const (
 	ScopeVaultPasskeyOptions   = "vault_passkey_options"
 	ScopeVaultSensitive        = "vault_sensitive"
 	ScopeContentWrite          = "content_write"
+	ScopeExportCreate          = "export_create"
 
 	// MaxRateLimitWindow là cửa sổ dài nhất của rate_event (phục vụ job prune).
-	MaxRateLimitWindow = 15 * time.Minute
+	MaxRateLimitWindow = 60 * time.Minute
 )
 
 // RateLimitRule mô tả ngưỡng của một scope cửa sổ trượt.
@@ -57,6 +58,10 @@ func DefaultUserLimitRules() map[string]RateLimitRule {
 		ScopeContentWrite: {
 			Limit:  10,
 			Window: time.Second,
+		},
+		ScopeExportCreate: {
+			Limit:  3,
+			Window: 60 * time.Minute,
 		},
 	}
 }
@@ -178,6 +183,76 @@ func (l *UserLimiter) Allow(ctx context.Context, scope string, userID uuid.UUID)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		return false, 0, err
+	}
+	return true, 0, nil
+}
+
+// ConsumeTx kiểm tra và ghi nhận một sự kiện trong scope cho userID ngay trên transaction tx của caller.
+// Giữ pg_advisory_xact_lock(hashtext(scope), hashtext(user_id)) trên tx; nếu bị chặn (count >= limit)
+// hàm KHÔNG ghi thêm rate_event và trả ok=false kèm số giây Retry-After (>= 1).
+func (l *UserLimiter) ConsumeTx(ctx context.Context, tx pgx.Tx, scope string, userID uuid.UUID) (ok bool, retryAfter int, err error) {
+	if l == nil {
+		return false, 0, fmt.Errorf("user limiter chưa khởi tạo")
+	}
+	if tx == nil {
+		return false, 0, fmt.Errorf("tx rỗng")
+	}
+	if userID == uuid.Nil {
+		return false, 0, fmt.Errorf("user_id rỗng")
+	}
+	rule, exists := l.rules[scope]
+	if !exists || rule.Limit <= 0 || rule.Window <= 0 {
+		return false, 0, fmt.Errorf("scope rate limit không hợp lệ: %q", scope)
+	}
+
+	q := gen.New(tx)
+	if err := q.AcquireRateLimitLock(ctx, gen.AcquireRateLimitLockParams{
+		Scope:  scope,
+		UserID: userID,
+	}); err != nil {
+		return false, 0, err
+	}
+
+	now := l.clk.Now().UTC()
+	since := now.Add(-rule.Window)
+	sinceTS := pgtype.Timestamptz{Time: since, Valid: true}
+	nowTS := pgtype.Timestamptz{Time: now, Valid: true}
+	count, err := q.CountRateEventsSince(ctx, gen.CountRateEventsSinceParams{
+		Scope:  scope,
+		UserID: userID,
+		Since:  sinceTS,
+	})
+	if err != nil {
+		return false, 0, err
+	}
+
+	if int(count) >= rule.Limit {
+		retry := int(math.Ceil(rule.Window.Seconds()))
+		oldest, err := q.GetOldestRateEventSince(ctx, gen.GetOldestRateEventSinceParams{
+			Scope:  scope,
+			UserID: userID,
+			Since:  sinceTS,
+		})
+		if err == nil && oldest.Valid {
+			rem := oldest.Time.Add(rule.Window).Sub(now)
+			if rem > 0 {
+				retry = int(math.Ceil(rem.Seconds()))
+			} else {
+				retry = 1
+			}
+		}
+		if retry < 1 {
+			retry = 1
+		}
+		return false, retry, nil
+	}
+
+	if _, err := q.InsertRateEvent(ctx, gen.InsertRateEventParams{
+		Scope:  scope,
+		UserID: userID,
+		At:     nowTS,
+	}); err != nil {
 		return false, 0, err
 	}
 	return true, 0, nil
