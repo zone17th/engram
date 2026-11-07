@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { routing } from '../../i18n/routing';
 
 export const CSP_NONCE_HEADER = 'x-nonce';
 export const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com';
@@ -10,6 +11,22 @@ export const PERMISSIONS_POLICY_HEADER_VALUE =
 
 const SHA256_TOKEN_RE = /^'sha256-[A-Za-z0-9+/]+={0,2}'$/;
 
+/**
+ * Manifest key for the hashes of Next's static not-found shell. Used for every
+ * non-/app path without its own entry (404s) so the 404 page can hydrate.
+ * Written by `scripts/postbuild-csp-manifest.mjs` (keep the two in sync).
+ */
+export const NOT_FOUND_ROUTE_KEY = '/__not_found__';
+
+// Prerendered marketing pages (locale prefix stripped); `/docs` ships with P06 Task 7.
+const EXPECTED_SSG_ROUTES: Readonly<Record<string, true>> = {
+  '/': true,
+  '/privacy': true,
+  '/terms': true,
+  '/docs': true,
+};
+const UNKNOWN_ROUTE_WARN_INTERVAL_MS = 60_000;
+
 export type CspHashManifest = {
   version: number;
   routes: Record<string, string[]>;
@@ -17,7 +34,8 @@ export type CspHashManifest = {
 
 let cachedManifest: CspHashManifest | null | undefined;
 let manifestErrorLogged = false;
-let missingRouteErrorLogged = false;
+const missingSsgRoutesLogged = new Set<string>();
+let lastUnknownRouteWarnAt = 0;
 
 export function generateCspNonce(): string {
   return randomBytes(16).toString('base64');
@@ -74,10 +92,39 @@ function logManifestErrorOnce(message: string): void {
   console.error(message);
 }
 
-function logMissingRouteOnce(route: string): void {
-  if (missingRouteErrorLogged) return;
-  missingRouteErrorLogged = true;
-  console.error(`[csp] Missing CSP hash entry for route "${route}"; falling back to fail-closed script-src 'self'.`);
+function stripLocalePrefix(normalizedPathname: string): string {
+  for (const locale of routing.locales) {
+    const prefix = `/${locale}`;
+    if (normalizedPathname === prefix) return '/';
+    if (normalizedPathname.startsWith(`${prefix}/`)) return normalizedPathname.slice(prefix.length);
+  }
+  return normalizedPathname;
+}
+
+/** Marketing routes that are prerendered at build time and must exist in the manifest. */
+export function isExpectedSsgRoute(pathname: string): boolean {
+  return Object.hasOwn(EXPECTED_SSG_ROUTES, stripLocalePrefix(normalizeCspPathname(pathname)));
+}
+
+/**
+ * A missing *expected* SSG route is a build defect: logged once per distinct route
+ * (bounded by `EXPECTED_SSG_ROUTES` x locales). Any other missing route is a plain
+ * 404/scanner hit: at most one warning per `UNKNOWN_ROUTE_WARN_INTERVAL_MS`, so a
+ * scanner cannot suppress the SSG log nor flood the console.
+ */
+function logMissingRoute(route: string): void {
+  if (isExpectedSsgRoute(route)) {
+    if (missingSsgRoutesLogged.has(route)) return;
+    missingSsgRoutesLogged.add(route);
+    console.error(
+      `[csp] Missing CSP hash entry for expected SSG route "${route}"; falling back to fail-closed script-src 'self'.`,
+    );
+    return;
+  }
+  const now = Date.now();
+  if (now - lastUnknownRouteWarnAt < UNKNOWN_ROUTE_WARN_INTERVAL_MS) return;
+  lastUnknownRouteWarnAt = now;
+  console.warn(`[csp] No CSP hash entry for route "${route}" (not an SSG route); serving the not-found shell CSP.`);
 }
 
 /**
@@ -116,17 +163,20 @@ export function getRouteScriptHashes(pathname: string, cwd: string = process.cwd
   if (!manifest) return [];
   const normalized = normalizeCspPathname(pathname);
   const hashes = manifest.routes[normalized];
-  if (!hashes || hashes.length === 0) {
-    logMissingRouteOnce(normalized);
-    return [];
-  }
-  return hashes;
+  if (hashes && hashes.length > 0) return hashes;
+
+  logMissingRoute(normalized);
+  // Expected SSG route: fail closed. Anything else is answered by Next's static
+  // not-found shell, so it gets that shell's hashes and can hydrate.
+  if (isExpectedSsgRoute(normalized)) return [];
+  return manifest.routes[NOT_FOUND_ROUTE_KEY] ?? [];
 }
 
 export function resetCspManifestCacheForTests(): void {
   cachedManifest = undefined;
   manifestErrorLogged = false;
-  missingRouteErrorLogged = false;
+  missingSsgRoutesLogged.clear();
+  lastUnknownRouteWarnAt = 0;
 }
 
 export function buildAppNonceCsp(options: {

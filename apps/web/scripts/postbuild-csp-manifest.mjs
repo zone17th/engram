@@ -6,16 +6,17 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_TAG_RE = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
 const SRC_ATTR_RE = /(?:^|\s)src\s*=/i;
 const TYPE_ATTR_RE = /(?:^|\s)type\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
+// Synthetic manifest key for Next's static not-found shell(s); keep in sync with `lib/csp/manifest.ts`.
+export const NOT_FOUND_ROUTE_KEY = '/__not_found__';
 
-const EXECUTABLE_SCRIPT_TYPES = new Set([
-  '',
-  'module',
-  'text/javascript',
-  'application/javascript',
-  'application/ecmascript',
-  'text/ecmascript',
-]);
-
+const EXECUTABLE_SCRIPT_TYPES = Object.freeze({
+  '': true,
+  module: true,
+  'text/javascript': true,
+  'application/javascript': true,
+  'application/ecmascript': true,
+  'text/ecmascript': true,
+});
 /**
  * Extracts CSP `'sha256-<base64>'` tokens for every executable inline `<script>`
  * in an HTML string, preserving deterministic deduplicated order.
@@ -33,7 +34,7 @@ export function extractInlineScriptHashes(html) {
 
     const typeMatch = attrs.match(TYPE_ATTR_RE);
     const rawType = (typeMatch?.[1] ?? typeMatch?.[2] ?? typeMatch?.[3] ?? '').trim().toLowerCase();
-    if (!EXECUTABLE_SCRIPT_TYPES.has(rawType)) continue;
+    if (!Object.hasOwn(EXECUTABLE_SCRIPT_TYPES, rawType)) continue;
 
     const digest = createHash('sha256').update(body, 'utf8').digest('base64');
     const token = `'sha256-${digest}'`;
@@ -56,9 +57,16 @@ export function htmlRelativePathToRoutes(relativeHtmlPath, defaultLocale = 'en')
   // Strip Next route groups `(marketing)`
   const segments = rawSegments.filter((seg) => !(seg.startsWith('(') && seg.endsWith(')')));
   if (segments.length === 0) return [];
-
-  // Skip internal Next error/not-found shells and `/app/*` (which uses per-request nonces)
-  if (segments[0].startsWith('_') || segments[0] === 'app') {
+  // `/app/*` uses per-request nonces
+  if (segments[0] === 'app') {
+    return [];
+  }
+  // Hash Next's static not-found shell(s) under the fallback key so 404 pages hydrate under hash CSP
+  const leaf = segments[segments.length - 1];
+  if (leaf === '_not-found' || leaf === '404') {
+    return [NOT_FOUND_ROUTE_KEY];
+  }
+  if (segments[0].startsWith('_')) {
     return [];
   }
   if (segments[segments.length - 1] === 'index') {
@@ -177,7 +185,7 @@ const isMain =
 if (isMain) {
   const { cspManifest, buildManifest, cspManifestPath, buildManifestPath } =
     generateCspAndBuildManifests();
-  const routeCount = Object.keys(cspManifest.routes).length;
+  const routeCount = Object.keys(cspManifest.routes).filter((r) => r !== NOT_FOUND_ROUTE_KEY).length;
   const chunkCount = Object.keys(buildManifest.chunks).length;
   if (routeCount === 0) {
     console.error('[postbuild-csp-manifest] No prerendered marketing HTML routes found in .next/server/app');

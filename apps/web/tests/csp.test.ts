@@ -32,10 +32,14 @@ vi.mock('next/headers', () => ({
   }),
 }));
 
+vi.mock('@/app/fonts', () => ({
+  fontVariables: '--font-display --font-sans --font-mono',
+}));
+
+import AppLayout from '../app/app/layout';
 import { resolveAppLocale } from '../i18n/app-locale';
 import {
-  HSTS_HEADER_VALUE,
-  PERMISSIONS_POLICY_HEADER_VALUE,
+  NOT_FOUND_ROUTE_KEY,
   resetCspManifestCacheForTests,
 } from '../lib/csp/manifest';
 import middleware, { config as middlewareConfig } from '../middleware';
@@ -43,6 +47,7 @@ import nextConfig from '../next.config';
 
 const SAMPLE_ROOT_HASH = "'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='";
 const SAMPLE_VI_PRIVACY_HASH = "'sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564='";
+const SAMPLE_NOT_FOUND_HASH = "'sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0='";
 
 const SAMPLE_MANIFEST_JSON = JSON.stringify({
   version: 1,
@@ -52,6 +57,7 @@ const SAMPLE_MANIFEST_JSON = JSON.stringify({
     '/vi': [SAMPLE_ROOT_HASH],
     '/privacy': [SAMPLE_VI_PRIVACY_HASH],
     '/vi/privacy': [SAMPLE_VI_PRIVACY_HASH],
+    [NOT_FOUND_ROUTE_KEY]: [SAMPLE_NOT_FOUND_HASH],
   },
 });
 
@@ -239,7 +245,7 @@ describe('CSP single emitter & production script-src hardening (SPEC §10.2, P06
     }
   });
 
-  it('fails closed to script-src self and logs console.error once when csp-hashes.json is missing or route is absent', () => {
+  it('fails closed to script-src self and logs console.error once when csp-hashes.json is missing', () => {
     const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
       throw new Error('ENOENT: no such file or directory');
     });
@@ -258,21 +264,59 @@ describe('CSP single emitter & production script-src hardening (SPEC §10.2, P06
       expect(scriptSrc).not.toContain("'unsafe-inline'");
       expect(scriptSrc).not.toContain("'unsafe-eval'");
     }
+  });
 
-    // Also test missing route entry inside a valid manifest
-    resetCspManifestCacheForTests();
-    readSpy.mockReturnValue(SAMPLE_MANIFEST_JSON);
-    errorSpy.mockClear();
+  it('serves not-found shell hashes on unmapped 404 paths while logging missing expected SSG routes even after scanner hits (R1-3)', () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(SAMPLE_MANIFEST_JSON);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const unmapped1 = middleware(makeRequest('/unknown-route'));
-    const unmapped2 = middleware(makeRequest('/another-unmapped'));
-    expect(getScriptSrcDirective(unmapped1.headers.get('Content-Security-Policy') ?? '')).toBe(
-      "script-src 'self'",
+    // (a) Unmapped 404 marketing paths receive the hashed not-found shell CSP so 404 hydrates;
+    // scanner hits rate-limit to a single warn and do not touch console.error.
+    const scan1 = middleware(makeRequest('/wp-login'));
+    const scan2 = middleware(makeRequest('/vi/nonexistent-page'));
+    expect(getScriptSrcDirective(scan1.headers.get('Content-Security-Policy') ?? '')).toBe(
+      `script-src 'self' ${SAMPLE_NOT_FOUND_HASH}`,
     );
-    expect(getScriptSrcDirective(unmapped2.headers.get('Content-Security-Policy') ?? '')).toBe(
-      "script-src 'self'",
+    expect(getScriptSrcDirective(scan2.headers.get('Content-Security-Policy') ?? '')).toBe(
+      `script-src 'self' ${SAMPLE_NOT_FOUND_HASH}`,
     );
-    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    // (b) A missing *expected SSG* route (e.g. /docs omitted from manifest) still logs
+    // console.error per distinct SSG route and fails closed to script-src 'self'.
+    const missingDocs1 = middleware(makeRequest('/docs'));
+    const missingDocs2 = middleware(makeRequest('/docs'));
+    const missingViDocs = middleware(makeRequest('/vi/docs'));
+    for (const res of [missingDocs1, missingDocs2, missingViDocs]) {
+      expect(getScriptSrcDirective(res.headers.get('Content-Security-Policy') ?? '')).toBe(
+        "script-src 'self'",
+      );
+    }
+    expect(errorSpy).toHaveBeenCalledTimes(2);
+    expect(errorSpy.mock.calls[0]?.[0]).toContain('"/docs"');
+    expect(errorSpy.mock.calls[1]?.[0]).toContain('"/vi/docs"');
+  });
+
+  it('does not leak the per-request CSP nonce into any data-* attribute or prop on the /app layout <html> element (R1-2)', async () => {
+    const sentinelNonce = 'TEST_SENTINEL_NONCE_9f8e7d==';
+    mockHeaders.set('x-nonce', sentinelNonce);
+
+    const tree = (await AppLayout({ children: null })) as {
+      type: unknown;
+      props: Record<string, unknown>;
+    };
+    expect(tree.type).toBe('html');
+    expect(tree.props['data-csp-nonce']).toBeUndefined();
+    for (const key of Object.keys(tree.props)) {
+      expect(key.toLowerCase()).not.toContain('nonce');
+    }
+    expect(JSON.stringify(tree.props)).not.toContain(sentinelNonce);
+
+    const layoutSource = fs.readFileSync(path.resolve(__dirname, '../app/app/layout.tsx'), 'utf8');
+    expect(layoutSource).not.toContain('data-csp-nonce');
+    expect(layoutSource).not.toContain('CSP_NONCE_HEADER');
   });
 
   it('preserves /app/* locale behavior (NF-05: sabk_locale=en still resolves to en without middleware interference)', async () => {
@@ -307,26 +351,30 @@ describe('security headers & poweredByHeader in next.config.ts', () => {
     expect(authIndex).toBeGreaterThan(catchAllIndex);
     expect(resetIndex).toBeGreaterThan(authIndex);
 
+    const expectedHsts = 'max-age=31536000; includeSubDomains';
+    const expectedPermissionsPolicy =
+      'camera=(), microphone=(), geolocation=(), payment=(), usb=(), publickey-credentials-get=(self), publickey-credentials-create=(self)';
+
     const rootHeaders = await effectiveStaticHeadersFor('/');
     expect(rootHeaders.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
     expect(rootHeaders.get('X-Content-Type-Options')).toBe('nosniff');
     expect(rootHeaders.get('X-Frame-Options')).toBe('DENY');
-    expect(rootHeaders.get('Strict-Transport-Security')).toBe(HSTS_HEADER_VALUE);
-    expect(rootHeaders.get('Permissions-Policy')).toBe(PERMISSIONS_POLICY_HEADER_VALUE);
+    expect(rootHeaders.get('Strict-Transport-Security')).toBe(expectedHsts);
+    expect(rootHeaders.get('Permissions-Policy')).toBe(expectedPermissionsPolicy);
 
     const loginHeaders = await effectiveStaticHeadersFor('/app/auth/login');
     expect(loginHeaders.get('Referrer-Policy')).toBe('no-referrer');
     expect(loginHeaders.get('X-Content-Type-Options')).toBe('nosniff');
     expect(loginHeaders.get('X-Frame-Options')).toBe('DENY');
-    expect(loginHeaders.get('Strict-Transport-Security')).toBe(HSTS_HEADER_VALUE);
-    expect(loginHeaders.get('Permissions-Policy')).toBe(PERMISSIONS_POLICY_HEADER_VALUE);
+    expect(loginHeaders.get('Strict-Transport-Security')).toBe(expectedHsts);
+    expect(loginHeaders.get('Permissions-Policy')).toBe(expectedPermissionsPolicy);
 
     const resetHeaders = await effectiveStaticHeadersFor('/app/auth/reset-password');
     expect(resetHeaders.get('Referrer-Policy')).toBe('no-referrer');
     expect(resetHeaders.get('Cache-Control')).toBe('no-store');
     expect(resetHeaders.get('X-Content-Type-Options')).toBe('nosniff');
     expect(resetHeaders.get('X-Frame-Options')).toBe('DENY');
-    expect(resetHeaders.get('Strict-Transport-Security')).toBe(HSTS_HEADER_VALUE);
-    expect(resetHeaders.get('Permissions-Policy')).toBe(PERMISSIONS_POLICY_HEADER_VALUE);
+    expect(resetHeaders.get('Strict-Transport-Security')).toBe(expectedHsts);
+    expect(resetHeaders.get('Permissions-Policy')).toBe(expectedPermissionsPolicy);
   });
 });

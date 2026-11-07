@@ -1,21 +1,18 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 import {
+  NOT_FOUND_ROUTE_KEY,
   extractInlineScriptHashes,
   generateCspAndBuildManifests,
   htmlRelativePathToRoutes,
 } from './postbuild-csp-manifest.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RUN_TMP_BASE = 'D:/my-project/.engram-dev/p06-beta/reports/ops-edge';
-
 function makeTempDir() {
-  const base = fs.existsSync(RUN_TMP_BASE) ? RUN_TMP_BASE : path.resolve(__dirname, '..');
-  return fs.mkdtempSync(path.join(base, '.tmp-csp-manifest-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'csp-manifest-test-'));
 }
 
 test('extractInlineScriptHashes computes exact sha256-<base64> for inline executable scripts and ignores external/JSON scripts', () => {
@@ -40,13 +37,15 @@ test('extractInlineScriptHashes computes exact sha256-<base64> for inline execut
   assert.deepEqual(hashes, [expected1, expected2]);
 });
 
-test('htmlRelativePathToRoutes maps default locale en and prefixed locale vi routes while skipping internal/app routes', () => {
+test('htmlRelativePathToRoutes maps default locale en, prefixed locale vi, and not-found shell while skipping internal/app routes', () => {
   assert.deepEqual(htmlRelativePathToRoutes('en.html'), ['/', '/en']);
   assert.deepEqual(htmlRelativePathToRoutes('vi.html'), ['/vi']);
   assert.deepEqual(htmlRelativePathToRoutes('en/privacy.html'), ['/en/privacy', '/privacy']);
   assert.deepEqual(htmlRelativePathToRoutes('vi/privacy.html'), ['/vi/privacy']);
   assert.deepEqual(htmlRelativePathToRoutes('(marketing)/en/docs.html'), ['/docs', '/en/docs']);
-  assert.deepEqual(htmlRelativePathToRoutes('_not-found.html'), []);
+  assert.deepEqual(htmlRelativePathToRoutes('_not-found.html'), [NOT_FOUND_ROUTE_KEY]);
+  assert.deepEqual(htmlRelativePathToRoutes('vi/_not-found.html'), [NOT_FOUND_ROUTE_KEY]);
+  assert.deepEqual(htmlRelativePathToRoutes('_error.html'), []);
   assert.deepEqual(htmlRelativePathToRoutes('app/settings.html'), []);
 });
 
@@ -74,9 +73,10 @@ test('generateCspAndBuildManifests writes csp-hashes.json and build-manifest.jso
       `<html><body><script>${viPrivacyInline}</script></body></html>`,
       'utf8',
     );
+    const notFoundInline = 'self.__next_f.push([1,"404"])';
     fs.writeFileSync(
       path.join(serverAppDir, '_not-found.html'),
-      '<html><body><script>self.__next_f.push([1,"404"])</script></body></html>',
+      `<html><body><script>${notFoundInline}</script></body></html>`,
       'utf8',
     );
 
@@ -98,10 +98,12 @@ test('generateCspAndBuildManifests writes csp-hashes.json and build-manifest.jso
 
     const expectedEnHash = `'sha256-${createHash('sha256').update(enInline, 'utf8').digest('base64')}'`;
     const expectedViHash = `'sha256-${createHash('sha256').update(viPrivacyInline, 'utf8').digest('base64')}'`;
+    const expectedNotFoundHash = `'sha256-${createHash('sha256').update(notFoundInline, 'utf8').digest('base64')}'`;
 
     assert.deepEqual(cspManifest.routes['/'], [expectedEnHash]);
     assert.deepEqual(cspManifest.routes['/en'], [expectedEnHash]);
     assert.deepEqual(cspManifest.routes['/vi/privacy'], [expectedViHash]);
+    assert.deepEqual(cspManifest.routes[NOT_FOUND_ROUTE_KEY], [expectedNotFoundHash]);
     assert.equal(cspManifest.routes['/_not-found'], undefined);
 
     const expectedJsDigest = `sha256-${createHash('sha256').update(jsBytes).digest('hex')}`;

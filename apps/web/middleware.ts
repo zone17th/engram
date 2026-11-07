@@ -10,8 +10,6 @@ import {
 
 const intlMiddleware = createMiddleware(routing);
 
-export const matcher = ['/((?!api|_next|_vercel|.*\\..*).*)'];
-
 export default function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   if (process.env.NODE_ENV !== 'production' && pathname === '/dev/crypto-bench') {
