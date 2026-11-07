@@ -282,7 +282,7 @@
       <div class="card p-5 mb-3" id="timkiem-privacy-card">
         <div class="text-[15px] font-semibold mb-1">Tìm kiếm thấy được gì</div>
         <p class="text-[13px] m-0" style="color:var(--muted)">
-          Tên mục, gợi ý và tag không được mã hoá, và chữ gõ trong ô tìm được gửi tới máy chủ, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá.
+          Tên mục, gợi nhớ và tag không được mã hoá, và chữ gõ trong ô tìm được gửi tới máy chủ, nên máy chủ có thể tìm theo tên mục và tag. Nội dung entry luôn được mã hoá. <a href="docs.html#rieng-tu" class="text-link">Xem chi tiết quyền riêng tư</a> · <span lang="en"><a href="docs.html#rieng-tu" class="text-link">Privacy details</a></span>
         </p>
       </div>
 
@@ -356,24 +356,95 @@
     </section>
 
     <!-- ===== dữ liệu ===== -->
-    <section id="dulieu">
-      <h2 class="t-title-md mb-6">Dữ liệu</h2>
-      <div class="card">
-        <div class="flex items-center gap-4 p-5 flex-wrap">
-          <div class="min-w-0 flex-1 basis-[240px]">
-            <div class="text-[15px] font-semibold mb-1">Xuất toàn bộ</div>
-            <p class="text-[13px] m-0" style="color:var(--muted)">Một file JSON đã giải mã, gồm mọi mục, tag và entry. Cần vault đang mở.</p>
-          </div>
-          <button class="btn btn-tertiary" onclick="SAK.toast('Đang chuẩn bị engram-export.json…')">Xuất</button>
+    <!-- U17 (P06): one primary action = encrypted backup (session only). Readable export is secondary (unlocked vault + re-auth).
+         States are a review switcher only; production shows one state at a time. Status lines use role="status"/"alert" inline, never toasts. -->
+    <section id="dulieu" aria-labelledby="dulieuTitle">
+      <h2 id="dulieuTitle" class="t-title-md mb-1">Dữ liệu · <span lang="en" class="font-normal" style="color:var(--muted)">Data</span></h2>
+      <p class="t-body mb-6" style="color:var(--muted)">Giữ một bản sao dữ liệu của bạn ở ngoài engram. <span lang="en" class="block text-[13px]">Keep a copy of your data outside engram.</span></p>
+
+      <div class="card p-5 mb-3" data-seg-scope>
+        <div class="text-[15px] font-semibold mb-1">Bản sao lưu · <span lang="en" class="font-normal" style="color:var(--muted)">Backup</span></div>
+        <p class="text-[13px] m-0 mb-4" style="color:var(--body)">
+          Tải về một file đã mã hoá. Chỉ mở lại được bằng passphrase hoặc recovery key của bạn.
+          <span lang="en" class="block text-[12px] mt-0.5" style="color:var(--muted)">Download an encrypted file. Only your passphrase or a recovery key can unlock it.</span>
+        </p>
+
+        <div class="seg mb-4 flex-wrap" data-seg aria-label="Review states">
+          <button type="button" data-target="exp-idle" aria-pressed="true">Sẵn sàng</button>
+          <button type="button" data-target="exp-preparing" aria-pressed="false">Đang chuẩn bị</button>
+          <button type="button" data-target="exp-ready" aria-pressed="false">Tải về</button>
+          <button type="button" data-target="exp-failed" aria-pressed="false">Lỗi</button>
+          <button type="button" data-target="exp-expired" aria-pressed="false">Hết hạn</button>
+          <button type="button" data-target="exp-limit" aria-pressed="false">429 giới hạn</button>
+          <button type="button" data-target="exp-offline" aria-pressed="false">Offline</button>
         </div>
-        <hr class="rule">
-        <div class="flex items-center gap-4 p-5 flex-wrap">
-          <div class="min-w-0 flex-1 basis-[240px]">
-            <div class="text-[15px] font-semibold mb-1" style="color:var(--error)">Xoá tài khoản</div>
-            <p class="text-[13px] m-0" style="color:var(--muted)">Xoá mọi mục, entry và khoá. Không khôi phục được.</p>
+
+        <section data-view="exp-idle">
+          <button type="button" class="btn btn-primary">Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
+        </section>
+
+        <section data-view="exp-preparing" hidden>
+          <div role="status" aria-live="polite" class="auth-status mb-3">
+            Đang chuẩn bị bản sao lưu… 140/231 mục · <span lang="en">Preparing your backup… 140 of 231 items</span>
+            <progress class="block w-full mt-2" max="231" value="140" aria-label="Tiến độ / Progress"></progress>
           </div>
-          <button class="btn btn-danger">Xoá tài khoản</button>
+          <p class="text-[12px] m-0 mb-3" style="color:var(--muted)">Bạn có thể rời trang; file vẫn được chuẩn bị. <span lang="en">You can leave this page; the file keeps preparing.</span></p>
+          <button type="button" class="btn btn-tertiary">Huỷ · <span lang="en">Cancel</span></button>
+        </section>
+
+        <section data-view="exp-ready" hidden>
+          <div role="status" class="auth-status mb-3">Bản sao lưu đã sẵn sàng · có hiệu lực đến 14:12 ngày mai. Tải lại bao nhiêu lần cũng được. <span lang="en" class="block">Your backup is ready · available until 14:12 tomorrow. Download it as often as you need.</span></div>
+          <a href="#" class="btn btn-primary no-underline" download>Tải file (2,4 MB) · <span lang="en" class="font-semibold">Download file (2.4 MB)</span></a>
+        </section>
+
+        <section data-view="exp-failed" hidden>
+          <div role="alert" class="auth-alert mb-3">Không tạo được bản sao lưu. Dữ liệu của bạn không bị ảnh hưởng. <span lang="en" class="block">We couldn't create the backup. Your data is unaffected.</span></div>
+          <button type="button" class="btn btn-primary">Thử lại · <span lang="en" class="font-semibold">Try again</span></button>
+        </section>
+
+        <section data-view="exp-expired" hidden>
+          <div role="status" class="auth-status mb-3">Bản sao lưu đã hết hạn và được xoá (giữ 24 giờ để an toàn). Tạo bản mới chỉ mất một lần bấm. <span lang="en" class="block">The backup expired and was deleted (kept 24 hours for safety). One click makes a new one.</span></div>
+          <button type="button" class="btn btn-primary">Tạo bản mới · <span lang="en" class="font-semibold">Make a new backup</span></button>
+        </section>
+
+        <section data-view="exp-limit" hidden>
+          <div role="alert" class="auth-warning mb-3">Bạn đã tạo 3 bản trong 1 giờ qua (kể cả bản đã huỷ). Thử lại lúc 14:12. <span lang="en" class="block">You made 3 exports in the last hour (cancelled ones count). Try again at 14:12.</span></div>
+          <button type="button" class="btn btn-primary" disabled>Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
+        </section>
+
+        <section data-view="exp-offline" hidden>
+          <div role="status" class="auth-status mb-3">Bạn đang offline. Kết nối lại để tạo bản sao lưu. <span lang="en" class="block">You're offline. Reconnect to create a backup.</span></div>
+          <button type="button" class="btn btn-primary" disabled>Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
+        </section>
+
+        <details class="mt-4 text-[13px]">
+          <summary class="cursor-pointer py-1 min-h-[24px]" style="color:var(--body)">Chi tiết · <span lang="en">Details</span></summary>
+          <ul class="mt-2 mb-0 pl-5 list-disc" style="color:var(--muted)">
+            <li>File <span class="mono">.sabk.json</span>: mục, tag, entry ở dạng mã hoá, và các khoá đã bọc (passphrase, recovery key, passkey) để khôi phục độc lập; tính năng nhập lại trên giao diện sẽ có ở bản cập nhật tiếp theo. <span lang="en">Items, tags, encrypted entries and wrapped keys for independent recovery; in-app backup import arrives in a later update.</span></li>
+            <li>Gồm mục đang dùng và thùng rác chưa xoá hẳn. <span lang="en">Includes active items and trash not yet purged.</span></li>
+            <li>Tên mục, gợi nhớ và tag ở dạng đọc được trong file (giống trên máy chủ). <span lang="en">Item names, hints and tags are readable in the file, as on the server.</span></li>
+            <li>Tối đa 3 lần/giờ. File giữ 24 giờ, chỉ bạn tải được khi đã đăng nhập; tạo bản mới sẽ thay bản cũ. <span lang="en">Up to 3 per hour. Kept 24 hours, downloadable only by you while signed in; a new backup replaces the old one.</span></li>
+          </ul>
+        </details>
+
+        <hr class="rule my-4">
+        <div class="flex items-center gap-3 flex-wrap">
+          <p class="text-[13px] m-0 flex-1 basis-[240px]" style="color:var(--muted)">Cần một file đọc được không cần passphrase? <span lang="en" class="block text-[12px]">Need a file anyone can read, no passphrase?</span></p>
+          <button type="button" class="btn btn-tertiary btn-sm !whitespace-normal text-left" data-open-dialog="plainDlg">Xuất bản đọc được · <span lang="en">Readable export</span></button>
         </div>
+      </div>
+    </section>
+
+    <!-- Danger zone: separated from data card so it is never clicked by accident. -->
+    <section id="xoataikhoan" aria-labelledby="xoaTitle">
+      <h2 id="xoaTitle" class="t-title-md mb-4" style="color:var(--error-ink)">Vùng nguy hiểm · <span lang="en" class="font-normal">Danger zone</span></h2>
+      <div class="card card-error p-5">
+        <div class="text-[15px] font-semibold mb-1">Xoá tài khoản · <span lang="en" class="font-normal" style="color:var(--muted)">Delete account</span></div>
+        <p class="text-[13px] m-0 mb-4" style="color:var(--body)">
+          Xoá tài khoản và mọi dữ liệu. Không hoàn tác được. Khác với "Đặt lại vault" (chỉ xoá nội dung entry, giữ tài khoản, mục và tag).
+          <span lang="en" class="block text-[12px] mt-0.5" style="color:var(--muted)">Deletes your account and all data. Cannot be undone. Unlike "Reset vault" (clears entry contents only, keeps account, items and tags).</span>
+        </p>
+        <button type="button" class="btn btn-danger" data-open-dialog="deleteDlg">Xoá tài khoản… · <span lang="en">Delete account…</span></button>
       </div>
     </section>
 
@@ -1062,6 +1133,160 @@
   </div>
 </dialog>
 
+<!-- ===== modal: xuất bản đọc được (U17 decrypted export) ===== -->
+<dialog id="plainDlg" aria-labelledby="plainDlgTitle">
+  <div class="panel" style="width:min(560px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
+    <h2 id="plainDlgTitle" class="t-title-sm mb-1">Xuất bản đọc được · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Readable export</span></h2>
+    <!-- Production focus note: [data-seg] does not exist in apps/web; initial focus lands on password input (plainDlg) or "Giữ tài khoản" (deleteDlg). -->
+    <p class="t-body mb-4" style="color:var(--muted)">File được giải mã ngay trên máy này (gồm mục đang dùng và thùng rác chưa xoá hẳn; tính vào giới hạn 3 lần xuất/giờ); nội dung không gửi lên máy chủ. <span lang="en" class="block text-[12px] mt-1">Decrypted on this device (includes active items and unpurged trash; counts toward the 3/hour limit); contents are never uploaded.</span></p>
+    <div class="seg mb-5 flex-wrap" data-seg aria-label="Review states">
+      <button type="button" data-target="pl-confirm" aria-pressed="true">Xác nhận</button>
+      <button type="button" data-target="pl-locked" aria-pressed="false">Vault khoá</button>
+      <button type="button" data-target="pl-progress" aria-pressed="false">Đang giải mã</button>
+      <button type="button" data-target="pl-done" aria-pressed="false">Xong</button>
+      <button type="button" data-target="pl-failed" aria-pressed="false">Lỗi</button>
+      <button type="button" data-target="pl-limit" aria-pressed="false">429 giới hạn</button>
+      <button type="button" data-target="pl-offline" aria-pressed="false">Offline</button>
+      <button type="button" data-target="pl-reauth-expired" aria-pressed="false">Hết hạn re-auth</button>
+    </div>
+    <section data-view="pl-confirm">
+      <div class="rounded-md p-3.5 mb-4" style="background:var(--pale-orange)">
+        <p class="text-[13px] m-0" style="color:var(--body)"><strong>Ai có file này đều đọc được toàn bộ entry.</strong> Đừng gửi qua email hay lưu lên cloud chung. Muốn sao lưu an toàn, dùng "Tải bản sao lưu".
+        <span lang="en" class="block text-[12px] mt-1"><strong>Anyone with this file can read every entry.</strong> Don't email it or put it in shared cloud storage. For a safe backup, use "Download backup".</span></p>
+      </div>
+      <label class="field field-password">
+        <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal">Account password</span></span>
+        <input class="field-input" type="password" autocomplete="current-password" aria-describedby="plPwHint">
+        <span id="plPwHint" class="field-hint">Xác nhận đây là bạn. Tài khoản chỉ dùng Google/GitHub có thể bấm nút bên dưới (sẽ cần mở lại vault sau khi quay về). <span lang="en">Confirms it's you. Google/GitHub-only accounts can use the button below (you'll unlock your vault again on return).</span></span>
+      </label>
+      <button type="button" class="btn btn-secondary btn-sm mb-4">Xác nhận bằng Google · <span lang="en">Verify with Google</span></button>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ · <span lang="en">Cancel</span></button>
+        <button type="button" class="btn btn-primary">Xuất file đọc được · <span lang="en" class="font-semibold">Export readable file</span></button>
+      </div>
+    </section>
+    <section data-view="pl-locked" hidden>
+      <div role="alert" class="auth-alert mb-4">Cần mở vault trước khi xuất bản đọc được. <span lang="en" class="block">Unlock your vault first to make a readable export.</span></div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ · <span lang="en">Cancel</span></button>
+        <a href="unlock.html" class="btn btn-primary no-underline">Mở vault · <span lang="en" class="font-semibold">Unlock vault</span></a>
+      </div>
+    </section>
+    <section data-view="pl-progress" hidden>
+      <div role="status" aria-live="polite" class="auth-status mb-3">Đang giải mã trên máy này… 80/231 entry · <span lang="en">Decrypting on this device… 80 of 231 entries</span>
+        <progress class="block w-full mt-2" max="231" value="80" aria-label="Tiến độ / Progress"></progress></div>
+      <p class="text-[12px] m-0 mb-3" style="color:var(--muted)">Giữ tab này mở. Huỷ hoặc khoá vault sẽ xoá phần đã giải mã. <span lang="en">Keep this tab open. Cancelling or locking clears what was decrypted.</span></p>
+      <div class="flex justify-end"><button type="button" class="btn btn-tertiary">Huỷ · <span lang="en">Cancel</span></button></div>
+    </section>
+    <section data-view="pl-done" hidden>
+      <div role="status" class="auth-status mb-3">Đã lưu <span class="mono">engram-readable-2026-11-07.json</span>. Xoá file khi không cần nữa. <span lang="en" class="block">Saved <span class="mono">engram-readable-2026-11-07.json</span>. Delete the file when you no longer need it.</span></div>
+      <div class="flex justify-end"><button type="button" class="btn btn-primary" data-close-dialog>Xong · <span lang="en" class="font-semibold">Done</span></button></div>
+    </section>
+    <section data-view="pl-failed" hidden>
+      <div role="alert" class="auth-alert mb-3">Không giải mã được một số entry (vault vừa đổi khoá). Không có file nào được lưu. <span lang="en" class="block">Some entries couldn't be decrypted (the vault key just changed). No file was saved.</span></div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button>
+        <button type="button" class="btn btn-primary">Thử lại · <span lang="en" class="font-semibold">Try again</span></button>
+      </div>
+    </section>
+    <section data-view="pl-limit" hidden>
+      <div role="alert" class="auth-warning mb-3">Bạn đã tạo 3 bản trong 1 giờ qua (kể cả bản đã huỷ). Thử lại lúc 14:12. <span lang="en" class="block">You made 3 exports in the last hour (cancelled ones count). Try again at 14:12.</span></div>
+      <div class="flex justify-end"><button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button></div>
+    </section>
+    <section data-view="pl-offline" hidden>
+      <div role="status" class="auth-status mb-3">Bạn đang offline. Kết nối lại để tải dữ liệu về giải mã. <span lang="en" class="block">You're offline. Reconnect to fetch data for decryption.</span></div>
+      <div class="flex justify-end"><button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button></div>
+    </section>
+    <section data-view="pl-reauth-expired" hidden>
+      <div role="alert" class="auth-alert mb-3">Phiên xác nhận đã hết hạn. Nhập lại mật khẩu (hoặc xác nhận lại bằng Google) để tiếp tục. <span lang="en" class="block">Your confirmation expired. Enter your password (or verify with Google) to continue.</span></div>
+      <label class="field field-password"><span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal">Account password</span></span><input class="field-input" type="password" autocomplete="current-password"></label>
+      <div class="flex flex-wrap justify-between gap-2">
+        <button type="button" class="btn btn-secondary btn-sm">Xác nhận bằng Google · <span lang="en">Verify with Google</span></button>
+        <div class="flex gap-2">
+          <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ · <span lang="en">Cancel</span></button>
+          <button type="button" class="btn btn-primary">Tiếp tục · <span lang="en" class="font-semibold">Continue</span></button>
+        </div>
+      </div>
+    </section>
+  </div>
+</dialog>
+
+<!-- ===== modal: xoá tài khoản (U17 delete account) ===== -->
+<dialog id="deleteDlg" aria-labelledby="deleteDlgTitle">
+  <div class="panel" style="width:min(560px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
+    <h2 id="deleteDlgTitle" class="t-title-sm mb-1">Xoá tài khoản · <span lang="en" class="text-[16px] font-normal" style="color:var(--muted)">Delete account</span></h2>
+    <div class="seg mb-5 flex-wrap" data-seg aria-label="Review states">
+      <button type="button" data-target="del-s1" aria-pressed="true">1 · Hậu quả</button>
+      <button type="button" data-target="del-s2" aria-pressed="false">2 · Xác nhận</button>
+      <button type="button" data-target="del-busy" aria-pressed="false">Đang xoá</button>
+      <button type="button" data-target="del-failed" aria-pressed="false">Lỗi</button>
+      <button type="button" data-target="del-reauth-expired" aria-pressed="false">Hết hạn re-auth</button>
+      <button type="button" data-target="del-done" aria-pressed="false">Đã xoá</button>
+    </div>
+    <section data-view="del-s1">
+      <p class="text-[14px] font-semibold m-0 mb-2" style="color:var(--body)">Khi xoá tài khoản: · <span lang="en" class="font-normal">When you delete your account:</span></p>
+      <ul class="text-[13px] mt-0 mb-4 pl-5 list-disc space-y-1.5" style="color:var(--body)">
+        <li>Mọi mục, tag, entry, recovery key và bản bọc passkey trên máy chủ bị xoá (file sao lưu hoặc passkey đã lưu trên thiết bị của bạn vẫn thuộc quyền kiểm soát của bạn). <span lang="en" class="block text-[12px]" style="color:var(--muted)">All items, tags, entries, recovery keys and server passkey wraps are deleted (backup files or device passkeys saved on your devices remain yours).</span></li>
+        <li>Bạn bị đăng xuất trên mọi thiết bị. <span lang="en" class="block text-[12px]" style="color:var(--muted)">You're signed out on every device.</span></li>
+        <li>Bản sao lưu nội bộ của engram tự hết hạn trong tối đa 7 ngày; nhật ký bảo mật (không có nội dung) giữ 90 ngày. <span lang="en" class="block text-[12px]" style="color:var(--muted)">engram's internal backups expire within 7 days; security logs (no content) are kept 90 days.</span></li>
+        <li>Không khôi phục được. <span lang="en" class="block text-[12px]" style="color:var(--muted)">This can't be undone.</span></li>
+      </ul>
+      <div class="card p-4 mb-4">
+        <p class="text-[13px] m-0 mb-3" style="color:var(--body)">Chưa có bản sao lưu? Tải ngay để giữ dữ liệu. <span lang="en" class="block text-[12px]" style="color:var(--muted)">No backup yet? Download one to keep your data.</span></p>
+        <a href="#dulieu" class="btn btn-secondary btn-sm no-underline !whitespace-normal text-left" data-close-dialog>Tải bản sao lưu trước · <span lang="en">Download backup first</span></a>
+      </div>
+      <p class="text-[12px] m-0 mb-4" style="color:var(--muted)">Chỉ muốn bắt đầu lại vault mà giữ tài khoản? Dùng <a href="#baomat" class="text-link" data-close-dialog>Đặt lại vault</a>. <span lang="en">Only want a fresh vault and keep the account? Use Reset vault.</span></p>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button type="button" class="btn btn-tertiary" data-close-dialog>Giữ tài khoản · <span lang="en">Keep account</span></button>
+        <button type="button" class="btn btn-secondary" onclick="const s=this.closest('[data-seg-scope]');s.querySelector('[data-target=del-s2]').click();s.querySelector('[data-view=del-s2] input')?.focus()">Tiếp tục · <span lang="en">Continue</span></button>
+      </div>
+    </section>
+    <section data-view="del-s2" hidden>
+      <label class="field field-password">
+        <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal">Account password</span></span>
+        <input class="field-input" type="password" autocomplete="current-password" aria-describedby="delPwHint">
+        <span id="delPwHint" class="field-hint">Nếu mật khẩu sai, lỗi hiển thị ngay dưới ô này. Tài khoản chỉ dùng Google/GitHub bấm nút bên dưới. <span lang="en">Wrong-password errors appear right here. Google/GitHub-only accounts use the button below.</span></span>
+      </label>
+      <button type="button" class="btn btn-secondary btn-sm mb-4">Xác nhận bằng Google · <span lang="en">Verify with Google</span></button>
+      <label class="field">
+        <span class="field-label">Gõ email của bạn để xác nhận: <span class="mono">an@example.com</span> · <span lang="en" class="font-normal">Type your email to confirm (demo: mismatch validation shown)</span></span>
+        <input class="field-input" type="email" autocomplete="off" spellcheck="false" aria-describedby="delEmailErr" aria-invalid="true" value="an@exampl">
+        <span id="delEmailErr" class="field-error text-error-ink">Email chưa khớp. · <span lang="en">Email doesn't match.</span></span>
+      </label>
+      <div class="flex flex-wrap justify-between gap-2">
+        <button type="button" class="btn btn-tertiary" onclick="const s=this.closest('[data-seg-scope]');s.querySelector('[data-target=del-s1]').click();s.querySelector('[data-view=del-s1] button')?.focus()">Quay lại · <span lang="en">Back</span></button>
+        <button type="button" class="btn btn-danger !whitespace-normal text-left" disabled>Xoá vĩnh viễn · <span lang="en">Delete permanently</span></button>
+      </div>
+    </section>
+    <section data-view="del-busy" hidden>
+      <div role="status" aria-live="polite" class="auth-status mb-0">Đang xoá tài khoản… Đừng đóng tab. <span lang="en" class="block">Deleting your account… Don't close this tab.</span></div>
+    </section>
+    <section data-view="del-failed" hidden>
+      <div role="alert" class="auth-alert mb-3">Chưa xoá được. Tài khoản và dữ liệu vẫn còn nguyên. <span lang="en" class="block">Not deleted. Your account and data are unchanged.</span></div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button>
+        <button type="button" class="btn btn-danger">Thử lại · <span lang="en">Try again</span></button>
+      </div>
+    </section>
+    <section data-view="del-reauth-expired" hidden>
+      <div role="alert" class="auth-alert mb-3">Phiên xác nhận đã hết hạn; chưa có gì bị xoá. Nhập lại mật khẩu (hoặc xác nhận bằng Google). <span lang="en" class="block">Confirmation expired; nothing was deleted. Enter your password (or verify with Google).</span></div>
+      <label class="field field-password"><span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal">Account password</span></span><input class="field-input" type="password" autocomplete="current-password"></label>
+      <div class="flex flex-wrap justify-between gap-2">
+        <button type="button" class="btn btn-secondary btn-sm">Xác nhận bằng Google · <span lang="en">Verify with Google</span></button>
+        <div class="flex gap-2">
+          <button type="button" class="btn btn-tertiary" data-close-dialog>Huỷ · <span lang="en">Cancel</span></button>
+          <button type="button" class="btn btn-danger">Xác nhận và xoá · <span lang="en">Verify &amp; delete</span></button>
+        </div>
+      </div>
+    </section>
+    <section data-view="del-done" hidden>
+      <p class="text-[12px] m-0 mb-2" style="color:var(--muted)">Màn hình sau khi xoá (trang đăng nhập, đã đăng xuất) · <span lang="en">After-delete screen (sign-in page, signed out)</span></p>
+      <div role="status" class="auth-status mb-3">Tài khoản của bạn đã bị xoá. Cảm ơn bạn đã dùng engram. <span lang="en" class="block">Your account has been deleted. Thanks for using engram.</span></div>
+      <a href="landing.html" class="btn btn-tertiary no-underline">Về trang chủ · <span lang="en">Go to home</span></a>
+    </section>
+  </div>
+</dialog>
+
 <!-- ===== modal: đặt lại vault (multi-step reset) ===== -->
 <dialog id="resetDlg" aria-labelledby="resetDlgTitle">
   <div class="panel" style="width:min(600px,94vw);max-height:90vh;overflow:auto;padding:28px" data-seg-scope>
@@ -1124,7 +1349,7 @@
           Đặt lại chỉ xoá dữ liệu trên máy chủ live, không xoá các file backup bạn đang giữ ở ngoài. Nếu vẫn còn khả năng nhớ lại passphrase hoặc tìm thấy recovery key cũ sau này, hãy tải bản <strong>encrypted backup</strong> (<span class="mono">.sabk.json</span>, hoàn thiện ở <span class="phase-badge">P06</span>) trước khi đặt lại.
           <span lang="en" class="block text-[12px] mt-1.5" style="color:var(--muted)">Resetting deletes data on the live server only. Before resetting, check any existing backups or export an encrypted snapshot (<span class="mono">.sabk.json</span>, wired in P06) in case you recover an old passphrase or printout later.</span>
         </p>
-        <a href="#dulieu" class="btn btn-tertiary btn-sm no-underline" data-close-dialog>Tới mục Dữ liệu / Xuất · <span lang="en">Go to Export</span></a>
+        <a href="#dulieu" class="btn btn-secondary btn-sm no-underline !whitespace-normal text-left" data-close-dialog>Tải bản sao lưu trước · <span lang="en">Download backup first</span></a>
       </div>
       <div class="flex flex-wrap justify-between gap-2">
         <button type="button" class="btn btn-tertiary" onclick="this.closest('[data-seg-scope]').querySelector('[data-target=rst-s1]').click()">Quay lại</button>

@@ -38,21 +38,23 @@
 
 <main class="max-w-[840px] mx-auto px-5 pt-10 pb-24" data-seg-scope>
 
-  <h1 class="t-title-lg mb-2">Trạng thái rỗng, lỗi, ngoại tuyến, giảm chức năng</h1>
+  <h1 class="t-title-lg mb-2">Trạng thái rỗng, lỗi, ngoại tuyến, giảm chức năng · <span lang="en" class="font-normal text-muted">Empty, error, offline &amp; degraded states</span></h1>
   <p class="t-body-lg mb-7" style="color:var(--muted)">
     Bộ trạng thái dùng chung cho mọi màn. Nguyên tắc: nói chuyện gì đã xảy ra, dữ liệu còn nguyên hay không,
     và luôn để lại đúng một việc tiếp theo làm được.
+    <span lang="en" class="block text-[14px] mt-1">Shared states across all screens: explain what happened, whether data is intact, and leave one clear next action.</span>
   </p>
 
   <div class="seg mb-7 flex-wrap" data-seg>
-    <button data-target="empty"  aria-pressed="true">Rỗng</button>
-    <button data-target="load"   aria-pressed="false">Đang tải</button>
-    <button data-target="err"    aria-pressed="false">Lỗi</button>
-    <button data-target="auth"   aria-pressed="false">Auth/P02</button>
-    <button data-target="vault"  aria-pressed="false">Vault/P03</button>
-    <button data-target="search" aria-pressed="false">Tìm kiếm/P05</button>
-    <button data-target="off"    aria-pressed="false">Ngoại tuyến</button>
-    <button data-target="degr"   aria-pressed="false">Giảm chức năng</button>
+    <button type="button" data-target="empty"  aria-pressed="true">Rỗng</button>
+    <button type="button" data-target="load"   aria-pressed="false">Đang tải</button>
+    <button type="button" data-target="err"    aria-pressed="false">Lỗi</button>
+    <button type="button" data-target="auth"   aria-pressed="false">Auth/P02</button>
+    <button type="button" data-target="vault"  aria-pressed="false">Vault/P03</button>
+    <button type="button" data-target="search" aria-pressed="false">Tìm kiếm/P05</button>
+    <button type="button" data-target="data"   aria-pressed="false">Dữ liệu/P06</button>
+    <button type="button" data-target="off"    aria-pressed="false">Ngoại tuyến</button>
+    <button type="button" data-target="degr"   aria-pressed="false">Giảm chức năng</button>
   </div>
 
   <!-- ============================================================= -->
@@ -60,46 +62,53 @@
   <!-- ============================================================= -->
   <section data-view="empty" class="flex flex-col gap-4 scope-vault">
 
-    <div class="panel p-8 text-center">
-      <p class="t-label mb-3" style="color:var(--muted)">Vault trống · lần đầu</p>
-      <h2 class="t-title-md mb-2">Chưa có gì ở đây</h2>
-      <p class="t-body mb-5 max-w-[440px] mx-auto" style="color:var(--muted)">
-        Lưu thứ đầu tiên: một đoạn ghi chú, một khối JSON, hay bất cứ thứ gì bạn sợ quên.
-        Đặt tên theo từ khoá bạn sẽ nhớ lúc cần tìm.
+    <div class="panel p-8 text-center" id="empty-vault-first">
+      <p class="t-label mb-3" style="color:var(--muted)">Vault trống · lần đầu · <span lang="en">Empty vault · first time</span></p>
+      <h2 class="t-title-md mb-2">Chưa có gì ở đây · <span lang="en" class="font-normal text-muted">Nothing here yet</span></h2>
+      <p class="t-body mb-5 max-w-[480px] mx-auto" style="color:var(--muted)">
+        Gõ <span class="mono">ý tưởng: câu đầu tiên</span> hoặc nhập JSON. Lưu một đoạn ghi chú, một bảng JSON, hay bất cứ thứ gì bạn sợ quên — đặt tên theo từ khoá bạn sẽ nhớ lúc cần tìm.
+        <span lang="en" class="block text-[13px] mt-1.5">Type <span class="mono">idea: first sentence</span> or import JSON. Save your first note, JSON table, or anything you might forget — name it by a keyword you will remember.</span>
       </p>
-      <button class="btn btn-primary" onclick="SAK.toast('Mở ô thêm nhanh')">Thêm mục đầu tiên</button>
+      <a href="index.html" class="btn btn-primary no-underline">Thêm mục đầu tiên · <span lang="en" class="font-semibold">Add first item</span></a>
     </div>
 
     <!-- Neo #empty-search-no-match (mục 2.10: Không khớp — lexical + near rỗng, hoặc Enter với q chuẩn hoá rỗng không gọi /search) -->
     <!-- i18n: search.state.noMatch (vi: "Không khớp “{query}”" / en: "No match for “{query}”"),
                search.actions.createItem (vi: "Tạo mục “{query}”" / en: "Create item “{query}”") -->
     <div class="card p-6 text-center" id="empty-search-no-match">
-      <p class="t-label mb-2 text-muted">Tìm không ra</p>
-      <h2 class="t-title-sm mb-2">Không khớp “xyz”</h2>
+      <p class="t-label mb-2 text-muted">Tìm không ra · <span lang="en">No match</span></p>
+      <h2 class="t-title-sm mb-2">Không khớp “xyz” · <span lang="en" class="font-normal text-muted">No match for “xyz”</span></h2>
       <p class="t-body mb-4 text-muted">
-        Tìm kiếm chỉ soi tên mục và tag — không soi nội dung entry đã mã hoá đầu-cuối.
+        Tìm kiếm chỉ soi tên mục và tag — không soi nội dung entry đã mã hoá đầu-cuối. Gõ <span class="mono">xyz: nội dung</span> để lưu ngay hoặc tạo mục rỗng bên dưới.
+        <span lang="en" class="block text-[13px] mt-1">Search only checks item names and tags — never end-to-end encrypted entry contents. Type <span class="mono">xyz: content</span> to save right away, or create an empty item below.</span>
       </p>
       <div class="flex gap-2 justify-center flex-wrap">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đã tạo mục “xyz”','Hoàn tác')">Tạo mục “xyz”</button>
-        <button type="button" class="btn btn-tertiary btn-sm">Xoá bộ lọc</button>
+        <button type="button" class="btn btn-secondary btn-sm">Tạo mục “xyz” · <span lang="en">Create item “xyz”</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm">Xoá bộ lọc · <span lang="en">Clear filter</span></button>
       </div>
     </div>
 
-    <div class="card p-6 text-center">
-      <p class="t-label mb-2" style="color:var(--muted)">Mục chưa có entry</p>
-      <h2 class="t-title-sm mb-2">Mục này còn trống</h2>
-      <p class="t-body mb-4" style="color:var(--muted)">Thêm đoạn văn bản hoặc dán JSON vào đây.</p>
+    <div class="card p-6 text-center" id="empty-item-entries">
+      <p class="t-label mb-2" style="color:var(--muted)">Mục chưa có entry · <span lang="en">Empty item</span></p>
+      <h2 class="t-title-sm mb-2">Mục này chưa có nội dung · <span lang="en" class="font-normal text-muted">This item has no entries yet</span></h2>
+      <p class="t-body mb-4" style="color:var(--muted)">
+        Thêm đoạn văn bản hoặc dán JSON vào đây.
+        <span lang="en" class="block text-[13px] mt-1">Add a text entry or paste JSON here.</span>
+      </p>
       <div class="flex gap-2 justify-center flex-wrap">
-        <button class="btn btn-primary btn-sm">Thêm văn bản</button>
-        <button class="btn btn-secondary btn-sm">Dán JSON</button>
+        <button type="button" class="btn btn-primary btn-sm">Thêm văn bản · <span lang="en" class="font-semibold">Add text</span></button>
+        <button type="button" class="btn btn-secondary btn-sm">Nhập JSON… · <span lang="en">Import JSON…</span></button>
       </div>
     </div>
 
-    <div class="card p-6 text-center">
-      <p class="t-label mb-2" style="color:var(--muted)">Tag chưa dùng</p>
-      <h2 class="t-title-sm mb-2">Chưa mục nào gắn <span class="chip">#hoá-đơn</span></h2>
-      <p class="t-body mb-4" style="color:var(--muted)">Gắn tag này cho một mục, hoặc xoá tag nếu không cần nữa.</p>
-      <button class="btn btn-tertiary btn-sm">Xoá tag</button>
+    <div class="card p-6 text-center" id="empty-tag-unused">
+      <p class="t-label mb-2" style="color:var(--muted)">Tag chưa dùng · <span lang="en">Unused tag</span></p>
+      <h2 class="t-title-sm mb-2">Chưa mục nào gắn <span class="chip">#hoá-đơn</span> · <span lang="en" class="font-normal text-muted">No items tagged #hoá-đơn yet</span></h2>
+      <p class="t-body mb-4" style="color:var(--muted)">
+        Gắn tag này cho một mục, hoặc bỏ lọc để xem lại toàn bộ mục gần đây.
+        <span lang="en" class="block text-[13px] mt-1">Assign this tag to an item, or clear the filter to view all recent items.</span>
+      </p>
+      <button type="button" class="btn btn-tertiary btn-sm">Bỏ lọc · <span lang="en">Clear filter</span></button>
     </div>
   </section>
 
@@ -107,9 +116,10 @@
   <!-- ĐANG TẢI                                                       -->
   <!-- ============================================================= -->
   <section data-view="load" hidden class="flex flex-col gap-4 scope-vault">
-    <div class="card p-6">
-      <p class="t-label mb-4" style="color:var(--muted)">Danh sách đang tải · khung xám, không nhảy layout</p>
-      <div class="flex flex-col gap-3">
+    <div class="card p-6" id="load-list-skeleton">
+      <p class="t-label mb-2" style="color:var(--muted)">Danh sách đang tải · khung xám, không nhảy bố cục · <span lang="en">Loading list · layout-stable skeleton</span></p>
+      <p class="text-[13px] text-muted m-0 mb-4">Đang tải mục gần đây… · <span lang="en">Loading recent items…</span></p>
+      <div class="flex flex-col gap-3" aria-hidden="true">
         <div style="height:16px;width:42%;border-radius:var(--r-sm);background:var(--border)"></div>
         <div style="height:12px;width:68%;border-radius:var(--r-sm);background:var(--surface)"></div>
         <hr class="rule">
@@ -118,16 +128,20 @@
       </div>
     </div>
 
-    <div class="card p-6">
-      <p class="t-label mb-3" style="color:var(--muted)">Giải mã entry</p>
-      <p class="text-[14px] m-0" style="color:var(--body)">Đang giải mã nội dung trong trình duyệt…</p>
-      <p class="text-[13px] m-0 mt-1" style="color:var(--muted)">Mục và tag hiện ngay, nội dung hiện sau khi giải mã xong.</p>
+    <div class="card p-6" id="load-entry-decrypt">
+      <p class="t-label mb-3" style="color:var(--muted)">Giải mã entry · <span lang="en">Decrypting entry</span></p>
+      <p class="text-[14px] m-0" style="color:var(--body)">Đang giải mã nội dung entry… · <span lang="en" class="text-muted">Decrypting entry content…</span></p>
+      <p class="text-[13px] m-0 mt-1" style="color:var(--muted)">
+        Tên mục và tag hiện ngay; nội dung hiện sau khi giải mã xong trong trình duyệt.
+        <span lang="en" class="block text-[12px] mt-0.5">Item names and tags appear right away; entry content appears once decrypted in your browser.</span>
+      </p>
     </div>
 
-    <div class="card p-6">
-      <p class="t-label mb-3" style="color:var(--muted)">Thao tác chậm</p>
-      <p class="text-[14px] m-0 mb-3" style="color:var(--body)">Việc này lâu hơn thường lệ…</p>
-      <button class="btn btn-tertiary btn-sm">Huỷ</button>
+    <div class="card p-6" id="load-slow-action">
+      <p class="t-label mb-3" style="color:var(--muted)">Thao tác chậm · <span lang="en">Slow operation</span></p>
+      <p class="text-[14px] m-0 mb-1" style="color:var(--body)">Việc này lâu hơn thường lệ… · <span lang="en" class="text-muted">Taking longer than usual…</span></p>
+      <p class="text-[12px] text-muted m-0 mb-3"> Máy chậm có thể mất vài giây khi tính khoá hoặc xử lý nhiều mục. · <span lang="en">Slow devices may take a few seconds while deriving keys or processing items.</span></p>
+      <button type="button" class="btn btn-tertiary btn-sm">Huỷ · <span lang="en">Cancel</span></button>
     </div>
   </section>
 
@@ -149,14 +163,14 @@
       </p>
       <div class="flex gap-2 flex-wrap">
         <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=false">Tải bản mới · <span lang="en">Load latest</span></button>
-        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã ghi đè bằng bản của bạn (version mới) · Overwritten with your version')">Giữ bản của tôi · <span lang="en">Keep mine</span></button>
-        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã chép bản nháp vào clipboard · Copied your draft to clipboard')">Chép bản của tôi · <span lang="en">Copy mine</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm">Giữ bản của tôi · <span lang="en">Keep mine</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm">Chép bản của tôi · <span lang="en">Copy mine</span></button>
       </div>
       <div id="err-conflict-confirm" hidden class="rounded-md p-3 mt-3 bg-surface">
         <p class="text-[13px] m-0 mb-1 text-body"><strong>Bỏ thay đổi đang gõ và tải bản mới?</strong></p>
         <p class="text-[12px] text-muted m-0 mb-2" lang="en">Discard your current draft and load the latest version?</p>
         <div class="flex gap-2 flex-wrap">
-          <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true;SAK.toast('Đã tải bản mới nhất · Loaded latest version')">Bỏ nháp và tải · <span lang="en">Discard &amp; load</span></button>
+          <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true">Bỏ nháp và tải · <span lang="en">Discard &amp; load</span></button>
           <button type="button" class="btn btn-tertiary btn-sm" onclick="document.getElementById('err-conflict-confirm').hidden=true">Huỷ · <span lang="en">Cancel</span></button>
         </div>
       </div>
@@ -184,8 +198,8 @@
         "amount": 1200<br>"currency": "VND"
       </div>
       <div class="flex flex-wrap gap-2 mt-3">
-        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã đưa con trỏ tới dòng 14, cột 3 · Moved caret to line 14, column 3')">Đi tới lỗi · <span lang="en">Go to error</span></button>
-        <button type="button" class="btn btn-tertiary btn-sm" onclick="SAK.toast('Đã lưu nguyên văn thành 1 entry văn bản · Saved verbatim as text entry','Hoàn tác')">Lưu dạng văn bản · <span lang="en">Save as text</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm">Đi tới lỗi · <span lang="en">Go to error</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm">Lưu dạng văn bản · <span lang="en">Save as text</span></button>
       </div>
     </div>
 
@@ -222,10 +236,24 @@
       <button type="button" class="btn btn-primary btn-sm" data-open-dup-picker="wifi">Mở picker trùng tên “wifi” · <span lang="en">Open U9 picker</span></button>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Thao tác quá nhanh</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
+    <div class="card p-5" id="err-item-limits">
+      <span class="badge-type badge-warn mb-2 inline-block">409 item_tag_limit / item_entry_limit</span>
+      <p class="text-[14px] font-semibold m-0 mb-1">Chạm trần 20 tag hoặc 200 entry trong một mục</p>
+      <p class="text-[13px] text-muted m-0 mb-1">
+        Mỗi mục gắn tối đa 20 tag và chứa tối đa 200 entry đang hoạt động. Khi đủ 20 tag, nút <span class="mono">+ Tag (đã đủ 20)</span> bị khoá; khi đủ 200 entry, nút thêm văn bản/JSON bị khoá kèm giải thích.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        <strong>Item limit reached (20 tags or 200 entries).</strong> An item can have at most 20 active tags and 200 active entries. Remove a tag or delete an entry (or create a new item) to add more.
+      </p>
+    </div>
+
+    <div class="card p-5" id="err-content-rate-limited">
+      <p class="text-[14px] font-semibold m-0 mb-1">Thao tác quá nhanh · <span lang="en" class="font-normal text-muted">Too many requests</span></p>
+      <p class="text-[13px] m-0 mb-1" style="color:var(--muted)">
         Chờ vài giây rồi thử lại. Lần lưu vừa rồi không bị nhân đôi, kể cả khi bạn bấm lại.
+      </p>
+      <p class="text-[12px] text-muted m-0" lang="en">
+        Too many requests. Wait a moment and try again — your save will not be duplicated.
       </p>
     </div>
 
@@ -237,32 +265,36 @@
       <p class="text-[12px] text-muted m-0 mb-3" lang="en">
         <strong>Could not decrypt this entry.</strong> Authenticated decryption failed, so corrupted content is not shown. Other entries in this item still open normally.
       </p>
-      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang tải và giải mã lại entry… · Reloading and decrypting entry…')">Thử lại · <span lang="en">Retry</span></button>
+      <button type="button" class="btn btn-secondary btn-sm">Thử lại · <span lang="en">Retry</span></button>
     </div>
 
     <div class="card card-warning p-5" id="err-entry-key-mismatch">
       <span class="badge-type badge-warn mb-2 inline-block">entry_key_mismatch</span>
-      <p class="text-[14px] font-semibold m-0 mb-1">Entry này mã hoá bằng khoá cũ</p>
+      <p class="text-[14px] font-semibold m-0 mb-1">Entry này được mã hoá bằng khoá cũ</p>
       <p class="text-[13px] text-muted m-0 mb-1">
-        Mã khoá trên entry (<span class="mono">key_id</span>) không khớp với khoá hiện tại của vault (<span class="mono">vault_key_id</span>) nên trình duyệt không gọi giải mã. Điều này xảy ra khi vault đã được đặt lại hoặc đổi khoá ở thiết bị khác.
+        Khoá mã hoá trên entry này không khớp với khoá hiện tại của vault nên trình duyệt bỏ qua việc giải mã. Điều này xảy ra sau khi đặt lại vault hoặc đổi khoá ở thiết bị khác.
       </p>
       <p class="text-[12px] text-muted m-0" lang="en">
-        <strong>Encrypted with an older key (entry_key_mismatch).</strong> The encryption key on this entry (<span class="mono">key_id</span>) does not match your current vault key (<span class="mono">vault_key_id</span>), so decryption was skipped.
+        <strong>This entry was encrypted with an older vault key (entry_key_mismatch).</strong> The encryption key on this entry does not match your current vault key, so decryption was skipped. This happens after a vault reset or key change on another device.
       </p>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Lỗi máy chủ</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">
-        Chúng tôi chưa xử lý được yêu cầu. Mã sự cố <span class="mono">req_7f2a91c4</span> — gửi mã này nếu bạn cần báo lỗi.
+    <div class="card p-5" id="err-server-500">
+      <p class="text-[14px] font-semibold m-0 mb-1">Chưa xử lý được yêu cầu · <span lang="en" class="font-normal text-muted">Could not process request</span></p>
+      <p class="text-[13px] m-0 mb-1" style="color:var(--muted)">
+        Máy chủ tạm thời gặp sự cố (<span class="mono">req_7f2a91c4</span>). Bản nháp của bạn vẫn còn nguyên — hãy thử lại.
       </p>
-      <button class="btn btn-tertiary btn-sm">Thử lại</button>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        We could not process the request right now (<span class="mono">req_7f2a91c4</span>). Your draft is still here — please retry.
+      </p>
+      <button type="button" class="btn btn-tertiary btn-sm">Thử lại · <span lang="en">Retry</span></button>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Không tìm thấy</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Mục này đã bị xoá, hoặc đường dẫn không thuộc tài khoản của bạn.</p>
-      <a href="index.html" class="btn btn-tertiary btn-sm no-underline">Về danh sách</a>
+    <div class="card p-5" id="err-not-found">
+      <p class="text-[14px] font-semibold m-0 mb-1">Không tìm thấy · <span lang="en" class="font-normal text-muted">Not found</span></p>
+      <p class="text-[13px] m-0 mb-1" style="color:var(--muted)">Mục này đã bị xoá, hoặc đường dẫn không thuộc tài khoản của bạn.</p>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">This item was deleted or does not belong to your account.</p>
+      <a href="index.html" class="btn btn-tertiary btn-sm no-underline">Về danh sách · <span lang="en">Back to list</span></a>
     </div>
   </section>
 
@@ -271,32 +303,62 @@
   <!-- ============================================================= -->
   <section data-view="auth" hidden class="flex flex-col gap-3">
 
-    <div class="card p-5">
-      <div role="status" class="auth-status mb-0">Đang tải tài khoản…</div>
-    </div>
-
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Chưa có vault</p>
-      <p class="text-[13px] m-0 mb-3" style="color:var(--muted)">Bạn vẫn quản lý email, phiên và thông báo. Tạo vault ở onboarding (P03).</p>
-      <a href="settings.html" class="btn btn-tertiary btn-sm no-underline">Cài đặt tài khoản</a>
-    </div>
-
-    <div class="card p-5" style="border-color:var(--error)">
-      <div role="alert" class="auth-alert mb-3">
-        <p class="text-[14px] font-semibold m-0 mb-1">Không xác minh được phiên</p>
-        <p class="text-[13px] m-0" style="color:var(--body)">Mạng hoặc máy chủ tạm lỗi. Thử lại — chưa coi là đăng xuất.</p>
+    <div class="card p-5" id="auth-loading">
+      <div role="status" class="auth-status mb-0">
+        Đang tải tài khoản… · <span lang="en" class="text-muted">Loading account…</span>
       </div>
-      <button type="button" class="btn btn-secondary btn-sm">Thử lại</button>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Danh sách phiên trống</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">Chỉ có phiên hiện tại. Không có phiên khác để thu hồi.</p>
+    <div class="card p-5" id="auth-no-vault">
+      <p class="text-[14px] font-semibold m-0 mb-1">Chưa tạo vault · <span lang="en" class="font-normal text-muted">No vault set up yet</span></p>
+      <p class="text-[13px] m-0 mb-1" style="color:var(--muted)">Bạn vẫn quản lý được email, phiên đăng nhập và thông báo. Hãy tạo vault trước để lưu nội dung mã hoá và nhận 10 recovery key.</p>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">You can still manage your email, sessions, and notices. Create your vault first to save encrypted entries and receive 10 recovery keys.</p>
+      <div class="flex flex-wrap gap-2">
+        <a href="onboarding.html" class="btn btn-primary btn-sm no-underline">Tạo vault · <span lang="en" class="font-semibold">Set up vault</span></a>
+        <a href="settings.html" class="btn btn-tertiary btn-sm no-underline">Cài đặt tài khoản · <span lang="en">Account settings</span></a>
+      </div>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Thông báo trống</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">Chưa có cảnh báo bảo mật nào trong 90 ngày qua.</p>
+    <div class="card p-5" id="auth-session-unavailable" style="border-color:var(--error)">
+      <div role="alert" class="auth-alert mb-3">
+        <p class="text-[14px] font-semibold m-0 mb-1">Không kiểm tra được phiên · <span lang="en" class="font-normal">Could not verify the session</span></p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Lỗi mạng hoặc máy chủ. Thử lại — đây không phải đăng xuất.
+          <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)">Network or server error. Try again — this is not a sign-out.</span>
+        </p>
+      </div>
+      <button type="button" class="btn btn-secondary btn-sm">Thử lại · <span lang="en">Try again</span></button>
+    </div>
+
+    <!-- Session expired mid-flow (401 unauthenticated / access_expired / session_revoked while working in app) -->
+    <div class="card p-5" id="auth-session-expired-midflow" style="border-color:var(--error)">
+      <p class="t-label mb-2" style="color:var(--muted)">Hết hạn phiên giữa chừng · <span lang="en">Session expired mid-flow</span></p>
+      <div role="alert" class="auth-alert mb-3">
+        <p class="text-[14px] font-semibold m-0 mb-1" style="color:var(--body)">Phiên đăng nhập đã hết hạn</p>
+        <p class="text-[13px] m-0" style="color:var(--body)">
+          Làm mới phiên không thành công hoặc phiên đã bị đăng xuất ở thiết bị khác. Để bảo vệ dữ liệu, khoá giải mã và nội dung tạm trong bộ nhớ đã được xoá; dữ liệu đã lưu trên máy chủ vẫn nguyên vẹn. Đăng nhập lại để tiếp tục.
+        </p>
+      </div>
+      <p class="text-[12px] text-muted m-0 mb-3" lang="en">
+        <strong>Session expired (mid-flow).</strong> Automatic session refresh did not succeed or the session was revoked elsewhere. Decryption keys and temporary in-memory drafts were cleared for safety; your saved server data is untouched. Sign in again to continue.
+      </p>
+      <a href="auth.html#login" class="btn btn-primary btn-sm no-underline">Đăng nhập lại · <span lang="en" class="font-semibold">Sign in again</span></a>
+    </div>
+
+    <div class="card p-5" id="auth-sessions-empty">
+      <p class="text-[14px] font-semibold m-0 mb-1">Chỉ phiên này đang đăng nhập · <span lang="en" class="font-normal text-muted">Only this session is signed in</span></p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Không có phiên đăng nhập nào khác để thu hồi.
+        <span lang="en" class="block text-[12px] mt-0.5">There are no other active sessions to revoke.</span>
+      </p>
+    </div>
+
+    <div class="card p-5" id="auth-notifications-empty">
+      <p class="text-[14px] font-semibold m-0 mb-1">Chưa có thông báo bảo mật · <span lang="en" class="font-normal text-muted">No security notices yet</span></p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Chưa có cảnh báo bảo mật nào trong 90 ngày qua.
+        <span lang="en" class="block text-[12px] mt-0.5">No security alerts in the last 90 days.</span>
+      </p>
     </div>
 
     <div class="card p-5" lang="en">
@@ -327,7 +389,7 @@
       <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
         <strong>Vault changed in another tab or device.</strong> Nothing was saved, and any keys generated in this failed step are discarded. Reload to fetch the latest vault state.
       </p>
-      <button type="button" class="btn btn-secondary" onclick="SAK.toast('Đã tải lại trạng thái vault')">Tải lại · <span lang="en">Reload</span></button>
+      <button type="button" class="btn btn-secondary">Tải lại · <span lang="en">Reload</span></button>
     </div>
 
     <!-- 2a. Re-auth expired mid-flow — password user -->
@@ -350,7 +412,7 @@
         </span>
       </label>
       <div class="flex gap-2 flex-wrap">
-        <button type="button" class="btn btn-primary" onclick="SAK.toast('Đã xác nhận lại · tiếp tục lưu')">Xác nhận và tiếp tục · <span lang="en">Confirm &amp; continue</span></button>
+        <button type="button" class="btn btn-primary">Xác nhận và tiếp tục · <span lang="en">Confirm &amp; continue</span></button>
         <button type="button" class="btn btn-tertiary">Huỷ · <span lang="en">Cancel</span></button>
       </div>
     </div>
@@ -367,7 +429,7 @@
       <p class="text-[12px] m-0 mb-3" style="color:var(--muted)" lang="en">
         <strong>Time ran out (OAuth-only account).</strong> Because Google re-authentication redirects the page, temporary secrets were cleared and nothing was saved on the server. Restart the flow to re-authenticate with Google.
       </p>
-      <button type="button" class="btn btn-secondary" onclick="SAK.toast('Bắt đầu lại thao tác từ bước xác thực')">Bắt đầu lại · <span lang="en">Start over</span></button>
+      <button type="button" class="btn btn-secondary">Bắt đầu lại · <span lang="en">Start over</span></button>
     </div>
 
     <!-- 3. 429 rate_limited for vault actions -->
@@ -426,7 +488,7 @@
         <strong>Not enough memory to open the vault.</strong> This browser could not set aside the 64 MiB of memory needed to derive the key from your passphrase. This does not mean your passphrase is wrong. Close other tabs or apps, unlock with a passkey or remembered device, or try another device.
       </p>
       <div class="flex gap-2 flex-wrap">
-        <button type="button" class="btn btn-secondary" onclick="SAK.toast('Đang thử tính lại khoá…')">Thử lại · <span lang="en">Try again</span></button>
+        <button type="button" class="btn btn-secondary">Thử lại · <span lang="en">Try again</span></button>
         <a href="unlock.html" class="btn btn-tertiary no-underline">Dùng passkey · <span lang="en">Use passkey</span></a>
       </div>
     </div>
@@ -883,13 +945,211 @@
   </section>
 
   <!-- ============================================================= -->
+  <!-- DỮ LIỆU / P06: SAO LƯU, XUẤT ĐỌC ĐƯỢC & XOÁ TÀI KHOẢN (U17/U18) -->
+  <!-- ============================================================= -->
+  <!-- Khớp từng chữ với mockups/settings.html #dulieu, #xoataikhoan, #plainDlg, #deleteDlg (advisor-dec-P06-003).
+       Không dùng thuật ngữ kỹ thuật (snapshot, envelope, ciphertext) ở câu chính; dùng role="status"/role="alert" nội tuyến, không toast giả. -->
+  <section data-view="data" hidden class="flex flex-col gap-3 scope-vault" id="data-p06-states">
+
+    <div class="rounded-md p-4 bg-surface">
+      <p class="text-[13px] m-0 text-body">
+        <strong>Bản sao lưu &amp; Xoá tài khoản (U17 · <span class="mono">settings.html#dulieu</span>).</strong>
+        Một hành động chính là tải bản sao lưu đã mã hoá (<span class="mono">.sabk.json</span>, chỉ cần đang đăng nhập). Xuất bản đọc được (không mã hoá) và xoá tài khoản đều có cảnh báo rõ hậu quả và bước xác nhận lại.
+        <span lang="en" class="block text-[12px] mt-1 text-muted"><strong>Backup &amp; Delete account (U17 · <span class="mono">settings.html#dulieu</span>).</strong> One primary action downloads an encrypted backup (<span class="mono">.sabk.json</span>, session only). Readable export and account deletion require clear warnings and re-authentication.</span>
+      </p>
+    </div>
+
+    <!-- Export 1: Idle -->
+    <div class="card p-5" id="export-idle">
+      <p class="t-label mb-2 text-muted">Sao lưu · 1 · Sẵn sàng · <span lang="en">Backup · 1 · Idle</span></p>
+      <div class="text-[15px] font-semibold mb-1">Bản sao lưu · <span lang="en" class="font-normal text-muted">Backup</span></div>
+      <p class="text-[13px] m-0 mb-4 text-body">
+        Tải về một file đã mã hoá. Chỉ mở lại được bằng passphrase hoặc recovery key của bạn.
+        <span lang="en" class="block text-[12px] mt-0.5 text-muted">Download an encrypted file. Only your passphrase or a recovery key can unlock it.</span>
+      </p>
+      <button type="button" class="btn btn-primary">Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
+    </div>
+
+    <!-- Export 2: Preparing + progress + cancel -->
+    <div class="card p-5" id="export-preparing">
+      <p class="t-label mb-2 text-muted">Sao lưu · 2 · Đang chuẩn bị + tiến độ + huỷ · <span lang="en">Backup · 2 · Preparing + progress + cancel</span></p>
+      <div role="status" aria-live="polite" class="auth-status mb-3">
+        Đang chuẩn bị bản sao lưu… 140/231 mục · <span lang="en">Preparing your backup… 140 of 231 items</span>
+        <progress class="block w-full mt-2" max="231" value="140" aria-label="Tiến độ / Progress"></progress>
+      </div>
+      <p class="text-[12px] m-0 mb-3 text-muted">
+        Bạn có thể rời trang; file vẫn được chuẩn bị. <span lang="en">You can leave this page; the file keeps preparing.</span>
+      </p>
+      <button type="button" class="btn btn-tertiary">Huỷ · <span lang="en">Cancel</span></button>
+    </div>
+
+    <!-- Export 3: Ready + expiry -->
+    <div class="card p-5" id="export-ready">
+      <p class="t-label mb-2 text-muted">Sao lưu · 3 · Sẵn sàng tải + thời hạn 24 giờ · <span lang="en">Backup · 3 · Ready + 24h expiry</span></p>
+      <div role="status" class="auth-status mb-3">
+        Bản sao lưu đã sẵn sàng · có hiệu lực đến 14:12 ngày mai. Tải lại bao nhiêu lần cũng được.
+        <span lang="en" class="block">Your backup is ready · available until 14:12 tomorrow. Download it as often as you need.</span>
+      </div>
+      <a href="#export-ready" class="btn btn-primary no-underline">Tải file (2,4 MB) · <span lang="en" class="font-semibold">Download file (2.4 MB)</span></a>
+    </div>
+
+    <!-- Export 4: Failed + retry -->
+    <div class="card card-error p-5" id="export-failed">
+      <p class="t-label mb-2 text-muted">Sao lưu · 4 · Lỗi + thử lại · <span lang="en">Backup · 4 · Failed + retry</span></p>
+      <div role="alert" class="auth-alert mb-3">
+        Không tạo được bản sao lưu. Dữ liệu của bạn không bị ảnh hưởng.
+        <span lang="en" class="block">We couldn't create the backup. Your data is unaffected.</span>
+      </div>
+      <button type="button" class="btn btn-primary">Thử lại · <span lang="en" class="font-semibold">Try again</span></button>
+    </div>
+
+    <!-- Export 5: Expired -->
+    <div class="card p-5" id="export-expired">
+      <p class="t-label mb-2 text-muted">Sao lưu · 5 · Đã hết hạn · <span lang="en">Backup · 5 · Expired</span></p>
+      <div role="status" class="auth-status mb-3">
+        Bản sao lưu đã hết hạn và được xoá (giữ 24 giờ để an toàn). Tạo bản mới chỉ mất một lần bấm.
+        <span lang="en" class="block">The backup expired and was deleted (kept 24 hours for safety). One click makes a new one.</span>
+      </div>
+      <button type="button" class="btn btn-primary">Tạo bản mới · <span lang="en" class="font-semibold">Make a new backup</span></button>
+    </div>
+
+    <!-- Export 6: Rate-limited 3/hour with retry time -->
+    <div class="card card-warning p-5" id="export-rate-limited">
+      <p class="t-label mb-2 text-muted">Sao lưu · 6 · Giới hạn 3 lần/giờ kèm giờ thử lại · <span lang="en">Backup · 6 · Rate-limited (3/hour) with retry time</span></p>
+      <div role="alert" class="auth-warning mb-3">
+        Bạn đã tạo 3 bản trong 1 giờ qua (kể cả bản đã huỷ). Thử lại lúc 14:12.
+        <span lang="en" class="block">You made 3 exports in the last hour (cancelled ones count). Try again at 14:12.</span>
+      </div>
+      <button type="button" class="btn btn-primary" disabled>Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
+    </div>
+
+    <!-- Export 7: Offline -->
+    <div class="card p-5" id="export-offline">
+      <p class="t-label mb-2 text-muted">Sao lưu · 7 · Ngoại tuyến · <span lang="en">Backup · 7 · Offline</span></p>
+      <div role="status" class="auth-status mb-3">
+        Bạn đang offline. Kết nối lại để tạo bản sao lưu.
+        <span lang="en" class="block">You're offline. Reconnect to create a backup.</span>
+      </div>
+      <button type="button" class="btn btn-primary" disabled>Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
+    </div>
+
+    <!-- Decrypted export: Vault locked -->
+    <div class="card card-error p-5" id="export-decrypted-locked">
+      <p class="t-label mb-2 text-muted">Xuất bản đọc được · Vault đang khoá · <span lang="en">Readable export · Vault locked</span></p>
+      <div role="alert" class="auth-alert mb-3">
+        Cần mở vault trước khi xuất bản đọc được.
+        <span lang="en" class="block">Unlock your vault first to make a readable export.</span>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <a href="unlock.html" class="btn btn-primary btn-sm no-underline">Mở vault · <span lang="en" class="font-semibold">Unlock vault</span></a>
+        <button type="button" class="btn btn-tertiary btn-sm">Huỷ · <span lang="en">Cancel</span></button>
+      </div>
+    </div>
+
+    <!-- Decrypted export: Confirm + re-auth, Progress, Done, Failed -->
+    <div class="card p-5" id="export-decrypted-states">
+      <p class="t-label mb-2 text-muted">Xuất bản đọc được · Xác nhận, đang giải mã, xong &amp; lỗi · <span lang="en">Readable export · Confirm, decrypting, done &amp; failed</span></p>
+      <div class="rounded-md p-3.5 mb-3" style="background:var(--pale-orange)">
+        <p class="text-[13px] m-0 text-body">
+          <strong>Ai có file này đều đọc được toàn bộ entry.</strong> Đừng gửi qua email hay lưu lên cloud chung. Muốn sao lưu an toàn, dùng "Tải bản sao lưu".
+          <span lang="en" class="block text-[12px] mt-1"><strong>Anyone with this file can read every entry.</strong> Don't email it or put it in shared cloud storage. For a safe backup, use "Download backup".</span>
+        </p>
+      </div>
+      <div role="status" aria-live="polite" class="auth-status mb-3" id="export-decrypted-progress">
+        Đang giải mã trên máy này… 80/231 entry · <span lang="en">Decrypting on this device… 80 of 231 entries</span>
+        <progress class="block w-full mt-2" max="231" value="80" aria-label="Tiến độ giải mã / Decryption progress"></progress>
+        <span class="block text-[12px] text-muted mt-1.5">Giữ tab này mở. Huỷ hoặc khoá vault sẽ xoá phần đã giải mã. · <span lang="en">Keep this tab open. Cancelling or locking clears what was decrypted.</span></span>
+      </div>
+      <div role="status" class="auth-status mb-3" id="export-decrypted-done">
+        Đã lưu <span class="mono">engram-readable-2026-11-07.json</span>. Xoá file khi không cần nữa.
+        <span lang="en" class="block">Saved <span class="mono">engram-readable-2026-11-07.json</span>. Delete the file when you no longer need it.</span>
+      </div>
+      <div role="alert" class="auth-alert mb-0" id="export-decrypted-failed">
+        Không giải mã được một số entry (vault vừa đổi khoá). Không có file nào được lưu.
+        <span lang="en" class="block">Some entries couldn't be decrypted (the vault key just changed). No file was saved.</span>
+      </div>
+    </div>
+
+    <!-- Delete account 1: Re-auth + typed email confirm -->
+    <div class="card card-error p-5" id="delete-account-confirm">
+      <p class="t-label mb-2 text-muted">Xoá tài khoản · 1 · Xác thực lại + gõ email xác nhận · <span lang="en">Delete account · 1 · Re-auth + typed email confirm</span></p>
+      <p class="text-[13px] m-0 mb-3 text-body">
+        Xoá tài khoản và mọi dữ liệu (mục, tag, entry, recovery key, passkey). Không hoàn tác được. Khác với "Đặt lại vault" (chỉ xoá nội dung entry, giữ tài khoản, mục và tag).
+        <span lang="en" class="block text-[12px] mt-0.5 text-muted">Deletes your account and all data (items, tags, entries, recovery keys, passkeys). Cannot be undone. Unlike "Reset vault" (clears entry contents only, keeps account, items and tags).</span>
+      </p>
+      <label class="field field-password">
+        <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal text-muted">Account password</span></span>
+        <input class="field-input" type="password" value="••••••••••" autocomplete="current-password" aria-describedby="stateDelPwHint">
+        <span id="stateDelPwHint" class="field-hint">Tài khoản chỉ dùng Google/GitHub: bấm "Đăng nhập lại với nhà cung cấp" thay cho ô này. <span lang="en">OAuth-only accounts: use "Sign in again with provider" instead.</span></span>
+      </label>
+      <label class="field">
+        <span class="field-label">Gõ email của bạn để xác nhận: <span class="mono">an@example.com</span> · <span lang="en" class="font-normal text-muted">Type your email to confirm</span></span>
+        <input class="field-input" type="email" autocomplete="off" spellcheck="false" aria-describedby="stateDelEmailErr" aria-invalid="true" value="an@exampl">
+        <span id="stateDelEmailErr" class="field-error text-error-ink">Email chưa khớp. · <span lang="en">Email doesn't match.</span></span>
+      </label>
+      <div class="flex flex-wrap justify-between gap-2 mt-4">
+        <a href="settings.html#dulieu" class="btn btn-secondary btn-sm no-underline">Tải bản sao lưu trước · <span lang="en">Download backup first</span></a>
+        <button type="button" class="btn btn-danger !whitespace-normal text-left" disabled>Xoá vĩnh viễn · <span lang="en">Delete permanently</span></button>
+      </div>
+    </div>
+
+    <!-- Delete account 2: Deleting (busy) -->
+    <div class="card p-5" id="delete-account-deleting">
+      <p class="t-label mb-2 text-muted">Xoá tài khoản · 2 · Đang xoá · <span lang="en">Delete account · 2 · Deleting</span></p>
+      <div role="status" aria-live="polite" class="auth-status mb-0">
+        Đang xoá tài khoản… Đừng đóng tab.
+        <span lang="en" class="block">Deleting your account… Don't close this tab.</span>
+      </div>
+    </div>
+
+    <!-- Delete account 3: Failed -->
+    <div class="card card-error p-5" id="delete-account-failed">
+      <p class="t-label mb-2 text-muted">Xoá tài khoản · 3 · Lỗi khi xoá · <span lang="en">Delete account · 3 · Delete failed</span></p>
+      <div role="alert" class="auth-alert mb-3">
+        Chưa xoá được. Tài khoản và dữ liệu vẫn còn nguyên.
+        <span lang="en" class="block">Not deleted. Your account and data are unchanged.</span>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" class="btn btn-danger btn-sm">Thử lại · <span lang="en">Try again</span></button>
+        <button type="button" class="btn btn-tertiary btn-sm">Đóng · <span lang="en">Close</span></button>
+      </div>
+    </div>
+
+    <!-- Delete account 4: Re-auth expired mid-flow -->
+    <div class="card card-warning p-5" id="delete-account-reauth-expired">
+      <p class="t-label mb-2 text-muted">Xoá tài khoản · 4 · Hết hạn xác nhận giữa luồng · <span lang="en">Delete account · 4 · Re-auth expired</span></p>
+      <div role="alert" class="auth-alert mb-3">
+        Phiên xác nhận đã hết hạn; chưa có gì bị xoá. Nhập lại mật khẩu.
+        <span lang="en" class="block">Confirmation expired; nothing was deleted. Enter your password again.</span>
+      </div>
+      <label class="field field-password mb-3">
+        <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal text-muted">Account password</span></span>
+        <input class="field-input" type="password" value="••••••••••" autocomplete="current-password">
+      </label>
+      <button type="button" class="btn btn-danger btn-sm">Xác nhận và xoá · <span lang="en">Verify &amp; delete</span></button>
+    </div>
+
+    <!-- Delete account 5: After-delete signed-out message -->
+    <div class="card p-5" id="delete-account-done">
+      <p class="t-label mb-2 text-muted">Xoá tài khoản · 5 · Sau khi xoá (đã đăng xuất) · <span lang="en">Delete account · 5 · After-delete signed-out message</span></p>
+      <div role="status" class="auth-status mb-3">
+        Tài khoản của bạn đã bị xoá. Cảm ơn bạn đã dùng engram.
+        <span lang="en" class="block">Your account has been deleted. Thanks for using engram.</span>
+      </div>
+      <a href="landing.html" class="btn btn-tertiary btn-sm no-underline">Về trang chủ · <span lang="en">Go to home</span></a>
+    </div>
+
+  </section>
+
+  <!-- ============================================================= -->
   <!-- NGOẠI TUYẾN                                                    -->
   <!-- ============================================================= -->
   <section data-view="off" hidden class="flex flex-col gap-3 scope-vault">
 
-    <div class="rounded-md p-4" style="background:var(--pale-orange)">
+    <div class="rounded-md p-4" id="off-banner" style="background:var(--pale-orange)">
       <p class="text-[13px] m-0" style="color:var(--body)">
         <strong>Mất kết nối.</strong> Bạn vẫn xem được những gì đã tải. Thao tác tạo và sửa tạm hoãn.
+        <span lang="en" class="block text-[12px] mt-0.5" style="color:var(--muted)"><strong>You're offline.</strong> You can still view what is already loaded. Creating and editing are paused until you reconnect.</span>
       </p>
     </div>
 
@@ -901,17 +1161,29 @@
       <p class="text-[12px] text-muted m-0 mb-3" lang="en">
         <strong>Cannot save right now.</strong> What you typed stays in the editor until the vault locks (locking the vault clears unsaved drafts). Retry once connectivity returns.
       </p>
-      <button type="button" class="btn btn-secondary btn-sm" onclick="SAK.toast('Đang thử lưu lại với cùng Idempotency-Key… · Retrying save with same Idempotency-Key…')">Thử lưu lại · <span lang="en">Retry save</span></button>
+      <button type="button" class="btn btn-secondary btn-sm">Thử lưu lại · <span lang="en">Retry save</span></button>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Tìm kiếm cần mạng</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">Bản này chưa tìm ngoại tuyến được. Duyệt danh sách đã tải trong lúc chờ.</p>
+    <div class="card p-5" id="off-search-unavailable">
+      <p class="text-[14px] font-semibold m-0 mb-1">Tìm kiếm cần mạng · <span lang="en" class="font-normal text-muted">Search needs a connection</span></p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Bản này chưa tìm ngoại tuyến được. Duyệt danh sách đã tải trong lúc chờ.
+        <span lang="en" class="block text-[12px] mt-0.5">Offline search is not available yet. Browse the items already loaded while you wait.</span>
+      </p>
     </div>
 
-    <div class="rounded-md p-4" style="background:var(--surface)">
+    <div class="card p-5" id="off-export-unavailable">
+      <p class="text-[14px] font-semibold m-0 mb-1">Sao lưu cần kết nối mạng · <span lang="en" class="font-normal text-muted">Backup needs a connection</span></p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Bạn đang offline. Kết nối lại để tạo hoặc tải bản sao lưu.
+        <span lang="en" class="block text-[12px] mt-0.5">You're offline. Reconnect to create or download a backup.</span>
+      </p>
+    </div>
+
+    <div class="rounded-md p-4" id="off-reconnected" style="background:var(--surface)">
       <p class="text-[13px] m-0" style="color:var(--body)">
         <strong>Đã kết nối lại.</strong> Danh sách vừa được làm mới.
+        <span lang="en" class="block text-[12px] mt-0.5" style="color:var(--muted)"><strong>Back online.</strong> Your list has been refreshed.</span>
       </p>
     </div>
   </section>
@@ -923,7 +1195,7 @@
 
     <!-- Neo #semantic-degraded-inline (mục 2.10 + FE-23: dòng muted hiển thị ngoài listbox, không role="status", kèm live region sr-only đọc một lần/phiên) -->
     <div class="card p-5" id="semantic-degraded-card">
-      <p class="t-label mb-2 text-muted">Tìm gần nghĩa tạm nghỉ (dropdown omnibox)</p>
+      <p class="t-label mb-2 text-muted">Tìm gần nghĩa tạm nghỉ (dropdown omnibox) · <span lang="en">Meaning-based search degraded (omnibox dropdown)</span></p>
       <div class="popover p-2">
         <div id="u18-degraded-listbox" role="listbox" aria-label="Gợi ý tìm kiếm" class="omni-listbox">
           <div role="group" aria-labelledby="u18-degraded-tags-hdr" class="sugg-zone">
@@ -982,48 +1254,55 @@
         </div>
         <!-- Dòng muted hiển thị nằm NGOÀI listbox và NGOÀI live region, KHÔNG mang role="status" hay aria-live (FE-23) -->
         <div class="sugg-status-line" id="semantic-degraded-inline" data-omni-status="degraded" data-i18n-key="search.state.degraded">
-          <span>Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy</span>
+          <span>Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy · <span lang="en">Meaning-based search is taking a break — name search still works</span></span>
         </div>
       </div>
       <!-- Live region sr-only đọc đúng một lần mỗi phiên (tách biệt hoàn toàn khỏi dòng hiển thị) -->
       <div class="sr-only" role="status" aria-live="polite" id="u18-degraded-sr-live">Gần nghĩa đang tạm nghỉ — tìm theo tên vẫn chạy</div>
     </div>
 
-    <div class="rounded-md p-4" style="background:var(--surface)">
+    <div class="rounded-md p-4" id="semantic-degraded-banner" style="background:var(--surface)">
       <p class="text-[13px] m-0 mb-1" style="color:var(--body)">
         <strong>Tìm theo nghĩa đang tạm nghỉ.</strong> Tìm theo tên và tag vẫn chạy đủ.
       </p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
+      <p class="text-[13px] m-0 mb-1" style="color:var(--muted)">
         Mục mới sẽ được lập chỉ mục nghĩa khi dịch vụ quay lại. Không cần làm gì thêm.
       </p>
-    </div>
-
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Không bật được tìm theo nghĩa</p>
-      <p class="text-[13px] m-0" style="color:var(--muted)">
-        Dịch vụ nhúng chưa sẵn sàng nên thiết lập này tạm thời không đổi được. Thử lại sau.
+      <p class="text-[12px] m-0" style="color:var(--muted)" lang="en">
+        <strong>Meaning-based search is taking a break.</strong> Searching by item name and tag still works normally. New items will be indexed automatically once the service returns.
       </p>
     </div>
 
-    <div class="rounded-md p-4" style="background:var(--pale-accent)">
+    <div class="card p-5" id="semantic-enable-409-card">
+      <p class="text-[14px] font-semibold m-0 mb-1">Không bật được tìm theo nghĩa · <span lang="en" class="font-normal text-muted">Couldn't turn on meaning-based search</span></p>
+      <p class="text-[13px] m-0" style="color:var(--muted)">
+        Dịch vụ nhúng chưa sẵn sàng nên thiết lập này tạm thời không đổi được. Công tắc tự quay lại vị trí tắt; thử lại sau.
+        <span lang="en" class="block text-[12px] mt-1">The embedding service is not ready right now, so this setting could not be changed. The switch reverted to off; try again later.</span>
+      </p>
+    </div>
+
+    <div class="rounded-md p-4" id="degr-vault-locked" style="background:var(--pale-accent)">
       <p class="text-[13px] m-0" style="color:var(--body)">
         <strong>Vault đang khoá.</strong> Bạn vẫn tìm và duyệt được tên mục, tag, gợi nhớ.
         Nội dung entry hiện sau khi mở khoá.
+        <span lang="en" class="block text-[12px] mt-1" style="color:var(--muted)"><strong>Vault locked.</strong> You can still browse and search item names, tags, and hints. Entry contents appear after unlocking.</span>
       </p>
-      <a href="unlock.html" class="btn btn-primary btn-sm mt-3 no-underline">Mở khoá</a>
+      <a href="unlock.html" class="btn btn-primary btn-sm mt-3 no-underline">Mở khoá · <span lang="en" class="font-semibold">Unlock vault</span></a>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Trình duyệt chưa đủ điều kiện</p>
+    <div class="card p-5" id="degr-browser-unsupported">
+      <p class="text-[14px] font-semibold m-0 mb-1">Trình duyệt chưa đủ điều kiện · <span lang="en" class="font-normal text-muted">Browser not supported</span></p>
       <p class="text-[13px] m-0" style="color:var(--muted)">
-        engram cần trình duyệt đời mới để mã hoá ngay trên máy bạn. Hãy cập nhật hoặc dùng Chrome, Edge, Firefox, Safari bản mới.
+        engram cần trình duyệt đời mới (WebCrypto &amp; Web Worker) để mã hoá ngay trên máy bạn. Hãy cập nhật hoặc dùng Chrome, Edge, Firefox, Safari bản mới.
+        <span lang="en" class="block text-[12px] mt-1">engram requires a modern browser (WebCrypto &amp; Web Worker) to encrypt data on your device. Please update or use a current version of Chrome, Edge, Firefox, or Safari.</span>
       </p>
     </div>
 
-    <div class="card p-5">
-      <p class="text-[14px] font-semibold m-0 mb-1">Đang bảo trì</p>
+    <div class="card p-5" id="degr-maintenance">
+      <p class="text-[14px] font-semibold m-0 mb-1">Đang bảo trì · <span lang="en" class="font-normal text-muted">Maintenance in progress</span></p>
       <p class="text-[13px] m-0" style="color:var(--muted)">
         Hệ thống tạm ngừng ghi trong ít phút. Dữ liệu của bạn không bị ảnh hưởng; quay lại sau nhé.
+        <span lang="en" class="block text-[12px] mt-1">Writes are paused for a few minutes for maintenance. Your data is safe; please check back shortly.</span>
       </p>
     </div>
   </section>
