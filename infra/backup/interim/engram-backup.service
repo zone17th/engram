@@ -1,0 +1,7 @@
+[Unit]
+Description=engram interim nightly encrypted DB backup (P06-BACKUPNOW)
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/engram-ops/backup/engram-backup.sh
+SuccessExitStatus=2
