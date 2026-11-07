@@ -55,13 +55,13 @@ Every round-2 check above still runs and passes; these were added:
 
 | Check | bro dev smoke (`bro-smoke-8.log`, tree == `d98024c`) | Cursor cloud runner |
 | --- | --- | --- |
-| Exit / verdict | `0` / `PITR_REHEARSAL=PASS` | CLOUD_R4_VERDICT |
-| HBA apply failing before publication (stale temporary) | live `pg_hba.conf` byte-identical, apply succeeds afterwards | CLOUD_R4_HBA |
-| Restore DB on its dedicated network | unreachable from the default bridge, reachable on the private network | CLOUD_R4_NET |
-| Restore negative controls (a promoted restore running before the first) | key import / extraction / start failures all non-zero, no promoted container left | CLOUD_R4_NEG |
-| Owner simulation: archive converted key A → key B (`convert-archive-to-test-key.sh`), owner flow with key B only, `T_near` | restored, sessions revoked, migrate rc 0, `/readyz` 200, T3+T4 present, RTO 6 s, `RPO_UPPER_BOUND_SECONDS=60` → `RPO_ACCEPTANCE=PASS` | CLOUD_R4_OWNER |
-| RPO protocol cases (same converted archive) | missing capture → `PENDING`; over bound (2000 s) → `FAIL`; proven inactive → `PASS` | CLOUD_R4_RPO |
-| Scratch RPO / warm RTO | 294 s / 12 s | CLOUD_R4_RPORTO |
+| Exit / verdict | `0` / `PITR_REHEARSAL=PASS` | `0` / `PITR_REHEARSAL=PASS` (`cloud-test-4.md` @ `d98024c`; `OPSDR_LINT_EXIT=0`, `OPSDR_IMAGE_EXIT=0`, `OPSDR_EXIT=0`; nonzero `*_EXIT` grep empty; canary 0) |
+| HBA apply failing before publication (stale temporary) | live `pg_hba.conf` byte-identical, apply succeeds afterwards | PASS / PASS |
+| Restore DB on its dedicated network | unreachable from the default bridge, reachable on the private network | PASS / PASS |
+| Restore negative controls (a promoted restore running before the first) | key import / extraction / start failures all non-zero, no promoted container left | all 3 PASS |
+| Owner simulation: archive converted key A → key B (`convert-archive-to-test-key.sh`), owner flow with key B only, `T_near` | restored, sessions revoked, migrate rc 0, `/readyz` 200, T3+T4 present, RTO 6 s, `RPO_UPPER_BOUND_SECONDS=60` → `RPO_ACCEPTANCE=PASS` | PASS: migrate rc 0, `/readyz` 200, T3+T4 500, RTO 5 s, bound 60 s → `PASS` |
+| RPO protocol cases (same converted archive) | missing capture → `PENDING`; over bound (2000 s) → `FAIL`; proven inactive → `PASS` | `PENDING` / `FAIL` / `PASS` |
+| Scratch RPO / warm RTO | 294 s / 12 s | 294 s / 9 s |
 
 ## `wal_keep_size` sizing (R4-03)
 
