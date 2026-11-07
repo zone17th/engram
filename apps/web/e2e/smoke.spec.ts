@@ -4,6 +4,8 @@ import { expect, test, type Page } from '@playwright/test';
 const PAGES = [
   { name: 'landing-en', path: '/' },
   { name: 'landing-vi', path: '/vi' },
+  { name: 'docs-en', path: '/docs' },
+  { name: 'docs-vi', path: '/vi/docs' },
   { name: 'app', path: '/app' },
 ] as const;
 
@@ -230,5 +232,30 @@ test.describe('P01 browser smoke', () => {
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     const cookiesAfterEn = await page.context().cookies();
     expect(cookiesAfterEn.find((c) => c.name === 'sabk_locale')?.value).toBe('en');
+  });
+
+  test('docs routes /docs and /vi/docs return 200, render 7 anchors and LocaleSwitch, and switch locales preserving hash', async ({
+    page,
+    request,
+  }) => {
+    const enRes = await request.get('/docs');
+    expect(enRes.status()).toBe(200);
+    const viRes = await request.get('/vi/docs');
+    expect(viRes.status()).toBe(200);
+
+    await page.goto('/docs#khoi-phuc', { waitUntil: 'networkidle' });
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(page.locator('main#main-content')).toBeVisible();
+    for (const id of ['batdau', 'rieng-tu', 'tim-kiem', 'khoi-phuc', 'du-lieu', 'gioi-han', 'lien-he']) {
+      await expect(page.locator(`section#${id}`)).toBeVisible();
+    }
+    const enGroup = page.getByRole('radiogroup', { name: 'Language' });
+    await expect(enGroup).toBeVisible();
+    await enGroup.getByRole('radio', { name: 'Vietnamese (VI)' }).click();
+
+    await expect(page).toHaveURL(/\/vi\/docs#khoi-phuc$/);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'vi');
+    const viGroup = page.getByRole('radiogroup', { name: 'Ngôn ngữ' });
+    await expect(viGroup.getByRole('radio', { name: 'Tiếng Việt (VI)' })).toHaveAttribute('aria-checked', 'true');
   });
 });
