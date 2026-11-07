@@ -116,6 +116,7 @@ func TestProductionAcceptsHTTPSAndDistinctSecrets(t *testing.T) {
 		"AUTH_REAUTH_SECRET": b64(34),
 		"AUTH_IP_PEPPER":     b64(35),
 		"AUTH_EMAIL_PEPPER":  b64(36),
+		"EXPORT_AT_REST_SECRET": b64(37),
 	})
 	cfg, err := config.Load()
 	if err != nil {
@@ -156,6 +157,7 @@ func TestFakeOAuthRejectedInProduction(t *testing.T) {
 		"AUTH_REAUTH_SECRET": b64(34),
 		"AUTH_IP_PEPPER":     b64(35),
 		"AUTH_EMAIL_PEPPER":  b64(36),
+		"EXPORT_AT_REST_SECRET": b64(37),
 	})
 	if _, err := config.Load(); err == nil {
 		t.Fatal("production không được bật AUTH_FAKE_OAUTH")
@@ -345,6 +347,7 @@ func TestWebAuthnRPBootValidation(t *testing.T) {
 		"AUTH_REAUTH_SECRET": b64(34),
 		"AUTH_IP_PEPPER":     b64(35),
 		"AUTH_EMAIL_PEPPER":  b64(36),
+		"EXPORT_AT_REST_SECRET": b64(37),
 	}
 
 	t.Run("production explicit engram.zone17.click and https://engram.zone17.click accepted", func(t *testing.T) {
@@ -516,6 +519,7 @@ func TestWebAuthnRPIDPublicSuffixBoot(t *testing.T) {
 		"AUTH_REAUTH_SECRET": b64(34),
 		"AUTH_IP_PEPPER":     b64(35),
 		"AUTH_EMAIL_PEPPER":  b64(36),
+		"EXPORT_AT_REST_SECRET": b64(37),
 	}
 	prod := func(origin, rpID string) map[string]string {
 		m := make(map[string]string, len(prodSecrets)+2)
@@ -607,6 +611,7 @@ func TestTrustedProxyCIDRsLoaded(t *testing.T) {
 		"AUTH_REAUTH_SECRET": b64(34),
 		"AUTH_IP_PEPPER":     b64(35),
 		"AUTH_EMAIL_PEPPER":  b64(36),
+		"EXPORT_AT_REST_SECRET": b64(37),
 	}
 	dev := map[string]string{"APP_ENV": "development"}
 	with := func(base map[string]string, cidrs string) map[string]string {
@@ -699,6 +704,7 @@ func TestMailCaptureAsDeliveryFailClosedAndRejectedInProduction(t *testing.T) {
 				"AUTH_REAUTH_SECRET":            b64(34),
 				"AUTH_IP_PEPPER":                b64(35),
 				"AUTH_EMAIL_PEPPER":             b64(36),
+				"EXPORT_AT_REST_SECRET":        b64(37),
 			})
 			if _, err := config.Load(); err == nil {
 				t.Fatalf("%s must refuse boot when AUTH_MAIL_CAPTURE_AS_DELIVERY=true", envName)
@@ -1154,6 +1160,7 @@ func TestP05SearchKnobsAndBootstrapFlipIntervalValidation(t *testing.T) {
 			"AUTH_REAUTH_SECRET":                b64(34),
 			"AUTH_IP_PEPPER":                    b64(35),
 			"AUTH_EMAIL_PEPPER":                 b64(36),
+			"EXPORT_AT_REST_SECRET":             b64(37),
 			"EMBEDDING_BOOTSTRAP_FLIP_INTERVAL": "5s",
 		})
 		if _, err := config.Load(); err == nil {
@@ -1383,6 +1390,156 @@ func TestP05URLRuleInConfigAndSecretRedaction(t *testing.T) {
 		}
 		if fmt.Sprintf("%v|%#v|%q", zeroEndpoint, zeroEndpoint, zeroEndpoint) != `[redacted]|[redacted]|"[redacted]"` {
 			t.Fatalf("zero Endpoint fmt = %s", fmt.Sprintf("%v|%#v|%q", zeroEndpoint, zeroEndpoint, zeroEndpoint))
+		}
+	})
+}
+
+func TestConfig_ExportAtRestSecretRequired(t *testing.T) {
+	for _, envName := range []string{"staging", "production"} {
+		t.Run(envName+"_missing_rejected", func(t *testing.T) {
+			setEnv(t, map[string]string{
+				"APP_ENV":               envName,
+				"APP_ORIGIN":            "https://engram.zone17.click",
+				"AUTH_JWT_SECRET":       b64(32),
+				"AUTH_CSRF_SECRET":      b64(33),
+				"AUTH_REAUTH_SECRET":    b64(34),
+				"AUTH_IP_PEPPER":        b64(35),
+				"AUTH_EMAIL_PEPPER":     b64(36),
+				"EXPORT_AT_REST_SECRET": "",
+			})
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("%s thiếu EXPORT_AT_REST_SECRET phải báo lỗi", envName)
+			}
+		})
+
+		t.Run(envName+"_short_rejected", func(t *testing.T) {
+			setEnv(t, map[string]string{
+				"APP_ENV":               envName,
+				"APP_ORIGIN":            "https://engram.zone17.click",
+				"AUTH_JWT_SECRET":       b64(32),
+				"AUTH_CSRF_SECRET":      b64(33),
+				"AUTH_REAUTH_SECRET":    b64(34),
+				"AUTH_IP_PEPPER":        b64(35),
+				"AUTH_EMAIL_PEPPER":     b64(36),
+				"EXPORT_AT_REST_SECRET": base64.StdEncoding.EncodeToString([]byte("short")),
+			})
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("%s EXPORT_AT_REST_SECRET < 32B phải báo lỗi", envName)
+			}
+		})
+	}
+}
+
+func TestConfig_ExportAtRestSecretDevConstant(t *testing.T) {
+	setEnv(t, map[string]string{
+		"APP_ENV":               "development",
+		"EXPORT_AT_REST_SECRET": "",
+	})
+	cfg1, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() 1: %v", err)
+	}
+	cfg2, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() 2: %v", err)
+	}
+	if len(cfg1.ExportAtRestSecret) != 32 {
+		t.Fatalf("len(ExportAtRestSecret) = %d, muốn 32", len(cfg1.ExportAtRestSecret))
+	}
+	if !bytes.Equal(cfg1.ExportAtRestSecret, cfg2.ExportAtRestSecret) || !bytes.Equal(cfg1.ExportAtRestSecret, config.DevExportAtRestSecret) {
+		t.Fatal("development với EXPORT_AT_REST_SECRET trống phải trả cùng hằng cố định 32B qua nhiều lần Load()")
+	}
+
+	devConstB64 := base64.StdEncoding.EncodeToString(config.DevExportAtRestSecret)
+	for _, envName := range []string{"staging", "production"} {
+		t.Run(envName+"_rejects_dev_constant", func(t *testing.T) {
+			setEnv(t, map[string]string{
+				"APP_ENV":               envName,
+				"APP_ORIGIN":            "https://engram.zone17.click",
+				"AUTH_JWT_SECRET":       b64(32),
+				"AUTH_CSRF_SECRET":      b64(33),
+				"AUTH_REAUTH_SECRET":    b64(34),
+				"AUTH_IP_PEPPER":        b64(35),
+				"AUTH_EMAIL_PEPPER":     b64(36),
+				"EXPORT_AT_REST_SECRET": devConstB64,
+			})
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("%s phải từ chối hằng development cho EXPORT_AT_REST_SECRET", envName)
+			}
+		})
+	}
+}
+
+func TestConfig_SMTPTLSNoneRejectedInProd(t *testing.T) {
+	for _, envName := range []string{"staging", "production"} {
+		t.Run(envName, func(t *testing.T) {
+			setEnv(t, map[string]string{
+				"APP_ENV":               envName,
+				"APP_ORIGIN":            "https://engram.zone17.click",
+				"AUTH_JWT_SECRET":       b64(32),
+				"AUTH_CSRF_SECRET":      b64(33),
+				"AUTH_REAUTH_SECRET":    b64(34),
+				"AUTH_IP_PEPPER":        b64(35),
+				"AUTH_EMAIL_PEPPER":     b64(36),
+				"EXPORT_AT_REST_SECRET": b64(37),
+				"SMTP_TLS_MODE":         "none",
+			})
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("%s phải từ chối SMTP_TLS_MODE=none", envName)
+			}
+		})
+	}
+
+	t.Run("development_allows_smtp_tls_none_and_validates_smtp_pairs", func(t *testing.T) {
+		setEnv(t, map[string]string{
+			"APP_ENV":       "development",
+			"SMTP_TLS_MODE": "none",
+		})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("development SMTP_TLS_MODE=none: %v", err)
+		}
+		if cfg.SMTPTLSMode != "none" || cfg.ExportSpoolDir != ".data/exports" || cfg.ExportMaxSpoolBytes != 4294967296 || cfg.ExportCreatePaused {
+			t.Fatalf("defaults lệch: SMTPTLSMode=%q ExportSpoolDir=%q ExportMaxSpoolBytes=%d ExportCreatePaused=%v",
+				cfg.SMTPTLSMode, cfg.ExportSpoolDir, cfg.ExportMaxSpoolBytes, cfg.ExportCreatePaused)
+		}
+
+		setEnv(t, map[string]string{
+			"APP_ENV":   "development",
+			"SMTP_USER": "user-only",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("nửa cặp SMTP_USER/SMTP_PASSWORD phải bị từ chối")
+		}
+
+		setEnv(t, map[string]string{
+			"APP_ENV":   "development",
+			"SMTP_HOST": "smtp.example.invalid",
+		})
+		if _, err := config.Load(); err == nil {
+			t.Fatal("SMTP_HOST khác rỗng nhưng thiếu SMTP_FROM phải bị từ chối")
+		}
+
+		const smtpSecret = "smtp-distinctive-password-secret-445566"
+		setEnv(t, map[string]string{
+			"APP_ENV":       "development",
+			"SMTP_HOST":     "smtp.example.invalid",
+			"SMTP_PORT":     "465",
+			"SMTP_USER":     "mailer",
+			"SMTP_PASSWORD": smtpSecret,
+			"SMTP_FROM":     "engram <no-reply@example.invalid>",
+			"SMTP_TLS_MODE": "implicit",
+		})
+		cfgSMTP, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() SMTP hợp lệ: %v", err)
+		}
+		if cfgSMTP.SMTPPassword.Reveal() != smtpSecret {
+			t.Fatalf("SMTPPassword.Reveal() = %q", cfgSMTP.SMTPPassword.Reveal())
+		}
+		dump := fmtMap(cfgSMTP.Redacted()) + "|" + fmt.Sprintf("%v|%+v|%#v", cfgSMTP, *cfgSMTP, cfgSMTP)
+		if strings.Contains(dump, smtpSecret) {
+			t.Fatal("Redacted/String làm lộ SMTP_PASSWORD")
 		}
 	})
 }

@@ -109,6 +109,19 @@ type Config struct {
 	MailSinkDir           string `envconfig:"AUTH_MAIL_SINK_DIR"`
 	MailCaptureAsDelivery bool   `envconfig:"AUTH_MAIL_CAPTURE_AS_DELIVERY" default:"false"`
 
+	ExportStorageDir    string           `envconfig:"EXPORT_STORAGE_DIR" default:".data/exports"`
+	ExportSpoolDir      string           `envconfig:"EXPORT_SPOOL_DIR" default:".data/exports"`
+	ExportMaxSpoolBytes int64            `envconfig:"EXPORT_MAX_SPOOL_BYTES" default:"4294967296"`
+	ExportCreatePaused  bool             `envconfig:"EXPORT_CREATE_PAUSED" default:"false"`
+	ExportAtRestSecret  []byte           `ignored:"true"`
+	SMTPHost            string           `envconfig:"SMTP_HOST"`
+	SMTPPort            int              `envconfig:"SMTP_PORT" default:"587"`
+	SMTPUsername        string           `envconfig:"SMTP_USERNAME"`
+	SMTPUser            string           `envconfig:"SMTP_USER"`
+	SMTPPassword        embedding.Secret `ignored:"true"`
+	SMTPFrom            string           `envconfig:"SMTP_FROM"`
+	SMTPTLSMode         string           `envconfig:"SMTP_TLS_MODE" default:"starttls" validate:"oneof=starttls implicit none"`
+
 	TrustedProxyCIDRs []net.IPNet `ignored:"true"`
 
 	// EphemeralSecrets là true khi development/test tự sinh key vì env trống.
@@ -128,6 +141,8 @@ type Config struct {
 	rawSearchANNRandomPageCost     string           `ignored:"true"`
 	rawLexicalForceCustomPlan      string           `ignored:"true"`
 	lexicalCustomPlanLoaded        bool             `ignored:"true"`
+	rawExportAtRestSecret          string           `ignored:"true"`
+	rawSMTPPassword                embedding.Secret `ignored:"true"`
 }
 
 type secretEnv struct {
@@ -141,6 +156,8 @@ type secretEnv struct {
 	TEIURL                 string `envconfig:"TEI_URL"`
 	EmbeddingBaseURL       string `envconfig:"EMBEDDING_BASE_URL"`
 	EmbeddingShadowBaseURL string `envconfig:"EMBEDDING_SHADOW_BASE_URL"`
+	ExportAtRestSecret     string `envconfig:"EXPORT_AT_REST_SECRET"`
+	SMTPPassword           string `envconfig:"SMTP_PASSWORD"`
 }
 
 // proxyEnv đọc AUTH_TRUSTED_PROXY_CIDRS qua field exported: envconfig bỏ qua field
@@ -181,6 +198,9 @@ func Load() (*Config, error) {
 	cfg.TEIURL = embedding.NewEndpoint(secrets.TEIURL)
 	cfg.EmbeddingBaseURL = embedding.NewEndpoint(secrets.EmbeddingBaseURL)
 	cfg.EmbeddingShadowBaseURL = embedding.NewEndpoint(secrets.EmbeddingShadowBaseURL)
+	cfg.rawExportAtRestSecret = secrets.ExportAtRestSecret
+	cfg.rawSMTPPassword = embedding.NewSecret(secrets.SMTPPassword)
+	cfg.SMTPPassword = cfg.rawSMTPPassword
 
 	var proxies proxyEnv
 	if err := envconfig.Process("", &proxies); err != nil {
@@ -206,6 +226,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.validateP05Policy(); err != nil {
+		return nil, err
+	}
+	if err := cfg.validateP06Policy(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -240,6 +263,9 @@ func (c *Config) loadSecrets() error {
 		bytesEqual(c.AuthIPPepper, c.AuthEmailPepper) {
 		return fmt.Errorf("các secret auth phải độc lập, không dùng chung key")
 	}
+	if err := c.loadExportAtRestSecret(strict); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -266,6 +292,86 @@ func decodeOrGenerate(name, raw string, strict bool) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("%s phải giải mã tối thiểu %d byte", name, minSecretLen)
 	}
 	return b, false, nil
+}
+
+// DevExportAtRestSecret là hằng cố định 32B cho development/test khi EXPORT_AT_REST_SECRET trống,
+// giúp API và worker đọc được cùng file spool qua nhiều lần khởi động lại trong dev/e2e.
+// Chuỗi này bị từ chối ở staging/production.
+var DevExportAtRestSecret = []byte("engram-dev-export-at-rest-key32!")
+
+func (c *Config) loadExportAtRestSecret(strict bool) error {
+	raw := strings.TrimSpace(c.rawExportAtRestSecret)
+	if raw == "" {
+		if strict {
+			return fmt.Errorf("EXPORT_AT_REST_SECRET là bắt buộc ở %s", c.Env)
+		}
+		b := make([]byte, len(DevExportAtRestSecret))
+		copy(b, DevExportAtRestSecret)
+		c.ExportAtRestSecret = b
+		return nil
+	}
+	b, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		b, err = base64.RawStdEncoding.DecodeString(raw)
+	}
+	if err != nil {
+		return fmt.Errorf("EXPORT_AT_REST_SECRET không phải base64 hợp lệ")
+	}
+	if len(b) < minSecretLen {
+		return fmt.Errorf("EXPORT_AT_REST_SECRET phải giải mã tối thiểu %d byte", minSecretLen)
+	}
+	if strict && bytesEqual(b, DevExportAtRestSecret) {
+		return fmt.Errorf("EXPORT_AT_REST_SECRET ở %s không được dùng hằng development", c.Env)
+	}
+	if bytesEqual(b, c.AuthJWTSecret) ||
+		bytesEqual(b, c.AuthCSRFSecret) ||
+		bytesEqual(b, c.AuthReauthSecret) ||
+		bytesEqual(b, c.AuthIPPepper) ||
+		bytesEqual(b, c.AuthEmailPepper) {
+		return fmt.Errorf("EXPORT_AT_REST_SECRET phải độc lập với các secret auth")
+	}
+	c.ExportAtRestSecret = b
+	return nil
+}
+
+func (c *Config) validateP06Policy() error {
+	c.ExportStorageDir = strings.TrimSpace(c.ExportStorageDir)
+	c.ExportSpoolDir = strings.TrimSpace(c.ExportSpoolDir)
+	if c.ExportStorageDir == "" && c.ExportSpoolDir != "" {
+		c.ExportStorageDir = c.ExportSpoolDir
+	}
+	if c.ExportSpoolDir == "" && c.ExportStorageDir != "" {
+		c.ExportSpoolDir = c.ExportStorageDir
+	}
+	if c.ExportStorageDir == "" {
+		return fmt.Errorf("EXPORT_STORAGE_DIR không được rỗng")
+	}
+	if c.ExportMaxSpoolBytes <= 0 {
+		return fmt.Errorf("EXPORT_MAX_SPOOL_BYTES phải > 0")
+	}
+	c.SMTPHost = strings.TrimSpace(c.SMTPHost)
+	c.SMTPUsername = strings.TrimSpace(c.SMTPUsername)
+	c.SMTPUser = strings.TrimSpace(c.SMTPUser)
+	if c.SMTPUsername == "" && c.SMTPUser != "" {
+		c.SMTPUsername = c.SMTPUser
+	}
+	if c.SMTPUser == "" && c.SMTPUsername != "" {
+		c.SMTPUser = c.SMTPUsername
+	}
+	c.SMTPFrom = strings.TrimSpace(c.SMTPFrom)
+	if c.SMTPPort < 1 || c.SMTPPort > 65535 {
+		return fmt.Errorf("SMTP_PORT phải trong khoảng 1..65535")
+	}
+	if err := requirePair("SMTP_USERNAME", "SMTP_PASSWORD", c.SMTPUsername, c.SMTPPassword.Reveal()); err != nil {
+		return err
+	}
+	if c.SMTPHost != "" && c.SMTPFrom == "" {
+		return fmt.Errorf("SMTP_FROM là bắt buộc khi SMTP_HOST khác rỗng")
+	}
+	if (c.Env == "production" || c.Env == "staging") && c.SMTPTLSMode == "none" {
+		return fmt.Errorf("SMTP_TLS_MODE=none không được phép ở %s", c.Env)
+	}
+	return nil
 }
 
 func (c *Config) loadTrustedProxies() error {
@@ -850,7 +956,7 @@ func (c Config) LogValue() slog.Value {
 
 func (c Config) redactedSummary() string {
 	return fmt.Sprintf(
-		"Config{Env:%q, HTTPAddr:%q, AppOrigin:%q, EmbeddingProvider:%q, EmbeddingAPIKeySet:%t, EmbeddingBaseURLSet:%t, TEIURLSet:%t, EmbeddingModel:%q, EmbeddingDimensions:%d, EmbeddingQueryTimeout:%s, EmbeddingDocumentTimeout:%s, EmbeddingShadowProvider:%q, EmbeddingShadowAPIKeySet:%t, EmbeddingShadowBaseURLSet:%t, SearchSemanticEnabled:%t}",
+		"Config{Env:%q, HTTPAddr:%q, AppOrigin:%q, EmbeddingProvider:%q, EmbeddingAPIKeySet:%t, EmbeddingBaseURLSet:%t, TEIURLSet:%t, EmbeddingModel:%q, EmbeddingDimensions:%d, EmbeddingQueryTimeout:%s, EmbeddingDocumentTimeout:%s, EmbeddingShadowProvider:%q, EmbeddingShadowAPIKeySet:%t, EmbeddingShadowBaseURLSet:%t, SearchSemanticEnabled:%t, ExportAtRestSecretSet:%t, SMTPHostSet:%t, SMTPPasswordSet:%t}",
 		c.Env,
 		c.HTTPAddr,
 		c.AppOrigin,
@@ -866,6 +972,9 @@ func (c Config) redactedSummary() string {
 		!c.EmbeddingShadowAPIKey.IsEmpty() || !c.rawEmbeddingShadowAPIKey.IsEmpty(),
 		!c.EmbeddingShadowBaseURL.IsEmpty(),
 		c.SearchSemanticEnabled,
+		len(c.ExportAtRestSecret) > 0 || strings.TrimSpace(c.rawExportAtRestSecret) != "",
+		strings.TrimSpace(c.SMTPHost) != "",
+		!c.SMTPPassword.IsEmpty() || !c.rawSMTPPassword.IsEmpty(),
 	)
 }
 
@@ -922,5 +1031,14 @@ func (c *Config) Redacted() map[string]any {
 		"vault_key_mutations_disabled":      c.KeyMutationsDisabled,
 		"webauthn_rp_id":                    c.WebAuthnRPID,
 		"webauthn_rp_origin":                c.WebAuthnRPOrigin,
+		"export_storage_dir":                c.ExportStorageDir,
+		"export_spool_dir":                  c.ExportSpoolDir,
+		"export_max_spool_bytes":            c.ExportMaxSpoolBytes,
+		"export_create_paused":              c.ExportCreatePaused,
+		"export_at_rest_secret_set":         len(c.ExportAtRestSecret) > 0,
+		"smtp_configured":                   strings.TrimSpace(c.SMTPHost) != "",
+		"smtp_port":                         c.SMTPPort,
+		"smtp_tls_mode":                     c.SMTPTLSMode,
+		"smtp_password_set":                 !c.SMTPPassword.IsEmpty() || !c.rawSMTPPassword.IsEmpty(),
 	}
 }

@@ -17,6 +17,16 @@ const (
 	PurposePasswordResetNotice    = "password_reset_notice"
 )
 
+type NoopMailer struct{}
+
+func NewNoopMailer() *NoopMailer { return &NoopMailer{} }
+
+func (*NoopMailer) Send(context.Context, string, string, string) error {
+	return ErrMailDeliveryUnavailable
+}
+
+func (*NoopMailer) MailDeliveryAvailable() bool { return false }
+
 type SinkMailer struct {
 	dir string
 	mu  sync.Mutex
