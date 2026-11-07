@@ -1383,7 +1383,7 @@ describe('Task 16 (steps 1-2) — VaultOnboardingFlow U3', () => {
     await waitFor(() => {
       expect(screen.getByTestId('onboarding-step1-error')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('onboarding-step1-error')).toHaveTextContent(/Worker unexpected failure/i);
+    expect(screen.getByTestId('onboarding-step1-error')).toHaveTextContent(/Something went wrong/i);
 
     // Re-enter passphrase and succeed -> FE1-4 focuses Step 2 heading on step transition
     fireEvent.change(screen.getByLabelText(/^Passphrase$/i), {

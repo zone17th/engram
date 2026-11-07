@@ -7,6 +7,7 @@ import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProblemError } from '@engram/shared-types';
 import { AppHeader } from '../components/app-shell/app-header';
+import AppError from '../app/app/error';
 import { EmptyState } from '../components/app-shell/empty-state';
 import { Omnibox } from '../components/app-shell/omnibox';
 import { PreviewNotice } from '../components/app-shell/preview-notice';
@@ -660,5 +661,30 @@ describe('App shell routes', () => {
   it('có đủ route canonical cho detail và settings preview', () => {
     expect(existsSync(resolve(WEB_ROOT, 'app', 'app', 'items', '[id]', 'page.tsx'))).toBe(true);
     expect(existsSync(resolve(WEB_ROOT, 'app', 'app', 'settings', 'page.tsx'))).toBe(true);
+  });
+});
+
+describe('AppError', () => {
+  it('renders localized states copy in en and vi', () => {
+    const reset = vi.fn();
+    const { unmount } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AppError error={new Error('boom')} reset={reset} />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByRole('heading', { name: enMessages.states.errorTitle })).toBeInTheDocument();
+    expect(screen.getByText(enMessages.states.errorBody)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: enMessages.states.retry }));
+    expect(reset).toHaveBeenCalledTimes(1);
+    unmount();
+
+    render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <AppError error={new Error('boom')} reset={reset} />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByRole('heading', { name: viMessages.states.errorTitle })).toBeInTheDocument();
+    expect(screen.getByText(viMessages.states.errorBody)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: viMessages.states.retry })).toBeInTheDocument();
   });
 });

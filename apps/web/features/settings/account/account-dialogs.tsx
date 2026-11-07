@@ -17,6 +17,7 @@ import {
   type IdentityProvider,
   type OauthProvider,
   type ReauthAction,
+  type ReauthGrant,
 } from '@/lib/api/auth';
 
 export type AccountDialogId =
@@ -142,12 +143,8 @@ export function AccountDialogs({
             await runMutation(grantToken, kind);
           } catch (err) {
             setError(
-              err instanceof ProblemError
-                ? err.problem.code === 'email_not_verified'
-                  ? t('account.linkRequiresVerifiedEmail')
-                  : kind === 'link'
-                    ? t('errors.generic')
-                    : (err.problem.detail ?? err.problem.title)
+              err instanceof ProblemError && err.problem.code === 'email_not_verified'
+                ? t('account.linkRequiresVerifiedEmail')
                 : t('errors.generic'),
             );
           } finally {
@@ -165,16 +162,20 @@ export function AccountDialogs({
     setPending(true);
     setError(null);
     try {
-      const grantResult = await reauth.submitPassword(reauthPassword);
+      let grantResult: ReauthGrant | null;
+      try {
+        grantResult = await reauth.submitPassword(reauthPassword);
+      } catch {
+        setReauthPassword('');
+        return;
+      }
       setReauthPassword('');
       if (!grantResult || !pendingKind) throw new Error('missing grant');
       await runMutation(grantResult.grant, pendingKind);
     } catch (err) {
       setError(
-        err instanceof ProblemError
-          ? err.problem.code === 'email_not_verified'
-            ? t('account.linkRequiresVerifiedEmail')
-            : (err.problem.detail ?? err.problem.title)
+        err instanceof ProblemError && err.problem.code === 'email_not_verified'
+          ? t('account.linkRequiresVerifiedEmail')
           : t('errors.generic'),
       );
     } finally {

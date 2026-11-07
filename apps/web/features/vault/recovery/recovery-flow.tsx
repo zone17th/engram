@@ -53,7 +53,7 @@ export type Step2ErrorState =
   | { kind: 'invalid' }
   | { kind: 'rate_limited'; initialSeconds: number }
   | { kind: 'aead_failed' }
-  | { kind: 'network'; detail?: string };
+  | { kind: 'network' };
 
 export type Step3ErrorState =
   | { kind: 'reauth_expired_password' }
@@ -65,7 +65,7 @@ export type Step3ErrorState =
   | { kind: 'idempotency_conflict' }
   | { kind: 'mutations_disabled' }
   | { kind: 'rate_limited'; initialSeconds: number }
-  | { kind: 'network'; detail?: string };
+  | { kind: 'network' };
 
 export type Step4ErrorState =
   | { kind: 'reauth_expired_password' }
@@ -73,7 +73,7 @@ export type Step4ErrorState =
   | { kind: 'version_mismatch' }
   | { kind: 'slot_taken' }
   | { kind: 'rate_limited'; initialSeconds: number }
-  | { kind: 'network'; detail?: string };
+  | { kind: 'network' };
 
 interface PreparedCompleteBundle {
   opGeneration: number;
@@ -753,10 +753,7 @@ export function VaultRecoveryFlow() {
           workerHoldsRecoveryStateRef.current = false;
           await vault.lock({ broadcast: false, reason: 'recovery_key_lookup_error' });
           refocusRecoveryKeyAfterErrorRef.current = true;
-          setStep2Error({
-            kind: 'network',
-            detail: err.problem.detail ?? err.problem.title,
-          });
+          setStep2Error({ kind: 'network' });
           return;
         }
 
@@ -784,10 +781,7 @@ export function VaultRecoveryFlow() {
           return;
         }
         refocusRecoveryKeyAfterErrorRef.current = true;
-        setStep2Error({
-          kind: 'network',
-          detail: err instanceof Error ? err.message : undefined,
-        });
+        setStep2Error({ kind: 'network' });
       } finally {
         if (isMountedRef.current && lookupBusyTokenRef.current === lookupToken) {
           setLookingUpKey(false);
@@ -1128,18 +1122,12 @@ export function VaultRecoveryFlow() {
             }
             return;
           }
-          setStep3Error({
-            kind: 'network',
-            detail: err.problem.detail ?? err.problem.title,
-          });
+          setStep3Error({ kind: 'network' });
           return;
         }
 
         // Network / timeout error: preserve `preparedCompleteBundle` (`sentAtLeastOnce = true`) for idempotent replay
-        setStep3Error({
-          kind: 'network',
-          detail: err instanceof Error ? err.message : undefined,
-        });
+        setStep3Error({ kind: 'network' });
       } finally {
         originTransitions.release();
         if (isMountedRef.current && completeBusyTokenRef.current === completeToken) {
@@ -1290,10 +1278,7 @@ export function VaultRecoveryFlow() {
         if (classified.kind === 'stale_generation' && client.getGeneration() !== opGen) {
           return;
         }
-        setStep3Error({
-          kind: 'network',
-          detail: err instanceof Error ? err.message : undefined,
-        });
+        setStep3Error({ kind: 'network' });
       } finally {
         if (isMountedRef.current && completeBusyTokenRef.current === submitToken) {
           setCompletingRecovery(false);
@@ -1490,17 +1475,7 @@ export function VaultRecoveryFlow() {
         if (!isVerifiedUnlockedAccess(opGen, opFlowSeq, opUserId)) {
           return;
         }
-        if (err instanceof ProblemError) {
-          setStep4Error({
-            kind: 'network',
-            detail: err.problem.detail ?? err.problem.title,
-          });
-          return;
-        }
-        setStep4Error({
-          kind: 'network',
-          detail: err instanceof Error ? err.message : undefined,
-        });
+        setStep4Error({ kind: 'network' });
       } finally {
         if (isMountedRef.current && regenGenerateTokenRef.current === generateToken) {
           setGeneratingRegenKeys(false);
@@ -1658,16 +1633,10 @@ export function VaultRecoveryFlow() {
           setStep4Error({ kind: 'rate_limited', initialSeconds: seconds });
           return;
         }
-        setStep4Error({
-          kind: 'network',
-          detail: err.problem.detail ?? err.problem.title,
-        });
+        setStep4Error({ kind: 'network' });
         return;
       }
-      setStep4Error({
-        kind: 'network',
-        detail: err instanceof Error ? err.message : undefined,
-      });
+      setStep4Error({ kind: 'network' });
     } finally {
       if (isMountedRef.current && regenSaveTokenRef.current === saveToken) {
         setSavingRegenKeys(false);
@@ -1784,7 +1753,7 @@ export function VaultRecoveryFlow() {
             clock: formatRetryClock(effectiveStep4RateSeconds),
             seconds: effectiveStep4RateSeconds,
           })}
-        {step4Error.kind === 'network' && (step4Error.detail ?? t('step4.errors.networkBody'))}
+        {step4Error.kind === 'network' && t('step4.errors.networkBody')}
       </p>
     </div>
   ) : null;
@@ -2146,7 +2115,7 @@ export function VaultRecoveryFlow() {
                     {t('step2.errors.networkTitle')}
                   </p>
                   <p className="m-0 text-[13px] text-muted">
-                    {step2Error.detail ?? t('step2.errors.networkBody')}
+                    {t('step2.errors.networkBody')}
                   </p>
                 </div>
               </div>
@@ -2538,7 +2507,7 @@ export function VaultRecoveryFlow() {
                     {t('step3.errors.networkTitle')}
                   </p>
                   <p className="m-0 text-[13px] text-muted">
-                    {step3Error.detail ?? t('step3.errors.networkBody')}
+                    {t('step3.errors.networkBody')}
                   </p>
                 </div>
                 {preparedCompleteBundle ? (

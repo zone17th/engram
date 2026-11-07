@@ -658,7 +658,7 @@ describe('Task 17A — VaultRecoveryFlow (Re-auth -> RK Lookup -> Recovering -> 
       expect(screen.getByTestId('recovery-error-lookup-network')).toBeInTheDocument();
     });
     expect(screen.getByTestId('recovery-error-lookup-network')).toHaveTextContent(
-      /Another state-changing crypto call is already in flight/i,
+      /Could not reach the server/i,
     );
 
     unmount();

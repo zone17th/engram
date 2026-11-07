@@ -386,9 +386,8 @@ function PasskeySecurityCardInner({
     setOauthError(null);
     try {
       await reauth.startOauthReauth('google', SETTINGS_PATH);
-    } catch (err) {
-      const detail = err instanceof ProblemError ? err.problem.detail ?? err.problem.title : null;
-      setOauthError(detail || t('add.oauthStartFailed'));
+    } catch {
+      setOauthError(t('add.oauthStartFailed'));
     } finally {
       setOauthPending(false);
     }

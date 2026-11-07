@@ -118,6 +118,9 @@
     "errorBody": "Thử lại sau giây lát.",
     "retry": "Thử lại"
   },
+  "ui": {
+    "segmentedAriaLabel": "Lựa chọn"
+  },
   "footer": {
     "legal": "engram — lưu theo từ khoá."
   },
@@ -582,6 +585,8 @@
       "patchFailed": "Không lưu được lựa chọn này. Giữ nguyên giá trị cũ.",
       "localeTitle": "Ngôn ngữ",
       "localeBody": "Áp dụng cho giao diện, không đụng tới nội dung.",
+      "localeVi": "Tiếng Việt",
+      "localeEn": "English",
       "themeTitle": "Giao diện",
       "themeBody": "Theo hệ thống, sáng, hoặc tối.",
       "themeSystem": "Hệ thống",
@@ -601,6 +606,8 @@
       "currentSession": "phiên này",
       "revoke": "Thu hồi",
       "unknownDevice": "Thiết bị không rõ",
+      "lastSeenJustNow": "vừa xong",
+      "lastSeenHoursAgo": "{hours} giờ trước",
       "auditTitle": "Nhật ký bảo mật",
       "auditBody": "Đăng nhập, thay đổi tài khoản và vault, thu hồi phiên.",
       "notificationsTitle": "Thông báo trong app",
@@ -1768,6 +1775,7 @@
       "addFieldValueAria": "Giá trị mới",
       "typeOptionString": "Văn bản",
       "typeOptionNumber": "Số",
+      "typeOptionBoolean": "true / false",
       "typeOptionTrue": "true",
       "typeOptionFalse": "false",
       "typeOptionNull": "null",
@@ -1788,7 +1796,7 @@
         "colKey": "Trường",
         "colValue": "Giá trị",
         "colType": "Kiểu",
-        "colMenuSr": "Menu",
+        "colMenuSr": "Trình đơn",
         "placeholderKey": "Tên trường (vd: ssid)",
         "placeholderValue": "Giá trị",
         "placeholderArrayItemValue": "Giá trị mục #{row} (trống = \"\")",

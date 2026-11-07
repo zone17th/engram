@@ -1,7 +1,7 @@
 'use client';
 
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { AuthStatus } from '@/components/ui/field';
@@ -21,13 +21,17 @@ import { AutoLockCard } from '@/features/settings/security/auto-lock-card';
 import { PasskeySecurityCard } from '@/features/settings/security/passkey-card';
 import { formatUserAgent } from '@/features/settings/security/user-agent-label';
 
-function formatRelative(iso: string, locale: string): string {
+function formatRelative(
+  iso: string,
+  locale: string,
+  labels: { justNow: string; hoursAgo: (hours: number) => string },
+): string {
   try {
     const date = new Date(iso);
     const diff = Date.now() - date.getTime();
     const hours = Math.floor(diff / 3_600_000);
-    if (hours < 1) return locale === 'vi' ? 'vừa xong' : 'just now';
-    if (hours < 48) return locale === 'vi' ? `${hours} giờ trước` : `${hours}h ago`;
+    if (hours < 1) return labels.justNow;
+    if (hours < 48) return labels.hoursAgo(hours);
     return new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-US').format(date);
   } catch {
     return iso;
@@ -36,6 +40,7 @@ function formatRelative(iso: string, locale: string): string {
 
 export function SessionsPanel({ onOpenRevokeDialog }: { onOpenRevokeDialog: () => void }) {
   const t = useTranslations('settings');
+  const uiLocale = useLocale() === 'vi' ? 'vi' : 'en';
   const { me, sessionEpoch, signOut } = useSession();
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [mutationErrorId, setMutationErrorId] = useState<string | null>(null);
@@ -89,7 +94,12 @@ export function SessionsPanel({ onOpenRevokeDialog }: { onOpenRevokeDialog: () =
             <span className="min-w-0 flex-1 break-words" title={session.user_agent ?? undefined}>
               {session.device_label ?? formatUserAgent(session.user_agent) ?? t('security.unknownDevice')}
             </span>
-            <span className="text-muted">{formatRelative(session.last_seen_at, me?.settings.locale ?? 'en')}</span>
+            <span className="text-muted">
+              {formatRelative(session.last_seen_at, uiLocale, {
+                justNow: t('security.lastSeenJustNow'),
+                hoursAgo: (hours) => t('security.lastSeenHoursAgo', { hours }),
+              })}
+            </span>
             {session.current ? (
               <span className="text-muted">{t('security.currentSession')}</span>
             ) : (
