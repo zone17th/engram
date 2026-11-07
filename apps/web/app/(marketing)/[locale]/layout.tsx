@@ -27,6 +27,8 @@ export default async function MarketingLayout({
   const { locale } = await params;
   if (!hasLocale(routing.locales, locale)) notFound();
   // Bắt buộc để landing render tĩnh (SSG) — P01 yêu cầu TTFB < 200 ms.
+  // Không đọc `headers()`/`x-nonce` tại đây: CSP của nhóm marketing dùng
+  // danh sách `sha256-` tĩnh trích xuất lúc build (`public/.well-known/csp-hashes.json`).
   setRequestLocale(locale);
 
   // `lang={locale}` chứ không phải "en" cố định: `/vi` phục vụ nội dung tiếng
