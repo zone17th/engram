@@ -317,6 +317,35 @@ exec "${realGit}" "\${args[@]}"
       r = spawnSync(process.execPath, [CLOUD_RUNNER_MJS, "collect"], { cwd: wt, env, encoding: "utf8" });
       assert.equal(r.status, 1);
       assert.equal(readFileSync(join(outLogs, "a.log"), "utf8").includes("EVIDENCE_FOR_A"), true);
+
+      // 5) Legacy 8-char pending checkpoint (written by the pre-cutover controller) is preserved
+      // non-destructively: collect returns 2 without deleting pending, overwriting the existing
+      // report, or deleting the remote log ref (R5-1, R3-1).
+      rmSync(outMd, { recursive: true, force: true });
+      writeFileSync(outMd, `# Cloud test report: cloudrun @ ${sb.sha.slice(0, 8)}\n\n- stage_outcome: **succeeded**\n- test_verdict: **pass**\n`);
+      const legacySha = sb.sha.slice(0, 8);
+      const legacyRef = `refs/test-results/engram/cloudrun/${legacySha}`;
+      const legacyCommitDir = join(hostRoot, "legacy-commit");
+      mkdirSync(legacyCommitDir, { recursive: true });
+      writeFileSync(join(legacyCommitDir, "a.log"), `LEGACY_EVIDENCE_FOR_${legacySha}\n`);
+      execFileSync("git", ["init", "-q"], { cwd: legacyCommitDir });
+      execFileSync("git", ["add", "a.log"], { cwd: legacyCommitDir });
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@local", "commit", "-qm", "legacy logs"], { cwd: legacyCommitDir });
+      execFileSync("git", ["push", "-q", "-f", logRepo, `HEAD:${legacyRef}`], { cwd: legacyCommitDir });
+
+      writeFileSync(stateFile, JSON.stringify(makePending(
+        { sha: legacySha, specRef: `refs/test-specs/cloudrun/${legacySha}` },
+        { sha: legacySha, log_ref: legacyRef, ran: [{ cmd: scrubbedCmd, result: "pass", duration_s: 0, exit_code: 0 }] },
+      )));
+      r = spawnSync(process.execPath, [CLOUD_RUNNER_MJS, "collect"], { cwd: wt, env, encoding: "utf8" });
+      assert.equal(r.status, 2);
+      assert.equal(readFileSync(outMd, "utf8").includes("test_verdict: **pass**"), true, "legacy pending collect must not overwrite existing report");
+      const retainedState = JSON.parse(readFileSync(stateFile, "utf8"));
+      assert.equal(retainedState.pending?.sha, legacySha, "legacy pending state must be preserved, not deleted");
+      const legacyRemoteRefs = execFileSync("git", ["ls-remote", logRepo, `${legacyRef}`], { encoding: "utf8" });
+      assert.equal(legacyRemoteRefs.includes(legacyRef), true, "legacy remote log ref must not be deleted");
+
+      // A subsequent clean collect on a fresh 40-char pending state still works after legacy state is closed
     } finally {
       rmSync(hostRoot, { recursive: true, force: true });
     }

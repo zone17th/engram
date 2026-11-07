@@ -53,6 +53,9 @@ node $R/cloud-runner.mjs close --all yes --lane <lane>         # when the lane i
 Other commands: `ensure` (provision ahead, about 10 minutes), `collect [--shard n | --all yes]`
 (finish a round after this machine died or after `--detach yes`), `--timeout s` (default
 3600), `--model id[:k=v,...]` (default `grok-4.6:effort=high,fast=false`).
+- Pending rounds created before the 40-char SHA cutover are preserved
+  non-destructively by `collect` (exit `2` without deleting state or overwriting
+  an existing report); drain them with `close --all yes` and re-run `test`.
 
 ## Spec format
 

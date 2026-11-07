@@ -632,6 +632,10 @@ async function cmdTest(opts) {
 // can retry without re-running the VM.
 async function finishPending(state, shard, timeoutOverride) {
   const p = state.pending;
+  if (!/^[0-9a-f]{40}$/i.test(String(p?.sha ?? "")) || !Array.isArray(p?.expectedCommands) || p.expectedCommands.length === 0) {
+    console.error(`cloud-runner: legacy pending state for ${p?.runId ?? "unknown"} (sha=${p?.sha ?? "none"}) lacks full 40-char SHA or expectedCommands manifest; preserving pending state and existing report without destructive finalization. Drain with 'node ${process.argv[1]} close --all yes' and re-run 'test' under full-SHA binding.`);
+    return 2;
+  }
   let runStatus = p.runStatus;
   let durationMs = p.durationMs;
   let rawResult = p.rawResult;
