@@ -531,7 +531,9 @@ post_restore_open() { # mandatory pre-open steps + assertions (both modes)
   local mrc=0
   migrate_up "$DST" >"$WORK/migrate.log" 2>&1 || mrc=$?
   [ "$mrc" -eq 0 ] || sed 's/^/    migrate: /' "$WORK/migrate.log" | tail -n 5
-  ev MIGRATE_UP_EXIT "$mrc"
+  # *_RC, not *_EXIT: the cloud runner treats any *_EXIT=<n> > 0 line as a failed step, and the
+  # negative control below legitimately records a non-zero migrate rc.
+  ev MIGRATE_UP_RC "$mrc"
   check MIGRATE_UP test "$mrc" -eq 0
   docker rm -f "$API" >/dev/null 2>&1 || true
   docker run -d --name "$API" --network "$NET" -p 127.0.0.1::8080 \
