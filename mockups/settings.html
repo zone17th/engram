@@ -1211,7 +1211,10 @@
     </section>
     <section data-view="pl-too-large" hidden>
       <div role="alert" class="auth-alert mb-3">Bản xuất đọc được quá lớn cho trình duyệt này — dùng Chrome/Edge trên máy tính, hoặc tải bản sao lưu mã hoá. <span lang="en" class="block">This readable export is too large for this browser — use Chrome or Edge on a computer, or download an encrypted backup instead.</span></div>
-      <div class="flex justify-end"><button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button></div>
+      <div class="flex flex-wrap justify-end gap-2">
+        <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button>
+        <a href="#dulieu" class="btn btn-primary no-underline" data-close-dialog>Tải bản sao lưu mã hoá · <span lang="en" class="font-semibold">Download encrypted backup</span></a>
+      </div>
     </section>
   </div>
 </dialog>

@@ -178,6 +178,95 @@ describe('i18n', () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it('mọi khoá P06 dành sẵn đều nằm đúng một namespace chuẩn trong en và vi', () => {
+    const canonicalReservedKeys = [
+      'nav.help',
+      'nav.skipToContent',
+      'settings.search.privacyLink',
+      'settings.data.docsLink',
+      'states.vaultLocked',
+      'states.vaultLockedTitle',
+      'states.vaultLockedBody',
+      'states.vaultLockedCta',
+      'states.server500Title',
+      'states.server500Body',
+      'states.notFoundTitle',
+      'states.notFoundBody',
+      'states.backToList',
+      'states.sessionExpiredTitle',
+      'states.sessionExpiredBody',
+      'states.sessionExpiredCta',
+      'offline.banner',
+      'offline.bannerTitle',
+      'offline.bannerBody',
+      'offline.reconnectedTitle',
+      'offline.reconnectedBody',
+      'offline.saveDeferredTitle',
+      'offline.saveDeferredBody',
+      'offline.retrySave',
+      'offline.searchUnavailableTitle',
+      'offline.searchUnavailableBody',
+      'offline.exportUnavailableTitle',
+      'offline.exportUnavailableBody',
+      'auth.signup.mailResetUnavailable',
+      'auth.forgot.contactIssues',
+      'auth.forgot.contactHref',
+      'auth.reauth.pendingAction',
+      'auth.reauth.actions.export_decrypted',
+      'auth.reauth.actions.account_delete',
+      'settings.account.oauthUnavailable',
+      'onboarding.settingUp',
+      'onboarding.semanticConsent',
+      'onboarding.semanticConsentTitle',
+      'onboarding.semanticConsentBody',
+      'onboarding.semanticConsentEnable',
+      'onboarding.semanticConsentLater',
+      'onboarding.semanticConsentError',
+      'vault.passkey.add.timeout',
+      'unlock.deriving',
+      'search.toggle.similarMeaningLabel',
+      'search.toggle.similarMeaningTooltip',
+      'search.help.privacyHint1',
+      'search.help.privacyHint2',
+      'search.help.privacyHint3',
+      'content.home.empty.fillHint',
+      'search.consentBanner',
+      'search.consentBannerTitle',
+      'search.consentBannerBody',
+      'search.consentBannerTurnOff',
+      'search.consentBannerAcknowledge',
+      'search.consentBannerError',
+    ] as const;
+    const forbiddenDuplicatePaths = [
+      'app.header.help',
+      'app.header.skipToContent',
+      'search.similarMeaningLabel',
+      'search.similarMeaningTooltip',
+      'content.omnibox.similarMeaningLabel',
+      'content.omnibox.similarMeaningTooltip',
+      'search.privacyHint1',
+      'search.privacyHint2',
+      'search.privacyHint3',
+      'content.omnibox.privacyHint1',
+      'content.omnibox.privacyHint2',
+      'content.omnibox.privacyHint3',
+      'home.examples.fillHint',
+      'content.home.examples.fillHint',
+      'reauth.pendingAction',
+      'passkey.add.timeout',
+      'vault.state.settingUp',
+      'vault.locked.neutralBanner',
+    ] as const;
+    for (const key of canonicalReservedKeys) {
+      expect(typeof valueAtPath(en, key), `en missing canonical key ${key}`).toBe('string');
+      expect(typeof valueAtPath(vi, key), `vi missing canonical key ${key}`).toBe('string');
+    }
+    for (const dup of forbiddenDuplicatePaths) {
+      expect(valueAtPath(en, dup), `en should not duplicate ${dup}`).toBeUndefined();
+      expect(valueAtPath(vi, dup), `vi should not duplicate ${dup}`).toBeUndefined();
+    }
+  });
 });
 
 describe('routing', () => {

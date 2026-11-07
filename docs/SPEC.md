@@ -99,7 +99,7 @@ Thuật ngữ **keyword** chỉ còn trong glossary: *cũ, đã thay bằng `Ite
 
 | Entity | Plaintext trên server? | Mô tả |
 |--------|------------------------|-------|
-| **User** | ✔ | Tài khoản; email, locale, theme, `auto_lock_minutes`, `settings` |
+| **User** | ✔ | Tài khoản; email, locale, theme, `auto_lock_minutes`, `settings`, `semantic_consent_seen_at` |
 | **AuthIdentity** | ✔ | OAuth (google/github) hoặc password hash |
 | **Session** | ✔ | Refresh token hash, device info, thời hạn |
 | **Vault** | ✔ (metadata + wrapped keys) | `vault_key` wrap bởi KEK (passphrase); **thêm** tối đa 10 wrap bởi recovery key và N wrap bởi passkey PRF. Keypair X25519/Ed25519 (pub plaintext, priv wrapped). Mọi đường unlock lấy được VK đều có quyền tạo KEK wrap mới, kèm re-auth tài khoản (§3.9) |
@@ -118,7 +118,7 @@ Thuật ngữ **keyword** chỉ còn trong glossary: *cũ, đã thay bằng `Ite
 | **VaultPasskey** | ✔ `cred_id`, `prf_salt`, `vk_wrap`, `pubkey?`, meta | WebAuthn; PRF → wrap VK. Nhiều passkey / user. Không fallback secret phía server |
 | **DeviceKey** (client-only) | — không có trên server | `DevKey` WebCrypto non-extractable + `seal(VK, DevKey)` trong IndexedDB khi bật "Nhớ thiết bị này" (§5.6) |
 
-**Settings** (cột `app_user.settings` jsonb + cột riêng): `semantic_suggest` (default `true`), `auto_lock_minutes` (default `15`; `0` = never).
+**Settings** (cột `app_user.settings` jsonb + cột riêng): `semantic_suggest` (default `false` cho tài khoản mới từ migration `0010_p06`; tài khoản cũ đang bật giữ nguyên cho tới khi chọn trên banner một lần), `semantic_consent_seen_at` (`NULL` khi chưa xem lựa chọn consent cuối onboarding hoặc banner một lần; thời điểm server khi đã xem, §6.10), `auto_lock_minutes` (default `15`; `0` = never).
 
 ### 2.3 Quan hệ
 
@@ -227,7 +227,8 @@ erDiagram
         text email UK
         text locale
         int auto_lock_minutes "0 = never"
-        jsonb settings "semantic_suggest"
+        jsonb settings "semantic_suggest (default false)"
+        timestamptz semantic_consent_seen_at "NULL khi chưa xem consent"
         timestamptz created_at
     }
     AUTH_IDENTITY {

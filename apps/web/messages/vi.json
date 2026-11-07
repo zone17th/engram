@@ -106,9 +106,7 @@
       "lockedAndUnlock": "Vault đang khoá — Mở khoá vault",
       "unlockVaultNamed": "{state} — Mở khoá vault",
       "settings": "Cài đặt",
-      "settingsDone": "Xong",
-      "help": "Tài liệu & quyền riêng tư",
-      "skipToContent": "Chuyển tới nội dung chính"
+      "settingsDone": "Xong"
     },
     "preview": {
       "label": "Bản xem trước",
@@ -125,7 +123,7 @@
     "vaultLockedTitle": "Vault đang khoá",
     "vaultLockedBody": "Mở khoá để xem nội dung entry.",
     "vaultLockedCta": "Mở khoá vault",
-    "server500Title": "Chưa xử lý được yêu cầu",
+    "server500Title": "Chưa thực hiện được lúc này",
     "server500Body": "Máy chủ tạm thời gặp sự cố. Bản nháp của bạn vẫn còn nguyên — hãy thử lại.",
     "notFoundTitle": "Không tìm thấy",
     "notFoundBody": "Mục này đã bị xoá, hoặc đường dẫn không thuộc tài khoản của bạn.",
@@ -141,12 +139,12 @@
     "reconnectedTitle": "Đã kết nối lại.",
     "reconnectedBody": "Danh sách vừa được làm mới.",
     "saveDeferredTitle": "Không lưu được lúc này",
-    "saveDeferredBody": "Nội dung bạn gõ vẫn nằm trong ô soạn thảo cho tới khi vault khoá (khoá vault sẽ xoá bản nháp chưa lưu). Có mạng lại thì bấm lưu để gửi lại đúng yêu cầu cũ.",
+    "saveDeferredBody": "Nội dung bạn gõ vẫn nằm trong ô soạn thảo cho tới khi vault khoá (khoá vault sẽ xoá bản nháp chưa lưu). Có mạng lại thì bấm lưu lại.",
     "retrySave": "Thử lưu lại",
     "searchUnavailableTitle": "Tìm kiếm cần mạng",
     "searchUnavailableBody": "Bản này chưa tìm ngoại tuyến được. Duyệt danh sách đã tải trong lúc chờ.",
     "exportUnavailableTitle": "Sao lưu cần kết nối mạng",
-    "exportUnavailableBody": "Bạn đang offline. Kết nối lại để tạo hoặc tải bản sao lưu."
+    "exportUnavailableBody": "Bạn đang ngoại tuyến. Kết nối lại để tạo hoặc tải bản sao lưu."
   },
   "ui": {
     "segmentedAriaLabel": "Lựa chọn"
@@ -326,7 +324,7 @@
     },
     "semanticConsent": "Bật tìm theo nghĩa? Tên mục, gợi ý, tag và chữ tìm kiếm được gửi tới dịch vụ tạo vector bên ngoài; nội dung entry không bao giờ được gửi.",
     "semanticConsentTitle": "Tìm theo nghĩa (tuỳ chọn)",
-    "semanticConsentBody": "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm kiếm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời thiết bị.",
+    "semanticConsentBody": "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm kiếm được gửi tới dịch vụ tạo vector bên ngoài để tính vector. Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời thiết bị.",
     "semanticConsentEnable": "Bật tìm theo nghĩa",
     "semanticConsentLater": "Để sau",
     "semanticConsentError": "Không lưu được lựa chọn. Hãy thử lại."
@@ -454,7 +452,7 @@
       "mailUnavailableContactLink": "kênh liên hệ",
       "mailUnavailableHelpSuffix": ".",
       "mailUnavailableOauthHint": "Nếu tài khoản của bạn đã liên kết Google hoặc GitHub, bạn vẫn có thể đăng nhập bằng nhà cung cấp đó.",
-      "sentTitle": "Nếu có tài khoản dùng địa chỉ email này, chúng tôi đã gửi hướng dẫn tiếp theo. Vui lòng kiểm tra hộp thư đến và thư rác.",
+      "sentTitle": "Nếu địa chỉ này có tài khoản, chúng tôi đã gửi hướng dẫn tiếp theo.",
       "sentBody": "Hãy kiểm tra hộp thư (kể cả mục thư rác) của địa chỉ bạn vừa nhập và làm theo hướng dẫn trong thư.",
       "tryAnotherEmail": "Thử địa chỉ khác",
       "contactIssues": "Liên hệ (GitHub Issues)",
@@ -574,19 +572,6 @@
     "common": {
       "cancel": "Huỷ",
       "logout": "Đăng xuất"
-    }
-  },
-  "reauth": {
-    "pendingAction": "{action}"
-  },
-  "passkey": {
-    "add": {
-      "timeout": "Hộp thoại passkey đã quá 60 giây. Hãy thử lại hoặc bấm Huỷ."
-    }
-  },
-  "home": {
-    "examples": {
-      "fillHint": "Bấm vào ví dụ để điền vào ô nhập"
     }
   },
   "settings": {
@@ -957,7 +942,7 @@
     "search": {
       "semanticTitle": "Tìm gần nghĩa",
       "semanticDesc": "Gõ “mạng nhà” cũng gợi ý mục tên “wifi”. Kết quả gần nghĩa nằm ở nhóm riêng bên dưới kết quả khớp chữ, nên bật hay tắt cũng không xáo trộn thứ tự quen thuộc.",
-      "semanticExternalCopy": "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ nhúng lại.",
+      "semanticExternalCopy": "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ tạo vector bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ tạo lại vector.",
       "semanticSelfHostCopy": "Tên mục, gợi ý và tag được nhúng trên máy chủ engram. Tắt chỉ ẩn kết quả gần nghĩa; chỉ mục vẫn được cập nhật nên bật lại dùng được ngay.",
       "semanticEntryNeverSent": "Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời máy bạn.",
       "semanticServerOff": "Máy chủ này chưa bật tìm gần nghĩa",
@@ -973,7 +958,6 @@
     "state": {
       "noVault": "Chưa tạo vault",
       "onboarding": "Đang tạo vault…",
-      "settingUp": "Đang thiết lập",
       "locked": "Vault đang khoá",
       "unlocking": "Đang mở khoá vault…",
       "unlocked": "Vault mở",
@@ -987,7 +971,6 @@
     "locked": {
       "bannerTitle": "Vault đã khoá",
       "bannerBody": "Khoá giải mã và nội dung entry trong bộ nhớ đã được xoá. Bạn vẫn duyệt và tìm được tên mục cùng tag; mở khoá lại để xem nội dung entry.",
-      "neutralBanner": "Vault đang khoá. Mở khoá để xem nội dung entry.",
       "unlockCta": "Mở khoá vault",
       "maskLabel": "Nội dung entry đang bị khoá. Mở khoá vault để xem.",
       "bodyLoading": "Đang giải mã nội dung entry…",
@@ -1612,9 +1595,6 @@
         "example2": "wifi #nhà: SSID Zone17th / mk 8chars",
         "example3": "cấu-hình #ops: https://engram.zone17.click"
       },
-      "examples": {
-        "fillHint": "Bấm vào ví dụ để điền vào ô nhập"
-      },
       "filteredEmpty": {
         "eyebrow": "Tag chưa dùng",
         "title": "Chưa mục nào gắn #{display}",
@@ -1632,11 +1612,6 @@
       "placeholder": "Tìm hoặc tên: nội dung",
       "searchHint": "Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ <mono>tên:</mono> trước.",
       "tagHint": "Enter: lọc theo tag — chữ đã gõ gửi tới máy chủ, không mã hoá",
-      "similarMeaningLabel": "Gần nghĩa",
-      "similarMeaningTooltip": "Gần nghĩa (≈): gợi ý mục theo ý nghĩa",
-      "privacyHint1": "Chữ gõ tìm kiếm được gửi tới máy chủ, không mã hoá.",
-      "privacyHint2": "Khi bật ≈, tên mục, tag, gợi ý và chữ tìm kiếm được gửi tới dịch vụ nhúng bên ngoài.",
-      "privacyHint3": "Lưu nội dung mã hoá thì gõ tên: trước.",
       "guardTitle": "Thêm tên và dấu : để lưu",
       "guardBody": "Chuỗi nhiều dòng hoặc dài quá 200 ký tự không được gửi tìm kiếm để tránh lộ nội dung. Gõ tên: nội dung ở dòng đầu để mã hoá và lưu.",
       "tagGuardTitle": "Tên tag lọc tối đa 50 ký tự",
@@ -2073,10 +2048,10 @@
   "search": {
     "help": {
       "sentToServer": "Chữ gõ để tìm được gửi tới máy chủ, không mã hoá; lưu nội dung thì gõ <mono>tên:</mono> trước.",
-      "sentToServerExternal": "Chữ gõ để tìm được gửi tới máy chủ và tới dịch vụ nhúng bên ngoài khi bật ≈, không mã hoá; lưu nội dung thì gõ <mono>tên:</mono> trước.",
+      "sentToServerExternal": "Chữ gõ để tìm được gửi tới máy chủ và tới dịch vụ tạo vector bên ngoài khi bật ≈, không mã hoá; lưu nội dung thì gõ <mono>tên:</mono> trước.",
       "enterToSearch": "Nhấn Enter để tìm; chữ gõ được gửi tới máy chủ, không mã hoá.",
       "privacyHint1": "Chữ gõ tìm kiếm được gửi tới máy chủ, không mã hoá.",
-      "privacyHint2": "Khi bật ≈, tên mục, tag, gợi ý và chữ tìm kiếm được gửi tới dịch vụ nhúng bên ngoài.",
+      "privacyHint2": "Khi bật ≈, tên mục, tag, gợi ý và chữ tìm kiếm được gửi tới dịch vụ tạo vector bên ngoài.",
       "privacyHint3": "Lưu nội dung mã hoá thì gõ tên: trước."
     },
     "toggle": {
@@ -2132,14 +2107,9 @@
       "cannotFill": "Không điền được bằng Tab",
       "pinned": "Đã chọn mục có sẵn"
     },
-    "similarMeaningLabel": "Gần nghĩa",
-    "similarMeaningTooltip": "Gần nghĩa (≈): gợi ý mục theo ý nghĩa",
-    "privacyHint1": "Chữ gõ tìm kiếm được gửi tới máy chủ, không mã hoá.",
-    "privacyHint2": "Khi bật ≈, tên mục, tag, gợi ý và chữ tìm kiếm được gửi tới dịch vụ nhúng bên ngoài.",
-    "privacyHint3": "Lưu nội dung mã hoá thì gõ tên: trước.",
     "consentBanner": "Tìm theo nghĩa (≈) gửi tên mục, gợi ý, tag và chữ tìm kiếm tới dịch vụ tạo vector bên ngoài; nội dung entry không bao giờ được gửi.",
     "consentBannerTitle": "Tìm theo nghĩa (≈) đang bật",
-    "consentBannerBody": "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm kiếm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Nội dung entry không bao giờ được gửi.",
+    "consentBannerBody": "Tên mục, gợi ý, tag và chữ bạn gõ khi tìm kiếm được gửi tới dịch vụ tạo vector bên ngoài để tính vector. Nội dung entry không bao giờ được gửi.",
     "consentBannerTurnOff": "Tắt",
     "consentBannerAcknowledge": "Đã hiểu",
     "consentBannerError": "Không lưu được lựa chọn. Hãy thử lại."

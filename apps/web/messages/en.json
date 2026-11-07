@@ -106,9 +106,7 @@
       "lockedAndUnlock": "Vault locked — Unlock vault",
       "unlockVaultNamed": "{state} — Unlock vault",
       "settings": "Settings",
-      "settingsDone": "Done",
-      "help": "Docs & privacy",
-      "skipToContent": "Skip to main content"
+      "settingsDone": "Done"
     },
     "preview": {
       "label": "Preview",
@@ -125,7 +123,7 @@
     "vaultLockedTitle": "Vault locked",
     "vaultLockedBody": "Unlock to see entry contents.",
     "vaultLockedCta": "Unlock vault",
-    "server500Title": "Could not process request",
+    "server500Title": "Couldn't complete that right now",
     "server500Body": "We could not process the request right now. Your draft is still here — please retry.",
     "notFoundTitle": "Not found",
     "notFoundBody": "This item was deleted or does not belong to your account.",
@@ -141,7 +139,7 @@
     "reconnectedTitle": "Back online.",
     "reconnectedBody": "Your list has been refreshed.",
     "saveDeferredTitle": "Cannot save right now",
-    "saveDeferredBody": "What you typed stays in the editor until the vault locks (locking the vault clears unsaved drafts). Retry once connectivity returns.",
+    "saveDeferredBody": "What you typed stays in the editor until the vault locks (locking clears unsaved drafts). When you're back online, press Save again.",
     "retrySave": "Retry save",
     "searchUnavailableTitle": "Search needs a connection",
     "searchUnavailableBody": "Offline search is not available yet. Browse the items already loaded while you wait.",
@@ -327,7 +325,7 @@
     "semanticConsent": "Enable meaning-based search? Item names, hints, tags, and search text are sent to an external embedding service to compute vectors; entry contents are never sent.",
     "semanticConsentTitle": "Meaning-based search (optional)",
     "semanticConsentBody": "Item names, hints, tags, and the text you type when searching are sent to an external embedding service to compute vectors. Entry content is never sent — it is encrypted before leaving your device.",
-    "semanticConsentEnable": "Enable meaning search",
+    "semanticConsentEnable": "Turn on meaning-based search",
     "semanticConsentLater": "Maybe later",
     "semanticConsentError": "Could not save your choice. Try again."
   },
@@ -454,7 +452,7 @@
       "mailUnavailableContactLink": "contact channel",
       "mailUnavailableHelpSuffix": ".",
       "mailUnavailableOauthHint": "If your account is linked to Google or GitHub, you can still sign in with that provider.",
-      "sentTitle": "If an account uses this email address, we have sent the next steps. Please check your inbox and spam folder.",
+      "sentTitle": "If an account uses this email address, we have sent the next steps.",
       "sentBody": "Check the inbox (and spam folder) for the address you entered and follow the instructions in the email.",
       "tryAnotherEmail": "Try another email",
       "contactIssues": "Contact (GitHub Issues)",
@@ -574,19 +572,6 @@
     "common": {
       "cancel": "Cancel",
       "logout": "Sign out"
-    }
-  },
-  "reauth": {
-    "pendingAction": "{action}"
-  },
-  "passkey": {
-    "add": {
-      "timeout": "The passkey prompt timed out after 60 seconds. Try again or cancel."
-    }
-  },
-  "home": {
-    "examples": {
-      "fillHint": "Click an example to fill the input box"
     }
   },
   "settings": {
@@ -973,7 +958,6 @@
     "state": {
       "noVault": "No vault yet",
       "onboarding": "Setting up vault…",
-      "settingUp": "Setting up",
       "locked": "Vault locked",
       "unlocking": "Unlocking vault…",
       "unlocked": "Vault open",
@@ -987,7 +971,6 @@
     "locked": {
       "bannerTitle": "Vault locked",
       "bannerBody": "Decryption keys and cached entry contents in memory were cleared. You can still browse and search item names and tags; unlock again to view entry contents.",
-      "neutralBanner": "Vault locked. Unlock to see entry contents.",
       "unlockCta": "Unlock vault",
       "maskLabel": "Entry content is locked. Unlock the vault to view it.",
       "bodyLoading": "Decrypting entry content…",
@@ -1612,9 +1595,6 @@
         "example2": "wifi #home: SSID Zone17th / pass 8chars",
         "example3": "api-config #ops: https://engram.zone17.click"
       },
-      "examples": {
-        "fillHint": "Click an example to fill the input box"
-      },
       "filteredEmpty": {
         "eyebrow": "Unused tag",
         "title": "No items tagged #{display} yet",
@@ -1632,11 +1612,6 @@
       "placeholder": "Search or name: content",
       "searchHint": "Text you type to search is sent to the server, not encrypted. To save content, type <mono>name:</mono> first.",
       "tagHint": "Enter: filter by tag — typed text is sent to the server, not encrypted",
-      "similarMeaningLabel": "Similar meaning",
-      "similarMeaningTooltip": "Similar meaning (≈): suggests items by meaning",
-      "privacyHint1": "Typed search text is sent to the server unencrypted.",
-      "privacyHint2": "When ≈ is on, item names, tags, hints, and search text are sent to an external embedding service.",
-      "privacyHint3": "To save encrypted content, type name: first.",
       "guardTitle": "Add a name and : to save",
       "guardBody": "Multi-line or > 200-character input is never sent as a search query. Prefix with name: on the first line to encrypt and save.",
       "tagGuardTitle": "Tag filter query must be at most 50 characters",
@@ -2132,11 +2107,6 @@
       "cannotFill": "Cannot fill with Tab",
       "pinned": "Existing item selected"
     },
-    "similarMeaningLabel": "Similar meaning",
-    "similarMeaningTooltip": "Similar meaning (≈): suggests items by meaning",
-    "privacyHint1": "Typed search text is sent to the server unencrypted.",
-    "privacyHint2": "When ≈ is on, item names, tags, hints, and search text are sent to an external embedding service.",
-    "privacyHint3": "To save encrypted content, type name: first.",
     "consentBanner": "Meaning-based search (≈) sends item names, hints, tags, and search text to an external embedding service; entry contents are never sent.",
     "consentBannerTitle": "Meaning-based search (≈) is on",
     "consentBannerBody": "Item names, hints, tags, and the text you type when searching are sent to an external embedding service to compute vectors. Entry content is never sent.",
