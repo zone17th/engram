@@ -1227,7 +1227,8 @@
     <section data-view="del-s2" hidden>
       <label class="field field-password">
         <span class="field-label">Mật khẩu đăng nhập · <span lang="en" class="font-normal">Account password</span></span>
-        <input class="field-input" type="password" autocomplete="current-password">
+        <input class="field-input" type="password" autocomplete="current-password" aria-describedby="delPwHint">
+        <span id="delPwHint" class="field-hint">Tài khoản chỉ dùng Google/GitHub: bấm "Đăng nhập lại với nhà cung cấp" thay cho ô này. <span lang="en">OAuth-only accounts: use "Sign in again with provider" instead.</span></span>
       </label>
       <label class="field">
         <span class="field-label">Gõ email của bạn để xác nhận: <span class="mono">an@example.com</span> · <span lang="en" class="font-normal">Type your email to confirm</span></span>
