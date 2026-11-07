@@ -64,6 +64,10 @@ func (e *reembedEnv) user(t *testing.T, email string) uuid.UUID {
 	if err != nil {
 		t.Fatalf("InsertUser: %v", err)
 	}
+	if _, err := e.pool.Exec(context.Background(),
+		`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'true'::jsonb, true) WHERE id = $1`, u.ID); err != nil {
+		t.Fatalf("set semantic_suggest=true: %v", err)
+	}
 	return u.ID
 }
 

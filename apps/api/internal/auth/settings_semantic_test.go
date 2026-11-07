@@ -360,10 +360,8 @@ func semNewUser(t *testing.T, pool *pgxpool.Pool, svc *auth.Service, email strin
 	if err != nil {
 		t.Fatalf("InsertUser: %v", err)
 	}
-	if !semanticSuggest {
-		if _, err := q.UpdateUserSemanticSuggest(ctx, gen.UpdateUserSemanticSuggestParams{ID: u.ID, SemanticSuggest: false}); err != nil {
-			t.Fatalf("UpdateUserSemanticSuggest: %v", err)
-		}
+	if _, err := q.UpdateUserSemanticSuggest(ctx, gen.UpdateUserSemanticSuggestParams{ID: u.ID, SemanticSuggest: semanticSuggest}); err != nil {
+		t.Fatalf("UpdateUserSemanticSuggest: %v", err)
 	}
 	issued, err := svc.Sessions().Issue(ctx, nil, auth.IssueParams{UserID: u.ID})
 	if err != nil {

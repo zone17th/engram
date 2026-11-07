@@ -363,6 +363,12 @@ func TestMutationEnqueuesPerReceivingGeneration(t *testing.T) {
 	}
 	g2 := seedTestGeneration(t, ctx, h.Pool, 2, openAIIdent, generation.StatePending, nil, false)
 	wantAllR := []int{g1.ID, g2.ID, g3.ID}
+	if _, err := h.Pool.Exec(ctx,
+		`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'true'::jsonb, true) WHERE id = $1`,
+		userA.User.ID,
+	); err != nil {
+		t.Fatalf("set semantic_suggest=true: %v", err)
+	}
 
 	// 2a. POST /tags (`tagUpsert` 201 create branch) -> 3 jobs.
 	const (

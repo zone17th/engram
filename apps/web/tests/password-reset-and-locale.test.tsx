@@ -1003,6 +1003,7 @@ describe('OAuthCallbackView problem-code mapping (AU2-FE3-6) and AccountDialogs 
         captcha_site_key: null,
       },
       vault: { status: 'absent' },
+      semantic_consent_seen_at: null,
     };
     mocks.session.reauth.hasUsableGrant.mockReturnValue(true);
     mocks.session.reauth.grant = {
@@ -1242,6 +1243,7 @@ describe('Zero language mixing across all auth screens and states (AU4-FE1-9, AU
             captcha_site_key: null,
           },
           vault: { status: 'absent' },
+          semantic_consent_seen_at: null,
         };
       };
 

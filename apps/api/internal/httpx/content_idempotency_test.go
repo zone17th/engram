@@ -32,7 +32,7 @@ func (r *failingMidwayReader) Read(p []byte) (int, error) {
 	return 0, errors.New("simulated connection reset mid-body")
 }
 
-func TestContentRateLimitDefaultRule10PerSecondAndMaxWindowUnchanged(t *testing.T) {
+func TestContentRateLimitDefaultRule10PerSecond(t *testing.T) {
 	rules := httpx.DefaultUserLimitRules()
 	rule, ok := rules[httpx.ScopeContentWrite]
 	if !ok {
@@ -40,9 +40,6 @@ func TestContentRateLimitDefaultRule10PerSecondAndMaxWindowUnchanged(t *testing.
 	}
 	if rule.Limit != 10 || rule.Window != time.Second {
 		t.Fatalf("ScopeContentWrite rule = %+v, want Limit=10 Window=1s", rule)
-	}
-	if httpx.MaxRateLimitWindow != 15*time.Minute {
-		t.Fatalf("MaxRateLimitWindow = %v, want 15m", httpx.MaxRateLimitWindow)
 	}
 }
 

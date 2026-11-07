@@ -363,7 +363,7 @@ func TestSuggestWithRealNearSourceLexicalByteIdentical(t *testing.T) {
 	clk := clock.NewFixed(ts)
 	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
 
-	if _, err := pool.Exec(ctx, `INSERT INTO app_user (id, email, locale) VALUES ($1, 'sem-suggest@example.com', 'vi')`, userID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO app_user (id, email, locale, settings) VALUES ($1, 'sem-suggest@example.com', 'vi', '{"semantic_suggest": true}'::jsonb)`, userID); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
 
@@ -662,7 +662,7 @@ func TestRequestScopeBareContextFlip(t *testing.T) {
 	clk := clock.NewFixed(ts)
 	userID := uuid.MustParse("11111111-1111-4000-8000-000000000001")
 
-	if _, err := pool.Exec(ctx, `INSERT INTO app_user (id, email, locale) VALUES ($1, 'sem-search-flip@example.com', 'vi')`, userID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO app_user (id, email, locale, settings) VALUES ($1, 'sem-search-flip@example.com', 'vi', '{"semantic_suggest": true}'::jsonb)`, userID); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
 

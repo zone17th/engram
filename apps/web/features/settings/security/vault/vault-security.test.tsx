@@ -289,6 +289,7 @@ function makeMeFixture(overrides: {
       captcha_site_key: null,
     },
     vault: { status: overrides.vaultStatus ?? 'present' },
+    semantic_consent_seen_at: null,
   };
 }
 

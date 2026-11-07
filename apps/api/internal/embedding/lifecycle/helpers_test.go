@@ -261,6 +261,10 @@ func (e *env) user(email string) uuid.UUID {
 	if err != nil {
 		e.t.Fatalf("InsertUser: %v", err)
 	}
+	if _, err := e.pool.Exec(e.ctx,
+		`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'true'::jsonb, true) WHERE id = $1`, u.ID); err != nil {
+		e.t.Fatalf("set semantic_suggest=true: %v", err)
+	}
 	return u.ID
 }
 

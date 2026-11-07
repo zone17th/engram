@@ -18,9 +18,8 @@ func TestEmbeddingMigration0009SchemaAndFunctions(t *testing.T) {
 	ctx := context.Background()
 
 	// Single shared container for the test: start at version 7, seed P04 data
-	// (user, item, tag, entry), migrate up to latest (without assuming version 8
-	// is already on this branch), verify P04 rows survive, then exercise all
-	// 0009 schema constraints, DDL functions, and down migration.
+	// (user, item, tag, entry), migrate up to 0009, verify P04 rows survive,
+	// then exercise all 0009 schema constraints, DDL functions, and 0009 down migration.
 	dsn := dbtest.StartPostgres(t)
 	migrateToVersion(t, dsn, 7)
 
@@ -32,11 +31,11 @@ func TestEmbeddingMigration0009SchemaAndFunctions(t *testing.T) {
 	pool := dbtest.Pool(t, dsn)
 	q := gen.New(pool)
 
-	uP04, err := q.InsertUser(ctx, gen.InsertUserParams{
-		Email:  "p04-embed-survivor@example.com",
-		Locale: "vi",
-	})
-	if err != nil {
+	var uP04 gen.AppUser
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO app_user (email, locale) VALUES ($1, $2) RETURNING id, email`,
+		"p04-embed-survivor@example.com", "vi",
+	).Scan(&uP04.ID, &uP04.Email); err != nil {
 		t.Fatalf("InsertUser at v7: %v", err)
 	}
 
@@ -73,17 +72,17 @@ func TestEmbeddingMigration0009SchemaAndFunctions(t *testing.T) {
 		t.Fatalf("InsertEntry at v7: %v", err)
 	}
 
-	// Migrate up from 7 to latest (0009).
-	dbtest.MigrateUp(t, dsn)
+	// Migrate up from 7 to 0009 boundary.
+	migrateToVersion(t, dsn, 9)
 	vUp, dirtyUp, err := db.Version(dsn)
-	if err != nil || dirtyUp || vUp < 9 {
-		t.Fatalf("after MigrateUp: version=%d dirty=%v err=%v", vUp, dirtyUp, err)
+	if err != nil || dirtyUp || vUp != 9 {
+		t.Fatalf("after migrateToVersion(9): version=%d dirty=%v err=%v", vUp, dirtyUp, err)
 	}
 
-	// Verify P04 rows survive intact.
-	gotUser, err := q.GetUserByID(ctx, uP04.ID)
-	if err != nil || gotUser.Email != uP04.Email {
-		t.Fatalf("GetUserByID after 0009: got=%+v err=%v", gotUser, err)
+	// Verify P04 rows survive intact at v9.
+	var gotEmail string
+	if err := pool.QueryRow(ctx, `SELECT email FROM app_user WHERE id = $1`, uP04.ID).Scan(&gotEmail); err != nil || gotEmail != uP04.Email {
+		t.Fatalf("GetUserByID after 0009: got=%q err=%v", gotEmail, err)
 	}
 	gotItem, err := q.GetItemByUserAndID(ctx, gen.GetItemByUserAndIDParams{
 		UserID: uP04.ID,

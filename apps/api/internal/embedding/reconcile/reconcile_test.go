@@ -277,11 +277,9 @@ func (f *fixture) user(t *testing.T, email string, suggestOn bool) uuid.UUID {
 	if err != nil {
 		t.Fatalf("InsertUser: %v", err)
 	}
-	if !suggestOn {
-		if _, err := f.pool.Exec(f.ctx,
-			`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'false'::jsonb) WHERE id = $1`, u.ID); err != nil {
-			t.Fatalf("set semantic_suggest=false: %v", err)
-		}
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', to_jsonb($2::boolean), true) WHERE id = $1`, u.ID, suggestOn); err != nil {
+		t.Fatalf("set semantic_suggest=%t: %v", suggestOn, err)
 	}
 	return u.ID
 }

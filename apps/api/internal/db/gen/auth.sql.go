@@ -1082,7 +1082,7 @@ func (q *Queries) GetThrottleForUpdate(ctx context.Context, subjectHash []byte) 
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at FROM app_user
+SELECT id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at, semantic_consent_seen_at FROM app_user
 WHERE email = $1 AND deleted_at IS NULL
 `
 
@@ -1099,12 +1099,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (AppUser, er
 		&i.Settings,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.SemanticConsentSeenAt,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at FROM app_user
+SELECT id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at, semantic_consent_seen_at FROM app_user
 WHERE id = $1 AND deleted_at IS NULL
 `
 
@@ -1121,12 +1122,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (AppUser, error
 		&i.Settings,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.SemanticConsentSeenAt,
 	)
 	return i, err
 }
 
 const getUserByIDForUpdate = `-- name: GetUserByIDForUpdate :one
-SELECT id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at FROM app_user
+SELECT id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at, semantic_consent_seen_at FROM app_user
 WHERE id = $1 AND deleted_at IS NULL
 FOR UPDATE
 `
@@ -1144,6 +1146,7 @@ func (q *Queries) GetUserByIDForUpdate(ctx context.Context, id uuid.UUID) (AppUs
 		&i.Settings,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.SemanticConsentSeenAt,
 	)
 	return i, err
 }
@@ -1446,7 +1449,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) (S
 const insertUser = `-- name: InsertUser :one
 INSERT INTO app_user (email, locale)
 VALUES ($1, $2)
-RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at
+RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at, semantic_consent_seen_at
 `
 
 type InsertUserParams struct {
@@ -1467,6 +1470,7 @@ func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) (AppUser
 		&i.Settings,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.SemanticConsentSeenAt,
 	)
 	return i, err
 }
@@ -1784,7 +1788,7 @@ const updateUserEmail = `-- name: UpdateUserEmail :one
 UPDATE app_user
 SET email = $2, email_verified_at = $3
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at
+RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at, semantic_consent_seen_at
 `
 
 type UpdateUserEmailParams struct {
@@ -1806,6 +1810,7 @@ func (q *Queries) UpdateUserEmail(ctx context.Context, arg UpdateUserEmailParams
 		&i.Settings,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.SemanticConsentSeenAt,
 	)
 	return i, err
 }
@@ -1814,7 +1819,7 @@ const updateUserEmailVerified = `-- name: UpdateUserEmailVerified :one
 UPDATE app_user
 SET email_verified_at = $2
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at
+RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at, semantic_consent_seen_at
 `
 
 type UpdateUserEmailVerifiedParams struct {
@@ -1835,6 +1840,7 @@ func (q *Queries) UpdateUserEmailVerified(ctx context.Context, arg UpdateUserEma
 		&i.Settings,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.SemanticConsentSeenAt,
 	)
 	return i, err
 }
@@ -1846,7 +1852,7 @@ SET
   theme = COALESCE($2::text, theme),
   auto_lock_minutes = COALESCE($3::int, auto_lock_minutes)
 WHERE id = $4 AND deleted_at IS NULL
-RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at
+RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at, semantic_consent_seen_at
 `
 
 type UpdateUserLocaleThemeAutoLockParams struct {
@@ -1874,6 +1880,7 @@ func (q *Queries) UpdateUserLocaleThemeAutoLock(ctx context.Context, arg UpdateU
 		&i.Settings,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.SemanticConsentSeenAt,
 	)
 	return i, err
 }
@@ -1882,7 +1889,7 @@ const updateUserSemanticSuggest = `-- name: UpdateUserSemanticSuggest :one
 UPDATE app_user
 SET settings = jsonb_set(settings, '{semantic_suggest}', to_jsonb($1::boolean), true)
 WHERE id = $2 AND deleted_at IS NULL
-RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at
+RETURNING id, email, email_verified_at, locale, theme, auto_lock_minutes, settings, created_at, deleted_at, semantic_consent_seen_at
 `
 
 type UpdateUserSemanticSuggestParams struct {
@@ -1903,6 +1910,7 @@ func (q *Queries) UpdateUserSemanticSuggest(ctx context.Context, arg UpdateUserS
 		&i.Settings,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.SemanticConsentSeenAt,
 	)
 	return i, err
 }

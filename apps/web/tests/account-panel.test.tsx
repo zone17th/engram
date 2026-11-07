@@ -58,6 +58,7 @@ function makeMe(serverLocale: 'en' | 'vi'): Me {
       captcha_site_key: null,
     },
     vault: { status: 'absent' },
+    semantic_consent_seen_at: null,
   } as Me;
 }
 

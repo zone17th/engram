@@ -239,10 +239,8 @@ func newCLIFixture(t *testing.T) *cliFixture {
 		if err != nil {
 			t.Fatalf("InsertUser: %v", err)
 		}
-		if !on {
-			if _, err := pool.Exec(ctx, `UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', 'false'::jsonb) WHERE id = $1`, u.ID); err != nil {
-				t.Fatalf("user off: %v", err)
-			}
+		if _, err := pool.Exec(ctx, `UPDATE app_user SET settings = jsonb_set(settings, '{semantic_suggest}', to_jsonb($2::boolean), true) WHERE id = $1`, u.ID, on); err != nil {
+			t.Fatalf("set semantic_suggest=%t: %v", on, err)
 		}
 		return u.ID
 	}

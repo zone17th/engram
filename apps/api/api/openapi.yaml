@@ -19,6 +19,7 @@ tags:
   - name: account
   - name: vault
   - name: content
+  - name: exports
 paths:
   /healthz:
     get:
@@ -432,6 +433,7 @@ paths:
         '503':
           $ref: '#/components/responses/Problem'
 
+
   /auth/verify-email/confirm:
     post:
       operationId: authVerifyEmailConfirm
@@ -809,6 +811,7 @@ paths:
         '403':
           $ref: '#/components/responses/Problem'
         '409':
+          description: Bật semantic khi `semantic_available=false` (tĩnh) hoặc breaker mở (semantic_unavailable)
           $ref: '#/components/responses/Problem'
 
   /me/email:
@@ -888,6 +891,60 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
 
+
+  /me:
+    delete:
+      operationId: accountDelete
+      tags: [account]
+      summary: Xoá vĩnh viễn tài khoản và toàn bộ dữ liệu thuộc tài khoản
+      description: |
+        Yêu cầu session, CSRF, grant re-auth (`account.delete`), rate limit `vault_sensitive` và `Idempotency-Key`.
+        Nhận body `{"confirm_email":"<email>"}` (16 KiB; lệch email chuẩn hoá trả `400 account_delete_confirm_invalid`).
+        Trong một transaction: kiểm tra grant + email, xoá vector mọi generation, ghi nhận job cleanup file export còn sống,
+        ghi audit `account.delete` (`user_id=NULL`, giữ 90 ngày rồi purge), xoá `app_user` (CASCADE toàn bộ dữ liệu của user),
+        rồi xoá cookie auth và trả `204`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReauthToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeleteRequest'
+      responses:
+        '204':
+          description: Đã xoá tài khoản và xoá cookie auth
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '400':
+          description: Email xác nhận không khớp hoặc body không hợp lệ (account_delete_confirm_invalid, invalid_request)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: 'Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
+          $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Phụ thuộc chưa sẵn sàng (dependency_unavailable)
+          $ref: '#/components/responses/Problem'
   /vault:
     get:
       operationId: vaultGet
@@ -2785,6 +2842,321 @@ paths:
           description: 'Quá giới hạn scope `search_read` (token bucket in-memory 20/s, burst 40 theo user); kèm header `Retry-After` (≥ 1 s) và `retry_after` (rate_limited)'
           $ref: '#/components/responses/RateLimited'
 
+  /exports:
+    post:
+      operationId: exportCreate
+      tags: [exports]
+      summary: Tạo hoặc nối vào job xuất bản sao lưu mã hoá (.sabk.json)
+      description: |
+        Yêu cầu session, CSRF và `Idempotency-Key` (body `{kind:"encrypted"}`, trần 16 KiB).
+        Thứ tự xử lý: (0) nếu `EXPORT_CREATE_PAUSED=true` thì trả ngay `503 dependency_unavailable` kèm `Retry-After: 600` trước mọi ghi;
+        (1) replay idempotency cùng key; (2) giữ `pg_advisory_xact_lock` theo user; (3) nếu đã có job `queued`/`running` thì coalesce trả `202`
+        với job đó mà không tiêu tốn lượt quota `export_create` (3 / 60 phút / user); (4) nếu tạo job mới thì kiểm tra quota `export_create`
+        (`ConsumeTx`), trần spool, chốt `snapshot_vault_key_id`/`snapshot_vault_ver` và enqueue River job `export_encrypted`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportCreateRequest'
+      responses:
+        '202':
+          description: Job xuất bản sao lưu mã hoá đã xếp hàng hoặc đang chạy
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJob'
+        '400':
+          description: Yêu cầu không hợp lệ (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Chưa khởi tạo vault (vault_absent)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: 'Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
+          $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
+        '429':
+          description: 'Quá 3 lần tạo job mới trong 60 phút (`export_create`, rate_limited)'
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: 'Công tắc tạm dừng tạo bản sao lưu đang bật (`EXPORT_CREATE_PAUSED=true`, `Retry-After: 600` kiểm tra trước mọi ghi) hoặc phụ thuộc chưa sẵn sàng (dependency_unavailable)'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /exports/latest:
+    get:
+      operationId: exportGetLatest
+      tags: [exports]
+      summary: Lấy job xuất bản sao lưu gần nhất của người dùng hiện tại
+      description: |
+        Trả về `{job: ExportJob | null}` theo `created_at DESC, id DESC LIMIT 1`.
+        Nếu job `ready` đã quá `expires_at` hoặc thiếu file vật lý thì lazy-expire sang `expired` trước khi trả.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Job xuất bản sao lưu gần nhất (hoặc null nếu chưa từng tạo)
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportLatestResponse'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+
+  /exports/{id}:
+    get:
+      operationId: exportGet
+      tags: [exports]
+      summary: Lấy trạng thái một job xuất bản sao lưu theo ID
+      description: Không tồn tại hoặc của người dùng khác trả `404 not_found`.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+      responses:
+        '200':
+          description: Trạng thái job xuất bản sao lưu
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJob'
+        '400':
+          description: ID không phải UUID (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Không tìm thấy job (not_found)
+          $ref: '#/components/responses/Problem'
+
+  /exports/{id}/download:
+    get:
+      operationId: exportDownload
+      tags: [exports]
+      summary: Tải xuống file sao lưu mã hoá (.sabk.json) từ job đã sẵn sàng
+      description: |
+        Giải mã lớp AEAD at-rest `ENGX1` trên đĩa rồi stream JSON `.sabk.json` với `Cache-Control: no-store, no-transform`,
+        `Content-Type: application/json`, `Content-Disposition: attachment; filename="engram-backup-YYYY-MM-DD.sabk.json"` và `X-Content-Type-Options: nosniff`.
+        Không giới hạn lượt tải khi job còn `ready` và chưa quá `expires_at`.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+      responses:
+        '200':
+          description: Nội dung file sao lưu mã hoá `.sabk.json`
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStoreNoTransform'
+            Content-Disposition:
+              $ref: '#/components/headers/ExportContentDisposition'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/NoSniff'
+          content:
+            application/json:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: ID không phải UUID (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Không tìm thấy job (not_found)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Job chưa sẵn sàng hoặc không ở trạng thái tải được (export_not_ready)
+          $ref: '#/components/responses/Problem'
+        '410':
+          description: Bản sao lưu đã hết hạn 24 giờ (export_expired)
+          $ref: '#/components/responses/Problem'
+
+  /exports/{id}/cancel:
+    post:
+      operationId: exportCancel
+      tags: [exports]
+      summary: Huỷ một job xuất bản sao lưu đang chờ, đang chạy hoặc đã sẵn sàng
+      description: |
+        Yêu cầu session, CSRF và `Idempotency-Key` (body `{}`).
+        Chuyển job `queued`/`running`/`ready` sang `cancelled` và xếp hàng xoá file vật lý; nếu đã `cancelled` thì trả `200` idempotent;
+        `failed` trả `409 export_not_ready`; `expired` trả `410 export_expired`. Không hoàn trả lượt quota `export_create`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyObject'
+      responses:
+        '200':
+          description: Job sau khi huỷ
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJob'
+        '400':
+          description: ID hoặc body không hợp lệ (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực (unauthenticated, access_expired, session_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Không tìm thấy job (not_found)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: 'Job không thể huỷ hoặc xung đột idempotency (export_not_ready, idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
+          $ref: '#/components/responses/IdempotencyConflict'
+        '410':
+          description: Bản sao lưu đã hết hạn (export_expired)
+          $ref: '#/components/responses/Problem'
+        '413':
+          description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
+
+  /exports/{id}/decrypted-pages:
+    get:
+      operationId: exportDecryptedPages
+      tags: [exports]
+      summary: Đọc phân trang dữ liệu từ snapshot sao lưu đã sẵn sàng để client giải mã cục bộ
+      description: |
+        Yêu cầu session và grant re-auth (`export.decrypted`; là GET nên không kiểm CSRF) và không tính vào quota `export_create`.
+        Chỉ đọc từ chính file snapshot `.sabk.enc` đã giải mã lớp at-rest của job `ready` (tuyệt đối không truy vấn bảng nội dung trực tiếp),
+        trả từng trang ≤ 1 MiB theo thứ tự `tags` → `items` → `item_tags` → `entries` sống (`deleted_at IS NULL`) kèm cursor HMAC.
+      security:
+        - sessionCookie: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+        - $ref: '#/components/parameters/ReauthToken'
+        - name: cursor
+          in: query
+          required: false
+          description: Cursor trang kế tiếp từ `next_cursor` trang trước; bỏ trống ở trang đầu.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Một trang phần tử từ snapshot sao lưu
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecryptedExportPage'
+        '400':
+          description: ID hoặc cursor/HMAC không hợp lệ (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Không tìm thấy job (not_found)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Job chưa sẵn sàng hoặc không ở trạng thái đọc được (export_not_ready)
+          $ref: '#/components/responses/Problem'
+        '410':
+          description: Bản sao lưu đã hết hạn (export_expired)
+          $ref: '#/components/responses/Problem'
+
+  /audit/export-decrypted:
+    post:
+      operationId: exportDecryptedAudit
+      tags: [exports]
+      summary: Ghi nhận sự kiện kiểm toán sau khi client hoàn tất xuất bản JSON đã giải mã ở trình duyệt
+      description: |
+        Yêu cầu session, CSRF, grant re-auth (`export.decrypted`) và `Idempotency-Key` (body `{}`, trần 16 KiB; field lạ trả `400 invalid_request`;
+        không áp rate limit phụ). Được client gọi sau khi ghi xong toàn bộ file đọc được cục bộ: ghi sự kiện `export.decrypted` (`meta="{}"`)
+        vào `audit_log`, tạo `user_notification`, xếp hàng email thông báo bảo mật và trả `204`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+          reauthHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReauthToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyObject'
+      responses:
+        '204':
+          description: Đã ghi nhận sự kiện kiểm toán
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '400':
+          description: Body không hợp lệ (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '401':
+          description: Chưa xác thực hoặc thiếu/sai grant re-auth (unauthenticated, access_expired, session_invalid, reauth_required, reauth_invalid)
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Thiếu hoặc sai CSRF/Origin (csrf_invalid, forbidden)
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: 'Xung đột idempotency (idempotency_conflict, idempotency_in_progress kèm Retry-After: 1)'
+          $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          description: Body quá 16 KiB (invalid_request)
+          $ref: '#/components/responses/Problem'
+        '415':
+          description: 'Thiếu hoặc sai `Content-Type: application/json` (invalid_request)'
+          $ref: '#/components/responses/Problem'
 components:
   securitySchemes:
     sessionCookie:
@@ -2818,6 +3190,15 @@ components:
       schema:
         type: integer
         minimum: 1
+    ExportContentDisposition:
+      description: Tên tệp tải xuống chuẩn `attachment; filename="engram-backup-YYYY-MM-DD.sabk.json"`.
+      schema:
+        type: string
+    NoSniff:
+      description: Chặn trình duyệt tự đoán MIME type.
+      schema:
+        type: string
+        const: nosniff
   parameters:
     OauthProvider:
       name: provider
@@ -2984,6 +3365,14 @@ components:
       schema:
         type: string
         format: date-time
+    ExportId:
+      name: id
+      in: path
+      required: true
+      description: UUID của job xuất bản sao lưu thuộc người dùng hiện tại.
+      schema:
+        type: string
+        format: uuid
   responses:
     Problem:
       description: Lỗi RFC 9457
@@ -3101,6 +3490,9 @@ components:
         - reorder_mismatch
         - changes_window_expired
         - reset_token_invalid
+        - export_not_ready
+        - export_expired
+        - account_delete_confirm_invalid
     Problem:
       type: object
       required: [type, title, status, code]
@@ -3197,7 +3589,7 @@ components:
     Me:
       type: object
       additionalProperties: false
-      required: [user, settings, identities, features, vault]
+      required: [user, settings, identities, features, vault, semantic_consent_seen_at]
       properties:
         user:
           type: object
@@ -3282,6 +3674,10 @@ components:
               type: string
               enum: [absent, present]
               description: absent | present trên server; locked/unlocked là trạng thái crypto phía client, không phải trạng thái server.
+        semantic_consent_seen_at:
+          type: [string, 'null']
+          format: date-time
+          description: Thời điểm server ghi nhận người dùng đã xem lựa chọn consent tìm theo nghĩa (cuối onboarding hoặc banner một lần); `null` khi chưa xem.
     SignupRequest:
       type: object
       additionalProperties: false
@@ -3378,6 +3774,10 @@ components:
           $ref: '#/components/schemas/AutoLockMinutes'
         semantic_suggest:
           type: boolean
+        semantic_consent_seen:
+          type: boolean
+          const: true
+          description: Chỉ nhận `true` (`false` trả `400 invalid_request`); server ghi `semantic_consent_seen_at = coalesce(semantic_consent_seen_at, now())` trong cùng transaction.
     PasswordChangeRequest:
       oneOf:
         - type: object
@@ -4698,3 +5098,143 @@ components:
           type: [integer, 'null']
           minimum: 1
           maximum: 9999
+    AccountDeleteRequest:
+      type: object
+      additionalProperties: false
+      required: [confirm_email]
+      properties:
+        confirm_email:
+          type: string
+          format: email
+          description: Địa chỉ email xác nhận xoá tài khoản (server chuẩn hoá trim+lowercase và so với `app_user.email`; lệch trả `400 account_delete_confirm_invalid`).
+    ExportKind:
+      type: string
+      enum: [encrypted]
+    ExportStatus:
+      type: string
+      enum: [queued, running, ready, failed, cancelled, expired]
+    ExportCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          $ref: '#/components/schemas/ExportKind'
+    ExportJob:
+      type: object
+      additionalProperties: false
+      required: [id, kind, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ExportKind'
+        status:
+          $ref: '#/components/schemas/ExportStatus'
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: [string, 'null']
+          format: date-time
+        completed_at:
+          type: [string, 'null']
+          format: date-time
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        size_bytes:
+          type: [integer, 'null']
+          minimum: 0
+        items_total:
+          type: [integer, 'null']
+          minimum: 0
+        items_processed:
+          type: [integer, 'null']
+          minimum: 0
+        error_code:
+          type: [string, 'null']
+    ExportLatestResponse:
+      type: object
+      additionalProperties: false
+      required: [job]
+      properties:
+        job:
+          oneOf:
+            - $ref: '#/components/schemas/ExportJob'
+            - type: 'null'
+    DecryptedExportSection:
+      type: string
+      enum: [tags, items, item_tags, entries]
+    DecryptedExportItemRow:
+      type: object
+      additionalProperties: false
+      required: [id, name, hint, entry_count, version, last_used_at, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          $ref: '#/components/schemas/ItemName'
+        hint:
+          $ref: '#/components/schemas/ItemHint'
+        entry_count:
+          type: integer
+          minimum: 0
+        version:
+          type: integer
+          minimum: 1
+        last_used_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tag_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+    DecryptedExportItemTagRow:
+      type: object
+      additionalProperties: false
+      required: [item_id, tag_id, created_at]
+      properties:
+        item_id:
+          type: string
+          format: uuid
+        tag_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+    DecryptedExportPage:
+      type: object
+      additionalProperties: false
+      required: [source_export_id, vault_key_id, total_entries, section, items, next_cursor]
+      properties:
+        source_export_id:
+          type: string
+          format: uuid
+        vault_key_id:
+          $ref: '#/components/schemas/VaultKeyId'
+        total_entries:
+          type: integer
+          minimum: 0
+        section:
+          $ref: '#/components/schemas/DecryptedExportSection'
+        items:
+          type: array
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/Tag'
+              - $ref: '#/components/schemas/DecryptedExportItemRow'
+              - $ref: '#/components/schemas/DecryptedExportItemTagRow'
+              - $ref: '#/components/schemas/Entry'
+        next_cursor:
+          type: [string, 'null']

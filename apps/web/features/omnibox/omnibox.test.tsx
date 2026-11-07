@@ -3100,7 +3100,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
       // RV-T17-1-FE2-3: fail clearly if the seeded `Me` is not the one the hook reads (semantic_external: false ->
       // `search.help.sentToServer`; a missed read would default to `sentToServerExternal` and drop the semantic=1 leg).
       expect(screen.getByTestId('omnibox-hint')).toHaveTextContent('gửi tới máy chủ, không mã hoá');
-      expect(screen.getByTestId('omnibox-hint')).not.toHaveTextContent('dịch vụ nhúng bên ngoài');
+      expect(screen.getByTestId('omnibox-hint')).not.toHaveTextContent('dịch vụ tạo vector bên ngoài');
       await waitFor(() => {
         expect(suggestSpy).toHaveBeenCalledTimes(1);
       });
