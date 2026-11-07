@@ -35,6 +35,9 @@ x-engram-app-env: &engram-app-env
   OAUTH_GOOGLE_CLIENT_SECRET: ''
   OAUTH_GITHUB_CLIENT_ID: ''
   OAUTH_GITHUB_CLIENT_SECRET: ''
+  # When switching APP_ENV to production in a future gated step (after wiring a production mailer),
+  # set AUTH_MAIL_SINK_DIR: '' explicitly here — do NOT delete this key, or Compose will inherit
+  # AUTH_MAIL_SINK_DIR: /tmp/engram-mail from infra/docker-compose.yml and fail config.Load().
   AUTH_MAIL_SINK_DIR: /var/lib/engram-mail
   # P05-T24-2 S2 (advisor-dec-362/364, ADR 0004): openai_compat via the 9router container on the docker bridge gateway (private).
   EMBEDDING_PROVIDER: openai_compat
