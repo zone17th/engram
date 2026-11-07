@@ -13,8 +13,8 @@
 
 <!-- ================= nav ================= -->
 <div class="max-w-container mx-auto px-5 pt-5">
-  <nav class="flex items-center gap-4 rounded-pill px-5 py-3" style="background:var(--canvas);border:1px solid var(--border)">
-    <a href="landing.html" class="flex items-center gap-2.5 no-underline">
+  <nav class="flex items-center gap-2 sm:gap-4 rounded-pill px-4 sm:px-5 py-2.5 sm:py-3" style="background:var(--canvas);border:1px solid var(--border)" aria-label="Điều hướng chính · Primary navigation">
+    <a href="landing.html" class="flex items-center gap-2.5 no-underline shrink-0">
       <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
         <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="5" y1="17" x2="23" y2="11">
           <stop offset="0%" stop-color="var(--logo-magenta)"/>
@@ -28,15 +28,15 @@
       </svg>
       <span class="font-display font-extrabold text-[19px] tracking-[-.04em] text-ink">engram</span>
     </a>
-    <div class="hidden md:flex items-center gap-1 ml-4">
-      <a href="#batdau" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Bắt đầu</a>
-      <a href="#rieng-tu" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Riêng tư</a>
-      <a href="#khoi-phuc" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Khôi phục</a>
-      <a href="#du-lieu" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Dữ liệu</a>
+    <div class="hidden lg:flex items-center gap-1 ml-4">
+      <a href="#batdau" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Bắt đầu · <span lang="en" class="font-normal" style="color:var(--muted)">Start</span></a>
+      <a href="#rieng-tu" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Riêng tư · <span lang="en" class="font-normal" style="color:var(--muted)">Privacy</span></a>
+      <a href="#khoi-phuc" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Khôi phục · <span lang="en" class="font-normal" style="color:var(--muted)">Recovery</span></a>
+      <a href="#du-lieu" class="no-underline !text-body text-[15px] px-3 py-2 rounded-md hover:bg-surface">Dữ liệu · <span lang="en" class="font-normal" style="color:var(--muted)">Data</span></a>
     </div>
-    <div class="ml-auto flex items-center gap-2">
-      <button class="btn btn-tertiary !px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối">☾</button>
-      <a href="index.html" class="btn btn-primary no-underline">Mở engram</a>
+    <div class="ml-auto flex items-center gap-1.5 sm:gap-2">
+      <button type="button" class="btn btn-tertiary !px-2.5 sm:!px-3" data-theme-toggle aria-label="Đổi giao diện sáng/tối · Toggle light/dark theme">☾</button>
+      <a href="index.html" class="btn btn-primary no-underline !px-3.5 sm:!px-[18px]">Mở engram<span lang="en" class="hidden sm:inline font-normal"> · Open app</span></a>
     </div>
   </nav>
 </div>
@@ -44,10 +44,16 @@
 <!-- ================= hero ================= -->
 <header class="max-w-container mx-auto px-5 pt-14 pb-8 md:pt-20">
   <div class="max-w-[820px]">
-    <p class="t-label mb-3" style="color:var(--muted)">Tài liệu · cập nhật 15/09/2026</p>
-    <h1 class="t-headline-lg mb-5">Cách engram giữ đồ của bạn</h1>
-    <p class="t-body-lg max-w-[62ch]" style="color:var(--muted)">
-      Một trang, viết bằng tiếng người: chúng tôi lưu gì, không đọc được gì, và bạn còn đường nào về khi quên passphrase.
+    <p class="t-label mb-3" style="color:var(--muted)">Tài liệu &amp; Quyền riêng tư · Cập nhật 07/11/2026 · <span lang="en">Docs &amp; Privacy · Updated 2026-11-07</span></p>
+    <h1 class="t-headline-lg mb-5">
+      Cách engram giữ đồ của bạn
+      <span lang="en" class="block text-[26px] md:text-[32px] font-normal mt-2" style="color:var(--muted)">How engram protects your notes</span>
+    </h1>
+    <p class="t-body-lg max-w-[65ch] mb-2" style="color:var(--muted)">
+      Một trang, viết bằng lời thường: máy chủ nhìn thấy gì, thứ gì khoá kín trên trình duyệt, khi nào tên mục được gửi đi tìm gần nghĩa, và bạn còn những đường nào về khi quên passphrase.
+    </p>
+    <p class="text-[15px] max-w-[65ch] m-0" lang="en" style="color:var(--body)">
+      One plain-language page: what our server sees, what stays locked in your browser, when item names are sent for similar-meaning search, and how you get back in if you forget your passphrase.
     </p>
   </div>
 </header>
@@ -56,226 +62,386 @@
   <div class="grid gap-10 lg:grid-cols-[220px_minmax(0,1fr)] items-start pb-20">
 
     <!-- mục lục dính mép -->
-    <nav aria-label="Mục lục" class="lg:sticky lg:top-6">
-      <p class="t-label mb-3" style="color:var(--muted)">Trên trang này</p>
-      <div class="flex flex-col gap-1 text-[15px]">
-        <a href="#batdau"    class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Bắt đầu</a>
-        <a href="#rieng-tu"  class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Chỗ nào mã hoá</a>
-        <a href="#khoi-phuc" class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Khôi phục</a>
-        <a href="#tim-kiem"  class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Tìm kiếm</a>
-        <a href="#du-lieu"   class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Dữ liệu và xoá</a>
-        <a href="#gioi-han"  class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Giới hạn</a>
-        <a href="#lien-he"   class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">Liên hệ</a>
+    <nav aria-label="Mục lục · On this page" class="lg:sticky lg:top-6">
+      <p class="t-label mb-3" style="color:var(--muted)">Trên trang này · <span lang="en">On this page</span></p>
+      <div class="flex flex-wrap lg:flex-col gap-1 text-[14px]">
+        <a href="#batdau"    class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">1. Bắt đầu · <span lang="en" style="color:var(--muted)">Start</span></a>
+        <a href="#rieng-tu"  class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">2. Chỗ nào mã hoá · <span lang="en" style="color:var(--muted)">Encryption</span></a>
+        <a href="#tim-kiem"  class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">3. Tìm kiếm &amp; ≈ · <span lang="en" style="color:var(--muted)">Search</span></a>
+        <a href="#khoi-phuc" class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">4. Khôi phục &amp; sao lưu · <span lang="en" style="color:var(--muted)">Recovery</span></a>
+        <a href="#du-lieu"   class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">5. Xuất &amp; xoá dữ liệu · <span lang="en" style="color:var(--muted)">Export &amp; delete</span></a>
+        <a href="#gioi-han"  class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">6. Giới hạn · <span lang="en" style="color:var(--muted)">Limits</span></a>
+        <a href="#lien-he"   class="no-underline !text-body px-3 py-2 rounded-md hover:bg-surface">7. Liên hệ · <span lang="en" style="color:var(--muted)">Contact</span></a>
       </div>
     </nav>
 
     <div class="min-w-0 flex flex-col gap-8">
 
-      <!-- ===== bắt đầu ===== -->
+      <!-- ===== 1. bắt đầu ===== -->
       <section id="batdau" class="panel p-6 md:p-10">
-        <h2 class="t-title-md mb-4">Bắt đầu trong ba phút</h2>
-        <div class="flex flex-col gap-4">
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 1 · <span lang="en">Section 1</span></p>
+        <h2 class="t-title-md mb-4">
+          Bắt đầu trong ba phút
+          <span class="hidden sm:inline" aria-hidden="true">·</span>
+          <span lang="en" class="block sm:inline text-[22px] font-normal" style="color:var(--muted)">Get started in three minutes</span>
+        </h2>
+        <div class="flex flex-col gap-4 mb-6">
           <div class="flex gap-4">
             <span class="mono text-[13px] pt-0.5" style="color:var(--muted)">01</span>
             <div class="min-w-0">
-              <p class="text-[15px] font-semibold m-0 mb-1">Tạo tài khoản và đặt passphrase</p>
+              <p class="text-[15px] font-semibold m-0 mb-1">
+                Tạo tài khoản và đặt passphrase riêng cho kho · <span lang="en" class="font-normal" style="color:var(--muted)">Create an account and set a separate vault passphrase</span>
+              </p>
               <p class="t-body m-0" style="color:var(--muted)">
-                Mật khẩu đăng nhập và passphrase của vault là hai thứ khác nhau. Passphrase mở nội dung, và chỉ máy bạn biết nó.
+                Mật khẩu đăng nhập (hoặc Google/GitHub) và passphrase của kho là hai thứ tách biệt. Mật khẩu đăng nhập dùng với máy chủ; passphrase mở nội dung entry và không bao giờ rời trình duyệt của bạn. Đặt lại mật khẩu đăng nhập qua email chỉ lấy lại quyền vào tài khoản, không mở được kho.
               </p>
             </div>
           </div>
           <div class="flex gap-4">
             <span class="mono text-[13px] pt-0.5" style="color:var(--muted)">02</span>
             <div class="min-w-0">
-              <p class="text-[15px] font-semibold m-0 mb-1">Cất 10 recovery key</p>
+              <p class="text-[15px] font-semibold m-0 mb-1">
+                Cất kỹ 10 recovery key · <span lang="en" class="font-normal" style="color:var(--muted)">Save your 10 recovery keys</span>
+              </p>
               <p class="t-body m-0" style="color:var(--muted)">
-                Chúng chỉ hiện một lần duy nhất, ngay lúc tạo vault. In ra giấy hoặc bỏ vào trình quản lý mật khẩu.
+                Bộ 10 key chỉ hiện đúng một lần lúc tạo kho. Hãy tải file, in ra giấy hoặc cất vào trình quản lý mật khẩu; bạn cũng có thể thêm passkey (vân tay / khoá bảo mật) để mở kho hàng ngày không cần gõ.
               </p>
             </div>
           </div>
           <div class="flex gap-4">
             <span class="mono text-[13px] pt-0.5" style="color:var(--muted)">03</span>
             <div class="min-w-0">
-              <p class="text-[15px] font-semibold m-0 mb-1">Lưu bằng từ khoá bạn sẽ nghĩ tới</p>
+              <p class="text-[15px] font-semibold m-0 mb-1">
+                Đặt tên mục bằng từ khoá bạn sẽ nhớ, để bí mật ở phần nội dung · <span lang="en" class="font-normal" style="color:var(--muted)">Name items by keyword, keep secrets inside the entry body</span>
+              </p>
               <p class="t-body m-0" style="color:var(--muted)">
-                Đặt tên mục theo cách bạn sẽ gọi nó lúc cần, không theo thư mục. Tag để gom nhóm, gợi nhớ để nhắc bạn đây là cái gì.
+                Tên mục, tag và gợi nhớ giúp tìm lại nhanh nên không được mã hoá. Hãy đặt tên như <span class="mono">wifi nhà</span> hay <span class="mono">ngân hàng</span>, tuyệt đối không viết mật khẩu hay số thẻ vào tên mục, tag hoặc gợi nhớ.
               </p>
             </div>
           </div>
         </div>
-      </section>
 
-      <!-- ===== riêng tư ===== -->
-      <section id="rieng-tu" class="rounded-section p-8 md:p-12" style="background:var(--deep-panel);color:#fff">
-        <div class="grid gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] items-start">
-          <div>
-            <h2 class="t-title-md mb-4" style="color:#fff">Nói thẳng chỗ nào mã hoá, chỗ nào không</h2>
-            <p class="t-body-lg mb-4" style="color:rgba(255,255,255,.72)">
-              Nội dung entry được khoá ngay trên trình duyệt, bằng khoá sinh ra từ passphrase của bạn.
-              Máy chủ chỉ nhận về một khối đã khoá và không có cách nào mở.
-            </p>
-            <p class="t-body-lg m-0" style="color:rgba(255,255,255,.72)">
-              Tên mục và tag thì không mã hoá — chính chúng làm việc tìm kiếm chạy được.
-              Đây là đánh đổi có chủ ý, không phải thiếu sót.
-            </p>
-          </div>
-          <div class="flex flex-col gap-3">
-            <div class="rounded-xl p-4" style="background:rgba(255,255,255,.06)">
-              <p class="t-label mb-1" style="color:var(--ai-cyan)">Được mã hoá</p>
-              <p class="t-body m-0" style="color:rgba(255,255,255,.86)">Nội dung mọi entry text và json.</p>
-            </div>
-            <div class="rounded-xl p-4" style="background:rgba(255,255,255,.06)">
-              <p class="t-label mb-1" style="color:var(--warning)">Không mã hoá</p>
-              <p class="t-body m-0" style="color:rgba(255,255,255,.86)">Tên mục, tên tag, gợi nhớ, loại entry, thời điểm sửa, độ dài xấp xỉ.</p>
-            </div>
-            <p class="mono text-[12px] m-0 pt-1" style="color:rgba(255,255,255,.45)">
-              XChaCha20-Poly1305 · Argon2id · khoá không rời trình duyệt
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <!-- ===== khôi phục ===== -->
-      <section id="khoi-phuc" class="panel-agent p-8 md:p-12">
-        <h2 class="t-title-md mb-3">Quên passphrase không phải là mất hết</h2>
-        <p class="t-body-lg mb-6" style="color:var(--body)">
-          Vì chúng tôi không giữ khoá của bạn, bạn cần đường về của riêng mình. Thử theo thứ tự này.
-        </p>
-        <div class="flex flex-col gap-2.5 mb-6">
-          <div class="rounded-xl p-4" style="background:var(--canvas)">
-            <p class="text-[15px] font-semibold m-0 mb-1">Passkey</p>
-            <p class="t-body m-0" style="color:var(--muted)">Vân tay hoặc khoá bảo mật. Nhanh nhất, không phải gõ gì.</p>
-          </div>
-          <div class="rounded-xl p-4" style="background:var(--canvas)">
-            <p class="text-[15px] font-semibold m-0 mb-1">Thiết bị đã nhớ</p>
-            <p class="t-body m-0" style="color:var(--muted)">Máy quen mở thẳng. Đừng bật trên máy dùng chung.</p>
-          </div>
-          <div class="rounded-xl p-4" style="background:var(--canvas)">
-            <p class="text-[15px] font-semibold m-0 mb-1">10 recovery key</p>
-            <p class="t-body m-0" style="color:var(--muted)">
-              Mỗi key mở được vault một mình. Dùng xong, key đó ngừng hoạt động trên máy chủ và bạn được nhắc tạo key bù.
-              Bản in cũ vẫn mở được các backup cũ, nên đừng vứt bừa.
-            </p>
-          </div>
-        </div>
-        <div class="rounded-md p-4" style="background:var(--pale-orange)">
-          <p class="t-body m-0" style="color:var(--body)">
-            <strong>Hết mọi đường?</strong> Chỉ còn cách đặt lại vault: nội dung entry mất vĩnh viễn, tên mục và tag giữ lại.
-            Chúng tôi không mở giúp được — đó chính là lý do chúng tôi cũng không đọc được.
+        <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
+          <p class="t-label mb-2" style="color:var(--muted)">Get started · English</p>
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            <strong>01 · Separate login and vault credentials:</strong> Your account login password (or Google/GitHub sign-in) and your vault passphrase are completely separate. Your passphrase unlocks entry contents in your browser and is never sent to our server. Resetting your login password by email restores account sign-in only and never opens your vault.
+          </p>
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            <strong>02 · Save your 10 recovery keys:</strong> Your 10 single-use recovery keys are shown only once during setup. Download or print them and store them safely; you can also add a passkey (biometrics or security key) for one-tap daily unlocking.
+          </p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            <strong>03 · Keep secrets in the body, not the title:</strong> Item names, tags, and hints stay unencrypted so search works. Use plain labels like <span class="mono">home wifi</span> or <span class="mono">bank</span>, and never put passwords or secret keys into item names, tags, or hints.
           </p>
         </div>
       </section>
 
-      <!-- ===== tìm kiếm ===== -->
-      <section id="tim-kiem" class="panel p-6 md:p-10">
-        <h2 class="t-title-md mb-4">Tìm kiếm hoạt động thế nào</h2>
-        <p class="t-body-lg mb-5" style="color:var(--muted)">
-          Gõ vào ô tìm kiếm, kết quả xếp theo ba lớp, lớp trên luôn đứng trước lớp dưới.
-        </p>
-        <div class="flex flex-col gap-3 mb-6">
-          <div class="card p-4">
-            <p class="text-[15px] font-semibold m-0 mb-1">1 · Khớp từ đầu</p>
-            <p class="t-body m-0" style="color:var(--muted)">Gõ “wif” ra “wifi nhà”. Nhanh và chắc chắn nhất.</p>
+      <!-- ===== 2. riêng tư (máy chủ thấy gì vs E2E) ===== -->
+      <section id="rieng-tu" class="rounded-section p-8 md:p-12" style="background:var(--deep-panel);color:#fff">
+        <p class="t-label mb-2" style="color:var(--ai-cyan)">Phần 2 · <span lang="en">Section 2</span></p>
+        <div class="grid gap-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-start">
+          <div>
+            <h2 class="t-title-md mb-4" style="color:#fff">
+              Nói thẳng chỗ nào mã hoá, chỗ nào máy chủ nhìn thấy
+              <span lang="en" class="block text-[20px] font-normal mt-1.5" style="color:rgba(255,255,255,.68)">Plainly: what is encrypted and what the server sees</span>
+            </h2>
+            <p class="t-body-lg mb-4" style="color:rgba(255,255,255,.82)">
+              <strong>Nội dung bên trong mỗi entry</strong> (văn bản <span class="mono">text</span> và bảng <span class="mono">json</span>) được khoá ngay trên trình duyệt bằng khoá chỉ thiết bị của bạn giữ. Máy chủ chỉ nhận về khối dữ liệu đã khoá và không có khoá giải mã, miễn là mã ứng dụng gửi tới trình duyệt của bạn không bị can thiệp.
+            </p>
+            <p class="t-body-lg mb-4" style="color:rgba(255,255,255,.82)">
+              <strong>Tên mục, nhãn (<span class="mono">tag</span>), gợi nhớ (<span class="mono">hint</span>) và chữ bạn gõ tìm kiếm</strong> thì không mã hoá — chính chúng làm việc tìm kiếm và gợi ý chạy được. Máy chủ cũng biết loại entry (<span class="mono">text</span>/<span class="mono">json</span>), số lượng mục/entry, thời điểm tạo/sửa và kích thước thực của từng entry (chúng tôi làm tròn số hiển thị trên giao diện nhưng không độn thêm dữ liệu giả để che độ dài).
+            </p>
+            <p class="text-[14px] m-0 pt-2" lang="en" style="color:rgba(255,255,255,.72)">
+              <strong>In short:</strong> Entry bodies (<span class="mono">text</span> and <span class="mono">json</span>) are end-to-end encrypted in your browser; our server cannot read them as long as the app code delivered to your browser is untampered with. Item names, tags, optional hints, search queries, entry types (<span class="mono">text</span>/<span class="mono">json</span>), counts, timestamps, and exact entry sizes are visible to the server (we do not pad entries to hide length). Never put secrets in names, tags, or hints.
+            </p>
           </div>
-          <div class="card p-4">
-            <p class="text-[15px] font-semibold m-0 mb-1">2 · Gõ sai vẫn ra</p>
-            <p class="t-body m-0" style="color:var(--muted)">“hoa don” ra “hoá đơn”. Bỏ dấu, gõ thiếu chữ đều được.</p>
-          </div>
-          <div class="card p-4">
-            <p class="text-[15px] font-semibold m-0 mb-1">3 · Gần nghĩa <span class="badge-type ml-1" style="background:var(--pale-accent)">tắt được</span></p>
-            <p class="t-body m-0" style="color:var(--muted)">
-              “mạng nhà” ra “wifi nhà” dù không trùng chữ nào. Khi bật (mặc định bật nếu máy chủ hỗ trợ, tắt trong Cài đặt hoặc bằng nút ≈),
-              tên mục, tag, gợi nhớ và chữ bạn gõ được gửi tới dịch vụ embedding của bên thứ ba; nội dung entry thì không bao giờ được gửi.
+          <div class="flex flex-col gap-3">
+            <div class="rounded-xl p-4" style="background:rgba(255,255,255,.07)">
+              <p class="t-label mb-1" style="color:var(--ai-cyan)">Được mã hoá đầu-cuối · <span lang="en">End-to-end encrypted</span></p>
+              <p class="t-body m-0 mb-1" style="color:rgba(255,255,255,.92)">Nội dung mọi entry <span class="mono">text</span> và <span class="mono">json</span>.</p>
+              <p class="text-[13px] m-0" lang="en" style="color:rgba(255,255,255,.68)">The body of every <span class="mono">text</span> and <span class="mono">json</span> entry.</p>
+            </div>
+            <div class="rounded-xl p-4" style="background:rgba(255,255,255,.07)">
+              <p class="t-label mb-1" style="color:var(--warning)">Máy chủ nhìn thấy (không mã hoá) · <span lang="en">Visible to server (plaintext)</span></p>
+              <p class="t-body m-0 mb-1" style="color:rgba(255,255,255,.92)">Tên mục, tên tag, gợi nhớ, loại entry (<span class="mono">text</span>/<span class="mono">json</span>), thời điểm tạo/sửa, số lượng, kích thước entry và chữ bạn gõ khi tìm kiếm.</p>
+              <p class="text-[13px] m-0" lang="en" style="color:rgba(255,255,255,.68)">Item names, tag names, hints, entry types, timestamps, counts, entry size, and search query text.</p>
+            </div>
+            <div class="rounded-xl p-4" style="background:rgba(255,255,255,.07)">
+              <p class="t-label mb-1" style="color:#fff">Không bao giờ gửi lên máy chủ · <span lang="en">Never sent to server</span></p>
+              <p class="text-[14px] m-0 mb-1" style="color:rgba(255,255,255,.88)">Passphrase của kho, khoá giải mã kho, recovery key dạng rõ, khoá sinh từ passkey và khoá nhớ thiết bị.</p>
+              <p class="text-[13px] m-0" lang="en" style="color:rgba(255,255,255,.68)">Vault passphrase, vault decryption key, plaintext recovery keys, passkey PRF secret, and browser device key.</p>
+            </div>
+            <p class="mono text-[12px] m-0 pt-1" style="color:rgba(255,255,255,.52)">
+              XChaCha20-Poly1305 · Argon2id (64 MiB) · WebAuthn PRF · khoá không rời trình duyệt
             </p>
           </div>
         </div>
-        <p class="t-caption m-0" style="color:var(--muted)">
-          Tìm kiếm không soi nội dung entry — nội dung nằm sau lớp mã hoá. Hãy đặt tên mục cho đáng nhớ.
-        </p>
       </section>
 
-      <!-- ===== dữ liệu ===== -->
-      <section id="du-lieu" class="panel p-6 md:p-10">
-        <h2 class="t-title-md mb-4">Dữ liệu chúng tôi giữ, và cách lấy lại</h2>
+      <!-- ===== 3. tìm kiếm & nhà cung cấp embedding bên ngoài ===== -->
+      <section id="tim-kiem" class="panel p-6 md:p-10">
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 3 · <span lang="en">Section 3</span></p>
+        <h2 class="t-title-md mb-3">
+          Tìm kiếm và tìm gần nghĩa (<span class="mono">≈</span>) gửi dữ liệu đi đâu
+          <span class="hidden sm:inline" aria-hidden="true">·</span>
+          <span lang="en" class="block sm:inline text-[22px] font-normal" style="color:var(--muted)">How search and similar-meaning (<span class="mono">≈</span>) work</span>
+        </h2>
+        <p class="t-body-lg mb-5" style="color:var(--muted)">
+          Gõ vào ô tìm kiếm, kết quả xếp theo ba lớp tách biệt (lớp khớp chữ luôn đứng trên). Khi bạn gõ cú pháp lưu nhanh <span class="mono">tên #tag: nội dung</span> hoặc dán văn bản nhiều dòng, trình duyệt tự động khoá không gửi phần nội dung sau dấu hai chấm (<span class="mono">:</span>) đi tìm kiếm.
+        </p>
 
-        <div class="card p-0 overflow-hidden mb-6">
-          <table class="w-full text-[14px]" style="border-collapse:collapse">
+        <div class="flex flex-col gap-3 mb-6">
+          <div class="card p-4">
+            <p class="text-[15px] font-semibold m-0 mb-1">
+              1 · Khớp từ đầu và 2 · Gõ sai dấu vẫn ra (chạy trên máy chủ engram) · <span lang="en" class="font-normal" style="color:var(--muted)">Prefix &amp; typo-tolerant match (on engram server)</span>
+            </p>
+            <p class="t-body m-0" style="color:var(--muted)">
+              Gõ “wif” hay “hoa don” sẽ khớp ngay với tên mục “wifi nhà”, “hoá đơn” và các tag trên máy chủ của engram.
+            </p>
+          </div>
+
+          <div class="card p-4">
+            <p class="text-[15px] font-semibold m-0 mb-1.5">
+              3 · Tìm gần nghĩa (<span class="mono">≈</span>) và dịch vụ embedding bên ngoài · <span class="badge-type ml-1" style="background:var(--pale-accent);color:var(--accent)">tắt được · <span lang="en">can be turned off</span></span>
+            </p>
+            <p class="t-body m-0 mb-2" style="color:var(--body)">
+              Giúp gõ “mạng nhà” vẫn tìm ra mục tên “wifi”. Khi tính năng này đang bật (<strong>mặc định bật nếu máy chủ hỗ trợ</strong>), ở cấu hình mặc định, <strong>tên mục, tên tag, gợi nhớ và chữ bạn gõ tìm kiếm</strong> được gửi tới <strong>dịch vụ tạo vector (embedding) bên ngoài</strong> (qua bộ định tuyến của engram → OpenRouter → nhà cung cấp chạy mô hình) để tính vector so sánh nghĩa. <strong>Nội dung bên trong entry không bao giờ được gửi đi.</strong> (Nếu máy chủ cấu hình tự chạy mô hình nội bộ, các dữ liệu này không rời máy chủ engram.)
+            </p>
+            <p class="t-body m-0" style="color:var(--muted)">
+              <strong>Cách tắt bất kỳ lúc nào:</strong> bấm nút <span class="mono">≈</span> ngay trên ô tìm kiếm hoặc gạt công tắc trong <strong>Cài đặt › Tìm kiếm</strong>. Ngay khi tắt, engram <strong>ngừng gửi dữ liệu của bạn tới dịch vụ bên ngoài và xoá toàn bộ vector của bạn đang lưu trên máy chủ engram</strong>. Lưu ý: những yêu cầu đã gửi đi trước thời điểm bạn tắt thì không thể thu hồi từ phía dịch vụ bên ngoài. Khi bật lại, hệ thống sẽ tạo lại vector cho các mục và tag của bạn.
+            </p>
+          </div>
+        </div>
+
+        <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
+          <p class="t-label mb-2" style="color:var(--muted)">Search &amp; External Embedding Provider · English</p>
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            <strong>What stays in your browser when adding notes:</strong> Search never reads entry bodies. When you type quick-add syntax (<span class="mono">name #tag: content</span>), anything containing a colon (<span class="mono">:</span>), or paste text, the browser blocks live search requests so future entry content after <span class="mono">name:</span> is never sent as a search query.
+          </p>
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            <strong>What goes to the external embedding provider when similar-meaning (<span class="mono">≈</span>) is on:</strong> By default (where supported by the server), similar-meaning search is enabled and sends <strong>item names, tag names, hints, and your typed search queries</strong> through our router to an external embedding service (OpenRouter and the underlying model provider) to compute vectors. <strong>Entry bodies are never sent.</strong> (On self-hosted embedding deployments, this data stays on the engram server.)
+          </p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            <strong>How to turn it off:</strong> Click the <span class="mono">≈</span> toggle in the search bar or switch off <em>Similar-meaning search</em> in <strong>Settings › Search</strong>. Turning it off immediately stops sending your data to the external provider and <strong>deletes all stored vectors for your account from engram’s database</strong> (requests already sent before you turned it off cannot be recalled from the third party). Turning it back on re-computes vectors for your items and tags.
+          </p>
+        </div>
+      </section>
+
+      <!-- ===== 4. khôi phục, thu hồi & giới hạn bản sao lưu ===== -->
+      <section id="khoi-phuc" class="panel-agent p-6 md:p-10">
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 4 · <span lang="en">Section 4</span></p>
+        <h2 class="t-title-md mb-3">
+          Khôi phục khoá, thu hồi và giới hạn của bản sao lưu cũ
+          <span class="hidden sm:inline" aria-hidden="true">·</span>
+          <span lang="en" class="block sm:inline text-[22px] font-normal" style="color:var(--muted)">Recovery, revocation, and backup limits</span>
+        </h2>
+        <p class="t-body-lg mb-5" style="color:var(--body)">
+          Vì máy chủ không giữ khoá giải mã của bạn, bạn mở lại kho bằng những đường đã chuẩn bị sẵn. Nếu kho vẫn đang mở được bằng Passkey hoặc Thiết bị đã nhớ, bạn có thể vào <strong>Cài đặt › Bảo mật</strong> để đặt passphrase mới ngay sau khi xác nhận tài khoản — <strong>không cần nhớ passphrase cũ</strong>.
+        </p>
+
+        <div class="flex flex-col gap-3 mb-5">
+          <div class="rounded-xl p-4" style="background:var(--canvas)">
+            <p class="text-[15px] font-semibold m-0 mb-1">
+              Passkey (WebAuthn PRF) và cách gỡ · <span lang="en" class="font-normal" style="color:var(--muted)">Passkeys &amp; revocation</span>
+            </p>
+            <p class="t-body m-0" style="color:var(--muted)">
+              Mở kho bằng vân tay, khuôn mặt hoặc khoá bảo mật có hỗ trợ PRF. Khi bạn bấm <strong>Gỡ</strong> một passkey trong Cài đặt (cần xác thực lại tài khoản), máy chủ xoá ngay bản bọc khoá của passkey đó nên không dùng nó để mở kho trực tuyến được nữa. Bạn vẫn nên tự xoá passkey thừa trong trình quản lý thiết bị nếu muốn dọn danh sách.
+            </p>
+          </div>
+
+          <div class="rounded-xl p-4" style="background:var(--canvas)">
+            <p class="text-[15px] font-semibold m-0 mb-1">
+              Thiết bị đã nhớ · <span lang="en" class="font-normal" style="color:var(--muted)">Remembered device</span>
+            </p>
+            <p class="t-body m-0" style="color:var(--muted)">
+              Khi bạn chủ động bật “Nhớ thiết bị này”, trình duyệt giữ một khoá thiết bị riêng để tự mở lại kho sau khi tự khoá màn hình. Đừng bật trên máy dùng chung. Khi bạn tắt tuỳ chọn này hoặc khi phiên đăng nhập của máy đó bị thu hồi từ xa, khoá thiết bị trong trình duyệt sẽ tự động bị xoá.
+            </p>
+          </div>
+
+          <div class="rounded-xl p-4" style="background:var(--canvas)">
+            <p class="text-[15px] font-semibold m-0 mb-1">
+              10 recovery key: dùng một lần, tạo bù và xoay cả 10 · <span lang="en" class="font-normal" style="color:var(--muted)">10 recovery keys: one-time use, top-up &amp; rotate all 10</span>
+            </p>
+            <p class="t-body m-0" style="color:var(--muted)">
+              Mỗi recovery key tự mở được kho một lần. Khi dùng xong một key để đặt lại passphrase mới, <strong>key đó bị xoá ngay trên máy chủ trực tuyến</strong>; sau đó bạn có thể <strong>Tạo key mới</strong> để bù vào ô trống hoặc bấm <strong>Xoay cả 10</strong> trong Cài đặt để thay toàn bộ 10 key mới. Việc đổi passphrase không làm mất hiệu lực các recovery key hay passkey hiện có.
+            </p>
+          </div>
+        </div>
+
+        <div class="rounded-xl p-4 mb-5" style="background:var(--canvas);border:1px solid var(--border)">
+          <p class="text-[15px] font-semibold m-0 mb-1" style="color:var(--ink)">
+            Giới hạn quan trọng của bản sao lưu cũ · <span lang="en" class="font-normal" style="color:var(--muted)">Important limit for older backups &amp; copies</span>
+          </p>
+          <p class="t-body m-0" style="color:var(--body)">
+            Để đổi passphrase và xoay key diễn ra tức thì mà không phải tải về mã hoá lại mọi mục, kho của bạn giữ một khoá giải mã chính cố định. Vì vậy, khi bạn đổi passphrase, dùng hoặc xoay recovery key, hay gỡ passkey, <strong>các cách mở cũ chỉ bị xoá trên máy chủ trực tuyến</strong>. Nếu ai đó nắm giữ một <strong>bản sao lưu cũ (file <span class="mono">.sabk.json</span> hoặc bản sao lưu máy chủ cũ) cùng với passphrase cũ, bản in recovery key cũ hoặc thiết bị passkey cũ</strong> tương ứng, họ vẫn mở được bản sao lưu đó và đọc được dữ liệu khoá bằng khoá đó. Hãy bảo vệ các tờ in recovery key cũ và file sao lưu cẩn thận như dữ liệu đang dùng.
+          </p>
+        </div>
+
+        <div class="rounded-md p-4 mb-5" style="background:var(--pale-orange)">
+          <p class="t-body m-0" style="color:var(--body)">
+            <strong>Mất hết mọi đường mở kho?</strong> Nếu quên passphrase, mất cả 10 recovery key, không còn passkey, không còn thiết bị đã nhớ và không còn file sao lưu mở được, lựa chọn cuối cùng là <strong>Đặt lại kho (Reset vault)</strong>: toàn bộ nội dung entry đã mã hoá trên máy chủ bị xoá vĩnh viễn để tạo kho mới, còn tên mục và tag được giữ lại.
+          </p>
+        </div>
+
+        <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
+          <p class="t-label mb-2" style="color:var(--muted)">Recovery, Revocation &amp; Backup Limits · English</p>
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            <strong>Three ways back &amp; changing passphrases:</strong> You can unlock with a <strong>Passkey</strong> (WebAuthn PRF), a <strong>Remembered device</strong> (a non-extractable browser key cleared when you turn the setting off or revoke that session), or one of your <strong>10 recovery keys</strong>. As long as your vault is unlocked via any path, you can set a new passphrase in Settings after account re-authentication without needing the old passphrase.
+          </p>
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            <strong>Consuming, regenerating, or rotating keys &amp; removing passkeys:</strong> Using a recovery key deletes that key slot on the live server once you set a new passphrase; you can then regenerate keys for empty slots or rotate all 10 keys. Removing a passkey deletes its wrapped key on the live server (it does not delete the passkey inside your OS/authenticator).
+          </p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            <strong>Backup limit (no cryptographic revocation of old snapshots):</strong> Because changing your passphrase, rotating recovery keys, or removing a passkey only updates wrappers on the live server without re-encrypting every entry under a new vault key, <strong>an older backup file (<span class="mono">.sabk.json</span>) or copied wrapper can still be unlocked using the old passphrase, a used/rotated recovery key, or a removed passkey</strong> that was valid when that snapshot was taken. Treat old recovery key printouts and backup files as sensitive. If all unlock paths and backups are lost, <strong>Reset vault</strong> permanently deletes encrypted entry bodies on the server while keeping your account, item names, and tags.
+          </p>
+        </div>
+      </section>
+
+      <!-- ===== 5. dữ liệu, xuất và xoá tài khoản ===== -->
+      <section id="du-lieu" class="panel p-6 md:p-10">
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 5 · <span lang="en">Section 5</span></p>
+        <h2 class="t-title-md mb-4">
+          Dữ liệu chúng tôi giữ, xuất sao lưu và xoá tài khoản
+          <span class="hidden sm:inline" aria-hidden="true">·</span>
+          <span lang="en" class="block sm:inline text-[22px] font-normal" style="color:var(--muted)">Data retention, export formats, and account deletion</span>
+        </h2>
+
+        <div class="card p-0 overflow-x-auto mb-6">
+          <table class="w-full text-[13.5px]" style="border-collapse:collapse;min-width:560px">
             <thead>
               <tr style="background:var(--surface)">
-                <th class="t-label text-left p-3" style="color:var(--muted)">Thứ</th>
-                <th class="t-label text-left p-3" style="color:var(--muted)">Ở dạng</th>
-                <th class="t-label text-left p-3" style="color:var(--muted)">Giữ đến khi</th>
+                <th scope="col" class="t-label text-left p-3" style="color:var(--muted)">Dữ liệu · <span lang="en">Data</span></th>
+                <th scope="col" class="t-label text-left p-3" style="color:var(--muted)">Ở dạng · <span lang="en">Stored as</span></th>
+                <th scope="col" class="t-label text-left p-3" style="color:var(--muted)">Giữ đến khi · <span lang="en">Retained until</span></th>
               </tr>
             </thead>
             <tbody>
               <tr style="border-top:1px solid var(--border)">
-                <td class="p-3">Nội dung entry</td>
-                <td class="p-3" style="color:var(--muted)">Đã mã hoá, chúng tôi không đọc được</td>
-                <td class="p-3" style="color:var(--muted)">Bạn xoá</td>
+                <td class="p-3 font-semibold">Nội dung entry (<span class="mono">text</span>, <span class="mono">json</span>) · <span lang="en" class="font-normal" style="color:var(--muted)">Entry bodies</span></td>
+                <td class="p-3" style="color:var(--muted)">Đã mã hoá đầu-cuối, máy chủ không đọc được · <span lang="en">End-to-end encrypted</span></td>
+                <td class="p-3" style="color:var(--muted)">Khi bạn xoá mục/entry (giữ <strong>30 ngày</strong> để hoàn tác rồi xoá hẳn), đặt lại kho hoặc xoá tài khoản · <span lang="en">Deleted (<strong>30-day</strong> undo window, then purged), vault reset, or account deletion</span></td>
               </tr>
               <tr style="border-top:1px solid var(--border)">
-                <td class="p-3">Tên mục, tag, gợi nhớ</td>
-                <td class="p-3" style="color:var(--muted)">Văn bản thường</td>
-                <td class="p-3" style="color:var(--muted)">Bạn xoá</td>
+                <td class="p-3 font-semibold">Tên mục, tag, gợi nhớ, loại &amp; kích thước · <span lang="en" class="font-normal" style="color:var(--muted)">Names, tags, hints, types &amp; sizes</span></td>
+                <td class="p-3" style="color:var(--muted)">Văn bản thường (không mã hoá) · <span lang="en">Plaintext</span></td>
+                <td class="p-3" style="color:var(--muted)">Khi bạn xoá mục/tag (xoá vĩnh viễn sau <strong>30 ngày</strong>) hoặc xoá tài khoản · <span lang="en">Deleted (purged after <strong>30 days</strong>) or account deletion</span></td>
               </tr>
               <tr style="border-top:1px solid var(--border)">
-                <td class="p-3">Email, mật khẩu</td>
-                <td class="p-3" style="color:var(--muted)">Mật khẩu chỉ lưu dạng băm</td>
-                <td class="p-3" style="color:var(--muted)">Bạn xoá tài khoản</td>
+                <td class="p-3 font-semibold">Vector tìm gần nghĩa · <span lang="en" class="font-normal" style="color:var(--muted)">Similarity vectors</span></td>
+                <td class="p-3" style="color:var(--muted)">Vector số sinh từ tên mục, gợi nhớ và tag · <span lang="en">Numeric vectors from names, hints &amp; tags</span></td>
+                <td class="p-3" style="color:var(--muted)">Xoá ngay trên máy chủ engram khi bạn <strong>tắt nút <span class="mono">≈</span></strong>, xoá mục/tag hoặc xoá tài khoản · <span lang="en">Deleted immediately when you turn <span class="mono">≈</span> off, delete the item/tag, or delete your account</span></td>
               </tr>
               <tr style="border-top:1px solid var(--border)">
-                <td class="p-3">Nhật ký kỹ thuật</td>
-                <td class="p-3" style="color:var(--muted)">Không chứa nội dung, passphrase hay recovery key</td>
-                <td class="p-3" style="color:var(--muted)">Hết hạn lưu trữ</td>
+                <td class="p-3 font-semibold">Email, mật khẩu đăng nhập, phiên · <span lang="en" class="font-normal" style="color:var(--muted)">Email, login password, sessions</span></td>
+                <td class="p-3" style="color:var(--muted)">Email văn bản thường; mật khẩu chỉ lưu dạng băm Argon2id · <span lang="en">Plaintext email; Argon2id password hash</span></td>
+                <td class="p-3" style="color:var(--muted)">Xoá ngay khỏi cơ sở dữ liệu hoạt động khi bạn xoá tài khoản · <span lang="en">Removed from the live database when you delete your account</span></td>
+              </tr>
+              <tr style="border-top:1px solid var(--border)">
+                <td class="p-3 font-semibold">Nhật ký bảo mật &amp; bản sao lưu hệ thống · <span lang="en" class="font-normal" style="color:var(--muted)">Security audit log &amp; DB backups</span></td>
+                <td class="p-3" style="color:var(--muted)">Không chứa nội dung entry, câu tìm kiếm hay khoá bí mật; bản sao lưu DB được mã hoá khi lưu trữ · <span lang="en">No entry bodies, queries, or keys; encrypted at rest</span></td>
+                <td class="p-3" style="color:var(--muted)">Nhật ký bảo mật tự xoá sau <strong>90 ngày</strong>; bản sao lưu hệ thống / PITR tự hết hạn sau <strong>7 ngày</strong> · <span lang="en">Audit logs expire after <strong>90 days</strong>; DB backups / PITR expire after <strong>7 days</strong></span></td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <div class="grid gap-3 md:grid-cols-2">
+        <div class="grid gap-4 md:grid-cols-2 mb-6">
           <div class="card p-5">
-            <p class="text-[15px] font-semibold m-0 mb-1">Xuất dữ liệu</p>
-            <p class="t-body m-0" style="color:var(--muted)">
-              Một file bạn tải về được: bản mã hoá để làm backup, hoặc bản đã giải mã để đọc ngay.
-              Bản giải mã không còn lớp bảo vệ nào — cất cho kỹ.
+            <p class="text-[15px] font-semibold m-0 mb-2">
+              Hai định dạng xuất dữ liệu (tối đa 3 lần/giờ) · <span lang="en" class="font-normal" style="color:var(--muted)">Two export formats (up to 3/hour)</span>
+            </p>
+            <p class="t-body m-0 mb-2" style="color:var(--muted)">
+              <strong>1. Tải bản sao lưu (đã mã hoá, <span class="mono">.sabk.json</span>):</strong> cách khuyên dùng. Chỉ cần đang đăng nhập (không cần mở kho). File giữ nguyên nội dung đã mã hoá cùng thông tin bọc khoá của bạn để mở lại về sau bằng passphrase hoặc recovery key.
+            </p>
+            <p class="t-body m-0 mb-2" style="color:var(--muted)">
+              <strong>2. Xuất bản đọc được (không mã hoá, <span class="mono">.json</span>):</strong> cần kho đang mở và xác nhận lại tài khoản. Trình duyệt tự giải mã mọi entry (giữ nguyên cả số dài và khoá trùng trong JSON) thành file văn bản rõ không đi qua máy chủ. <strong>Cảnh báo:</strong> bất kỳ ai có file này đều đọc được toàn bộ nội dung ngay lập tức.
+            </p>
+            <p class="text-[13px] m-0" style="color:var(--muted)">
+              Cả hai định dạng gồm các mục đang dùng và các mục mới xoá chưa quá 30 ngày (chưa bị dọn vĩnh viễn). Giới hạn tối đa <strong>3 lần xuất mỗi giờ</strong> (tính cả lượt bị huỷ giữa chừng).
             </p>
           </div>
+
           <div class="card p-5">
-            <p class="text-[15px] font-semibold m-0 mb-1">Xoá tài khoản</p>
-            <p class="t-body m-0" style="color:var(--muted)">
-              Xoá là xoá thật, không có thùng rác. Nên xuất backup trước khi bấm.
+            <p class="text-[15px] font-semibold m-0 mb-2">
+              Xoá tài khoản khác gì Đặt lại kho · <span lang="en" class="font-normal" style="color:var(--muted)">Delete account vs. Reset vault</span>
+            </p>
+            <p class="t-body m-0 mb-2" style="color:var(--muted)">
+              <strong>Đặt lại kho (Reset vault):</strong> chỉ xoá các nội dung entry đã mã hoá và bộ khoá cũ để tạo kho mới khi bạn mất hết khoá; tài khoản, tên mục và tag vẫn giữ nguyên.
+            </p>
+            <p class="t-body m-0 mb-2" style="color:var(--muted)">
+              <strong>Xoá tài khoản (Delete account):</strong> cần xác thực lại tài khoản và gõ đúng địa chỉ email xác nhận. Thao tác này không thể hoàn tác: tài khoản, mọi phiên đăng nhập, kho, recovery key, passkey, mục, tag, entry và vector bị xoá ngay khỏi cơ sở dữ liệu hoạt động. Hãy tải bản sao lưu trước khi xoá.
+            </p>
+            <p class="text-[13px] m-0" style="color:var(--muted)">
+              <strong>Lưu giữ sau khi xoá:</strong> nhật ký sự kiện bảo mật (đã gỡ liên kết tài khoản và không chứa bí mật) tự xoá sau <strong>90 ngày</strong>; các bản sao lưu cơ sở dữ liệu toàn hệ thống (PITR) tự hết hạn và bị ghi đè sau chu kỳ <strong>7 ngày</strong>.
             </p>
           </div>
         </div>
+
+        <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
+          <p class="t-label mb-2" style="color:var(--muted)">Export Formats, Account Deletion &amp; Retention · English</p>
+          <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
+            <strong>Two export formats (rate-limited to 3 per hour, including cancelled jobs):</strong>
+            (1) <strong>Encrypted backup (<span class="mono">.sabk.json</span>, recommended)</strong> requires only an active sign-in session and packages your items, tags, encrypted entry bodies, and key wrappers so you can unlock the backup offline with your passphrase or recovery key.
+            (2) <strong>Readable export (unencrypted <span class="mono">.json</span>)</strong> requires an unlocked vault and account re-authentication; your browser decrypts entries locally (preserving exact JSON numbers and duplicate keys) without uploading plaintext to the server. Store readable exports carefully—anyone with the file can read every note. Both formats include active items and recently deleted items not yet purged (under 30 days).
+          </p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            <strong>Reset vault vs. Delete account &amp; backup retention:</strong> <em>Reset vault</em> deletes only encrypted entry bodies and vault keys while keeping your account, item names, and tags. <em>Delete account</em> (requires re-authentication and typing your email) permanently removes your account, sessions, vault, keys, items, tags, entries, and vectors from the live database, and signs you out immediately. Security audit records (unlinked from your user ID and containing no secrets) are retained for <strong>90 days</strong>, and encrypted system database backups / PITR copies age out automatically within <strong>7 days</strong>.
+          </p>
+        </div>
       </section>
 
-      <!-- ===== giới hạn ===== -->
+      <!-- ===== 6. giới hạn ===== -->
       <section id="gioi-han" class="panel p-6 md:p-10">
-        <h2 class="t-title-md mb-4">Giới hạn cần biết trước</h2>
-        <ul class="flex flex-col gap-3 m-0 p-0" style="list-style:none">
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 6 · <span lang="en">Section 6</span></p>
+        <h2 class="t-title-md mb-4">
+          Giới hạn cần biết trước
+          <span class="hidden sm:inline" aria-hidden="true">·</span>
+          <span lang="en" class="block sm:inline text-[22px] font-normal" style="color:var(--muted)">Known limits</span>
+        </h2>
+        <ul class="flex flex-col gap-3 m-0 p-0 mb-6" style="list-style:none">
           <li class="t-body" style="color:var(--body)">
-            <strong>Một entry tối đa 256 KiB.</strong> Đây là chỗ cho ghi chú và cấu hình, không phải nơi chứa file.
+            <strong>Dung lượng và số lượng:</strong> mỗi entry tối đa <span class="mono">256 KiB</span>, mỗi mục tối đa <strong>200 entry</strong> và <strong>20 tag</strong>. Đây là nơi lưu ghi chú văn bản và bảng cấu hình JSON, không phải nơi chứa file đính kèm.
           </li>
           <li class="t-body" style="color:var(--body)">
-            <strong>Chưa chia sẻ được.</strong> Vault là của riêng bạn; chia sẻ và tiện ích trình duyệt nằm ở kế hoạch sau.
+            <strong>Cần kết nối mạng và trình duyệt đời mới:</strong> việc mã hoá (<span class="mono">Argon2id 64 MiB</span> trong Web Worker) và mở kho bằng passkey (<span class="mono">WebAuthn PRF</span>) chạy trực tiếp trên trình duyệt; bản hiện tại cần kết nối mạng để tìm và lưu.
           </li>
           <li class="t-body" style="color:var(--body)">
-            <strong>Cần trình duyệt đời mới.</strong> Mã hoá chạy ngay trên máy bạn nên trình duyệt quá cũ sẽ không mở được.
-          </li>
-          <li class="t-body" style="color:var(--body)">
-            <strong>Chưa dùng được khi mất mạng.</strong> Bản này cần kết nối để tìm và lưu.
+            <strong>Không bán dữ liệu, chưa có chia sẻ mục:</strong> kho là của riêng bạn; chúng tôi không dùng quảng cáo và không bán dữ liệu. Tính năng nhập lại file sao lưu trên giao diện, xoay khoá giải mã chính và chia sẻ mục nằm ở các bản nâng cấp tiếp theo.
           </li>
         </ul>
+
+        <div class="rounded-lg p-5" lang="en" style="background:var(--canvas);border:1px solid var(--border)">
+          <p class="t-label mb-2" style="color:var(--muted)">Known Limits · English</p>
+          <p class="text-[13px] m-0" style="color:var(--body)">
+            <strong>Size &amp; platform limits:</strong> Each entry is up to <span class="mono">256 KiB</span>, with up to <strong>200 entries</strong> and <strong>20 tags</strong> per item. Encryption (<span class="mono">Argon2id 64 MiB</span>) and passkey unlock (<span class="mono">WebAuthn PRF</span>) run in modern browsers and require an internet connection to search and save. We never sell your data or run ads; UI backup import, vault key rotation, and item sharing are planned for later releases.
+          </p>
+        </div>
       </section>
 
-      <!-- ===== liên hệ ===== -->
+      <!-- ===== 7. liên hệ ===== -->
       <section id="lien-he" class="panel p-6 md:p-10">
-        <h2 class="t-title-md mb-3">Còn thắc mắc</h2>
-        <p class="t-body-lg mb-5" style="color:var(--muted)">
-          Hỏi thẳng, kể cả câu khó về mã hoá. Nếu gặp lỗi, gửi kèm mã sự cố hiện trên màn hình —
-          <strong>đừng gửi passphrase hay recovery key</strong>, chúng tôi không bao giờ hỏi xin.
+        <p class="t-label mb-2" style="color:var(--accent)">Phần 7 · <span lang="en">Section 7</span></p>
+        <h2 class="t-title-md mb-3">
+          Còn thắc mắc hoặc cần báo lỗi
+          <span class="hidden sm:inline" aria-hidden="true">·</span>
+          <span lang="en" class="block sm:inline text-[22px] font-normal" style="color:var(--muted)">Questions &amp; security reports</span>
+        </h2>
+        <p class="t-body-lg mb-4" style="color:var(--muted)">
+          Hỏi thẳng, kể cả câu khó về mã hoá. Khi báo lỗi trên kênh công khai, <strong>tuyệt đối không gửi mật khẩu, passphrase hay recovery key</strong> — chúng tôi không bao giờ hỏi xin các thông tin đó.
         </p>
-        <a href="mailto:hello@zone17th.click" class="btn btn-secondary no-underline">hello@zone17th.click</a>
+        <p class="text-[14px] mb-5" lang="en" style="color:var(--body)">
+          Have a question or found an issue? Reach out below. <strong>Never share your password, vault passphrase, or recovery keys</strong>—we will never ask for them.
+        </p>
+        <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
+          <a href="https://github.com/zone17th/engram/issues" class="btn btn-secondary no-underline text-[14px] !whitespace-normal text-center">
+            <span>GitHub Issues · <span lang="en" class="font-normal">Questions &amp; support</span></span>
+          </a>
+          <a href="https://github.com/zone17th/engram/security/advisories/new" class="btn btn-secondary no-underline text-[14px] !whitespace-normal text-center">
+            <span>Báo cáo lỗ hổng riêng tư · <span lang="en" class="font-normal">Private security report</span></span>
+          </a>
+          <a href="legal.html" class="btn btn-tertiary no-underline !whitespace-normal text-center">
+            <span>Điều khoản &amp; Pháp lý · <span lang="en" class="font-normal">Terms &amp; Privacy Policy</span></span>
+          </a>
+        </div>
       </section>
 
     </div>
@@ -302,25 +468,26 @@
 
       <div class="flex gap-12 flex-wrap">
         <div>
-          <p class="t-label mb-3" style="color:rgba(255,255,255,.5)">Tài liệu</p>
+          <p class="t-label mb-3" style="color:rgba(255,255,255,.5)">Tài liệu · <span lang="en">Docs</span></p>
           <div class="flex flex-col gap-2 text-[15px]">
-            <a href="#rieng-tu" class="no-underline" style="color:rgba(255,255,255,.85)">Riêng tư</a>
-            <a href="#khoi-phuc" class="no-underline" style="color:rgba(255,255,255,.85)">Khôi phục</a>
-            <a href="#du-lieu" class="no-underline" style="color:rgba(255,255,255,.85)">Dữ liệu</a>
+            <a href="#rieng-tu" class="no-underline" style="color:rgba(255,255,255,.85)">Riêng tư · <span lang="en">Privacy</span></a>
+            <a href="#tim-kiem" class="no-underline" style="color:rgba(255,255,255,.85)">Tìm kiếm · <span lang="en">Search</span></a>
+            <a href="#khoi-phuc" class="no-underline" style="color:rgba(255,255,255,.85)">Khôi phục · <span lang="en">Recovery</span></a>
+            <a href="#du-lieu" class="no-underline" style="color:rgba(255,255,255,.85)">Dữ liệu · <span lang="en">Data</span></a>
           </div>
         </div>
         <div>
-          <p class="t-label mb-3" style="color:rgba(255,255,255,.5)">Xem thử</p>
+          <p class="t-label mb-3" style="color:rgba(255,255,255,.5)">Xem thử · <span lang="en">Screens</span></p>
           <div class="flex flex-col gap-2 text-[15px]">
-            <a href="index.html" class="no-underline" style="color:rgba(255,255,255,.85)">Màn tìm kiếm</a>
-            <a href="item.html" class="no-underline" style="color:rgba(255,255,255,.85)">Màn chi tiết</a>
-            <a href="settings.html" class="no-underline" style="color:rgba(255,255,255,.85)">Cài đặt</a>
+            <a href="index.html" class="no-underline" style="color:rgba(255,255,255,.85)">Màn tìm kiếm · <span lang="en">Search</span></a>
+            <a href="item.html" class="no-underline" style="color:rgba(255,255,255,.85)">Màn chi tiết · <span lang="en">Item detail</span></a>
+            <a href="settings.html" class="no-underline" style="color:rgba(255,255,255,.85)">Cài đặt · <span lang="en">Settings</span></a>
           </div>
         </div>
       </div>
     </div>
     <hr style="border:0;height:1px;background:rgba(255,255,255,.12);margin:32px 0 20px">
-    <p class="t-legal m-0" style="color:rgba(255,255,255,.45)">Mockup tĩnh — dữ liệu là giả, không có mã hoá thật ở bản này.</p>
+    <p class="t-legal m-0" style="color:rgba(255,255,255,.45)">Mockup tĩnh — dữ liệu là giả, không có mã hoá thật ở bản này. · <span lang="en">Static mockup — sample data only.</span></p>
   </div>
 </footer>
 

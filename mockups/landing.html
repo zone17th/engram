@@ -163,7 +163,7 @@
         <p class="t-body-lg m-0" style="color:rgba(255,255,255,.72)">
           Tên mục và tag thì không mã hoá — chính chúng làm cho việc tìm kiếm chạy được. Chữ bạn gõ để tìm cũng được gửi tới máy chủ của chúng tôi, không mã hoá.
           Khi bật tìm gần nghĩa (mặc định bật nếu máy chủ hỗ trợ, tắt được trong Cài đặt hoặc bằng nút ≈), tên mục, tag, gợi nhớ và chữ bạn gõ được gửi tiếp tới
-          dịch vụ embedding của bên thứ ba để tính vector. Nội dung entry thì không bao giờ được gửi.
+          dịch vụ embedding của bên thứ ba để tính vector (tắt sẽ ngừng gửi và xoá vector trên máy chủ engram). Nội dung entry thì không bao giờ được gửi.
         </p>
       </div>
       <div class="flex flex-col gap-3">
@@ -173,7 +173,7 @@
         </div>
         <div class="rounded-xl p-4" style="background:rgba(255,255,255,.06)">
           <p class="t-label mb-1" style="color:var(--warning)">Không mã hoá</p>
-          <p class="t-body m-0" style="color:rgba(255,255,255,.86)">Tên mục, tên tag, thời điểm sửa, số lượng entry.</p>
+          <p class="t-body m-0" style="color:rgba(255,255,255,.86)">Tên mục, tên tag, gợi nhớ, loại và kích thước entry, thời điểm sửa, số lượng entry, chữ bạn gõ tìm kiếm.</p>
         </div>
         <p class="mono text-[12px] m-0 pt-1" style="color:rgba(255,255,255,.45)">
           XChaCha20-Poly1305 · Argon2id · khoá không rời trình duyệt
@@ -196,7 +196,7 @@
       <div class="flex flex-col gap-2.5">
         <div class="rounded-xl p-4" style="background:var(--canvas)">
           <p class="text-[15px] font-semibold m-0 mb-1">10 recovery key</p>
-          <p class="t-body m-0" style="color:var(--muted)">In ra, cất đi. Mỗi key mở được vault một mình, dùng xong thì thôi.</p>
+          <p class="t-body m-0" style="color:var(--muted)">In ra, cất kỹ. Mỗi key tự mở được vault một lần trên máy chủ; dùng xong có thể tạo key bù hoặc xoay bộ 10 key mới.</p>
         </div>
         <div class="rounded-xl p-4" style="background:var(--canvas)">
           <p class="text-[15px] font-semibold m-0 mb-1">Passkey</p>
