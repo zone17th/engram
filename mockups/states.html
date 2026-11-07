@@ -964,8 +964,8 @@
       <p class="t-label mb-2 text-muted">Sao lưu · 1 · Sẵn sàng · <span lang="en">Backup · 1 · Idle</span></p>
       <div class="text-[15px] font-semibold mb-1">Bản sao lưu · <span lang="en" class="font-normal text-muted">Backup</span></div>
       <p class="text-[13px] m-0 mb-4 text-body">
-        Tải về một file đã mã hoá. Chỉ mở được bằng passphrase của bạn, kể cả khi engram không còn chạy.
-        <span lang="en" class="block text-[12px] mt-0.5 text-muted">Download an encrypted file. Only your passphrase opens it, even if engram is offline.</span>
+        Tải về một file đã mã hoá. Chỉ mở lại được bằng passphrase hoặc recovery key của bạn.
+        <span lang="en" class="block text-[12px] mt-0.5 text-muted">Download an encrypted file. Only your passphrase or a recovery key can unlock it.</span>
       </p>
       <button type="button" class="btn btn-primary">Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
     </div>
@@ -990,7 +990,7 @@
         Bản sao lưu đã sẵn sàng · có hiệu lực đến 14:12 ngày mai. Tải lại bao nhiêu lần cũng được.
         <span lang="en" class="block">Your backup is ready · available until 14:12 tomorrow. Download it as often as you need.</span>
       </div>
-      <a href="#export-ready" class="btn btn-primary no-underline">Tải file (2,4 MB) · <span lang="en" class="font-semibold">Download file</span></a>
+      <a href="#export-ready" class="btn btn-primary no-underline">Tải file (2,4 MB) · <span lang="en" class="font-semibold">Download file (2.4 MB)</span></a>
     </div>
 
     <!-- Export 4: Failed + retry -->
@@ -1016,12 +1016,11 @@
     <!-- Export 6: Rate-limited 3/hour with retry time -->
     <div class="card card-warning p-5" id="export-rate-limited">
       <p class="t-label mb-2 text-muted">Sao lưu · 6 · Giới hạn 3 lần/giờ kèm giờ thử lại · <span lang="en">Backup · 6 · Rate-limited (3/hour) with retry time</span></p>
-      <div role="alert" class="auth-alert mb-3" style="color:var(--warning-ink);border-color:var(--warning);background:color-mix(in srgb,var(--warning) 8%,var(--canvas))">
+      <div role="alert" class="auth-warning mb-3">
         Bạn đã tạo 3 bản trong 1 giờ qua (kể cả bản đã huỷ). Thử lại lúc 14:12.
         <span lang="en" class="block">You made 3 exports in the last hour (cancelled ones count). Try again at 14:12.</span>
       </div>
-      <button type="button" class="btn btn-primary" disabled aria-describedby="stateExpLimitHint">Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
-      <span id="stateExpLimitHint" class="field-hint">Mở lại lúc 14:12 · <span lang="en">Available at 14:12</span></span>
+      <button type="button" class="btn btn-primary" disabled>Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
     </div>
 
     <!-- Export 7: Offline -->
@@ -1090,7 +1089,7 @@
       </label>
       <div class="flex flex-wrap justify-between gap-2 mt-4">
         <a href="settings.html#dulieu" class="btn btn-secondary btn-sm no-underline">Tải bản sao lưu trước · <span lang="en">Download backup first</span></a>
-        <button type="button" class="btn btn-danger" disabled>Xoá vĩnh viễn tài khoản · <span lang="en">Permanently delete account</span></button>
+        <button type="button" class="btn btn-danger !whitespace-normal text-left" disabled>Xoá vĩnh viễn · <span lang="en">Delete permanently</span></button>
       </div>
     </div>
 

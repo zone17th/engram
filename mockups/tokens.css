@@ -1781,3 +1781,22 @@ textarea.kv-input {
     transform: translate(-50%, -50%);
   }
 }
+
+/* P06 U17/U18/U20 visual & a11y fixes (B2, B3, B4, FE-08, N1) */
+dialog { color: var(--body); }
+.text-link { color: var(--link-ink); }
+.auth-warning {
+  font-size: 13px; line-height: 1.45; border-radius: var(--r-md); padding: 10px 12px;
+  background: color-mix(in srgb, var(--warning) 10%, var(--canvas));
+  color: var(--warning-ink);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+}
+progress {
+  appearance: none; -webkit-appearance: none;
+  height: 8px; border-radius: var(--r-pill); border: 1px solid var(--border);
+  background: var(--surface-alt); overflow: hidden;
+}
+progress::-webkit-progress-bar { background: var(--surface-alt); border-radius: var(--r-pill); }
+progress::-webkit-progress-value { background: var(--accent); border-radius: var(--r-pill); }
+progress::-moz-progress-bar { background: var(--accent); border-radius: var(--r-pill); }
+h1 [lang="en"], h2 [lang="en"], h3 [lang="en"] { letter-spacing: normal; }

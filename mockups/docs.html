@@ -235,13 +235,13 @@
           <span lang="en" class="block sm:inline text-[22px] font-normal" style="color:var(--muted)">Recovery, revocation, and backup limits</span>
         </h2>
         <p class="t-body-lg mb-5" style="color:var(--body)">
-          Vì máy chủ không giữ khoá giải mã của bạn, bạn mở lại kho bằng những đường đã chuẩn bị sẵn. Nếu kho vẫn đang mở được bằng Passkey hoặc Thiết bị đã nhớ, bạn có thể vào <strong>Cài đặt › Bảo mật</strong> để đặt passphrase mới ngay sau khi xác nhận tài khoản — <strong>không cần nhớ passphrase cũ</strong>.
+          Vì máy chủ không giữ khoá giải mã của bạn, bạn mở lại kho bằng những đường đã chuẩn bị sẵn. Nếu kho vẫn đang mở (nhờ phiên đang mở, Passkey hoặc Thiết bị đã nhớ), bạn có thể vào <strong>Cài đặt › Bảo mật</strong> để đặt passphrase mới ngay sau khi xác nhận tài khoản — <strong>không cần nhớ passphrase cũ</strong>.
         </p>
 
         <div class="flex flex-col gap-3 mb-5">
           <div class="rounded-xl p-4" style="background:var(--canvas)">
             <p class="text-[15px] font-semibold m-0 mb-1">
-              Passkey (WebAuthn PRF) và cách gỡ · <span lang="en" class="font-normal" style="color:var(--muted)">Passkeys &amp; revocation</span>
+              Passkey và cách gỡ · <span lang="en" class="font-normal" style="color:var(--muted)">Passkeys &amp; revocation</span>
             </p>
             <p class="t-body m-0" style="color:var(--muted)">
               Mở kho bằng vân tay, khuôn mặt hoặc khoá bảo mật có hỗ trợ PRF. Khi bạn bấm <strong>Gỡ</strong> một passkey trong Cài đặt (cần xác thực lại tài khoản), máy chủ xoá ngay bản bọc khoá của passkey đó nên không dùng nó để mở kho trực tuyến được nữa. Bạn vẫn nên tự xoá passkey thừa trong trình quản lý thiết bị nếu muốn dọn danh sách.
@@ -278,7 +278,7 @@
 
         <div class="rounded-md p-4 mb-5" style="background:var(--pale-orange)">
           <p class="t-body m-0" style="color:var(--body)">
-            <strong>Mất hết mọi đường mở kho?</strong> Nếu quên passphrase, mất cả 10 recovery key, không còn passkey, không còn thiết bị đã nhớ và không còn file sao lưu mở được, lựa chọn cuối cùng là <strong>Đặt lại kho (Reset vault)</strong>: toàn bộ nội dung entry đã mã hoá trên máy chủ bị xoá vĩnh viễn để tạo kho mới, còn tên mục và tag được giữ lại.
+            <strong>Mất hết mọi đường mở kho?</strong> Nếu quên passphrase, mất cả 10 recovery key, không còn passkey, không còn thiết bị đã nhớ và không còn file sao lưu mở được, lựa chọn cuối cùng là <strong>Đặt lại vault</strong> (Reset vault): toàn bộ nội dung entry đã mã hoá trên máy chủ bị xoá vĩnh viễn để tạo kho mới, còn tên mục và tag được giữ lại.
           </p>
         </div>
 
@@ -336,9 +336,14 @@
                 <td class="p-3" style="color:var(--muted)">Xoá ngay khỏi cơ sở dữ liệu hoạt động khi bạn xoá tài khoản · <span lang="en">Removed from the live database when you delete your account</span></td>
               </tr>
               <tr style="border-top:1px solid var(--border)">
-                <td class="p-3 font-semibold">Nhật ký bảo mật &amp; bản sao lưu hệ thống · <span lang="en" class="font-normal" style="color:var(--muted)">Security audit log &amp; DB backups</span></td>
-                <td class="p-3" style="color:var(--muted)">Không chứa nội dung entry, câu tìm kiếm hay khoá bí mật; bản sao lưu DB được mã hoá khi lưu trữ · <span lang="en">No entry bodies, queries, or keys; encrypted at rest</span></td>
-                <td class="p-3" style="color:var(--muted)">Nhật ký bảo mật tự xoá sau <strong>90 ngày</strong>; bản sao lưu hệ thống / PITR tự hết hạn sau <strong>7 ngày</strong> · <span lang="en">Audit logs expire after <strong>90 days</strong>; DB backups / PITR expire after <strong>7 days</strong></span></td>
+                <td class="p-3 font-semibold">Nhật ký bảo mật · <span lang="en" class="font-normal" style="color:var(--muted)">Security audit log</span></td>
+                <td class="p-3" style="color:var(--muted)">Không chứa nội dung entry, câu tìm kiếm hay khoá bí mật; gỡ liên kết tài khoản khi xoá · <span lang="en">No entry bodies, queries, or keys; unlinked on account deletion</span></td>
+                <td class="p-3" style="color:var(--muted)">Tự xoá sau <strong>90 ngày</strong> · <span lang="en">Expires after <strong>90 days</strong></span></td>
+              </tr>
+              <tr style="border-top:1px solid var(--border)">
+                <td class="p-3 font-semibold">Bản sao lưu hệ thống · <span lang="en" class="font-normal" style="color:var(--muted)">System database backups</span></td>
+                <td class="p-3" style="color:var(--muted)">Bản sao cơ sở dữ liệu đã mã hoá khi lưu trữ (gồm bản mã entry, bản bọc khoá, tên mục/tag và dòng tài khoản tại thời điểm sao lưu) · <span lang="en">Database snapshots encrypted at rest (ciphertext, key wraps, item/tag metadata, account rows at snapshot time)</span></td>
+                <td class="p-3" style="color:var(--muted)">Tự hết hạn và ghi đè trong tối đa <strong>7 ngày</strong> · <span lang="en">Expires and is overwritten within <strong>7 days</strong></span></td>
               </tr>
             </tbody>
           </table>
@@ -356,22 +361,22 @@
               <strong>2. Xuất bản đọc được (không mã hoá, <span class="mono">.json</span>):</strong> cần kho đang mở và xác nhận lại tài khoản. Trình duyệt tự giải mã mọi entry (giữ nguyên cả số dài và khoá trùng trong JSON) thành file văn bản rõ không đi qua máy chủ. <strong>Cảnh báo:</strong> bất kỳ ai có file này đều đọc được toàn bộ nội dung ngay lập tức.
             </p>
             <p class="text-[13px] m-0" style="color:var(--muted)">
-              Cả hai định dạng gồm các mục đang dùng và các mục mới xoá chưa quá 30 ngày (chưa bị dọn vĩnh viễn). Giới hạn tối đa <strong>3 lần xuất mỗi giờ</strong> (tính cả lượt bị huỷ giữa chừng).
+              Cả hai định dạng gồm các mục đang dùng và các mục mới xoá chưa quá 30 ngày (chưa bị dọn vĩnh viễn). Giới hạn tối đa <strong>3 lần xuất mỗi giờ</strong> (tính cả lượt bị huỷ giữa chừng). File bản sao lưu giữ trên máy chủ tối đa <strong>24 giờ</strong> để chỉ mình bạn tải lại khi đã đăng nhập, và tự xoá khi hết hạn, bị huỷ hoặc khi bạn tạo bản mới.
             </p>
           </div>
 
           <div class="card p-5">
             <p class="text-[15px] font-semibold m-0 mb-2">
-              Xoá tài khoản khác gì Đặt lại kho · <span lang="en" class="font-normal" style="color:var(--muted)">Delete account vs. Reset vault</span>
+              Xoá tài khoản khác gì Đặt lại vault · <span lang="en" class="font-normal" style="color:var(--muted)">Delete account vs. Reset vault</span>
             </p>
             <p class="t-body m-0 mb-2" style="color:var(--muted)">
-              <strong>Đặt lại kho (Reset vault):</strong> chỉ xoá các nội dung entry đã mã hoá và bộ khoá cũ để tạo kho mới khi bạn mất hết khoá; tài khoản, tên mục và tag vẫn giữ nguyên.
+              <strong>Đặt lại vault (Reset vault):</strong> chỉ xoá các nội dung entry đã mã hoá và bộ khoá cũ để tạo kho mới khi bạn mất hết khoá; tài khoản, tên mục và tag vẫn giữ nguyên.
             </p>
             <p class="t-body m-0 mb-2" style="color:var(--muted)">
               <strong>Xoá tài khoản (Delete account):</strong> cần xác thực lại tài khoản và gõ đúng địa chỉ email xác nhận. Thao tác này không thể hoàn tác: tài khoản, mọi phiên đăng nhập, kho, recovery key, passkey, mục, tag, entry và vector bị xoá ngay khỏi cơ sở dữ liệu hoạt động. Hãy tải bản sao lưu trước khi xoá.
             </p>
             <p class="text-[13px] m-0" style="color:var(--muted)">
-              <strong>Lưu giữ sau khi xoá:</strong> nhật ký sự kiện bảo mật (đã gỡ liên kết tài khoản và không chứa bí mật) tự xoá sau <strong>90 ngày</strong>; các bản sao lưu cơ sở dữ liệu toàn hệ thống (PITR) tự hết hạn và bị ghi đè sau chu kỳ <strong>7 ngày</strong>.
+              <strong>Lưu giữ sau khi xoá:</strong> nhật ký sự kiện bảo mật (đã gỡ liên kết tài khoản và không chứa bí mật) tự xoá sau <strong>90 ngày</strong>; các bản sao lưu phục hồi hệ thống tự hết hạn và bị ghi đè sau chu kỳ <strong>7 ngày</strong>.
             </p>
           </div>
         </div>
@@ -381,10 +386,10 @@
           <p class="text-[13px] m-0 mb-2" style="color:var(--body)">
             <strong>Two export formats (rate-limited to 3 per hour, including cancelled jobs):</strong>
             (1) <strong>Encrypted backup (<span class="mono">.sabk.json</span>, recommended)</strong> requires only an active sign-in session and packages your items, tags, encrypted entry bodies, and key wrappers so you can unlock the backup offline with your passphrase or recovery key.
-            (2) <strong>Readable export (unencrypted <span class="mono">.json</span>)</strong> requires an unlocked vault and account re-authentication; your browser decrypts entries locally (preserving exact JSON numbers and duplicate keys) without uploading plaintext to the server. Store readable exports carefully—anyone with the file can read every note. Both formats include active items and recently deleted items not yet purged (under 30 days).
+            (2) <strong>Readable export (unencrypted <span class="mono">.json</span>)</strong> requires an unlocked vault and account re-authentication; your browser decrypts entries locally (preserving exact JSON numbers and duplicate keys) without uploading plaintext to the server. Store readable exports carefully—anyone with the file can read every note. Both formats include active items and recently deleted items not yet purged (under 30 days). Generated encrypted backup files stay available for up to <strong>24 hours</strong> to the signed-in owner and are deleted on expiry, cancellation, or replacement.
           </p>
           <p class="text-[13px] m-0" style="color:var(--body)">
-            <strong>Reset vault vs. Delete account &amp; backup retention:</strong> <em>Reset vault</em> deletes only encrypted entry bodies and vault keys while keeping your account, item names, and tags. <em>Delete account</em> (requires re-authentication and typing your email) permanently removes your account, sessions, vault, keys, items, tags, entries, and vectors from the live database, and signs you out immediately. Security audit records (unlinked from your user ID and containing no secrets) are retained for <strong>90 days</strong>, and encrypted system database backups / PITR copies age out automatically within <strong>7 days</strong>.
+            <strong>Reset vault vs. Delete account &amp; backup retention:</strong> <em>Reset vault</em> deletes only encrypted entry bodies and vault keys while keeping your account, item names, and tags. <em>Delete account</em> (requires re-authentication and typing your email) permanently removes your account, sessions, vault, keys, items, tags, entries, and vectors from the live database, and signs you out immediately. Security audit records (unlinked from your user ID and containing no secrets) are retained for <strong>90 days</strong>, and encrypted system database backups age out automatically within <strong>7 days</strong>.
           </p>
         </div>
       </section>
@@ -402,7 +407,7 @@
             <strong>Dung lượng và số lượng:</strong> mỗi entry tối đa <span class="mono">256 KiB</span>, mỗi mục tối đa <strong>200 entry</strong> và <strong>20 tag</strong>. Đây là nơi lưu ghi chú văn bản và bảng cấu hình JSON, không phải nơi chứa file đính kèm.
           </li>
           <li class="t-body" style="color:var(--body)">
-            <strong>Cần kết nối mạng và trình duyệt đời mới:</strong> việc mã hoá (<span class="mono">Argon2id 64 MiB</span> trong Web Worker) và mở kho bằng passkey (<span class="mono">WebAuthn PRF</span>) chạy trực tiếp trên trình duyệt; bản hiện tại cần kết nối mạng để tìm và lưu.
+            <strong>Cần kết nối mạng và trình duyệt đời mới:</strong> việc mã hoá và mở kho bằng passkey chạy trực tiếp trên trình duyệt; bản hiện tại cần kết nối mạng để tìm và lưu. <span class="text-[13px]" style="color:var(--muted)">(Chi tiết kỹ thuật: dẫn xuất khoá <span class="mono">Argon2id 64 MiB</span> trong luồng nền trình duyệt, mở khoá passkey qua chuẩn <span class="mono">WebAuthn PRF</span>.)</span>
           </li>
           <li class="t-body" style="color:var(--body)">
             <strong>Không bán dữ liệu, chưa có chia sẻ mục:</strong> kho là của riêng bạn; chúng tôi không dùng quảng cáo và không bán dữ liệu. Tính năng nhập lại file sao lưu trên giao diện, xoay khoá giải mã chính và chia sẻ mục nằm ở các bản nâng cấp tiếp theo.
