@@ -67,7 +67,7 @@ func (s *plainSMTPSink) start(t *testing.T) int {
 }
 
 func (s *plainSMTPSink) serve(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(20 * time.Second))
 	r := bufio.NewReader(c)
 	w := func(l string) { _, _ = c.Write([]byte(l + "\r\n")) }

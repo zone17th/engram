@@ -94,7 +94,7 @@ func startFakeSMTP(t *testing.T, f *fakeSMTP) (port int) {
 }
 
 func (f *fakeSMTP) serve(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(20 * time.Second))
 	isTLS := false
 	if f.implicit {

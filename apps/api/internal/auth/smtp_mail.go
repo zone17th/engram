@@ -172,7 +172,7 @@ func (m *SMTPMailer) send(ctx context.Context, recipient, purpose, link string) 
 	// Abort blocking I/O when ctx ends before the deadline (caller cancel).
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
 	defer stop()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := conn.SetDeadline(deadline); err != nil {
 		return &SMTPError{Stage: "dial"}
 	}
@@ -187,7 +187,7 @@ func (m *SMTPMailer) send(ctx context.Context, recipient, purpose, link string) 
 	if err != nil {
 		return classify("greeting", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if err := c.Hello("localhost"); err != nil {
 		return classify("hello", err)
 	}

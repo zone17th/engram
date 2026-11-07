@@ -304,7 +304,7 @@ func startSTARTTLSSink(t *testing.T) (port int, certFile string, messages func()
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				_ = c.SetDeadline(time.Now().Add(20 * time.Second))
 				r := bufio.NewReader(c)
 				w := func(l string) { _, _ = c.Write([]byte(l + "\r\n")) }
