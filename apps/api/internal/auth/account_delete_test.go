@@ -147,7 +147,7 @@ func delUserRows(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) map[string]
 		out[tbl] = delCount(t, pool, `SELECT count(*) FROM `+tbl+` WHERE user_id = $1`, userID)
 	}
 	out["app_user"] = delCount(t, pool, `SELECT count(*) FROM app_user WHERE id = $1`, userID)
-	out["item_tag"] = delCount(t, pool, `SELECT count(*) FROM item_tag WHERE user_id = $1`, userID)
+	out["item_tag"] = delCount(t, pool, `SELECT count(*) FROM item_tag it WHERE it.item_id IN (SELECT id FROM item WHERE user_id = $1) OR it.tag_id IN (SELECT id FROM tag WHERE user_id = $1)`, userID)
 	return out
 }
 
