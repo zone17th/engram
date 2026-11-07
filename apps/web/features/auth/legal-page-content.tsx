@@ -1,9 +1,11 @@
 import Link from 'next/link';
 import { getTranslations } from 'next-intl/server';
-import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { Logo } from '@/components/landing/logo';
 import { LocaleSwitch } from '@/components/locale-switch';
-import { LegalBackToLoginLink } from '@/app/(marketing)/[locale]/docs/docs-client-actions';
+import {
+  LegalBackToLoginLink,
+  MarketingThemeButton,
+} from '@/app/(marketing)/[locale]/docs/docs-client-actions';
 
 export async function LegalPageContent({
   locale,
@@ -29,18 +31,18 @@ export async function LegalPageContent({
       >
         {tNav('skipToContent')}
       </a>
-      <header className="mx-auto flex max-w-container flex-wrap items-center gap-3 px-5 pt-6">
+      <header className="mx-auto flex max-w-container flex-wrap items-center gap-2 sm:gap-3 px-5 pt-6">
         <Link
           href={homeHref}
-          className="touch-target inline-flex min-h-11 min-w-11 items-center gap-2.5 text-ink no-underline"
+          className="touch-target inline-flex min-h-11 min-w-11 shrink-0 items-center gap-2.5 text-ink no-underline"
           aria-label="engram"
         >
-          <Logo />
+          <Logo wordmarkClassName="hidden min-[420px]:inline" />
         </Link>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
           <LocaleSwitch mode="landing" />
           <LegalBackToLoginLink label={t('backToLogin')} hasSession={hasSession} />
-          <ThemeToggle />
+          <MarketingThemeButton />
         </div>
       </header>
 

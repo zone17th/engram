@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { getTranslations } from 'next-intl/server';
-import { ThemeToggle } from '@/components/app-shell/theme-toggle';
+import { MarketingThemeButton } from '@/app/(marketing)/[locale]/docs/docs-client-actions';
 import { Logo } from '@/components/landing/logo';
 import { LocaleSwitch } from '@/components/locale-switch';
 
@@ -61,7 +61,7 @@ export async function DocsPageContent({ locale }: { locale: string }) {
           </div>
           <div className="ml-auto flex items-center gap-1 sm:gap-2">
             <LocaleSwitch mode="landing" />
-            <ThemeToggle />
+            <MarketingThemeButton />
             <Link
               href="/app"
               className="btn btn-primary touch-target min-h-11 min-w-11 !px-3 !text-[14px] no-underline sm:!px-[18px] sm:!text-[15px]"
@@ -250,7 +250,13 @@ export async function DocsPageContent({ locale }: { locale: string }) {
               <p className="t-label mb-2 text-accent">{t('s5.sectionLabel')}</p>
               <h2 className="t-title-md mb-4">{t('s5.heading')}</h2>
 
-              <div className="card mb-6 overflow-x-auto p-0">
+              <div className="relative mb-6">
+                <div
+                  className="card overflow-x-auto p-0"
+                  tabIndex={0}
+                  role="region"
+                  aria-label={t('s5.heading')}
+                >
                 <table className="w-full min-w-[560px] border-collapse text-[13.5px]">
                   <thead>
                     <tr className="bg-surface">
@@ -298,6 +304,12 @@ export async function DocsPageContent({ locale }: { locale: string }) {
                     </tr>
                   </tbody>
                 </table>
+                </div>
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-y-px right-px w-8 rounded-r-[inherit] sm:hidden"
+                  style={{ background: 'linear-gradient(to left, var(--surface-elevated), transparent)' }}
+                />
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">

@@ -163,6 +163,10 @@ describe('Task 7 docsprivacy — /docs, /vi/docs, privacy/legal truth, FU-T24-AB
 
     // Locale-aware links & LocaleSwitch
     expect(screen.getByRole('radiogroup', { name: 'Language' })).toBeInTheDocument();
+    const docsThemeBtn = screen.getByRole('button', { name: en.auth.theme.toggle });
+    expect(docsThemeBtn).toHaveClass('min-h-11', 'min-w-11');
+    const retentionRegion = screen.getByRole('region', { name: en.docs.s5.heading });
+    expect(retentionRegion).toHaveAttribute('tabindex', '0');
     const links = Array.from(container.querySelectorAll('a')).map((a) => a.getAttribute('href'));
     expect(links).toContain('/privacy');
     expect(links).toContain('/terms');
@@ -215,6 +219,10 @@ describe('Task 7 docsprivacy — /docs, /vi/docs, privacy/legal truth, FU-T24-AB
 
     expect(enContainer.querySelector('main#main-content')).not.toBeNull();
     expect(screen.getByRole('radiogroup', { name: 'Language' })).toBeInTheDocument();
+    const legalThemeBtn = screen.getByRole('button', { name: en.auth.theme.toggle });
+    expect(legalThemeBtn).toHaveClass('min-h-11', 'min-w-11');
+    const legalLogoLink = enContainer.querySelector('header a[aria-label="engram"]');
+    expect(legalLogoLink?.querySelector('.min-\\[420px\\]\\:inline')).not.toBeNull();
     expect(screen.getByRole('link', { name: en.legal.backToLogin })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: en.legal.contact.docsCta })).toHaveAttribute('href', '/docs');
 
@@ -267,6 +275,8 @@ describe('Task 7 docsprivacy — /docs, /vi/docs, privacy/legal truth, FU-T24-AB
 
     // F-05 & F-09: header logo, locale switch items, theme toggle, Sign in, and Create account have min-h-11 min-w-11 and Sign in is not hidden on mobile
     const signInLink = screen.getByRole('link', { name: en.nav.signIn });
+    const primaryNav = enContainer.querySelector('nav[aria-label="Primary"]');
+    expect(primaryNav).toHaveClass('flex-wrap', 'rounded-2xl', 'sm:rounded-pill');
     expect(signInLink).toHaveClass('min-h-11', 'min-w-11');
     expect(signInLink.className).not.toContain('hidden');
 
