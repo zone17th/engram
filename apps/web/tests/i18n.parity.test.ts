@@ -266,6 +266,21 @@ describe('i18n', () => {
       expect(valueAtPath(en, dup), `en should not duplicate ${dup}`).toBeUndefined();
       expect(valueAtPath(vi, dup), `vi should not duplicate ${dup}`).toBeUndefined();
     }
+
+    expect(valueAtPath(en, 'unlock.deriving')).toBe('Unlocking… this can take a few seconds');
+    expect(valueAtPath(vi, 'unlock.deriving')).toBe('Đang mở khoá… có thể mất vài giây');
+    expect(valueAtPath(en, 'states.sessionExpiredBody')).toBe(
+      'Sign in again to continue. Unsaved changes on this page were cleared for safety.',
+    );
+    expect(valueAtPath(vi, 'states.sessionExpiredBody')).toBe(
+      'Đăng nhập lại để tiếp tục. Thay đổi chưa lưu trên trang này đã được xoá để bảo vệ bạn.',
+    );
+    expect(valueAtPath(vi, 'offline.banner')).toContain('mất kết nối');
+    expect(valueAtPath(vi, 'offline.exportUnavailableBody')).toContain('Mất kết nối.');
+    expect(valueAtPath(vi, 'vault.passkey.add.timeout')).toBe(
+      'Đã chờ passkey quá 60 giây. Hãy thử lại hoặc bấm Huỷ.',
+    );
+    expect(valueAtPath(en, 'onboarding.semanticConsentEnable')).toBe('Turn on meaning-based search');
   });
 });
 

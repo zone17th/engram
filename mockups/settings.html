@@ -321,7 +321,7 @@
         <!-- Copy khi features.semantic_external = true (hoặc vắng = mặc định an toàn, mục 2.11 + 2.24 item 7) -->
         <div class="rounded-md p-4" style="background:var(--surface)" id="timkiem-copy-external">
           <p class="text-[13px] m-0 mb-2" style="color:var(--body)" data-i18n-key="settings.search.semanticExternalCopy">
-            Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ nhúng bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ nhúng lại.
+            Tên mục, gợi ý, tag và chữ bạn gõ khi tìm được gửi tới dịch vụ tạo vector bên ngoài để tính vector. Tắt thì ngừng gửi và xoá vector của bạn trên máy chủ engram (dữ liệu đã gửi trước đó không thu hồi được từ dịch vụ bên ngoài); bật lại sẽ tạo lại vector.
           </p>
           <p class="text-[13px] m-0" style="color:var(--muted)" data-i18n-key="settings.search.semanticEntryNeverSent">
             Nội dung entry không bao giờ được gửi — nó đã mã hoá trước khi rời máy bạn.
@@ -413,7 +413,7 @@
         </section>
 
         <section data-view="exp-offline" hidden>
-          <div role="status" class="auth-status mb-3">Bạn đang offline. Kết nối lại để tạo bản sao lưu. <span lang="en" class="block">You're offline. Reconnect to create a backup.</span></div>
+          <div role="status" class="auth-status mb-3">Mất kết nối. Kết nối lại để tạo bản sao lưu. <span lang="en" class="block">You're offline. Reconnect to create a backup.</span></div>
           <button type="button" class="btn btn-primary" disabled>Tải bản sao lưu · <span lang="en" class="font-semibold">Download backup</span></button>
         </section>
 
@@ -1195,7 +1195,7 @@
       <div class="flex justify-end"><button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button></div>
     </section>
     <section data-view="pl-offline" hidden>
-      <div role="status" class="auth-status mb-3">Bạn đang offline. Kết nối lại để tải dữ liệu về giải mã. <span lang="en" class="block">You're offline. Reconnect to fetch data for decryption.</span></div>
+      <div role="status" class="auth-status mb-3">Mất kết nối. Kết nối lại để tải dữ liệu về giải mã. <span lang="en" class="block">You're offline. Reconnect to fetch data for decryption.</span></div>
       <div class="flex justify-end"><button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button></div>
     </section>
     <section data-view="pl-reauth-expired" hidden>
@@ -1211,7 +1211,7 @@
     </section>
     <section data-view="pl-too-large" hidden>
       <div role="alert" class="auth-alert mb-3">Bản xuất đọc được quá lớn cho trình duyệt này — dùng Chrome/Edge trên máy tính, hoặc tải bản sao lưu mã hoá. <span lang="en" class="block">This readable export is too large for this browser — use Chrome or Edge on a computer, or download an encrypted backup instead.</span></div>
-      <div class="flex flex-wrap justify-end gap-2">
+      <div class="flex flex-col-reverse sm:flex-row flex-wrap justify-end gap-2">
         <button type="button" class="btn btn-tertiary" data-close-dialog>Đóng · <span lang="en">Close</span></button>
         <a href="#dulieu" class="btn btn-primary no-underline" data-close-dialog>Tải bản sao lưu mã hoá · <span lang="en" class="font-semibold">Download encrypted backup</span></a>
       </div>

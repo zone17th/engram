@@ -129,11 +129,11 @@
     "notFoundBody": "Mục này đã bị xoá, hoặc đường dẫn không thuộc tài khoản của bạn.",
     "backToList": "Về danh sách",
     "sessionExpiredTitle": "Phiên đăng nhập đã hết hạn",
-    "sessionExpiredBody": "Đăng nhập lại để tiếp tục. Bí mật chưa lưu trong bộ nhớ đã được xoá.",
+    "sessionExpiredBody": "Đăng nhập lại để tiếp tục. Thay đổi chưa lưu trên trang này đã được xoá để bảo vệ bạn.",
     "sessionExpiredCta": "Đăng nhập lại"
   },
   "offline": {
-    "banner": "Bạn đang ngoại tuyến — thay đổi chưa được lưu",
+    "banner": "Bạn đang mất kết nối — thay đổi chưa được lưu",
     "bannerTitle": "Mất kết nối.",
     "bannerBody": "Bạn vẫn xem được những gì đã tải. Thao tác tạo và sửa tạm hoãn cho tới khi có mạng lại.",
     "reconnectedTitle": "Đã kết nối lại.",
@@ -142,9 +142,9 @@
     "saveDeferredBody": "Nội dung bạn gõ vẫn nằm trong ô soạn thảo cho tới khi vault khoá (khoá vault sẽ xoá bản nháp chưa lưu). Có mạng lại thì bấm lưu lại.",
     "retrySave": "Thử lưu lại",
     "searchUnavailableTitle": "Tìm kiếm cần mạng",
-    "searchUnavailableBody": "Bản này chưa tìm ngoại tuyến được. Duyệt danh sách đã tải trong lúc chờ.",
+    "searchUnavailableBody": "Bản này chưa tìm khi mất kết nối được. Duyệt danh sách đã tải trong lúc chờ.",
     "exportUnavailableTitle": "Sao lưu cần kết nối mạng",
-    "exportUnavailableBody": "Bạn đang ngoại tuyến. Kết nối lại để tạo hoặc tải bản sao lưu."
+    "exportUnavailableBody": "Mất kết nối. Kết nối lại để tạo hoặc tải bản sao lưu."
   },
   "ui": {
     "segmentedAriaLabel": "Lựa chọn"
@@ -1036,7 +1036,7 @@
         "hidePassword": "Ẩn mật khẩu",
         "cancel": "Huỷ",
         "continue": "Tiếp tục",
-        "timeout": "Hộp thoại passkey đã quá 60 giây. Hãy thử lại hoặc bấm Huỷ."
+        "timeout": "Đã chờ passkey quá 60 giây. Hãy thử lại hoặc bấm Huỷ."
       },
       "unlock": {
         "button": "Mở khoá bằng passkey",
@@ -1138,7 +1138,7 @@
     "hidePassphrase": "Ẩn passphrase",
     "submit": "Mở khoá",
     "submitting": "Đang mở khoá…",
-    "deriving": "Đang tính khoá trong trình duyệt…",
+    "deriving": "Đang mở khoá… có thể mất vài giây",
     "caption": "Máy chậm có thể mất vài giây. Việc này chạy hẳn trong trình duyệt.",
     "forgotPassphrase": "Tôi quên passphrase",
     "rememberDeviceLabel": "Nhớ thiết bị này",

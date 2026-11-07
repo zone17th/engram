@@ -129,7 +129,7 @@
     "notFoundBody": "This item was deleted or does not belong to your account.",
     "backToList": "Back to list",
     "sessionExpiredTitle": "Session expired",
-    "sessionExpiredBody": "Sign in again to continue. Unsaved secrets in memory were cleared.",
+    "sessionExpiredBody": "Sign in again to continue. Unsaved changes on this page were cleared for safety.",
     "sessionExpiredCta": "Sign in again"
   },
   "offline": {
@@ -1138,7 +1138,7 @@
     "hidePassphrase": "Hide passphrase",
     "submit": "Unlock",
     "submitting": "Unlocking…",
-    "deriving": "Deriving key in your browser…",
+    "deriving": "Unlocking… this can take a few seconds",
     "caption": "Slow devices may take a few seconds. Key derivation runs entirely inside your browser.",
     "forgotPassphrase": "I forgot my passphrase",
     "rememberDeviceLabel": "Remember this device",
