@@ -1936,12 +1936,6 @@ h1 [lang="en"], h2 [lang="en"], h3 [lang="en"] { letter-spacing: normal; }
   color: var(--body);
   text-overflow: clip;
 }
-.json-add-field-type[data-kv-type='number'] { color: var(--accent); }
-.json-add-field-type[data-kv-type='boolean'] { color: var(--success-ink); }
-.json-add-field-type[data-kv-type='object'],
-.json-add-field-type[data-kv-type='array'] { color: #8A3A10; }
-[data-theme='dark'] .json-add-field-type[data-kv-type='object'],
-[data-theme='dark'] .json-add-field-type[data-kv-type='array'] { color: #F7A57A; }
 @media (max-width: 639px) {
   .json-add-field-form {
     display: grid;
