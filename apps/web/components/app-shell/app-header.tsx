@@ -26,7 +26,7 @@ import { useEffect, useRef } from 'react';
  * R4-L2 (advisor ruling, 360px): below `sm` the Settings link is an icon-only 44px target (the text stays in the DOM as
  * `sr-only`, so the accessible name and the link are unchanged) and Sign out uses `px-2`; every target is still >= 44px,
  * Sign out stays visible, and from `sm` up the header is exactly as before. While on /app/settings the short "Done"
- * label keeps its text. tester_visual proves the real `scrollWidth <= 360` (vi + en); jsdom cannot measure layout.
+ * label keeps its text, with `px-1.5` below `sm` (W-3: vi "Xong" + full-width padding overflowed 360px by 5px). tester_visual proves the real `scrollWidth <= 360` (vi + en); jsdom cannot measure layout.
  *
  * `showLogout` defaults to `true` so every route (including the item page, which passes no flag) shows Sign out.
  * The prop stays in the API only as an opt-out for isolated renders without a SessionProvider (unit tests); app routes
@@ -183,7 +183,7 @@ export function AppHeader({
           )}
           <Link
             href={settingsActive ? '/app' : '/app/settings'}
-            className={`btn btn-tertiary touch-target min-h-11 no-underline !text-body${settingsActive ? '' : ' max-sm:min-w-11 max-sm:!px-0'}`}
+            className={`btn btn-tertiary touch-target min-h-11 no-underline !text-body${settingsActive ? ' max-sm:!px-1.5' : ' max-sm:min-w-11 max-sm:!px-0'}`}
             aria-current={settingsActive ? 'page' : undefined}
             data-testid="header-settings-link"
           >

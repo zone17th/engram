@@ -159,6 +159,8 @@ describe('AppHeader', () => {
     const done = screen.getByRole('link', { name: 'Xong' });
     expect(done).toHaveAttribute('href', '/app');
     expect(done).not.toHaveClass('max-sm:!px-0');
+    // W-3: 12px side padding made vi "Xong" overflow 360px by 5px; 6px below sm fits (tester_visual measures scrollWidth).
+    expect(done).toHaveClass('min-h-11', 'max-sm:!px-1.5');
     expect(screen.queryByTestId('header-settings-icon')).toBeNull();
   });
 
