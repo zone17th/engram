@@ -79,6 +79,30 @@ describe('cấu trúc route (P01-A3)', () => {
     expect(config).toContain('API_UPSTREAM');
   });
 
+  it('V-2: /app/<không-có-route> vẫn đi nhánh /app (CSP nonce, không qua intl) như mọi trang /app khác', () => {
+    intlCalls.length = 0;
+    const makeReq = (pathname: string) =>
+      ({
+        url: `http://localhost:3040${pathname}`,
+        headers: new Headers(),
+        nextUrl: new URL(`http://localhost:3040${pathname}`),
+      }) as unknown as Parameters<typeof middleware>[0];
+    const known = middleware(makeReq('/app/settings'));
+    const unknown = middleware(makeReq('/app/zzz-nothing'));
+    expect(intlCalls).toEqual([]);
+    expect(unknown.headers.get('Content-Security-Policy')).toContain("'nonce-");
+    const scriptSrc = /script-src ([^;]*)/.exec(unknown.headers.get('Content-Security-Policy') ?? '')?.[1] ?? '';
+    expect(scriptSrc).not.toContain("'unsafe-inline'");
+    expect(scriptSrc).not.toContain("'unsafe-eval'");
+    expect(unknown.headers.get('x-middleware-rewrite')).toBeNull();
+    expect(unknown.headers.get('location')).toBeNull();
+    // same policy shape as a real /app route, only the per-request nonce differs
+    const strip = (csp: string | null) => (csp ?? '').replace(/'nonce-[^']+'/g, "'nonce-X'");
+    expect(strip(unknown.headers.get('Content-Security-Policy'))).toBe(
+      strip(known.headers.get('Content-Security-Policy')),
+    );
+  });
+
   it('layout /app đặt noindex', () => {
     const layout = readFileSync(resolve(WEB, 'app/app/layout.tsx'), 'utf8');
     expect(layout).toMatch(/robots:\s*\{[^}]*index:\s*false/);
