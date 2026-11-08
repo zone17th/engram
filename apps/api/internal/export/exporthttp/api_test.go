@@ -725,7 +725,7 @@ func (e *env) jobFilePath(id uuid.UUID) string {
 	return filepath.Join(e.storage, name)
 }
 
-func httpGet(t *testing.T, url, sess string) (*http.Response, []byte, error) {
+func httpGet(t *testing.T, url, sess string) (int, []byte, error) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -734,11 +734,11 @@ func httpGet(t *testing.T, url, sess string) (*http.Response, []byte, error) {
 	req.AddCookie(&http.Cookie{Name: "sabk_session", Value: sess})
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, err
 	}
 	defer func() { _ = res.Body.Close() }()
 	body, err := io.ReadAll(res.Body)
-	return res, body, err
+	return res.StatusCode, body, err
 }
 
 // TestExportHTTPDownloadCorruptStreamAborts: over real HTTP, an intact
@@ -752,8 +752,8 @@ func TestExportHTTPDownloadCorruptStreamAborts(t *testing.T) {
 	defer srv.Close()
 	url := srv.URL + "/api/v1/exports/" + j.ID.String() + "/download"
 
-	res, body, err := httpGet(t, url, "sess-a")
-	if err != nil || res.StatusCode != http.StatusOK || !json.Valid(body) || len(body) < 3*65536 {
+	status, body, err := httpGet(t, url, "sess-a")
+	if err != nil || status != http.StatusOK || !json.Valid(body) || len(body) < 3*65536 {
 		t.Fatalf("intact download: err=%v len=%d", err, len(body))
 	}
 
@@ -766,9 +766,9 @@ func TestExportHTTPDownloadCorruptStreamAborts(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res, body, err = httpGet(t, url, "sess-a")
+	status, body, err = httpGet(t, url, "sess-a")
 	if err == nil {
-		t.Fatalf("corrupt download completed cleanly: status=%d len=%d", res.StatusCode, len(body))
+		t.Fatalf("corrupt download completed cleanly: status=%d len=%d", status, len(body))
 	}
 	if !strings.Contains(e.logs.String(), "export download stream aborted") {
 		t.Fatalf("abort not logged: %s", e.logs.String())
