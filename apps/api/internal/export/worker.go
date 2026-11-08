@@ -133,6 +133,14 @@ type SabkEntry struct {
 
 var errAttemptSuperseded = errors.New("export: attempt superseded or cancelled")
 
+// errAmbiguousCommit marks a finalization COMMIT whose server-side outcome is
+// unknown; the renamed artifact must be preserved until resolution (r1 R1-13).
+var errAmbiguousCommit = errors.New("export: ambiguous finalize commit")
+
+// errSpoolLimit aborts an artifact that exceeds EXPORT_MAX_SPOOL_BYTES; it is
+// terminal for the attempt because a retry cannot shrink the vault (r1 R1-19).
+var errSpoolLimit = errors.New("export: artifact exceeds EXPORT_MAX_SPOOL_BYTES")
+
 // WorkerDeps configures the export_encrypted River worker.
 type WorkerDeps struct {
 	Pool       *pgxpool.Pool
@@ -140,10 +148,12 @@ type WorkerDeps struct {
 	Notify     *notification.Store
 	StorageDir string
 	Secret     config.Secret
-	Clock      clock.Clock
-	Logger     *slog.Logger
-	LeaseDur   time.Duration
-	ReadyTTL   time.Duration
+	// MaxSpoolBytes bounds one artifact's ciphertext bytes (r1 R1-19); <=0 uncapped.
+	MaxSpoolBytes int64
+	Clock         clock.Clock
+	Logger        *slog.Logger
+	LeaseDur      time.Duration
+	ReadyTTL      time.Duration
 	// BeforeFinalizeHook is called in tests after the file is sealed/renamed and
 	// before Finalize CAS opens its transaction (TestExportFinalizeCASKeepsAtomic).
 	BeforeFinalizeHook func(ctx context.Context, jobID, attemptID uuid.UUID)
@@ -154,18 +164,19 @@ type WorkerDeps struct {
 // ExportWorker implements river.Worker[ExportEncryptedArgs] (plan mục 2.3, 2.4, 2.7).
 type ExportWorker struct {
 	river.WorkerDefaults[ExportEncryptedArgs]
-	pool       *pgxpool.Pool
-	q          *gen.Queries
-	audit      *audit.Store
-	notify     *notification.Store
-	storageDir string
-	secret     config.Secret
-	clk        clock.Clock
-	logger     *slog.Logger
-	leaseDur   time.Duration
-	readyTTL   time.Duration
-	beforeFin  func(ctx context.Context, jobID, attemptID uuid.UUID)
-	afterBatch func(ctx context.Context, jobID, attemptID uuid.UUID)
+	pool          *pgxpool.Pool
+	q             *gen.Queries
+	audit         *audit.Store
+	notify        *notification.Store
+	storageDir    string
+	secret        config.Secret
+	maxSpoolBytes int64
+	clk           clock.Clock
+	logger        *slog.Logger
+	leaseDur      time.Duration
+	readyTTL      time.Duration
+	beforeFin     func(ctx context.Context, jobID, attemptID uuid.UUID)
+	afterBatch    func(ctx context.Context, jobID, attemptID uuid.UUID)
 }
 
 // NewExportWorker constructs an ExportWorker.
@@ -187,19 +198,28 @@ func NewExportWorker(d WorkerDeps) *ExportWorker {
 		aud = audit.NewStore(d.Pool)
 	}
 	return &ExportWorker{
-		pool:       d.Pool,
-		q:          gen.New(d.Pool),
-		audit:      aud,
-		notify:     d.Notify,
-		storageDir: d.StorageDir,
-		secret:     d.Secret,
-		clk:        clk,
-		logger:     d.Logger,
-		leaseDur:   lease,
-		readyTTL:   ttl,
-		beforeFin:  d.BeforeFinalizeHook,
-		afterBatch: d.AfterBatchHook,
+		pool:          d.Pool,
+		q:             gen.New(d.Pool),
+		audit:         aud,
+		notify:        d.Notify,
+		storageDir:    d.StorageDir,
+		secret:        d.Secret,
+		maxSpoolBytes: d.MaxSpoolBytes,
+		clk:           clk,
+		logger:        d.Logger,
+		leaseDur:      lease,
+		readyTTL:      ttl,
+		beforeFin:     d.BeforeFinalizeHook,
+		afterBatch:    d.AfterBatchHook,
 	}
+}
+
+// Timeout overrides River's 60 s executor default (river.JobTimeoutDefault):
+// full-vault streaming legitimately runs for minutes while the 10-minute lease
+// is renewed between batches, so a healthy export must not be killed early
+// (review r1 R1-17). Cancellation/shutdown still propagate through ctx.
+func (w *ExportWorker) Timeout(*river.Job[ExportEncryptedArgs]) time.Duration {
+	return ExportJobTimeout
 }
 
 func (w *ExportWorker) secretBytes() []byte {
@@ -258,6 +278,11 @@ func (w *ExportWorker) Work(ctx context.Context, rjob *river.Job[ExportEncrypted
 			w.markAttemptFailed(ctx, jobID, userID, attemptID, "vault_absent")
 			return river.JobCancel(runErr)
 		}
+		if errors.Is(runErr, errSpoolLimit) {
+			// The artifact can only grow on retry; fail terminally (r1 R1-19).
+			w.markAttemptFailed(ctx, jobID, userID, attemptID, "spool_limit")
+			return river.JobCancel(runErr)
+		}
 		return w.failOrRetry(ctx, rjob, jobID, userID, attemptID, "internal_error", runErr)
 	}
 
@@ -267,6 +292,17 @@ func (w *ExportWorker) Work(ctx context.Context, rjob *river.Job[ExportEncrypted
 
 	published, finErr := w.finalizeCAS(ctx, jobID, userID, attemptID, finalName, sizeBytes, vaultRow.VaultKeyID, vaultRow.Version)
 	if finErr != nil {
+		if errors.Is(finErr, errAmbiguousCommit) {
+			// Do NOT unlink finalPath: the ready row may have committed (r1
+			// R1-13). Resolve under a bounded fresh context and, if still
+			// unresolved, keep the file so the reconciler's state-aware
+			// cleanup can settle it; snooze for another look.
+			st, err := w.resolvePublication(jobID, userID, attemptID)
+			if err == nil && st {
+				return nil
+			}
+			return river.JobSnooze(time.Minute)
+		}
 		_ = os.Remove(finalPath)
 		return w.failOrRetry(ctx, rjob, jobID, userID, attemptID, "internal_error", finErr)
 	}
@@ -275,6 +311,31 @@ func (w *ExportWorker) Work(ctx context.Context, rjob *river.Job[ExportEncrypted
 		return river.JobCancel(errAttemptSuperseded)
 	}
 	return nil
+}
+
+// resolvePublication re-reads the export row under a bounded, non-cancelled
+// context after an ambiguous finalize COMMIT (r1 R1-13). It reports whether
+// the row committed ready for this attempt (file must be kept) or is
+// definitively not published for this attempt. An error means "still
+// unresolved" — the caller keeps the file and snoozes.
+func (w *ExportWorker) resolvePublication(jobID, userID, attemptID uuid.UUID) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 15*time.Second)
+	defer cancel()
+	row, err := w.q.GetExportJobForOwner(ctx, gen.GetExportJobForOwnerParams{
+		ID:     jobID,
+		UserID: userID,
+	})
+	if err != nil {
+		return false, err
+	}
+	if row.Status == StatusReady && row.AttemptID != nil && *row.AttemptID == attemptID {
+		return true, nil
+	}
+	// Definitively not this attempt's publication: the row is terminal for a
+	// different outcome (expired/cancelled/failed) or points at a newer
+	// attempt; the artifact file is safe to keep for state-aware cleanup to
+	// unlink via export_file_cleanup records.
+	return false, nil
 }
 
 func (w *ExportWorker) handleUnclaimed(ctx context.Context, jobID uuid.UUID) error {
@@ -305,11 +366,17 @@ func (w *ExportWorker) failOrRetry(ctx context.Context, rjob *river.Job[ExportEn
 	if rjob.MaxAttempts > 0 {
 		maxAttempts = rjob.MaxAttempts
 	}
+	// Bookkeeping must survive a cancelled/timed-out Work ctx (r1 R1-15):
+	// release the lease / mark failed under a bounded detached context so a
+	// retryable attempt frees its lease immediately and a final attempt ends
+	// terminal now rather than waiting for the worker-lost sweep.
+	bkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	if rjob.Attempt >= maxAttempts {
-		w.markAttemptFailed(ctx, jobID, userID, attemptID, code)
+		w.markAttemptFailed(bkCtx, jobID, userID, attemptID, code)
 		return cause
 	}
-	_, _ = w.q.ReleaseExportLease(ctx, gen.ReleaseExportLeaseParams{
+	_, _ = w.q.ReleaseExportLease(bkCtx, gen.ReleaseExportLeaseParams{
 		ID:        jobID,
 		AttemptID: &attemptID,
 	})
@@ -433,7 +500,7 @@ func (w *ExportWorker) writeSnapshotFile(ctx context.Context, jobID, userID, att
 	if _, err := fw.WriteString("],\n\"entries\": [\n"); err != nil {
 		return gen.Vault{}, 0, err
 	}
-	if err := w.streamEntries(ctx, rq, fw, jobID, attemptID, userID, totalWork, &processed); err != nil {
+	if err := w.streamEntries(ctx, rrTx, fw, jobID, attemptID, userID, totalWork, &processed); err != nil {
 		return gen.Vault{}, 0, err
 	}
 	if _, err := fw.WriteString("]\n}\n"); err != nil {
@@ -441,6 +508,9 @@ func (w *ExportWorker) writeSnapshotFile(ctx context.Context, jobID, userID, att
 	}
 	if err := fw.Close(); err != nil {
 		return gen.Vault{}, 0, err
+	}
+	if w.maxSpoolBytes > 0 && fw.Written() > w.maxSpoolBytes {
+		return gen.Vault{}, 0, errSpoolLimit
 	}
 	if err := f.Sync(); err != nil {
 		return gen.Vault{}, 0, err
@@ -452,7 +522,9 @@ func (w *ExportWorker) writeSnapshotFile(ctx context.Context, jobID, userID, att
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		return gen.Vault{}, 0, err
 	}
-	syncDir(w.storageDir)
+	if err := syncDir(w.storageDir); err != nil {
+		return gen.Vault{}, 0, fmt.Errorf("export: sync dir after rename: %w", err)
+	}
 	return vaultRow, fw.Written(), nil
 }
 
@@ -711,25 +783,48 @@ func (w *ExportWorker) streamItemTags(ctx context.Context, rq *gen.Queries, fw *
 	return nil
 }
 
-func (w *ExportWorker) streamEntries(ctx context.Context, rq *gen.Queries, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
+// exportEntriesStreamSQL mirrors ExportEntriesBatch (apps/api/internal/db/queries/
+// export.sql) 1:1; it is issued through pgx.Tx.Query so rows stream through the
+// portal instead of materializing a whole 16-row batch of ciphertexts at once
+// (review r1 R1-02). Keep in sync with the generated query.
+const exportEntriesStreamSQL = `SELECT id, item_id, type, position, version, plaintext_len_bucket, envelope,
+  ciphertext, created_at, updated_at, deleted_at, deleted_via, delete_batch
+FROM entry
+WHERE user_id = $1
+  AND (item_id, position, id) > ($2::uuid, $3::int, $4::uuid)
+ORDER BY item_id ASC, position ASC, id ASC
+LIMIT $5`
+
+func (w *ExportWorker) streamEntries(ctx context.Context, rrTx pgx.Tx, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
 	var afterItem, afterID uuid.UUID
 	afterPos := int32(-1)
 	first := true
 	for {
-		rows, err := rq.ExportEntriesBatch(ctx, gen.ExportEntriesBatchParams{
-			UserID:        userID,
-			AfterItemID:   afterItem,
-			AfterPosition: afterPos,
-			AfterID:       afterID,
-			BatchLimit:    entryBatchLimit,
-		})
+		rows, err := rrTx.Query(ctx, exportEntriesStreamSQL, userID, afterItem, afterPos, afterID, entryBatchLimit)
 		if err != nil {
 			return err
 		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, r := range rows {
+		n := int32(0)
+		for rows.Next() {
+			var r gen.ExportEntriesBatchRow
+			if err := rows.Scan(
+				&r.ID,
+				&r.ItemID,
+				&r.Type,
+				&r.Position,
+				&r.Version,
+				&r.PlaintextLenBucket,
+				&r.Envelope,
+				&r.Ciphertext,
+				&r.CreatedAt,
+				&r.UpdatedAt,
+				&r.DeletedAt,
+				&r.DeletedVia,
+				&r.DeleteBatch,
+			); err != nil {
+				rows.Close()
+				return err
+			}
 			if err := writeJSONLine(fw, &first, SabkEntry{
 				ID:                 r.ID,
 				ItemID:             r.ItemID,
@@ -745,17 +840,30 @@ func (w *ExportWorker) streamEntries(ctx context.Context, rq *gen.Queries, fw *F
 				DeletedVia:         r.DeletedVia,
 				DeleteBatch:        r.DeleteBatch,
 			}); err != nil {
+				rows.Close()
 				return err
 			}
 			afterItem = r.ItemID
 			afterPos = r.Position
 			afterID = r.ID
 			*processed++
+			n++
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if n == 0 {
+			break
+		}
+		if w.maxSpoolBytes > 0 && fw.Written() > w.maxSpoolBytes {
+			return errSpoolLimit
 		}
 		if err := w.checkAndProgress(ctx, jobID, attemptID, total, *processed); err != nil {
 			return err
 		}
-		if int32(len(rows)) < entryBatchLimit {
+		if n < entryBatchLimit {
 			break
 		}
 	}
@@ -887,7 +995,10 @@ func (w *ExportWorker) finalizeCAS(ctx context.Context, jobID, userID, attemptID
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, err
+		// A commit transport/context error leaves the outcome ambiguous:
+		// PostgreSQL may have committed 'ready'. The caller must NOT unlink
+		// finalPath; it resolves the row state under a fresh context (r1 R1-13).
+		return false, fmt.Errorf("%w: %v", errAmbiguousCommit, err)
 	}
 	return true, nil
 }
@@ -901,11 +1012,14 @@ func riverClientFromCtx(ctx context.Context) (rc *river.Client[pgx.Tx]) {
 	return river.ClientFromContext[pgx.Tx](ctx)
 }
 
-func syncDir(dir string) {
+func syncDir(dir string) error {
 	d, err := os.Open(filepath.Clean(dir))
 	if err != nil {
-		return
+		return err
 	}
-	_ = d.Sync()
-	_ = d.Close()
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }

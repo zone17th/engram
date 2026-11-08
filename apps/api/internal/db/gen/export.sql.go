@@ -988,29 +988,89 @@ func (q *Queries) ListLiveExportAttempts(ctx context.Context) ([]ListLiveExportA
 	return items, nil
 }
 
+const listStaleQueuedExports = `-- name: ListStaleQueuedExports :many
+SELECT id, created_at
+FROM export_job
+WHERE status = 'queued'
+  AND created_at < $1
+  AND (created_at, id) > ($2::timestamptz, $3::uuid)
+ORDER BY created_at ASC, id ASC
+LIMIT $4
+`
+
+type ListStaleQueuedExportsParams struct {
+	Before       pgtype.Timestamptz
+	AfterCreated pgtype.Timestamptz
+	AfterID      uuid.UUID
+	BatchLimit   int32
+}
+
+type ListStaleQueuedExportsRow struct {
+	ID        uuid.UUID
+	CreatedAt pgtype.Timestamptz
+}
+
+// Queued jobs whose River delivery may be exhausted (r1 R1-16); keyset-paged
+// on (created_at, id). The caller checks river_job liveness before failing.
+func (q *Queries) ListStaleQueuedExports(ctx context.Context, arg ListStaleQueuedExportsParams) ([]ListStaleQueuedExportsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleQueuedExports,
+		arg.Before,
+		arg.AfterCreated,
+		arg.AfterID,
+		arg.BatchLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStaleQueuedExportsRow
+	for rows.Next() {
+		var i ListStaleQueuedExportsRow
+		if err := rows.Scan(&i.ID, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleRunningExports = `-- name: ListStaleRunningExports :many
-SELECT id, attempt_id, file_name
+SELECT id, attempt_id, file_name, lease_until
 FROM export_job
 WHERE status = 'running'
   AND lease_until < $1
-ORDER BY lease_until ASC
-LIMIT $2
+  AND (lease_until, id) > ($2::timestamptz, $3::uuid)
+ORDER BY lease_until ASC, id ASC
+LIMIT $4
 `
 
 type ListStaleRunningExportsParams struct {
 	Before     pgtype.Timestamptz
+	AfterLease pgtype.Timestamptz
+	AfterID    uuid.UUID
 	BatchLimit int32
 }
 
 type ListStaleRunningExportsRow struct {
-	ID        uuid.UUID
-	AttemptID *uuid.UUID
-	FileName  *string
+	ID         uuid.UUID
+	AttemptID  *uuid.UUID
+	FileName   *string
+	LeaseUntil pgtype.Timestamptz
 }
 
 // Reconciler candidates (mục 2.4); the caller checks river_job liveness.
+// Keyset-paged on (lease_until, id) so live rows skipped by the caller do not
+// starve later stale rows (review r1 R1-18).
 func (q *Queries) ListStaleRunningExports(ctx context.Context, arg ListStaleRunningExportsParams) ([]ListStaleRunningExportsRow, error) {
-	rows, err := q.db.Query(ctx, listStaleRunningExports, arg.Before, arg.BatchLimit)
+	rows, err := q.db.Query(ctx, listStaleRunningExports,
+		arg.Before,
+		arg.AfterLease,
+		arg.AfterID,
+		arg.BatchLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1018,7 +1078,12 @@ func (q *Queries) ListStaleRunningExports(ctx context.Context, arg ListStaleRunn
 	var items []ListStaleRunningExportsRow
 	for rows.Next() {
 		var i ListStaleRunningExportsRow
-		if err := rows.Scan(&i.ID, &i.AttemptID, &i.FileName); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.AttemptID,
+			&i.FileName,
+			&i.LeaseUntil,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1050,6 +1115,23 @@ FOR UPDATE
 
 func (q *Queries) LockExportOwnerForUpdate(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, lockExportOwnerForUpdate, userID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockExportOwnerNoKeyUpdate = `-- name: LockExportOwnerNoKeyUpdate :one
+SELECT id FROM app_user
+WHERE id = $1
+FOR NO KEY UPDATE
+`
+
+// Parent-row lock for vault.Reset / account-deletion interop: FOR NO KEY UPDATE
+// conflicts with export Finalize CAS (FOR SHARE) and DELETE /me (FOR UPDATE) but
+// stays compatible with FK FOR KEY SHARE taken by concurrent INSERTs into
+// idempotency_key (advisor review r1, R1-03).
+func (q *Queries) LockExportOwnerNoKeyUpdate(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockExportOwnerNoKeyUpdate, userID)
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err

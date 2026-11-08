@@ -3,6 +3,7 @@ package export
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -54,11 +56,17 @@ func setupExportTestDB(t *testing.T) (*pgxpool.Pool, *config.Config, *Service, *
 		t.Fatalf("NewService: %v", err)
 	}
 	w := NewExportWorker(WorkerDeps{
-		Pool:       pool,
-		StorageDir: cfg.ExportStorageDir,
-		Secret:     cfg.ExportAtRestSecret,
+		Pool:          pool,
+		StorageDir:    cfg.ExportStorageDir,
+		Secret:        cfg.ExportAtRestSecret,
+		MaxSpoolBytes: cfg.ExportMaxSpoolBytes,
 	})
 	return pool, cfg, svc, w
+}
+
+func sha256Sum(b []byte) []byte {
+	h := sha256.Sum256(b)
+	return h[:]
 }
 
 // seedUserAndVault inserts an app_user, a vault (with the js-v1.json vector wraps
@@ -66,6 +74,14 @@ func setupExportTestDB(t *testing.T) (*pgxpool.Pool, *config.Config, *Service, *
 // soft-deleted tag, 1 active item, 1 item_tag, 1 active entry and 1 soft-deleted
 // entry. Returns userID, itemID, activeEntryID, deletedEntryID, and vector VK.
 func seedUserAndVault(t *testing.T, pool *pgxpool.Pool) (uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, []byte) {
+	t.Helper()
+	return seedUserAndVaultK(t, pool, canonicalSampleVaultKeyID)
+}
+
+// seedUserAndVaultK seeds a tenant under the given vault_key_id. The key id is
+// globally UNIQUE, and lookup_hash/cred_id are derived from it so a second
+// tenant does not collide with the canonical seed.
+func seedUserAndVaultK(t *testing.T, pool *pgxpool.Pool, keyID string) (uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, []byte) {
 	t.Helper()
 	ctx := context.Background()
 	vec := loadJSVectors(t)
@@ -96,10 +112,15 @@ func seedUserAndVault(t *testing.T, pool *pgxpool.Pool) (uuid.UUID, uuid.UUID, u
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO vault (user_id, version, kdf, vault_key_id, vault_key_wrapped_by_kek, x25519_public, ed25519_public, private_keys_wrapped)
 		VALUES ($1, 3, $2, $3, $4, $5, $6, $7)
-	`, userID, kdfRaw, canonicalSampleVaultKeyID, wrapK, xPub, edPub, wrapP); err != nil {
+	`, userID, kdfRaw, keyID, wrapK, xPub, edPub, wrapP); err != nil {
 		t.Fatalf("insert vault: %v", err)
 	}
 	rkHash, _ := vault.DecodeBase64URLStrict(vec.Derived.RKLookupHashB64, 32)
+	if keyID != canonicalSampleVaultKeyID {
+		// lookup_hash is globally UNIQUE: fold keyID for extra tenants only so
+		// the canonical seed keeps the real vector hash used by restore tests.
+		rkHash = sha256Sum(append(append([]byte{}, rkHash...), keyID...))
+	}
 	rkWrap, _ := vault.DecodeBase64URLStrict(vec.Derived.Wraps.RK.WrapB64U, 73)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO vault_recovery_key (vault_id, slot, lookup_hash, wrap)
@@ -108,11 +129,15 @@ func seedUserAndVault(t *testing.T, pool *pgxpool.Pool) (uuid.UUID, uuid.UUID, u
 		t.Fatalf("insert rk: %v", err)
 	}
 	pkWrap, _ := vault.DecodeBase64URLStrict(vec.Derived.Wraps.PRF.WrapB64U, 73)
+	credID := bytes.Repeat([]byte{0x42}, 32)
+	if keyID != canonicalSampleVaultKeyID {
+		credID = sha256Sum(append(credID, keyID...))
+	}
 	aaguid := uuid.MustParse("adce0002-35bc-c60a-648b-0b25f1f05503")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO vault_passkey (id, user_id, cred_id, pubkey, prf_salt, vk_wrap, aaguid, name)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 'MacBook Touch ID')
-	`, uuid.New(), userID, bytes.Repeat([]byte{0x42}, 32), bytes.Repeat([]byte{0x99}, 32),
+	`, uuid.New(), userID, credID, bytes.Repeat([]byte{0x99}, 32),
 		bytes.Repeat([]byte{0x24}, 32), pkWrap, aaguid[:]); err != nil {
 		t.Fatalf("insert passkey: %v", err)
 	}
@@ -151,11 +176,11 @@ func seedUserAndVault(t *testing.T, pool *pgxpool.Pool) (uuid.UUID, uuid.UUID, u
 		deletedEntryID = uuid.New()
 	}
 	nonce := bytes.Repeat([]byte{0x07}, 24)
-	envA, ctA, err := vault.SealEntry(activeEntryID.String(), canonicalSampleVaultKeyID, []byte(vec.Inputs.Entries.Text.PlaintextUTF8), vk, nonce)
+	envA, ctA, err := vault.SealEntry(activeEntryID.String(), keyID, []byte(vec.Inputs.Entries.Text.PlaintextUTF8), vk, nonce)
 	if err != nil {
 		t.Fatal(err)
 	}
-	envD, ctD, err := vault.SealEntry(deletedEntryID.String(), canonicalSampleVaultKeyID, []byte(vec.Inputs.Entries.JSON.PlaintextUTF8), vk, nonce)
+	envD, ctD, err := vault.SealEntry(deletedEntryID.String(), keyID, []byte(vec.Inputs.Entries.JSON.PlaintextUTF8), vk, nonce)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +437,11 @@ func TestExportPeakMemory(t *testing.T) {
 	var before runtime.MemStats
 	runtime.ReadMemStats(&before)
 
+	// Sample HeapInuse continuously during the whole attempt WITHOUT forcing GC
+	// so transient peaks inside query collection, base64 conversion and JSON
+	// serialization are observed (review r1 R1-02).
 	var peakDelta atomic.Int64
+
 	sample := func() {
 		var ms runtime.MemStats
 		runtime.ReadMemStats(&ms)
@@ -426,16 +455,30 @@ func TestExportPeakMemory(t *testing.T) {
 			}
 		}
 	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tk := time.NewTicker(time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+				sample()
+			}
+		}
+	}()
 
-	w.afterBatch = func(ctx context.Context, _, _ uuid.UUID) {
-		runtime.GC()
-		sample()
-	}
 	if err := w.Work(ctx, makeRiverJob(job.ID, userID, 1, 3)); err != nil {
+		close(stop)
+		wg.Wait()
 		t.Fatalf("Work(2000×256KiB): %v", err)
 	}
-	runtime.GC()
-	sample()
+	close(stop)
+	wg.Wait()
 
 	const maxDelta = 16 << 20 // 16 MiB
 	gotDelta := peakDelta.Load()
@@ -444,6 +487,75 @@ func TestExportPeakMemory(t *testing.T) {
 	if gotDelta > maxDelta {
 		t.Fatalf("HeapInuse delta %d B exceeds 16 MiB (%d B)", gotDelta, maxDelta)
 	}
+
+	// R1-06: multi-batch completeness — stream-decode the produced file and
+	// assert all 2 002 seeded entries (2 000 synthetic + active + soft-deleted)
+	// appear exactly once, matching the manifest count.
+	var attemptID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT attempt_id FROM export_job WHERE id = $1`, job.ID).Scan(&attemptID); err != nil {
+		t.Fatalf("fetch attempt_id: %v", err)
+	}
+	sec := svc.secretBytes()
+	filePath := filepath.Join(cfg.ExportStorageDir, SafeFileName(job.ID, attemptID, "sabk.enc"))
+	f, err := os.Open(filePath)
+	if err != nil {
+		t.Fatalf("open artifact: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	fr, err := NewFrameReader(f, sec, job.ID, attemptID)
+	if err != nil {
+		t.Fatalf("NewFrameReader: %v", err)
+	}
+	ids := collectEntryIDs(t, json.NewDecoder(fr))
+	if len(ids) != totalSynth+2 {
+		t.Fatalf("entries decoded = %d, want %d", len(ids), totalSynth+2)
+	}
+	if _, err := io.Copy(io.Discard, fr); err != nil {
+		t.Fatalf("final-frame verification: %v", err)
+	}
+}
+
+// collectEntryIDs walks the decoded .sabk.json stream and returns the distinct
+// set of entry IDs (memory-bounded: only the ~36-byte ID per row is kept).
+func collectEntryIDs(t *testing.T, dec *json.Decoder) map[uuid.UUID]struct{} {
+	t.Helper()
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		t.Fatalf("sabk root: %v tok=%v", err, tok)
+	}
+	ids := make(map[uuid.UUID]struct{})
+	for dec.More() {
+		kTok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("key token: %v", err)
+		}
+		if key, _ := kTok.(string); key != SectionEntries {
+			if err := skipJSONValue(dec); err != nil {
+				t.Fatalf("skip %v: %v", key, err)
+			}
+			continue
+		}
+		open, err := dec.Token()
+		if err != nil || open != json.Delim('[') {
+			t.Fatalf("entries open: %v", err)
+		}
+		for dec.More() {
+			var e struct {
+				ID uuid.UUID `json:"id"`
+			}
+			if err := dec.Decode(&e); err != nil {
+				t.Fatalf("entry decode: %v", err)
+			}
+			if _, dup := ids[e.ID]; dup {
+				t.Fatalf("duplicate entry id %s", e.ID)
+			}
+			ids[e.ID] = struct{}{}
+		}
+		if _, err := dec.Token(); err != nil {
+			t.Fatalf("entries close: %v", err)
+		}
+	}
+	return ids
 }
 
 // Lease / retry / rescue tests (plan C04).

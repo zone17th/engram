@@ -211,7 +211,7 @@ func (s *Service) DecryptedPages(ctx context.Context, userID, jobID uuid.UUID, c
 	defer func() { _ = f.Close() }()
 
 	if !hasCursor {
-		return s.scanDecryptedPageFromStart(f, sec, userID, jobID, attemptID, row.SnapshotVaultKeyID, budget)
+		return s.scanDecryptedPageFromStart(ctx, f, sec, userID, jobID, attemptID, row.SnapshotVaultKeyID, budget)
 	}
 	if cur.offset > 0 {
 		if page, ok, err := s.readDecryptedPageAtOffset(f, sec, userID, jobID, attemptID, row.SnapshotVaultKeyID, cur, budget); err != nil {
@@ -220,11 +220,11 @@ func (s *Service) DecryptedPages(ctx context.Context, userID, jobID uuid.UUID, c
 			return page, nil
 		}
 	}
-	return s.scanDecryptedPageByToken(f, sec, userID, jobID, attemptID, row.SnapshotVaultKeyID, cur, budget)
+	return s.scanDecryptedPageByToken(ctx, f, sec, userID, jobID, attemptID, row.SnapshotVaultKeyID, cur, budget)
 }
 
-func (s *Service) scanDecryptedPageFromStart(f *os.File, sec []byte, userID, jobID, attemptID uuid.UUID, snapKey *string, budget int) (DecryptedPage, error) {
-	totalEntries, tagsOff, vaultKeyID, err := inspectSabkForFirstPage(f, sec, jobID, attemptID)
+func (s *Service) scanDecryptedPageFromStart(ctx context.Context, f *os.File, sec []byte, userID, jobID, attemptID uuid.UUID, snapKey *string, budget int) (DecryptedPage, error) {
+	totalEntries, tagsOff, vaultKeyID, err := inspectSabkForFirstPage(ctx, f, sec, jobID, attemptID)
 	if err != nil {
 		return DecryptedPage{}, err
 	}
@@ -245,13 +245,13 @@ func (s *Service) scanDecryptedPageFromStart(f *os.File, sec []byte, userID, job
 		}
 	}
 	cur.offset = 0
-	return s.scanDecryptedPageByToken(f, sec, userID, jobID, attemptID, &vaultKeyID, cur, budget)
+	return s.scanDecryptedPageByToken(ctx, f, sec, userID, jobID, attemptID, &vaultKeyID, cur, budget)
 }
 
 // inspectSabkForFirstPage streams the file once through json.Decoder.Token to
 // validate the JSON structure, extract vault.vault_key_id, record the plaintext
 // byte offset of the `"tags": [` line, and count active entries (deleted_at == nil).
-func inspectSabkForFirstPage(f *os.File, sec []byte, jobID, attemptID uuid.UUID) (totalEntries int, tagsOff int64, vaultKeyID string, err error) {
+func inspectSabkForFirstPage(ctx context.Context, f *os.File, sec []byte, jobID, attemptID uuid.UUID) (totalEntries int, tagsOff int64, vaultKeyID string, err error) {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return 0, 0, "", err
 	}
@@ -266,6 +266,9 @@ func inspectSabkForFirstPage(f *os.File, sec []byte, jobID, attemptID uuid.UUID)
 		return 0, 0, "", ErrAtRestCorrupt
 	}
 	for dec.More() {
+		if err := ctx.Err(); err != nil {
+			return 0, 0, "", err
+		}
 		kTok, err := dec.Token()
 		if err != nil {
 			return 0, 0, "", ErrAtRestCorrupt
@@ -286,13 +289,14 @@ func inspectSabkForFirstPage(f *os.File, sec []byte, jobID, attemptID uuid.UUID)
 				return 0, 0, "", ErrAtRestCorrupt
 			}
 			for dec.More() {
-				var e struct {
-					DeletedAt *string `json:"deleted_at"`
+				if err := ctx.Err(); err != nil {
+					return 0, 0, "", err
 				}
-				if err := dec.Decode(&e); err != nil {
+				deleted, err := entryIsDeleted(dec)
+				if err != nil {
 					return 0, 0, "", ErrAtRestCorrupt
 				}
-				if e.DeletedAt == nil {
+				if !deleted {
 					totalEntries++
 				}
 			}
@@ -300,8 +304,7 @@ func inspectSabkForFirstPage(f *os.File, sec []byte, jobID, attemptID uuid.UUID)
 				return 0, 0, "", ErrAtRestCorrupt
 			}
 		default:
-			var discard json.RawMessage
-			if err := dec.Decode(&discard); err != nil {
+			if err := skipJSONValue(dec); err != nil {
 				return 0, 0, "", ErrAtRestCorrupt
 			}
 		}
@@ -314,6 +317,39 @@ func inspectSabkForFirstPage(f *os.File, sec []byte, jobID, attemptID uuid.UUID)
 		return 0, 0, "", err
 	}
 	return totalEntries, cr.markerAfter, vaultKeyID, nil
+}
+
+// entryIsDeleted consumes one entry object and reports whether deleted_at is a
+// non-null value, decoding each member value only when it is deleted_at and
+// token-skipping everything else so large ciphertexts never materialize
+// (review r1 R1-01).
+func entryIsDeleted(dec *json.Decoder) (bool, error) {
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return false, errors.New("entry not object")
+	}
+	deleted := false
+	for dec.More() {
+		kTok, err := dec.Token()
+		if err != nil {
+			return false, err
+		}
+		if k, _ := kTok.(string); k == "deleted_at" {
+			var v json.RawMessage
+			if err := dec.Decode(&v); err != nil {
+				return false, err
+			}
+			deleted = !bytes.Equal(bytes.TrimSpace(v), []byte("null"))
+			continue
+		}
+		if err := skipJSONValue(dec); err != nil {
+			return false, err
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return false, err
+	}
+	return deleted, nil
 }
 
 type countingLineReader struct {
@@ -579,7 +615,7 @@ func projectSectionRow(section string, raw []byte) (json.RawMessage, bool, bool)
 
 // scanDecryptedPageByToken is the general json.Decoder.Token fallback when a
 // cursor has offset == 0 or the file layout differs from line-per-element.
-func (s *Service) scanDecryptedPageByToken(f *os.File, sec []byte, userID, jobID, attemptID uuid.UUID, snapKey *string, cur pageCursor, budget int) (DecryptedPage, error) {
+func (s *Service) scanDecryptedPageByToken(ctx context.Context, f *os.File, sec []byte, userID, jobID, attemptID uuid.UUID, snapKey *string, cur pageCursor, budget int) (DecryptedPage, error) {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return DecryptedPage{}, err
 	}
@@ -620,8 +656,7 @@ func (s *Service) scanDecryptedPageByToken(f *os.File, sec []byte, userID, jobID
 		}
 		secIdx, isSection := sectionIndex(key)
 		if !isSection || secIdx < startIdx || nextCursor != nil {
-			var discard json.RawMessage
-			if err := dec.Decode(&discard); err != nil {
+			if err := skipJSONValue(dec); err != nil {
 				return DecryptedPage{}, ErrAtRestCorrupt
 			}
 			continue
@@ -632,6 +667,9 @@ func (s *Service) scanDecryptedPageByToken(f *os.File, sec []byte, userID, jobID
 		}
 		var ord uint64
 		for dec.More() {
+			if err := ctx.Err(); err != nil {
+				return DecryptedPage{}, err
+			}
 			var raw json.RawMessage
 			if err := dec.Decode(&raw); err != nil {
 				return DecryptedPage{}, ErrAtRestCorrupt
@@ -682,8 +720,7 @@ func (s *Service) scanDecryptedPageByToken(f *os.File, sec []byte, userID, jobID
 			ord++
 		}
 		for dec.More() {
-			var discard json.RawMessage
-			if err := dec.Decode(&discard); err != nil {
+			if err := skipJSONValue(dec); err != nil {
 				return DecryptedPage{}, ErrAtRestCorrupt
 			}
 		}
@@ -716,4 +753,38 @@ func buildDecryptedPage(jobID uuid.UUID, snapKey *string, totalEntries int, sect
 		Items:          items,
 		NextCursor:     next,
 	}
+}
+
+// skipJSONValue consumes exactly one complete JSON value (object, array or
+// scalar) using only Decoder.Token(), never materializing it. It bounds
+// live memory to the decoder's stack depth rather than the section's size
+// (review r1 R1-01).
+func skipJSONValue(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('{'):
+		for dec.More() {
+			if _, err := dec.Token(); err != nil {
+				return err
+			}
+			if err := skipJSONValue(dec); err != nil {
+				return err
+			}
+		}
+	case json.Delim('['):
+		for dec.More() {
+			if err := skipJSONValue(dec); err != nil {
+				return err
+			}
+		}
+	default:
+		return nil
+	}
+	if _, err := dec.Token(); err != nil {
+		return err
+	}
+	return nil
 }

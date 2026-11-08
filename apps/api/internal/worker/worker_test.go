@@ -366,4 +366,9 @@ func TestExportWorkersRegistered(t *testing.T) {
 	if _, err := client.Insert(ctx, export.ExportPruneArgs{}, nil); err != nil {
 		t.Fatalf("Insert ExportPruneArgs: %v", err)
 	}
+	// r1 R1-14: security_notice_mail must be registered even with a nil mailer,
+	// otherwise every verified-owner export finalize rolls back on insert.
+	if _, err := client.Insert(ctx, notification.SecurityNoticeArgs{NotificationID: 1}, nil); err != nil {
+		t.Fatalf("Insert SecurityNoticeArgs with nil mailer: %v", err)
+	}
 }

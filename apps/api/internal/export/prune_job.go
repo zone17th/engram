@@ -3,6 +3,7 @@ package export
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -25,6 +26,10 @@ const (
 	cleanupBatchSize      = 200
 	staleExportBatchLimit = 100
 )
+
+// queuedDeliveryLostCode is the error_code recorded when a stale queued
+// export has no live River delivery left (r1 R1-16).
+var queuedDeliveryLostCode = "queued_delivery_lost"
 
 // CleanupWorker implements river.Worker[exportcleanup.Args] (plan mục 2.5.4,
 // 2.9g): unlinks the file idempotently (ENOENT counts as done) and sets done_at.
@@ -98,11 +103,12 @@ func (ExportPruneArgs) Kind() string { return ExportPruneKind }
 //     older than 90d.
 type PruneWorker struct {
 	river.WorkerDefaults[ExportPruneArgs]
-	pool       *pgxpool.Pool
-	q          *gen.Queries
-	storageDir string
-	clk        clock.Clock
-	logger     *slog.Logger
+	pool          *pgxpool.Pool
+	q             *gen.Queries
+	storageDir    string
+	clk           clock.Clock
+	logger        *slog.Logger
+	failedCleanup map[uuid.UUID]struct{} // in-memory backoff set, cleared on success
 }
 
 // NewPruneWorker constructs an export_prune worker.
@@ -134,21 +140,24 @@ func (w *PruneWorker) Sweep(ctx context.Context) error {
 	if err := w.reconcileStaleRunning(ctx, now); err != nil {
 		return err
 	}
-	if err := w.runPendingCleanups(ctx); err != nil {
+	if err := w.reconcileStaleQueued(ctx, now); err != nil {
 		return err
 	}
-	w.sweepOrphanFiles(ctx)
+	cleanupErr := w.runPendingCleanups(ctx)
+	sweepErr := w.sweepOrphanFiles(ctx)
 	if _, err := w.q.PruneDoneCleanup(ctx, pgtype.Timestamptz{
 		Time:  now.Add(-cleanupDoneRetention),
 		Valid: true,
 	}); err != nil {
-		return err
+		return errors.Join(cleanupErr, sweepErr, err)
 	}
-	_, err := w.q.DeleteOldTerminalExports(ctx, pgtype.Timestamptz{
+	if _, err := w.q.DeleteOldTerminalExports(ctx, pgtype.Timestamptz{
 		Time:  now.Add(-exportTerminalRetain),
 		Valid: true,
-	})
-	return err
+	}); err != nil {
+		return errors.Join(cleanupErr, sweepErr, err)
+	}
+	return errors.Join(cleanupErr, sweepErr)
 }
 
 func (w *PruneWorker) expireDue(ctx context.Context) error {
@@ -181,26 +190,83 @@ func (w *PruneWorker) expireDue(ctx context.Context) error {
 
 func (w *PruneWorker) reconcileStaleRunning(ctx context.Context, now time.Time) error {
 	cutoff := pgtype.Timestamptz{Time: now.Add(-ExportWorkerLostAfter), Valid: true}
-	stale, err := w.q.ListStaleRunningExports(ctx, gen.ListStaleRunningExportsParams{
-		Before:     cutoff,
-		BatchLimit: staleExportBatchLimit,
-	})
-	if err != nil {
-		return err
-	}
-	for _, s := range stale {
-		live, err := w.hasLiveRiverJob(ctx, s.ID)
+	// Keyset page so live rows skipped below cannot starve later stale rows
+	// (r1 R1-18).
+	afterLease := pgtype.Timestamptz{Valid: true} // valid zero-time: NULL would hide rows
+	var afterID uuid.UUID
+	for {
+		stale, err := w.q.ListStaleRunningExports(ctx, gen.ListStaleRunningExportsParams{
+			Before:     cutoff,
+			AfterLease: afterLease,
+			AfterID:    afterID,
+			BatchLimit: staleExportBatchLimit,
+		})
 		if err != nil {
 			return err
 		}
-		if live {
-			continue
+		if len(stale) == 0 {
+			return nil
 		}
-		if err := w.markOneWorkerLost(ctx, s, cutoff); err != nil {
-			return err
+		for _, s := range stale {
+			afterLease, afterID = s.LeaseUntil, s.ID
+			live, err := w.hasLiveRiverJob(ctx, s.ID)
+			if err != nil {
+				return err
+			}
+			if live {
+				continue
+			}
+			if err := w.markOneWorkerLost(ctx, s, cutoff); err != nil {
+				return err
+			}
+		}
+		if len(stale) < staleExportBatchLimit {
+			return nil
 		}
 	}
-	return nil
+}
+
+// reconcileStaleQueued fails queued exports whose River row no longer exists:
+// if every delivery attempt dies before ClaimExportJob succeeds, the export row
+// would otherwise sit queued forever and block future Creates (r1 R1-16). A
+// queued job that still has a live/scheduled river_job is preserved.
+func (w *PruneWorker) reconcileStaleQueued(ctx context.Context, now time.Time) error {
+	cutoff := pgtype.Timestamptz{Time: now.Add(-ExportWorkerLostAfter), Valid: true}
+	afterCreated := pgtype.Timestamptz{Valid: true} // valid zero-time: NULL would hide rows
+	var afterID uuid.UUID
+	for {
+		queued, err := w.q.ListStaleQueuedExports(ctx, gen.ListStaleQueuedExportsParams{
+			Before:       cutoff,
+			AfterCreated: afterCreated,
+			AfterID:      afterID,
+			BatchLimit:   staleExportBatchLimit,
+		})
+		if err != nil {
+			return err
+		}
+		if len(queued) == 0 {
+			return nil
+		}
+		for _, s := range queued {
+			afterCreated, afterID = s.CreatedAt, s.ID
+			live, err := w.hasLiveRiverJob(ctx, s.ID)
+			if err != nil {
+				return err
+			}
+			if live {
+				continue
+			}
+			if _, err := w.q.FailQueuedExport(ctx, gen.FailQueuedExportParams{
+				ErrorCode: &queuedDeliveryLostCode,
+				ID:        s.ID,
+			}); err != nil {
+				return err
+			}
+		}
+		if len(queued) < staleExportBatchLimit {
+			return nil
+		}
+	}
 }
 
 func (w *PruneWorker) hasLiveRiverJob(ctx context.Context, jobID uuid.UUID) (bool, error) {
@@ -246,30 +312,65 @@ func (w *PruneWorker) markOneWorkerLost(ctx context.Context, s gen.ListStaleRunn
 }
 
 func (w *PruneWorker) runPendingCleanups(ctx context.Context) error {
-	rows, err := w.q.ListPendingCleanup(ctx, cleanupBatchSize)
-	if err != nil {
-		return err
-	}
-	for _, r := range rows {
-		if err := unlinkSafeFile(w.storageDir, r.FileName); err != nil {
-			continue
+	limit := cleanupBatchSize
+	var errs []error
+	for round := 0; round < 3; round++ {
+		rows, err := w.q.ListPendingCleanup(ctx, int32(limit))
+		if err != nil {
+			return errors.Join(append(errs, err)...)
 		}
-		_, _ = w.q.CompleteCleanup(ctx, r.ID)
+		if len(rows) == 0 {
+			return errors.Join(errs...)
+		}
+		var failed map[uuid.UUID]struct{}
+		if w.failedCleanup != nil {
+			failed = w.failedCleanup
+		}
+		progress := false
+		for _, r := range rows {
+			if _, bad := failed[r.ID]; bad {
+				continue
+			}
+			if err := unlinkSafeFile(w.storageDir, r.FileName); err != nil {
+				errs = append(errs, fmt.Errorf("cleanup %s: %w", r.ID, err))
+				if failed == nil {
+					failed = make(map[uuid.UUID]struct{})
+				}
+				failed[r.ID] = struct{}{}
+				continue
+			}
+			if _, err := w.q.CompleteCleanup(ctx, r.ID); err != nil {
+				errs = append(errs, fmt.Errorf("complete cleanup %s: %w", r.ID, err))
+				if failed == nil {
+					failed = make(map[uuid.UUID]struct{})
+				}
+				failed[r.ID] = struct{}{}
+				continue
+			}
+			progress = true
+		}
+		w.failedCleanup = failed
+		if !progress || len(rows) < limit {
+			return errors.Join(errs...)
+		}
+		// Whole batch was already-failed/just-failed rows: grow the window so a
+		// permanently failing oldest page cannot starve later obligations.
+		limit += cleanupBatchSize
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
-func (w *PruneWorker) sweepOrphanFiles(ctx context.Context) {
+func (w *PruneWorker) sweepOrphanFiles(ctx context.Context) error {
 	if w.storageDir == "" {
-		return
+		return nil
 	}
 	entries, err := os.ReadDir(w.storageDir)
 	if err != nil {
-		return
+		return fmt.Errorf("read export dir: %w", err)
 	}
 	liveRows, err := w.q.ListLiveExportAttempts(ctx)
 	if err != nil {
-		return
+		return fmt.Errorf("list live attempts: %w", err)
 	}
 	type pair struct{ job, attempt string }
 	live := make(map[pair]struct{}, len(liveRows))
@@ -278,6 +379,7 @@ func (w *PruneWorker) sweepOrphanFiles(ctx context.Context) {
 			live[pair{r.ID.String(), r.AttemptID.String()}] = struct{}{}
 		}
 	}
+	var errs []error
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -293,6 +395,9 @@ func (w *PruneWorker) sweepOrphanFiles(ctx context.Context) {
 		if _, ok := live[pair{parts[0], parts[1]}]; ok {
 			continue
 		}
-		_ = unlinkSafeFile(w.storageDir, name)
+		if err := unlinkSafeFile(w.storageDir, name); err != nil {
+			errs = append(errs, fmt.Errorf("orphan %s: %w", name, err))
+		}
 	}
+	return errors.Join(errs...)
 }

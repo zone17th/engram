@@ -51,10 +51,13 @@ const (
 	CleanupReasonDrain         = "drain"
 	CleanupReasonWorkerLost    = "worker_lost"
 
-	ExportJobKind         = "export_encrypted"
-	ExportPruneKind       = "export_prune"
-	ExportLeaseDuration   = 10 * time.Minute
-	ExportReadyTTL        = 24 * time.Hour
+	ExportJobKind       = "export_encrypted"
+	ExportPruneKind     = "export_prune"
+	ExportLeaseDuration = 10 * time.Minute
+	ExportReadyTTL      = 24 * time.Hour
+	// ExportJobTimeout bounds one River attempt (r1 R1-17): long enough for
+	// large-vault streaming, unrelated to lease renewal cadence.
+	ExportJobTimeout      = 30 * time.Minute
 	ExportWorkerLostAfter = 15 * time.Minute
 	ExportPruneInterval   = 15 * time.Minute
 	ExportMaxAttempts     = 3

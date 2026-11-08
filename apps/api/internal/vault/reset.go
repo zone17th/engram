@@ -47,9 +47,15 @@ func (s *Service) Reset(ctx context.Context, p authctx.Principal, in ResetInput)
 
 	q := s.q.WithTx(tx)
 
-	// 1. Lock vault row FOR UPDATE and verify If-Match (404 vault_absent takes
-	// precedence over 412 version_mismatch; export Finalize CAS also locks vault
-	// FOR SHARE -> export_job FOR UPDATE, plan P06 mục 2.4).
+	// 1. Lock app_user FOR NO KEY UPDATE -> vault FOR UPDATE (same parent-first
+	// order as export Finalize CAS app_user FOR SHARE -> vault FOR SHARE ->
+	// export_job FOR UPDATE and DELETE /me, plan P06 mục 2.4, 2.9; review r1
+	// R1-03). NO KEY UPDATE is used instead of UPDATE so the lock stays
+	// compatible with the FK FOR KEY SHARE that a concurrent idempotency Claim
+	// tx takes when inserting idempotency_key rows (P04 barrier test).
+	if _, err := q.LockExportOwnerNoKeyUpdate(ctx, p.UserID); err != nil {
+		return err
+	}
 	if _, err := LockVaultAndCheckIfMatch(ctx, q, p.UserID, in.IfMatch); err != nil {
 		return err
 	}

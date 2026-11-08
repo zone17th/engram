@@ -110,6 +110,15 @@ SELECT id FROM app_user
 WHERE id = sqlc.arg('user_id')
 FOR UPDATE;
 
+-- name: LockExportOwnerNoKeyUpdate :one
+-- Parent-row lock for vault.Reset / account-deletion interop: FOR NO KEY UPDATE
+-- conflicts with export Finalize CAS (FOR SHARE) and DELETE /me (FOR UPDATE) but
+-- stays compatible with FK FOR KEY SHARE taken by concurrent INSERTs into
+-- idempotency_key (advisor review r1, R1-03).
+SELECT id FROM app_user
+WHERE id = sqlc.arg('user_id')
+FOR NO KEY UPDATE;
+
 -- name: GetVaultKeyForShare :one
 SELECT vault_key_id, version FROM vault
 WHERE user_id = sqlc.arg('user_id')
@@ -178,11 +187,25 @@ RETURNING *;
 
 -- name: ListStaleRunningExports :many
 -- Reconciler candidates (mục 2.4); the caller checks river_job liveness.
-SELECT id, attempt_id, file_name
+-- Keyset-paged on (lease_until, id) so live rows skipped by the caller do not
+-- starve later stale rows (review r1 R1-18).
+SELECT id, attempt_id, file_name, lease_until
 FROM export_job
 WHERE status = 'running'
   AND lease_until < sqlc.arg('before')
-ORDER BY lease_until ASC
+  AND (lease_until, id) > (sqlc.arg('after_lease')::timestamptz, sqlc.arg('after_id')::uuid)
+ORDER BY lease_until ASC, id ASC
+LIMIT sqlc.arg('batch_limit');
+
+-- name: ListStaleQueuedExports :many
+-- Queued jobs whose River delivery may be exhausted (r1 R1-16); keyset-paged
+-- on (created_at, id). The caller checks river_job liveness before failing.
+SELECT id, created_at
+FROM export_job
+WHERE status = 'queued'
+  AND created_at < sqlc.arg('before')
+  AND (created_at, id) > (sqlc.arg('after_created')::timestamptz, sqlc.arg('after_id')::uuid)
+ORDER BY created_at ASC, id ASC
 LIMIT sqlc.arg('batch_limit');
 
 -- name: MarkExportWorkerLost :execrows

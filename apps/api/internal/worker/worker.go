@@ -51,6 +51,8 @@ type EmbeddingDeps struct {
 type ExportDeps struct {
 	StorageDir string
 	Secret     config.Secret
+	// MaxSpoolBytes bounds one export artifact (r1 R1-19); <=0 disables the cap.
+	MaxSpoolBytes int64
 }
 
 // Deps gom các phụ thuộc mở rộng của NewWithMail (metrics, embedding, export).
@@ -114,12 +116,13 @@ func NewWithMail(
 	if err := river.AddWorkerSafely(workers, entry.NewContentPurgeWorker(pool, nil)); err != nil {
 		return nil, fmt.Errorf("đăng ký content purge: %w", err)
 	}
-	exportDir, exportSecret := resolveExportDeps(deps.Export)
+	exportDir, exportSecret, spoolCap := resolveExportDeps(deps.Export)
 	if err := river.AddWorkerSafely(workers, export.NewExportWorker(export.WorkerDeps{
-		Pool:       pool,
-		StorageDir: exportDir,
-		Secret:     exportSecret,
-		Logger:     logger,
+		Pool:          pool,
+		StorageDir:    exportDir,
+		Secret:        exportSecret,
+		MaxSpoolBytes: spoolCap,
+		Logger:        logger,
 	})); err != nil {
 		return nil, fmt.Errorf("đăng ký export_encrypted: %w", err)
 	}
@@ -129,10 +132,12 @@ func NewWithMail(
 	if err := river.AddWorkerSafely(workers, export.NewPruneWorker(pool, exportDir, nil, logger)); err != nil {
 		return nil, fmt.Errorf("đăng ký export_prune: %w", err)
 	}
-	if mail != nil {
-		if err := river.AddWorkerSafely(workers, NewSecurityNoticeWorker(pool, mailAdapter{mail}, logger)); err != nil {
-			return nil, fmt.Errorf("đăng ký notice: %w", err)
-		}
+	// Register the notice worker unconditionally: river.InsertTx rejects an
+	// unknown job kind, so with mail delivery disabled every verified-owner
+	// export finalization would roll back (review r1 R1-14). A nil mailer is a
+	// terminal no-delivery inside SecurityNoticeWorker.Work.
+	if err := river.AddWorkerSafely(workers, NewSecurityNoticeWorker(pool, mail, logger)); err != nil {
+		return nil, fmt.Errorf("đăng ký notice: %w", err)
 	}
 
 	periodic := []*river.PeriodicJob{
@@ -255,12 +260,14 @@ func NewWithMail(
 	return client, nil
 }
 
-func resolveExportDeps(ed *ExportDeps) (string, config.Secret) {
+func resolveExportDeps(ed *ExportDeps) (string, config.Secret, int64) {
 	var dir string
 	var sec config.Secret
+	var capBytes int64
 	if ed != nil {
 		dir = ed.StorageDir
 		sec = ed.Secret
+		capBytes = ed.MaxSpoolBytes
 	}
 	if dir == "" {
 		dir = os.TempDir() + "/engram-exports"
@@ -268,17 +275,7 @@ func resolveExportDeps(ed *ExportDeps) (string, config.Secret) {
 	if sec.IsEmpty() {
 		sec = config.NewSecretBytes([]byte(config.DevExportAtRestSecret))
 	}
-	return dir, sec
-}
-
-type mailAdapter struct {
-	fn interface {
-		Send(ctx context.Context, recipient, purpose, link string) error
-	}
-}
-
-func (m mailAdapter) Send(ctx context.Context, recipient, purpose, link string) error {
-	return m.fn.Send(ctx, recipient, purpose, link)
+	return dir, sec, capBytes
 }
 
 // Run chạy worker cho tới khi nhận SIGINT/SIGTERM rồi dừng gọn.
@@ -323,8 +320,9 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 	workerDeps := Deps{
 		Metrics: metrics,
 		Export: &ExportDeps{
-			StorageDir: cfg.ExportStorageDir,
-			Secret:     cfg.ExportAtRestSecret,
+			StorageDir:    cfg.ExportStorageDir,
+			Secret:        cfg.ExportAtRestSecret,
+			MaxSpoolBytes: cfg.ExportMaxSpoolBytes,
 		},
 	}
 	if cfg.SearchSemanticEnabled && cfg.EmbeddingProvider != "" && cfg.EmbeddingProvider != embedding.ProviderNoop {
