@@ -82,14 +82,17 @@ describe.each(LOCALES)('U18 #off offline banner ($locale)', (entry) => {
         </QueryClientProvider>,
       ),
     );
-    expect(screen.queryByRole('status')).toBeNull();
+    // M-3: always-mounted live region, empty while online
+    const live = screen.getByTestId('offline-live');
+    expect(live).toHaveAttribute('role', 'status');
+    expect(live).toBeEmptyDOMElement();
 
     setOnLine(false);
     act(() => {
       window.dispatchEvent(new Event('offline'));
     });
     const banner = screen.getByTestId('offline-banner');
-    expect(banner).toHaveAttribute('role', 'status');
+    expect(live).toContainElement(banner);
     expect(banner).toHaveTextContent(entry.messages.offline.bannerTitle);
     expect(banner).toHaveTextContent(entry.messages.offline.bannerBody);
     expect(invalidate).not.toHaveBeenCalled();
@@ -99,6 +102,7 @@ describe.each(LOCALES)('U18 #off offline banner ($locale)', (entry) => {
       window.dispatchEvent(new Event('online'));
     });
     expect(screen.queryByTestId('offline-banner')).toBeNull();
+    expect(screen.getByTestId('offline-live')).toBe(live);
     expect(screen.getByTestId('offline-reconnected')).toHaveTextContent(entry.messages.offline.reconnectedTitle);
     expect(invalidate).toHaveBeenCalledTimes(1);
 

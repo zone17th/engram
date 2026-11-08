@@ -1109,13 +1109,16 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
       return jsonResponse({});
     });
 
+    // M-3: the live region exists (empty) before the work starts, so the announcement is a change, not an insertion.
+    const status = screen.getByTestId('unlock-deriving');
+    expect(status).toHaveAttribute('role', 'status');
+    expect(status).toBeEmptyDOMElement();
     fireEvent.change(screen.getByTestId('unlock-passphrase-input'), { target: { value: 'wrong-passphrase-123456' } });
     await act(async () => {
       fireEvent.click(screen.getByTestId('unlock-submit-button'));
     });
-    const status = await screen.findByTestId('unlock-deriving');
-    expect(status).toHaveAttribute('role', 'status');
-    expect(status).toHaveTextContent(enMessages.unlock.deriving);
+    expect(screen.getByTestId('unlock-deriving')).toBe(status);
+    await waitFor(() => expect(status).toHaveTextContent(enMessages.unlock.deriving));
     expect(screen.getByTestId('unlock-submit-button')).toHaveAttribute('aria-busy', 'true');
 
     await act(async () => {
@@ -1124,7 +1127,7 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     await waitFor(() => {
       expect(screen.getByTestId('unlock-error-incorrect-passphrase')).toBeInTheDocument();
     });
-    expect(screen.queryByTestId('unlock-deriving')).toBeNull();
+    expect(screen.getByTestId('unlock-deriving')).toBeEmptyDOMElement();
   }, 15_000);
 
   it('FE1-7: the recovery-completed notice handed over by the recovery flow is shown on the unlock page after a real route change, only to the same account, and clears once the vault unlocks', async () => {

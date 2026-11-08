@@ -522,12 +522,12 @@ export function VaultUnlockFlow() {
                 {submitting ? t('submitting') : t('submit')}
               </Button>
               {/* F-22: Argon2id takes seconds; say so in a live region while it runs, and always end in a visible result. */}
+              {/* M-3: always-mounted live region (empty when idle); the visible line below is hidden from AT while it shows the same words. */}
+              <p role="status" aria-live="polite" className="sr-only" data-testid="unlock-deriving">
+                {submitting ? t('deriving') : ''}
+              </p>
               {submitting ? (
-                <p
-                  role="status"
-                  className="t-caption mt-3 mb-0 text-center text-body"
-                  data-testid="unlock-deriving"
-                >
+                <p aria-hidden="true" className="t-caption mt-3 mb-0 text-center text-body">
                   {t('deriving')}
                 </p>
               ) : (

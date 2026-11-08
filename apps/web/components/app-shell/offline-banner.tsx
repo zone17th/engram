@@ -59,18 +59,22 @@ export function OfflineBanner() {
     return () => window.clearTimeout(timer);
   }, [online, queryClient]);
 
-  if (online && !showReconnected) return null;
-
+  // M-3: the live region is always mounted (empty when idle) and only its content changes, because screen readers
+  // announce changes inside an existing live region far more reliably than the insertion of a populated one.
+  const showBanner = !online || showReconnected;
   return (
-    <div
-      role="status"
-      data-testid={online ? 'offline-reconnected' : 'offline-banner'}
-      className={`px-5 py-3 text-[13px] text-body ${online ? 'bg-surface' : 'bg-paleOrange'}`}
-    >
-      <p className="mx-auto m-0 max-w-container">
-        <strong>{online ? t('reconnectedTitle') : t('bannerTitle')}</strong>{' '}
-        {online ? t('reconnectedBody') : t('bannerBody')}
-      </p>
+    <div role="status" aria-live="polite" data-testid="offline-live">
+      {showBanner ? (
+        <div
+          data-testid={online ? 'offline-reconnected' : 'offline-banner'}
+          className={`px-5 py-3 text-[13px] text-body ${online ? 'bg-surface' : 'bg-paleOrange'}`}
+        >
+          <p className="mx-auto m-0 max-w-container">
+            <strong>{online ? t('reconnectedTitle') : t('bannerTitle')}</strong>{' '}
+            {online ? t('reconnectedBody') : t('bannerBody')}
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }
