@@ -903,6 +903,74 @@ describe('features/settings/data/readable-export-dialog (U17a #plainDlg)', () =>
     expect(mockClearGrant).toHaveBeenCalledTimes(1);
     uDirectStrict();
 
+    // 3b (R4): After a <StrictMode> remount while open, settling the aborted first run must NOT overwrite activeAbortRef for the live second run
+    mockClearGrant.mockClear();
+    mockGrant = {
+      grant: 'strictmode-r4-cancel-grant',
+      action: 'export.decrypted',
+      expires_at: '2026-11-08T14:05:00Z',
+    };
+    const getLatestGates: Array<{
+      signal?: AbortSignal;
+      resolve: (value: { job: ExportJob | null }) => void;
+    }> = [];
+    const r4BlobDownloadSpy = vi.fn();
+    const { unmount: uR4 } = render(
+      <StrictMode>
+        <NextIntlClientProvider locale="vi" messages={viMessages}>
+          <ReadableExportDialog
+            open={true}
+            onOpenChange={() => undefined}
+            resume={true}
+            now={() => nowMs}
+            runnerDeps={{
+              now: () => nowMs,
+              showSaveFilePicker: null,
+              onTriggerBlobDownload: r4BlobDownloadSpy,
+              getLatestExport: ({ signal } = {}) => {
+                const { promise, resolve } = Promise.withResolvers<{ job: ExportJob | null }>();
+                getLatestGates.push({ signal: signal ?? undefined, resolve });
+                return promise;
+              },
+              getDecryptedPage: async () => ({
+                source_export_id: TEST_JOB_ID,
+                vault_key_id: TEST_VAULT_KEY_ID,
+                total_entries: 0,
+                section: 'entries',
+                items: [],
+                next_cursor: null,
+              }),
+              postDecryptedAudit: async () => undefined,
+            }}
+          />
+        </NextIntlClientProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => {
+      expect(getLatestGates.length).toBe(2);
+    });
+    expect(getLatestGates[0]!.signal?.aborted).toBe(true);
+    expect(getLatestGates[1]!.signal?.aborted).toBe(false);
+
+    // Settle the first (already aborted) run so its catch block executes after the remount
+    getLatestGates[0]!.resolve({ job: readyJob });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Now cancel while the live second run is still in progress -> must abort the second run's signal
+    fireEvent.click(screen.getByTestId('readable-export-progress-cancel-btn'));
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-confirm"]')).toBeInTheDocument();
+    });
+    expect(getLatestGates[1]!.signal?.aborted).toBe(true);
+
+    // Settling the second run after cancel must NOT trigger a download or jump to pl-done
+    getLatestGates[1]!.resolve({ job: readyJob });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.querySelector('[data-view="pl-confirm"]')).toBeInTheDocument();
+    expect(r4BlobDownloadSpy).not.toHaveBeenCalled();
+    uR4();
     // 4. Expired grant on resume clears the grant and lands in pl-reauth-expired
     mockClearGrant.mockClear();
     mockGrant = {

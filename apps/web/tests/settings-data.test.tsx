@@ -176,7 +176,27 @@ describe('tests/settings-data.test.tsx (Settings #dulieu, #xoataikhoan, and <mai
 
     const dangerSection = document.getElementById('xoataikhoan');
     expect(dangerSection).toBeInTheDocument();
-    expect(screen.getByTestId('delete-account-open-btn')).toBeInTheDocument();
+    const deleteOpenBtn = screen.getByTestId('delete-account-open-btn');
+    expect(deleteOpenBtn).toHaveTextContent(
+      viMessages.settings.data.dangerZone.deleteOpenButton,
+    );
+
+    // Clicking "Xoá tài khoản…" opens #deleteDlg at del-s1 and focuses "Giữ tài khoản" (closes M9)
+    fireEvent.click(deleteOpenBtn);
+    await waitFor(() => {
+      expect(document.getElementById('deleteDlg')).toBeInTheDocument();
+      expect(document.querySelector('[data-view="del-s1"]')).toBeInTheDocument();
+    });
+    const keepBtn = screen.getByTestId('delete-account-keep-btn');
+    await waitFor(() => {
+      expect(document.activeElement).toBe(keepBtn);
+    });
+
+    fireEvent.click(keepBtn);
+    await waitFor(() => {
+      expect(document.getElementById('deleteDlg')).not.toBeInTheDocument();
+      expect(document.activeElement).toBe(deleteOpenBtn);
+    });
   });
 
   it('auto-opens #plainDlg and preserves reauth grant under <StrictMode> when returning to /app/settings?reauth=export.decrypted#dulieu and cleans query param via replaceState (R1)', async () => {

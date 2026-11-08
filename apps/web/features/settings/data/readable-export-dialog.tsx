@@ -249,7 +249,7 @@ export function ReadableExportDialog({
         reauthRef.current.clearGrant();
         setViewState('pl-done');
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || activeAbortRef.current !== abortController) return;
         activeAbortRef.current = null;
         clearLiveTimer();
 

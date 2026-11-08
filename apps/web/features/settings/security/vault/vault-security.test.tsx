@@ -2479,26 +2479,43 @@ describe('Task 20A — Vault Security Settings (Change Passphrase, Recovery Keys
     await waitFor(() => expect(resetOpener).toHaveFocus());
   });
 
-  it('does not pull focus back to the Reset vault opener when the backup link closes the reset dialog (JR3-b)', async () => {
+  it('closes the reset dialog, scrolls #dulieu into view, and focuses the Download backup button without pulling focus back to the Reset vault opener (JR3-b / F-42 / F-27)', async () => {
     const user = userEvent.setup();
     await renderSettingsHarness();
 
-    const resetOpener = screen.getByRole('button', { name: 'Reset vault' });
-    await user.click(resetOpener);
-    const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
-    const focusSpy = vi.spyOn(resetOpener, 'focus');
+    const dataSection = document.createElement('section');
+    dataSection.id = 'dulieu';
+    const scrollSpy = vi.fn();
+    dataSection.scrollIntoView = scrollSpy;
+    const downloadBackupBtn = document.createElement('button');
+    downloadBackupBtn.type = 'button';
+    downloadBackupBtn.setAttribute('data-testid', 'export-encrypted-start-btn');
+    downloadBackupBtn.textContent = 'Download backup';
+    dataSection.appendChild(downloadBackupBtn);
+    document.body.appendChild(dataSection);
 
-    await user.click(within(dialog).getByRole('link', { name: 'Go to Your data' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    // Radix FocusScope runs its unmount auto-focus in a zero-delay timeout scheduled when the dialog unmounted;
-    // one later macrotask is therefore enough to observe whether the opener was refocused.
-    await act(async () => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, 0);
-      await promise;
-    });
-    expect(focusSpy).not.toHaveBeenCalled();
-    expect(resetOpener).not.toHaveFocus();
+    try {
+      const resetOpener = screen.getByRole('button', { name: 'Reset vault' });
+      await user.click(resetOpener);
+      const dialog = await screen.findByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: 'None of these work' }));
+      const focusSpy = vi.spyOn(resetOpener, 'focus');
+
+      await user.click(within(dialog).getByRole('link', { name: 'Download backup first' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      // Radix FocusScope runs its unmount auto-focus in a zero-delay timeout scheduled when the dialog unmounted;
+      // one later macrotask is therefore enough to observe whether the opener was refocused.
+      await act(async () => {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 0);
+        await promise;
+      });
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+      expect(downloadBackupBtn).toHaveFocus();
+      expect(focusSpy).not.toHaveBeenCalled();
+      expect(resetOpener).not.toHaveFocus();
+    } finally {
+      dataSection.remove();
+    }
   });
 });

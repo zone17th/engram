@@ -404,7 +404,15 @@ export function ResetVaultDialog({
         aria-labelledby="resetDlgTitle"
         className="w-[min(600px,94vw)]"
         onCloseAutoFocus={(event) => {
-          if (skipFocusReturnRef.current) return;
+          if (skipFocusReturnRef.current) {
+            skipFocusReturnRef.current = false;
+            event.preventDefault();
+            const startBtn = document.querySelector<HTMLElement>(
+              '[data-testid="export-encrypted-start-btn"]',
+            );
+            startBtn?.focus();
+            return;
+          }
           const opener = returnFocusRef?.current;
           if (opener && opener.isConnected) {
             event.preventDefault();
@@ -521,11 +529,19 @@ export function ResetVaultDialog({
                 <p className="m-0 mb-3 text-[13px] text-body">{t('reset.step2Body')}</p>
                 <a
                   href="#dulieu"
-                  className="btn btn-tertiary btn-sm no-underline"
-                  onClick={() => {
+                  className="btn btn-secondary btn-sm !whitespace-normal text-left no-underline"
+                  data-testid="reset-vault-download-backup-link"
+                  onClick={(e) => {
+                    e.preventDefault();
                     // The link moves focus/scroll to #dulieu on purpose: do not return focus to the opener.
                     skipFocusReturnRef.current = true;
                     handleClose();
+                    const el = document.getElementById('dulieu');
+                    el?.scrollIntoView?.({ behavior: 'smooth' });
+                    const startBtn = document.querySelector<HTMLElement>(
+                      '[data-testid="export-encrypted-start-btn"]',
+                    );
+                    startBtn?.focus();
                   }}
                 >
                   {t('reset.step2ExportLink')}

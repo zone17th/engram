@@ -1,8 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { encodeBase64Url } from '../lib/crypto/b64url';
-import { openEntryPayload, validateEntryEnvelope, type EntryEnvelope } from '../lib/crypto/envelope';
-import { deriveKek, validateKdfParams, type KdfParams } from '../lib/crypto/kdf';
+import { openEntryPayload, validateEntryEnvelope, type EntryEnvelopeV1 } from '../lib/crypto/envelope';
+import { deriveKek, validateKdfParams } from '../lib/crypto/kdf';
 import {
   deriveRecoveryLookupHash,
   deriveRecoveryWrapKey,
@@ -52,7 +52,7 @@ interface SabkBackupDocument {
   readonly version: number;
   readonly vault: {
     readonly vault_key_id: string;
-    readonly kdf: KdfParams;
+    readonly kdf: unknown;
     readonly vault_key_wrapped_by_kek: string;
     readonly private_keys_wrapped: string;
     readonly recovery_keys: ReadonlyArray<{
@@ -64,7 +64,7 @@ interface SabkBackupDocument {
   readonly entries: ReadonlyArray<{
     readonly id: string;
     readonly type: string;
-    readonly envelope: EntryEnvelope;
+    readonly envelope: EntryEnvelopeV1;
     readonly ciphertext: string;
   }>;
 }
@@ -642,6 +642,237 @@ test.describe('P06-T12 content export E2E (U17a: .sabk.json + Readable decrypted
           expect(readableJson.entries.some((e) => e.body === rawJson)).toBe(true);
 
           await expect(dialog.locator('[data-view="pl-done"]')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+        },
+      );
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('delete journey 1 (P06-A1 / P06-A4): Reset Vault step 2 "Download backup first" scrolls/focuses #dulieu -> 2-step Delete Account (#deleteDlg) -> typed email + password reauth -> DELETE /api/v1/me 204 -> session revoked + #login-account-deleted-banner (?deleted=1) + dogfood cleanup', async ({
+    browser,
+  }) => {
+    test.setTimeout(EXPORT_TIMEOUT_MS);
+
+    const nonce = uniqueEmail('p06-t13-delete').split('@')[0];
+    const email = `${nonce}@example.com`;
+    const dogfoodSecret = `dogfood-secret-${nonce}`;
+    const context = await newContextWithRateLimit(browser);
+    const netMonitor = createRequestPlaintextMonitor([
+      { label: 'vaultPassphrase', value: VAULT_PASSPHRASE },
+      { label: 'dogfoodSecret', value: dogfoodSecret },
+    ]);
+    netMonitor.attachContext(context);
+
+    try {
+      const page = await context.newPage();
+
+      await timedJourneyStep(
+        '1. signup password user, create vault + 1 item + 1 entry, and navigate to /app/settings',
+        async () => {
+          await signupPasswordUser(page, email);
+          await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
+          await expectUnlockedOnApp(page);
+
+          await seedTextAndRawJsonEntries(
+            page,
+            `Delete-Dogfood-Item-${nonce.slice(0, 8)}`,
+            dogfoodSecret,
+            `{"dogfood":true}`,
+          );
+
+          await page.goto('/app/settings', { waitUntil: 'domcontentloaded' });
+          await expect(page.locator('#dulieu')).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(page.locator('#xoataikhoan')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+        },
+      );
+
+      await timedJourneyStep(
+        '2. Reset Vault step 2 "Download backup first" (F-42 / F-27) closes #resetDlg, scrolls #dulieu into view, and focuses the Download backup button',
+        async () => {
+          await page.locator('[data-open-dialog="resetDlg"]').click();
+          const resetDialog = page.locator('#resetDlg');
+          await expect(resetDialog).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(resetDialog.locator('[data-view="rst-s1"]')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+
+          await resetDialog
+            .getByRole('button', { name: /None of these work|Không đường nào dùng được/ })
+            .click();
+          await expect(resetDialog.locator('[data-view="rst-s2"]')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+
+          await page.getByTestId('reset-vault-download-backup-link').click();
+          await expect(resetDialog).toBeHidden({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(page.getByTestId('export-encrypted-start-btn')).toBeFocused({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+        },
+      );
+
+      await timedJourneyStep(
+        '3. open 2-step Delete Account (#deleteDlg) -> verify step 1 focus on Keep account -> step 2 email mismatch validation + wrong password error -> valid confirm_email + password -> DELETE /api/v1/me 204 -> redirect to /app/auth/login?deleted=1 with #login-account-deleted-banner and revoked session',
+        async () => {
+          await page.getByTestId('delete-account-open-btn').click();
+          const deleteDlg = page.locator('#deleteDlg');
+          await expect(deleteDlg).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(deleteDlg.locator('[data-view="del-s1"]')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+          await expect(page.getByTestId('delete-account-keep-btn')).toBeFocused({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+
+          await page.getByTestId('delete-account-continue-btn').click();
+          await expect(deleteDlg.locator('[data-view="del-s2"]')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+
+          const pwdInput = page.locator('#delete-account-password');
+          const emailInput = page.getByTestId('delete-account-email-input');
+          const submitBtn = page.getByTestId('delete-account-submit-btn');
+          await expect(pwdInput).toBeFocused({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(submitBtn).toBeDisabled();
+
+          // Mismatched email shows #delEmailErr and keeps submit disabled
+          await emailInput.fill('wrong-email@example.com');
+          await fillSecret(pwdInput, 'wrong-password-12345', ACCEPTANCE_UI_WAIT_MS);
+          await expect(page.locator('#delEmailErr')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+          await expect(submitBtn).toBeDisabled();
+
+          // Matching email (case-insensitive) enables submit; wrong password keeps dialog on del-s2 and focuses password input
+          await emailInput.fill(`  ${email.toUpperCase()}  `);
+          await expect(page.locator('#delEmailErr')).toBeHidden({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+          await expect(submitBtn).toBeEnabled({ timeout: ACCEPTANCE_UI_WAIT_MS });
+
+          await submitBtn.click();
+          await expect(page.locator('#delete-account-password-error')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+          await expect(pwdInput).toBeFocused({ timeout: ACCEPTANCE_UI_WAIT_MS });
+
+          // Enter valid password and submit -> 204 DELETE /api/v1/me -> lands on /app/auth/login with #login-account-deleted-banner
+          const deleteResponsePromise = page.waitForResponse(
+            (res) =>
+              res.request().method() === 'DELETE' && new URL(res.url()).pathname === '/api/v1/me',
+            { timeout: ACCEPTANCE_UI_WAIT_MS },
+          );
+          await fillSecret(pwdInput, PASSWORD, ACCEPTANCE_UI_WAIT_MS);
+          await submitBtn.click();
+
+          const deleteRes = await deleteResponsePromise;
+          expect(deleteRes.status()).toBe(204);
+
+          await expect(page).toHaveURL(/\/app\/auth\/login$/, {
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+          const deletedBanner = page.locator('#login-account-deleted-banner');
+          await expect(deletedBanner).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(deletedBanner).toHaveAttribute('role', 'status');
+
+          // Verify session is revoked on server (GET /api/v1/auth/me returns 401)
+          const meStatus = await page.evaluate(async () => {
+            const res = await fetch('/api/v1/auth/me', {
+              credentials: 'same-origin',
+              headers: { accept: 'application/json' },
+            });
+            return res.status;
+          });
+          expect(meStatus).toBe(401);
+        },
+      );
+
+      netMonitor.assertNoLeaks();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('delete journey 2: OAuth-only account delete re-auth returnTo (/app/settings?reauth=account.delete#xoataikhoan) -> auto-opens #deleteDlg at del-s2 -> typed email -> DELETE /api/v1/me 204 -> #login-account-deleted-banner', async ({
+    browser,
+  }) => {
+    test.setTimeout(EXPORT_TIMEOUT_MS);
+
+    const nonce = uniqueEmail('p06-t13-oauth-delete').split('@')[0];
+    const email = `${nonce}@example.com`;
+    const subject = `sub-p06-t13-del-${nonce}`;
+    const context = await newContextWithRateLimit(browser);
+
+    try {
+      const page = await context.newPage();
+
+      await timedJourneyStep(
+        '1. signup OAuth-only user, create vault via onboarding, and navigate to /app/settings#xoataikhoan',
+        async () => {
+          await signupOauthUser(page, email, subject);
+          await createVaultViaOnboarding(page, VAULT_PASSPHRASE, { kind: 'skip' });
+          await expectUnlockedOnApp(page);
+
+          await page.goto('/app/settings#xoataikhoan', { waitUntil: 'domcontentloaded' });
+          await expect(page.locator('#xoataikhoan')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+        },
+      );
+
+      await timedJourneyStep(
+        '2. open #deleteDlg -> advance to del-s2 -> click Verify with Google -> complete OAuth -> auto-opens #deleteDlg at del-s2 on return -> enter confirm_email -> DELETE /api/v1/me 204 -> #login-account-deleted-banner',
+        async () => {
+          await page.getByTestId('delete-account-open-btn').click();
+          const deleteDlg = page.locator('#deleteDlg');
+          await expect(deleteDlg).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(deleteDlg.locator('[data-view="del-s1"]')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+
+          await page.getByTestId('delete-account-continue-btn').click();
+          await expect(deleteDlg.locator('[data-view="del-s2"]')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+
+          await page.getByTestId('delete-account-oauth-btn').click();
+          await completeFakeOAuth(page, { email, subject });
+
+          await expect(page).toHaveURL(/\/app\/settings/, { timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(deleteDlg).toBeVisible({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(deleteDlg.locator('[data-view="del-s2"]')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+          await expect(page.getByTestId('delete-account-oauth-verified-status')).toBeVisible({
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+
+          const emailInput = page.getByTestId('delete-account-email-input');
+          const submitBtn = page.getByTestId('delete-account-submit-btn');
+          await expect(emailInput).toBeFocused({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await expect(submitBtn).toBeDisabled();
+
+          const deleteResponsePromise = page.waitForResponse(
+            (res) =>
+              res.request().method() === 'DELETE' && new URL(res.url()).pathname === '/api/v1/me',
+            { timeout: ACCEPTANCE_UI_WAIT_MS },
+          );
+          await emailInput.fill(email);
+          await expect(submitBtn).toBeEnabled({ timeout: ACCEPTANCE_UI_WAIT_MS });
+          await submitBtn.click();
+
+          const deleteRes = await deleteResponsePromise;
+          expect(deleteRes.status()).toBe(204);
+
+          await expect(page).toHaveURL(/\/app\/auth\/login$/, {
+            timeout: ACCEPTANCE_UI_WAIT_MS,
+          });
+          await expect(page.locator('#login-account-deleted-banner')).toBeVisible({
             timeout: ACCEPTANCE_UI_WAIT_MS,
           });
         },

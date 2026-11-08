@@ -54,11 +54,27 @@ export function LoginForm() {
     return false;
   });
 
+  const [accountDeleted, setAccountDeleted] = useState<boolean>(() => {
+    if (params.get('deleted') === '1') return true;
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('deleted') === '1';
+    }
+    return false;
+  });
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const current = new URLSearchParams(window.location.search);
+    let mutated = false;
     if (current.get('reset') === 'done') {
       current.delete('reset');
+      mutated = true;
+    }
+    if (current.get('deleted') === '1') {
+      current.delete('deleted');
+      mutated = true;
+    }
+    if (mutated && window.history?.replaceState) {
       const qs = current.toString();
       window.history.replaceState(
         null,
@@ -122,6 +138,7 @@ export function LoginForm() {
       }
       setFieldErrors({});
       setResetDone(false);
+      setAccountDeleted(false);
       setSubmitting(true);
       setAlert({ kind: 'submitting' });
       setRetryUntil(null);
@@ -243,6 +260,17 @@ export function LoginForm() {
               >
                 <p className="m-0 text-[13px] text-body">{t('login.resetSuccessBody')}</p>
               </div>
+            </div>
+          )}
+
+          {accountDeleted && (
+            <div
+              id="login-account-deleted-banner"
+              data-testid="login-account-deleted-banner"
+              role="status"
+              className="auth-status mb-4"
+            >
+              {t('login.accountDeletedBanner')}
             </div>
           )}
 
