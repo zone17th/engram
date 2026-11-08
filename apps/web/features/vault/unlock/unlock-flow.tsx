@@ -517,14 +517,22 @@ export function VaultUnlockFlow() {
                 className="w-full !justify-center"
                 disabled={submitting || vault.inFlight || isRateLimitedActive}
                 data-testid="unlock-submit-button"
+                aria-busy={submitting}
               >
                 {submitting ? t('submitting') : t('submit')}
               </Button>
-              <p
-                className="t-caption mt-3 mb-0 text-center text-muted"
-              >
-                {t('caption')}
-              </p>
+              {/* F-22: Argon2id takes seconds; say so in a live region while it runs, and always end in a visible result. */}
+              {submitting ? (
+                <p
+                  role="status"
+                  className="t-caption mt-3 mb-0 text-center text-body"
+                  data-testid="unlock-deriving"
+                >
+                  {t('deriving')}
+                </p>
+              ) : (
+                <p className="t-caption mt-3 mb-0 text-center text-muted">{t('caption')}</p>
+              )}
             </div>
           </form>
 

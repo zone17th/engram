@@ -1083,6 +1083,50 @@ describe('Task 17A — VaultUnlockFlow & ForgotPassphraseView U4', () => {
     });
   }, 15_000);
 
+  it('F-22: while the key derivation runs the form shows a live "this can take a few seconds" status and always ends in a visible result', async () => {
+    installUnlockFetchMock();
+    renderUnlock({ locale: 'en' });
+    await waitFor(() => {
+      expect(screen.getByTestId('test-vault-probe')).toHaveTextContent(
+        'authenticated_with_vault|locked|locked|',
+      );
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return new Response(null, { status: 204 });
+      if (url.endsWith('/auth/config')) {
+        return jsonResponse({ oauth_providers: [], email_verification_required: false, captcha_site_key: null });
+      }
+      if (url.endsWith('/auth/me')) return jsonResponse(makeMeFixture('present'));
+      if (url.endsWith('/vault')) {
+        await gate;
+        return jsonResponse(makeVaultMetaFixture());
+      }
+      return jsonResponse({});
+    });
+
+    fireEvent.change(screen.getByTestId('unlock-passphrase-input'), { target: { value: 'wrong-passphrase-123456' } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unlock-submit-button'));
+    });
+    const status = await screen.findByTestId('unlock-deriving');
+    expect(status).toHaveAttribute('role', 'status');
+    expect(status).toHaveTextContent(enMessages.unlock.deriving);
+    expect(screen.getByTestId('unlock-submit-button')).toHaveAttribute('aria-busy', 'true');
+
+    await act(async () => {
+      release();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('unlock-error-incorrect-passphrase')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('unlock-deriving')).toBeNull();
+  }, 15_000);
+
   it('FE1-7: the recovery-completed notice handed over by the recovery flow is shown on the unlock page after a real route change, only to the same account, and clears once the vault unlocks', async () => {
     installUnlockFetchMock();
     // The recovery route wrote the notice for this account, then navigated: nothing else is shared between the pages.
