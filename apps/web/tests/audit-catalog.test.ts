@@ -34,6 +34,10 @@ describe('audit catalog', () => {
       'recovery_key.rotate',
       'passkey.register',
       'passkey.revoke',
+      'entry.import',
+      'export.encrypted',
+      'export.decrypted',
+      'account.delete',
     ];
     for (const event of vaultEvents) {
       const key = eventMessageKey(event);

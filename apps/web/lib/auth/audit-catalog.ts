@@ -29,6 +29,10 @@ export const AUDIT_EVENTS = [
   'recovery_key.rotate',
   'passkey.register',
   'passkey.revoke',
+  'entry.import',
+  'export.encrypted',
+  'export.decrypted',
+  'account.delete',
 ] as const;
 
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];
