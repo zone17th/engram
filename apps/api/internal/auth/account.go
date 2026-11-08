@@ -131,6 +131,9 @@ func equalFoldEmail(a, b string) bool {
 }
 
 func (s *Service) RequestEmailChange(ctx context.Context, p authctx.Principal, newEmail, grant string) error {
+	if !s.MailDeliveryAvailable() {
+		return ErrMailDeliveryUnavailable
+	}
 	email, err := NormalizeEmail(newEmail)
 	if err != nil {
 		return err
@@ -139,6 +142,9 @@ func (s *Service) RequestEmailChange(ctx context.Context, p authctx.Principal, n
 }
 
 func (s *Service) SendVerifyCurrent(ctx context.Context, p authctx.Principal) error {
+	if !s.MailDeliveryAvailable() {
+		return ErrMailDeliveryUnavailable
+	}
 	u, err := s.q.GetUserByID(ctx, p.UserID)
 	if err != nil {
 		return err
@@ -147,6 +153,9 @@ func (s *Service) SendVerifyCurrent(ctx context.Context, p authctx.Principal) er
 }
 
 func (s *Service) SendEnroll(ctx context.Context, p authctx.Principal) error {
+	if !s.MailDeliveryAvailable() {
+		return ErrMailDeliveryUnavailable
+	}
 	u, err := s.q.GetUserByID(ctx, p.UserID)
 	if err != nil {
 		return err
@@ -165,7 +174,9 @@ func (s *Service) issueEmailToken(ctx context.Context, p authctx.Principal, purp
 }
 
 func (s *Service) issueEmailTokenWithGrant(ctx context.Context, p authctx.Principal, purpose, target, action, grant string) error {
-	if s.mail == nil {
+	// MAIL-CAP-P02: refuse before any token row is written (same contract as
+	// POST /auth/password/forgot, advisor-dec-140).
+	if !s.MailDeliveryAvailable() {
 		return ErrMailDeliveryUnavailable
 	}
 	raw, enc, err := NewOpaqueToken()

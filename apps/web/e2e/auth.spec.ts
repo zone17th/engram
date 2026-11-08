@@ -178,7 +178,15 @@ test.describe('P02 auth (real API)', () => {
   });
 
   test('forgot password shows unavailable state when mail delivery is disabled (E2E_VERIFY=false)', async ({ page }) => {
-    test.skip(verifyRequired(), 'runs in e2e-browser where AUTH_MAIL_CAPTURE_AS_DELIVERY is off');
+    test.skip(verifyRequired(), 'runs in e2e-browser; route-mocks mail_delivery_available=false (advisor-dec-P06-032)');
+    await page.route('**/api/v1/auth/config', async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as Record<string, unknown>;
+      await route.fulfill({
+        response,
+        json: { ...body, mail_delivery_available: false },
+      });
+    });
     await page.goto('/app/auth/forgot-password');
     await waitForAuthPageReady(page);
     const unavailable = page.getByTestId('forgot-unavailable');

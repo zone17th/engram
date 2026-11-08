@@ -2,6 +2,7 @@ package compose
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -61,15 +62,17 @@ func NewAuth(cfg *config.Config, pool *pgxpool.Pool, riverc *river.Client[pgx.Tx
 		clk = clock.System{}
 	}
 	if mail == nil {
-		dir := cfg.EffectiveMailSinkDir()
-		if dir == "" {
-			return nil, nil, nil, fmt.Errorf("thiếu mail adapter")
-		}
-		m, err := auth.NewSinkMailer(dir)
+		m, err := NewMailer(cfg, slog.Default())
 		if err != nil {
 			return nil, nil, nil, err
 		}
 		mail = m
+	}
+	// No real adapter (production without SMTP_HOST): boot anyway with mail off,
+	// so /auth/config reports mail_delivery_available=false and mail routes
+	// answer 503 mail_delivery_unavailable (MAIL-CAP-P02).
+	if !MailDeliveryCapable(mail) {
+		mail = nil
 	}
 	tokens := auth.NewTokenIssuer(cfg.AuthJWTSecret, cfg.JWTIssuer(), cfg.JWTAudience(), clk)
 	sessions := auth.NewSessionStore(pool, tokens, clk)
