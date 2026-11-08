@@ -6,11 +6,11 @@
 
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileP = promisify(execFile);
@@ -26,14 +26,22 @@ Options:
   --insecure-tls        Accept self-signed TLS (Playwright ignoreHTTPSErrors, curl -k).
                         Only for staging "tls internal" or the dry-run.
   --out <dir>           Output directory (default docs/benchmarks/P06-nfr/results).
+  --server-perf-log <file>
+                        Raw log of the same-SHA server perf line (protocol §3): must contain
+                        NFR_PERF_SHA=<HEAD sha>, "--- PASS: TestEntryCreatePerformanceA10" and the
+                        POPULATION lines; every population p95 < 150 ms. Required for a pass.
+  --semantic-metrics <file>
+                        Prometheus text scraped on bro (api and/or worker /metrics, protocol §4);
+                        repeatable. Absent = semantic observation "pending" (no exit failure).
   --dry-run             Harness check only: few TTFB samples, LCP on "/", no login/G1;
-                        threshold criteria are "skipped". Not NFR evidence.
+                        browser threshold criteria are "skipped". Not NFR evidence.
   --help                Show this help.
 
 Env (optional, G1/LCP account): NFR_EMAIL, NFR_PASSWORD, NFR_PASSPHRASE. Without them a
 fresh synthetic account is created through the UI signup + onboarding.
 
-Exit: 0 all criteria pass, 1 a criterion failed, 2 usage error.`;
+Exit: 0 no criterion failed (JSON "complete" also needs no "pending"), 1 a criterion failed,
+2 usage error.`;
 
 // ---- protocol constants (protocol.md; change only with a new protocol commit) ----------------------
 const TTFB_PATHS = ['/', '/vi'];
@@ -44,18 +52,23 @@ const LCP_SAMPLES = 15;
 const LCP_MS = 2000;
 const G1_SAMPLES = 15;
 const G1_MEDIAN_MS = 3000;
-const FAST_4G = {
+export const FAST_4G = {
   offline: false,
   latency: 40,
-  downloadThroughput: (9 * 1024 * 1024) / 8,
-  uploadThroughput: (3 * 1024 * 1024) / 8,
+  // 9 Mbps / 3 Mbps in decimal units (plan Task 19): 1,125,000 / 375,000 bytes per second.
+  downloadThroughput: 9_000_000 / 8,
+  uploadThroughput: 3_000_000 / 8,
 };
+const SERVER_P95_MS = 150;
+const SERVER_POPULATIONS = ['pop1_sequential', 'pop2_burst_no_purge', 'pop3_burst_purge_overlap'];
+const CURL_CONNECT_TIMEOUT_S = 10;
+const CURL_MAX_TIME_S = 30;
 const UI_WAIT_MS = 30_000;
 const CRYPTO_WAIT_MS = 90_000;
 
 // ---- CLI --------------------------------------------------------------------------------------------
 function parseArgs(argv) {
-  const opts = { target: null, insecureTls: false, out: DEFAULT_OUT, dryRun: false, help: false };
+  const opts = { target: null, insecureTls: false, out: DEFAULT_OUT, dryRun: false, help: false, serverPerfLog: null, semanticMetrics: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     const value = () => {
@@ -69,6 +82,8 @@ function parseArgs(argv) {
     else if (a === '--out') opts.out = resolve(value());
     else if (a === '--insecure-tls') opts.insecureTls = true;
     else if (a === '--dry-run') opts.dryRun = true;
+    else if (a === '--server-perf-log') opts.serverPerfLog = resolve(value());
+    else if (a === '--semantic-metrics') opts.semanticMetrics.push(resolve(value()));
     else throw new UsageError(`unknown argument: ${a}`);
   }
   if (opts.help) return opts;
@@ -99,17 +114,21 @@ function median(sorted) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-function stats(values) {
+// Raw (unrounded) statistics: pass/fail decisions use these; rounding is for console display only.
+export function stats(values) {
   const s = [...values].sort((a, b) => a - b);
-  const round = (v) => (v === null ? null : Math.round(v * 10) / 10);
   return {
     n: s.length,
-    p50: round(median(s)),
-    p75: round(nearestRank(s, 75)),
-    p95: round(nearestRank(s, 95)),
-    p99: round(nearestRank(s, 99)),
-    max: round(s.length ? s[s.length - 1] : null),
+    p50: median(s),
+    p75: nearestRank(s, 75),
+    p95: nearestRank(s, 95),
+    p99: nearestRank(s, 99),
+    max: s.length ? s[s.length - 1] : null,
   };
+}
+
+function display(v) {
+  return typeof v === 'number' ? Math.round(v * 10) / 10 : v;
 }
 
 // ---- environment ------------------------------------------------------------------------------------
@@ -152,26 +171,32 @@ function loadPlaywright() {
 }
 
 // ---- (1) TTFB ---------------------------------------------------------------------------------------
-async function curlOnce(url, insecure) {
-  const args = ['-s', '-o', '/dev/null', '-H', 'Cache-Control: no-cache', '-w', '%{http_code} %{time_starttransfer}'];
+// Every curl call is bounded (connect + total deadline, plus a process timeout) so a stalled peer
+// becomes a failed observation instead of hanging the run.
+function curlArgs(insecure) {
+  const args = ['-s', '--connect-timeout', String(CURL_CONNECT_TIMEOUT_S), '--max-time', String(CURL_MAX_TIME_S), '-H', 'Cache-Control: no-cache'];
   if (insecure) args.push('-k');
-  args.push(url);
+  return args;
+}
+
+const CURL_EXEC = { timeout: (CURL_MAX_TIME_S + 5) * 1000, killSignal: 'SIGKILL' };
+
+async function curlOnce(url, insecure) {
+  const args = [...curlArgs(insecure), '-o', '/dev/null', '-w', '%{http_code} %{time_starttransfer}', url];
   try {
-    const { stdout } = await execFileP('curl', args);
+    const { stdout } = await execFileP('curl', args, CURL_EXEC);
     const [code, t] = stdout.trim().split(' ');
     return { status: Number(code), ms: Number(t) * 1000 };
   } catch (err) {
-    return { status: 0, ms: null, error: String(err.code ?? 'curl_failed') };
+    return { status: 0, ms: null, error: String(err.code ?? err.signal ?? 'curl_failed') };
   }
 }
 
 async function curlHeaders(url, insecure) {
-  const args = ['-s', '-D', '-', '-o', '/dev/null', '-H', 'Cache-Control: no-cache'];
-  if (insecure) args.push('-k');
-  args.push(url);
+  const args = [...curlArgs(insecure), '-D', '-', '-o', '/dev/null', url];
   const headers = {};
   try {
-    const { stdout } = await execFileP('curl', args);
+    const { stdout } = await execFileP('curl', args, CURL_EXEC);
     for (const line of stdout.split(/\r?\n/)) {
       const idx = line.indexOf(':');
       if (idx > 0) headers[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
@@ -224,6 +249,126 @@ async function measureTtfb(opts, criteria) {
 
 function crit(id, pass, value, threshold, skipped = false) {
   return { id, status: skipped ? 'skipped' : pass ? 'pass' : 'fail', value: value ?? null, threshold };
+}
+
+function pending(id, value, threshold) {
+  return { id, status: 'pending', value: value ?? null, threshold };
+}
+
+// ---- (3b) server p95 from the same-SHA perf log -----------------------------------------------------
+// Go prints durations like "812.4µs", "12.3ms", "1.2s".
+export function goDurationMs(text) {
+  const m = /^([0-9.]+)(ns|µs|us|ms|s|m)$/.exec(text);
+  if (!m) return null;
+  const scale = { ns: 1e-6, µs: 1e-3, us: 1e-3, ms: 1, s: 1000, m: 60000 }[m[2]];
+  return Number(m[1]) * scale;
+}
+
+// Base A10 populations are required; "SEMANTIC-ON POPULATION" lines of TestEntryCreatePerformanceA10SemanticOn
+// (same ./internal/perf/... run) are gated too when present. The last line per population wins.
+export function evaluateServerPerf(logText, headSha) {
+  if (logText === null) return { state: 'missing', pass: false, reason: '--server-perf-log not given or unreadable' };
+  const shaMatch = /NFR_PERF_SHA=([0-9a-f]{40})/.exec(logText);
+  const out = { state: 'parsed', log_sha: shaMatch?.[1] ?? null, populations: {}, semantic_on_populations: {} };
+  const lastP95 = (re) => {
+    const all = [...logText.matchAll(re)];
+    return all.length ? goDurationMs(all[all.length - 1][1]) : null;
+  };
+  for (const name of SERVER_POPULATIONS) {
+    out.populations[name] = lastP95(new RegExp(`(?<!SEMANTIC-ON )POPULATION ${name}: .*? p95=(\\S+)`, 'g'));
+    const sem = lastP95(new RegExp(`SEMANTIC-ON POPULATION ${name}: .*? p95=(\\S+)`, 'g'));
+    if (sem !== null) out.semantic_on_populations[name] = sem;
+  }
+  const testPassed = /--- PASS: TestEntryCreatePerformanceA10\b/.test(logText);
+  const base = Object.values(out.populations);
+  const all = [...base, ...Object.values(out.semantic_on_populations)];
+  const reasons = [];
+  if (!out.log_sha) reasons.push('no NFR_PERF_SHA line');
+  else if (out.log_sha !== headSha) reasons.push(`log sha ${out.log_sha} != head ${headSha}`);
+  if (!testPassed) reasons.push('TestEntryCreatePerformanceA10 did not PASS');
+  if (base.some((v) => v === null)) reasons.push('missing population p95');
+  if (all.some((v) => v !== null && !(v < SERVER_P95_MS))) reasons.push(`population p95 >= ${SERVER_P95_MS} ms`);
+  out.max_p95_ms = base.every((v) => v !== null) ? Math.max(...all) : null;
+  out.pass = reasons.length === 0;
+  if (reasons.length) out.reason = reasons.join('; ');
+  return out;
+}
+
+// ---- (4) semantic observation from scraped Prometheus text ------------------------------------------
+function parseLabels(s) {
+  const labels = {};
+  for (const m of (s ?? '').matchAll(/(\w+)="((?:[^"\\]|\\.)*)"/g)) labels[m[1]] = m[2];
+  return labels;
+}
+
+export function parsePrometheus(text) {
+  const samples = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line || line.startsWith('#')) continue;
+    const m = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})?\s+(\S+)/.exec(line);
+    const value = m ? Number(m[3]) : NaN;
+    if (m && Number.isFinite(value)) samples.push({ name: m[1], labels: parseLabels(m[2]), value });
+  }
+  return samples;
+}
+
+// histogram_quantile over cumulative buckets (linear interpolation inside the bucket, Prometheus rules).
+export function histogramQuantile(q, buckets) {
+  const sorted = [...buckets].sort((a, b) => a.le - b.le);
+  const total = sorted.length ? sorted[sorted.length - 1].count : 0;
+  if (!total) return null;
+  const rank = q * total;
+  let prevLe = 0;
+  let prevCount = 0;
+  for (const b of sorted) {
+    if (b.count >= rank) {
+      if (b.le === Infinity) return prevLe;
+      return prevLe + ((b.le - prevLe) * (rank - prevCount)) / (b.count - prevCount || 1);
+    }
+    prevLe = b.le;
+    prevCount = b.count;
+  }
+  return prevLe;
+}
+
+// Only aggregate numbers leave this function: metric names/labels of the allowlisted families, never query text.
+export function evaluateSemantic(texts) {
+  if (texts.length === 0) return { state: 'pending', reason: 'no --semantic-metrics given (post-deploy bro scrape, protocol §4)' };
+  const samples = texts.flatMap((t) => parsePrometheus(t));
+  if (samples.length === 0) return { state: 'invalid', reason: 'no Prometheus samples parsed' };
+  const byLe = new Map();
+  let queryCount = 0;
+  for (const s of samples) {
+    if (s.name === 'embedding_provider_latency_seconds_bucket' && s.labels.op === 'query') {
+      const le = s.labels.le === '+Inf' ? Infinity : Number(s.labels.le);
+      byLe.set(le, (byLe.get(le) ?? 0) + s.value);
+    }
+    if (s.name === 'embedding_provider_latency_seconds_count' && s.labels.op === 'query') queryCount += s.value;
+  }
+  const buckets = [...byLe].map(([le, count]) => ({ le, count }));
+  const sum = (name, key) => {
+    const out = {};
+    for (const s of samples.filter((x) => x.name === name)) {
+      const k = key(s.labels);
+      out[k] = (out[k] ?? 0) + s.value;
+    }
+    return out;
+  };
+  const jobs = sum('embedding_jobs_total', (l) => `${l.kind ?? '?'}/${l.outcome ?? '?'}`);
+  const cache = sum('semantic_query_cache_total', (l) => l.result ?? '?');
+  const toMs = (v) => (v === null ? null : v * 1000);
+  const result = {
+    provider_query_latency_ms: {
+      cache_miss_calls: queryCount,
+      p50: toMs(histogramQuantile(0.5, buckets)),
+      p95: toMs(histogramQuantile(0.95, buckets)),
+    },
+    query_cache: cache,
+    embedding_jobs_total: jobs,
+  };
+  if (queryCount === 0) return { state: 'no_cache_miss_observed', ...result, reason: 'no provider query call (real cache miss) in the scrape' };
+  if (Object.keys(jobs).length === 0) return { state: 'partial', ...result, reason: 'embedding_jobs_total absent (worker /metrics not scraped)' };
+  return { state: 'collected', ...result };
 }
 
 // ---- browser helpers --------------------------------------------------------------------------------
@@ -361,10 +506,14 @@ function accountCreds() {
 async function measureWasmOnLanding(browser, opts, criteria) {
   const ctx = await newContext(browser, opts);
   const page = await ctx.newPage();
-  const wasm = [];
+  // Counted at the request event so a blocked/failed .wasm fetch still fails the gate; the response
+  // MIME check catches extensionless WASM. A Set avoids double-counting one request.
+  const wasm = new Set();
+  page.on('request', (r) => {
+    if (/\.wasm$/i.test(new URL(r.url()).pathname)) wasm.add(r);
+  });
   page.on('response', (r) => {
-    const ct = r.headers()['content-type'] ?? '';
-    if (/\.wasm(\?|$)/.test(new URL(r.url()).pathname) || ct.includes('application/wasm')) wasm.push(new URL(r.url()).pathname);
+    if ((r.headers()['content-type'] ?? '').includes('application/wasm')) wasm.add(r.request());
   });
   await installLcpObserver(page);
   await throttle(page);
@@ -372,10 +521,11 @@ async function measureWasmOnLanding(browser, opts, criteria) {
   await page.waitForTimeout(1000);
   const lcp = await page.evaluate(() => window.__nfrLcp);
   await ctx.close();
-  criteria.push(crit('landing.no_wasm', wasm.length === 0, wasm.length, '0 .wasm requests on /'));
+  const wasmPaths = [...wasm].map((r) => new URL(r.url()).pathname);
+  criteria.push(crit('landing.no_wasm', wasmPaths.length === 0, wasmPaths.length, '0 .wasm requests on /'));
   // Harness criterion: the LCP observer produced a value on a real page.
   criteria.push(crit('landing.lcp_observed', typeof lcp === 'number', lcp, 'LCP entry observed on /'));
-  return { wasm_requests: wasm, lcp_ms: lcp };
+  return { wasm_requests: wasmPaths, lcp_ms: lcp };
 }
 
 // Each sample must land on /app with the App Shell omnibox; a redirect to login would otherwise be measured silently.
@@ -519,25 +669,63 @@ async function main() {
     await browser.close();
   }
 
+  // (3b) server p95: real mode needs the same-SHA perf log; dry-run evaluates it only when given.
+  if (opts.serverPerfLog || !opts.dryRun) {
+    let text = null;
+    if (opts.serverPerfLog) {
+      try {
+        text = readFileSync(opts.serverPerfLog, 'utf8');
+      } catch {
+        text = null;
+      }
+    }
+    result.server_perf = evaluateServerPerf(text, result.environment.sha);
+    criteria.push(crit('server.p95', result.server_perf.pass, result.server_perf.max_p95_ms ?? result.server_perf.reason, `< ${SERVER_P95_MS} ms every population, same SHA, test PASS`));
+  } else {
+    criteria.push(crit('server.p95', false, null, 'no --server-perf-log in --dry-run', true));
+  }
+
+  // (4) semantic observation: observation only (P05 targets unchanged); absent = pending, unreadable/empty = fail.
+  if (opts.semanticMetrics.length || !opts.dryRun) {
+    let sem;
+    try {
+      sem = evaluateSemantic(opts.semanticMetrics.map((f) => readFileSync(f, 'utf8')));
+    } catch (err) {
+      sem = { state: 'invalid', reason: `cannot read --semantic-metrics: ${err.code ?? 'error'}` };
+    }
+    result.semantic = sem;
+    const id = 'semantic.observed';
+    const threshold = 'provider query latency + embedding_jobs_total collected (protocol §4)';
+    if (sem.state === 'collected') criteria.push(crit(id, true, sem.state, threshold));
+    else if (sem.state === 'invalid') criteria.push(crit(id, false, sem.reason, threshold));
+    else criteria.push(pending(id, `${sem.state}: ${sem.reason}`, threshold));
+  } else {
+    criteria.push(crit('semantic.observed', false, null, 'no --semantic-metrics in --dry-run', true));
+  }
+
   result.finished_at = new Date().toISOString();
   result.criteria = criteria;
   const failed = criteria.filter((c) => c.status === 'fail');
   result.pass = failed.length === 0;
+  result.complete = result.pass && !opts.dryRun && criteria.every((c) => c.status === 'pass');
 
   mkdirSync(opts.out, { recursive: true });
   const stamp = startedAt.toISOString().replace(/[:.]/g, '-');
   const file = join(opts.out, `nfr-${stamp}-${(result.environment.sha ?? 'nosha').slice(0, 7)}${opts.dryRun ? '-dryrun' : ''}.json`);
   writeFileSync(file, `${JSON.stringify(result, null, 2)}\n`);
 
-  for (const c of criteria) console.log(`${c.status.padEnd(7)} ${c.id} value=${JSON.stringify(c.value)} (${c.threshold})`);
-  console.log(`measure-nfr: ${result.pass ? 'PASS' : `FAIL (${failed.length})`} -> ${file}`);
+  for (const c of criteria) console.log(`${c.status.padEnd(7)} ${c.id} value=${JSON.stringify(display(c.value))} (${c.threshold})`);
+  console.log(`measure-nfr: ${result.pass ? 'PASS' : `FAIL (${failed.length})`} complete=${result.complete} -> ${file}`);
   return result.pass ? 0 : 1;
 }
 
-main().then(
-  (code) => process.exit(code),
-  (err) => {
-    console.error(`measure-nfr: error: ${err.stack ?? err}`);
-    process.exit(1);
-  },
-);
+// Importable for the self-test (docs/benchmarks/P06-nfr/measure-nfr.selftest.mjs) without running.
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().then(
+    (code) => process.exit(code),
+    (err) => {
+      console.error(`measure-nfr: error: ${err.stack ?? err}`);
+      process.exit(1);
+    },
+  );
+}
