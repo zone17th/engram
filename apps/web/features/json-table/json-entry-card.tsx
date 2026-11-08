@@ -581,6 +581,11 @@ export function JsonEntryCard({
       saveError !== null);
 
   const showEditControls = showTableSaveBar || hasSharedAlertPanel;
+  const byteCounterText = isOverCap
+    ? tEntry('byteCounterOver', { bytes: formattedBytes })
+    : isNearCap
+      ? tEntry('byteCounterNear', { bytes: formattedBytes })
+      : tEntry('byteCounter', { bytes: formattedBytes });
 
   const saveDisabled =
     isEmpty ||
@@ -1430,7 +1435,7 @@ export function JsonEntryCard({
           aria-hidden="true"
           className={`mono select-none text-muted ${
             canReorder && !showEditControls ? 'cursor-grab' : 'cursor-default opacity-50'
-          }`}
+          } ${showEditControls ? 'max-[420px]:hidden' : ''}`}
         >
           ⠿
         </span>
@@ -1495,15 +1500,11 @@ export function JsonEntryCard({
             <span
               id={`entry-byte-counter-${entry.id}`}
               data-testid={`entry-byte-counter-${entry.id}`}
-              className={`mono mr-1 text-[12px] ${
+              className={`mono mr-1 text-[12px] max-sm:hidden ${
                 isOverCap ? 'font-semibold text-error-ink' : 'text-body'
               }`}
             >
-              {isOverCap
-                ? tEntry('byteCounterOver', { bytes: formattedBytes })
-                : isNearCap
-                  ? tEntry('byteCounterNear', { bytes: formattedBytes })
-                  : tEntry('byteCounter', { bytes: formattedBytes })}
+              {byteCounterText}
             </span>
           ) : null}
 
@@ -1944,6 +1945,15 @@ export function JsonEntryCard({
 
                 {showTableSaveBar ? (
                   <div className="flex flex-wrap items-center justify-end gap-2">
+                    {/* FU-ENTRYUX-N3: at phone width the counter lives here so the edit-state header stays one row */}
+                    <span
+                      data-testid={`entry-byte-counter-footer-${entry.id}`}
+                      className={`mono mr-auto text-[12px] sm:hidden ${
+                        isOverCap ? 'font-semibold text-error-ink' : 'text-body'
+                      }`}
+                    >
+                      {byteCounterText}
+                    </span>
                     <button
                       type="button"
                       data-testid={`entry-cancel-edit-btn-${entry.id}`}
