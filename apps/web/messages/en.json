@@ -128,6 +128,8 @@
     "notFoundTitle": "Not found",
     "notFoundBody": "This item was deleted or does not belong to your account.",
     "backToList": "Back to list",
+    "pageNotFoundBody": "This page does not exist or has moved.",
+    "backHome": "Back to home",
     "sessionExpiredTitle": "Session expired",
     "sessionExpiredBody": "Sign in again to continue. Unsaved changes on this page were cleared for safety.",
     "sessionExpiredCta": "Sign in again"
