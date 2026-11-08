@@ -387,7 +387,7 @@ func TestFailOrRetrySurfacesBookkeepingErrors(t *testing.T) {
 	}
 }
 
-// ---- R1-03 / R1-08: real finalization vs reset/account-deletion barriers ----
+// ---- R1-03 / R1-08: real finalization vs reset barriers ----
 
 func newVaultService(t *testing.T, pool *pgxpool.Pool) *vault.Service {
 	t.Helper()
@@ -436,19 +436,6 @@ func failOnLockError(t *testing.T, what string, err error) {
 	}
 }
 
-// deleteAccountTx is account deletion per accountdelbe §2.9: app_user FOR
-// UPDATE, then vault FOR UPDATE, then DELETE cascading to export_job.
-func deleteAccountTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM app_user WHERE id = $1 FOR UPDATE`, userID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM vault WHERE user_id = $1 FOR UPDATE`, userID); err != nil {
-		return err
-	}
-	_, err := tx.Exec(ctx, `DELETE FROM app_user WHERE id = $1`, userID)
-	return err
-}
-
 func backendPID(ctx context.Context, t *testing.T, tx pgx.Tx) int32 {
 	t.Helper()
 	var pid int32
@@ -459,10 +446,11 @@ func backendPID(ctx context.Context, t *testing.T, tx pgx.Tx) int32 {
 }
 
 // TestExportFinalizeBarriers runs the REAL worker finalization (Work ->
-// finalizeCAS) against the REAL vault.Reset and against account deletion, in
-// both acquisition orders. The second transaction is proven to be waiting on
-// the first via pg_blocking_pids before release; no 40P01/55P03 occurs; and no
-// downloadable ready export survives a committed reset or deletion.
+// finalizeCAS) against the REAL vault.Reset in both acquisition orders. The
+// second transaction is proven to be waiting on the first via
+// pg_blocking_pids before release; no 40P01/55P03 occurs; and no downloadable
+// ready export survives the committed reset. Finalization vs the real account
+// deletion lives in finalize_delete_barrier_test.go (package export_test).
 func TestExportFinalizeBarriers(t *testing.T) {
 	type env struct {
 		pool   *pgxpool.Pool
@@ -560,77 +548,6 @@ func TestExportFinalizeBarriers(t *testing.T) {
 		if cleanups == 0 {
 			t.Fatal("reset after ready recorded no file cleanup obligation")
 		}
-	})
-
-	t.Run("DeleteFirstThenFinalize", func(t *testing.T) {
-		e := setup(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		delErr := make(chan error, 1)
-		e.w.beforeFin = func(context.Context, uuid.UUID, uuid.UUID) {
-			held := make(chan int32, 1)
-			go func() {
-				tx, err := e.pool.Begin(ctx)
-				if err != nil {
-					delErr <- err
-					return
-				}
-				defer func() { _ = tx.Rollback(ctx) }()
-				if err := deleteAccountTx(ctx, tx, e.userID); err != nil {
-					delErr <- err
-					return
-				}
-				pid := backendPID(ctx, t, tx)
-				held <- pid
-				awaitBlockedBy(t, e.pool, pid)
-				delErr <- tx.Commit(ctx)
-			}()
-			<-held
-		}
-		workErr := e.w.Work(ctx, makeRiverJob(e.job.ID, e.userID, 1, 3))
-		failOnLockError(t, "finalize", workErr)
-		if err := <-delErr; err != nil {
-			failOnLockError(t, "delete", err)
-			t.Fatalf("delete: %v", err)
-		}
-		var cancelErr *river.JobCancelError
-		if !errors.As(workErr, &cancelErr) {
-			t.Fatalf("Work after committed delete = %v, want JobCancel", workErr)
-		}
-		assertNotDownloadable(t, e)
-	})
-
-	t.Run("FinalizeFirstThenDelete", func(t *testing.T) {
-		e := setup(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		delErr := make(chan error, 1)
-		e.w.finalizeLocked = func(ctx context.Context, tx pgx.Tx) {
-			pid := backendPID(ctx, t, tx)
-			go func() {
-				dtx, err := e.pool.Begin(context.Background())
-				if err != nil {
-					delErr <- err
-					return
-				}
-				defer func() { _ = dtx.Rollback(context.Background()) }()
-				if err := deleteAccountTx(context.Background(), dtx, e.userID); err != nil {
-					delErr <- err
-					return
-				}
-				delErr <- dtx.Commit(context.Background())
-			}()
-			awaitBlockedBy(t, e.pool, pid)
-		}
-		if err := e.w.Work(ctx, makeRiverJob(e.job.ID, e.userID, 1, 3)); err != nil {
-			failOnLockError(t, "finalize", err)
-			t.Fatalf("Work (finalize first) = %v", err)
-		}
-		if err := <-delErr; err != nil {
-			failOnLockError(t, "delete", err)
-			t.Fatalf("delete after finalize: %v", err)
-		}
-		assertNotDownloadable(t, e)
 	})
 }
 
