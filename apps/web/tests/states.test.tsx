@@ -125,6 +125,42 @@ describe.each(LOCALES)('U18 #off offline banner ($locale)', (entry) => {
 describe.each(LOCALES)('U18 #auth-session-expired-midflow ($locale)', (entry) => {
   it('names the reason, keeps the page (no silent redirect) and offers one way back to login', () => {
     mockPathname = '/app/items/abc';
+    // The page had a live session first (me in hand), then the session ended mid-flow.
+    mockSession = {
+      status: 'authenticated_with_vault',
+      me: {
+        user: { id: 'u', email_verified: true },
+        vault: { status: 'present' },
+        features: { email_verification_required: false },
+      },
+      refetchMe: vi.fn(),
+      lastSessionEndReason: null,
+    };
+    const tree = () => (
+      <RouteGuard>
+        <div>private page</div>
+      </RouteGuard>
+    );
+    const view = render(wrap(entry, tree()));
+    mockReplace.mockClear();
+    mockSession = {
+      status: 'signed_out',
+      me: null,
+      refetchMe: vi.fn(),
+      lastSessionEndReason: 'expired',
+    };
+    view.rerender(wrap(entry, tree()));
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(entry.messages.states.sessionExpiredTitle);
+    expect(alert).toHaveTextContent(entry.messages.states.sessionExpiredBody);
+    expect(screen.queryByText('private page')).toBeNull();
+    const cta = screen.getByRole('link', { name: entry.messages.states.sessionExpiredCta });
+    expect(cta).toHaveAttribute('href', '/app/auth/login?returnTo=%2Fapp%2Fitems%2Fabc');
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('M-2: a cold load with a dead cookie (no session ever seen on this page) redirects to login, no "unsaved changes cleared" frame', () => {
+    mockPathname = '/app/items/abc';
     mockSession = {
       status: 'signed_out',
       me: null,
@@ -139,13 +175,9 @@ describe.each(LOCALES)('U18 #auth-session-expired-midflow ($locale)', (entry) =>
         </RouteGuard>,
       ),
     );
-    const alert = screen.getByRole('alert');
-    expect(alert).toHaveTextContent(entry.messages.states.sessionExpiredTitle);
-    expect(alert).toHaveTextContent(entry.messages.states.sessionExpiredBody);
-    expect(screen.queryByText('private page')).toBeNull();
-    const cta = screen.getByRole('link', { name: entry.messages.states.sessionExpiredCta });
-    expect(cta).toHaveAttribute('href', '/app/auth/login?returnTo=%2Fapp%2Fitems%2Fabc');
-    expect(mockReplace).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('session-expired-midflow')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining('/app/auth/login'));
   });
 
   it('a voluntary logout still redirects without the expired frame', () => {
@@ -184,8 +216,10 @@ describe.each(LOCALES)('U18 #err-server-500 / #err-not-found ($locale)', (entry)
     mockLocale = entry.locale;
     render(await MarketingNotFound());
     expect(screen.getByRole('heading', { name: entry.messages.states.notFoundTitle })).toBeInTheDocument();
-    expect(screen.getByText(entry.messages.states.notFoundBody)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: entry.messages.states.backToList })).toBeInTheDocument();
+    // M-1: no item-specific sentence and no way into /app for an anonymous visitor; the only action is the site home.
+    expect(screen.queryByText(entry.messages.states.notFoundBody)).toBeNull();
+    expect(screen.queryByRole('link', { name: entry.messages.states.backToList })).toBeNull();
+    expect(screen.getByTestId('err-not-found-home')).toHaveAttribute('href', entry.locale === 'vi' ? '/vi' : '/');
     expect(document.querySelector('main#main-content')).not.toBeNull();
   });
 });
