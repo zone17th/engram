@@ -17,9 +17,9 @@ export interface DataSectionProps {
 export function DataSection({ backupCardProps, readableDialogProps }: DataSectionProps = {}) {
   const t = useTranslations('settings.data');
   const [readableOpen, setReadableOpen] = useState(false);
+  const [openedViaResume, setOpenedViaResume] = useState(false);
   const openerRef = useRef<HTMLElement | null>(null);
   const autoOpenedResumeRef = useRef(false);
-
   // OAuth re-auth resume (FE-R1-14 / advisor-dec-P06-019):
   // Returning from Google OAuth to `/app/settings?reauth=export.decrypted#dulieu`
   // automatically opens `#plainDlg` once and strips the query parameter.
@@ -38,6 +38,7 @@ export function DataSection({ backupCardProps, readableDialogProps }: DataSectio
       if (defaultTrigger) {
         openerRef.current = defaultTrigger;
       }
+      setOpenedViaResume(true);
       setReadableOpen(true);
 
       if (typeof window !== 'undefined' && window.history?.replaceState) {
@@ -63,6 +64,7 @@ export function DataSection({ backupCardProps, readableDialogProps }: DataSectio
         {...backupCardProps}
         onOpenReadableExport={(opener) => {
           openerRef.current = opener;
+          setOpenedViaResume(false);
           setReadableOpen(true);
         }}
       />
@@ -70,8 +72,14 @@ export function DataSection({ backupCardProps, readableDialogProps }: DataSectio
       <ReadableExportDialog
         {...readableDialogProps}
         open={readableOpen}
-        onOpenChange={setReadableOpen}
+        onOpenChange={(nextOpen) => {
+          setReadableOpen(nextOpen);
+          if (!nextOpen) {
+            setOpenedViaResume(false);
+          }
+        }}
         returnFocusRef={openerRef}
+        resume={readableDialogProps?.resume ?? openedViaResume}
       />
     </section>
   );

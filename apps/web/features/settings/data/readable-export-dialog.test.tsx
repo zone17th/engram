@@ -690,4 +690,126 @@ describe('features/settings/data/readable-export-dialog (U17a #plainDlg)', () =>
       expect(document.querySelector('[data-view="pl-done"]')).toBeInTheDocument();
     });
   });
+
+  it('M-1, m-1, m-2, m-3: keeps focus on password input with linked password-only error after wrong reauth password, and renders provider-appropriate hints/primary button', async () => {
+    // 1. Password-only account: m-1 shows passwordOnlyHint (no Google button mention), M-1 + m-3 wrong password keeps focus on input with aria-invalid + aria-describedby
+    mockHasPassword = true;
+    mockOauthProviders = [];
+    mockReauthPassword.mockRejectedValueOnce(
+      new ProblemError({
+        type: 'https://engram.zone17.click/problems/invalid_credentials',
+        title: 'invalid_credentials',
+        status: 401,
+        code: 'invalid_credentials',
+      }),
+    );
+
+    const { unmount: u1 } = renderDialogHost({ locale: 'en' });
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-confirm"]')).toBeInTheDocument();
+    });
+
+    const pwdInput = document.getElementById('plain-export-password') as HTMLInputElement;
+    await waitFor(() => {
+      expect(document.activeElement).toBe(pwdInput);
+    });
+
+    // m-1: hint is passwordOnlyHint ("Confirms it's you.") without mentioning the button below
+    const hintEl = document.getElementById('plain-export-password-hint');
+    expect(hintEl).toHaveTextContent(enMessages.settings.data.readable.passwordOnlyHint);
+    expect(hintEl).not.toHaveTextContent('Google/GitHub-only');
+
+    fireEvent.change(pwdInput, { target: { value: 'wrong-password' } });
+    fireEvent.click(screen.getByTestId('readable-export-submit-btn'));
+
+    const errorEl = await waitFor(() => {
+      const el = document.getElementById('plain-export-password-error');
+      expect(el).toBeInTheDocument();
+      return el!;
+    });
+    expect(errorEl).toHaveTextContent(enMessages.settings.data.readable.invalidPasswordError);
+    expect(pwdInput).toHaveAttribute('aria-invalid', 'true');
+    expect(pwdInput).toHaveAttribute('aria-describedby', 'plain-export-password-error');
+
+    // M-1: focus stays on / returns to #plain-export-password, not #plainDlg
+    await waitFor(() => {
+      expect(document.activeElement).toBe(pwdInput);
+    });
+    u1();
+
+    // 2. OAuth-only account: m-2 renders oauthOnlyHint and makes Verify with Google btn-primary
+    mockHasPassword = false;
+    mockOauthProviders = ['google'];
+    const { unmount: u2 } = renderDialogHost({ locale: 'en' });
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-confirm"]')).toBeInTheDocument();
+    });
+    expect(screen.getByText(enMessages.settings.data.readable.oauthOnlyHint)).toBeInTheDocument();
+    const oauthBtn = screen.getByTestId('readable-export-oauth-btn');
+    expect(oauthBtn.className).toContain('btn-primary');
+    u2();
+  });
+
+  it('Delta N1: clears export.decrypted grant on unmount (unless in pl-locked) and does not auto-start when manually opened with resume={false}', async () => {
+    const nowMs = Date.parse('2026-11-08T14:00:00Z');
+    mockGrant = {
+      grant: 'residual-grant-token',
+      action: 'export.decrypted',
+      expires_at: '2026-11-08T14:05:00Z',
+    };
+
+    // 1. Opening manually with resume={false} clears stale grant and shows pl-confirm instead of auto-starting
+    const getLatestMock = vi.fn();
+    const { unmount: uManual } = render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <ReadableExportDialog
+          open={true}
+          onOpenChange={() => undefined}
+          resume={false}
+          now={() => nowMs}
+          runnerDeps={{
+            now: () => nowMs,
+            getLatestExport: getLatestMock,
+          }}
+        />
+      </NextIntlClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-confirm"]')).toBeInTheDocument();
+    });
+    expect(mockClearGrant).toHaveBeenCalled();
+    expect(getLatestMock).not.toHaveBeenCalled();
+    uManual();
+
+    // 2. Unmounting while in pl-limit clears the active grant
+    mockClearGrant.mockClear();
+    mockGrant = {
+      grant: 'grant-before-unmount',
+      action: 'export.decrypted',
+      expires_at: '2026-11-08T14:05:00Z',
+    };
+    const { unmount: uUnmount } = renderDialogHost({
+      now: () => nowMs,
+      runnerDeps: {
+        now: () => nowMs,
+        showSaveFilePicker: null,
+        getLatestExport: async () => ({ job: null }),
+        createExport: async () => {
+          throw new ProblemError({
+            type: 'https://engram.zone17.click/problems/rate_limited',
+            title: 'rate_limited',
+            status: 429,
+            code: 'rate_limited',
+            retry_after: 600,
+          });
+        },
+      },
+    });
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-limit"]')).toBeInTheDocument();
+    });
+    uUnmount();
+    expect(mockClearGrant).toHaveBeenCalled();
+  });
 });

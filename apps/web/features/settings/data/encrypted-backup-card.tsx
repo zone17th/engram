@@ -27,6 +27,8 @@ export type EncryptedBackupViewState =
 export const POLL_INTERVAL_MS = 1_500;
 export const LIVE_REGION_THROTTLE_MS = 1_000;
 
+const defaultNow = () => Date.now();
+
 function pad2(n: number): string {
   return n.toString().padStart(2, '0');
 }
@@ -134,7 +136,7 @@ export interface EncryptedBackupCardProps {
 export function EncryptedBackupCard({
   onOpenReadableExport,
   pollIntervalMs = POLL_INTERVAL_MS,
-  now = () => Date.now(),
+  now = defaultNow,
 }: EncryptedBackupCardProps) {
   const t = useTranslations('settings.data');
   const locale = useLocale();
@@ -155,6 +157,8 @@ export function EncryptedBackupCard({
   const pendingLiveTimerRef = useRef<number | null>(null);
 
   const mountedRef = useRef(true);
+  const nowRef = useRef(now);
+  nowRef.current = now;
   const pollAbortRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<number | null>(null);
   const expiryTimerRef = useRef<number | null>(null);
@@ -193,7 +197,7 @@ export function EncryptedBackupCard({
 
   const updateLiveProgress = useCallback(
     (processed: number, total: number, force = false) => {
-      const currentNow = now();
+      const currentNow = nowRef.current();
       const elapsed = currentNow - lastLiveUpdateAtRef.current;
       if (force || lastLiveUpdateAtRef.current === 0 || elapsed >= LIVE_REGION_THROTTLE_MS) {
         clearLiveTimer();
@@ -206,17 +210,17 @@ export function EncryptedBackupCard({
       const remaining = Math.max(10, LIVE_REGION_THROTTLE_MS - elapsed);
       pendingLiveTimerRef.current = window.setTimeout(() => {
         if (!mountedRef.current) return;
-        lastLiveUpdateAtRef.current = now();
+        lastLiveUpdateAtRef.current = nowRef.current();
         setAnnouncedProcessed(processed);
         setAnnouncedTotal(total);
       }, remaining);
     },
-    [clearLiveTimer, now],
+    [clearLiveTimer],
   );
 
   const applyJobState = useCallback(
     (job: ExportJob | null, forceLive = false) => {
-      const currentNow = now();
+      const currentNow = nowRef.current();
       const nextState = mapExportJobToViewState(job, currentNow);
       setCurrentJob(job);
       setViewState(nextState);
@@ -227,7 +231,7 @@ export function EncryptedBackupCard({
         lastLiveUpdateAtRef.current = 0;
       }
     },
-    [clearLiveTimer, now, updateLiveProgress],
+    [clearLiveTimer, updateLiveProgress],
   );
 
   // Schedule poll when in exp-preparing
@@ -250,13 +254,13 @@ export function EncryptedBackupCard({
           const updated = await getExport(jobId, { signal: controller.signal });
           if (cancelled || !mountedRef.current) return;
           applyJobState(updated);
-          const mapped = mapExportJobToViewState(updated, now());
+          const mapped = mapExportJobToViewState(updated, nowRef.current());
           if (mapped === 'exp-preparing') {
             scheduleNextPoll();
           }
         } catch (err) {
           if (cancelled || !mountedRef.current || controller.signal.aborted) return;
-          const classified = classifyExportError(err, now());
+          const classified = classifyExportError(err, nowRef.current());
           if (classified.kind === 'offline') {
             setViewState('exp-offline');
             return;
@@ -277,7 +281,7 @@ export function EncryptedBackupCard({
       cancelled = true;
       stopPolling();
     };
-  }, [applyJobState, currentJob?.id, now, pollIntervalMs, stopPolling, viewState]);
+  }, [applyJobState, currentJob?.id, pollIntervalMs, stopPolling, viewState]);
 
   // Client timer transitioning exp-ready -> exp-expired right at expires_at
   useEffect(() => {
@@ -287,7 +291,7 @@ export function EncryptedBackupCard({
     }
     const expMs = Date.parse(currentJob.expires_at);
     if (!Number.isFinite(expMs)) return;
-    const delayMs = expMs - now();
+    const delayMs = expMs - nowRef.current();
     if (delayMs <= 0) {
       setViewState('exp-expired');
       return;
@@ -300,7 +304,7 @@ export function EncryptedBackupCard({
     return () => {
       clearExpiryTimer();
     };
-  }, [clearExpiryTimer, currentJob?.expires_at, now, viewState]);
+  }, [clearExpiryTimer, currentJob?.expires_at, viewState]);
 
   // Client timer transitioning exp-limit -> exp-idle when retry window passes (L7)
   useEffect(() => {
@@ -333,14 +337,14 @@ export function EncryptedBackupCard({
         return res.job;
       } catch (err) {
         if (!mountedRef.current || signal?.aborted) return null;
-        const classified = classifyExportError(err, now());
+        const classified = classifyExportError(err, nowRef.current());
         if (classified.kind === 'offline') {
           setViewState('exp-offline');
         }
         return null;
       }
     },
-    [applyJobState, now],
+    [applyJobState],
   );
 
   // Mount: call getLatestExport() and listen to online/offline events
@@ -392,7 +396,7 @@ export function EncryptedBackupCard({
       applyJobState(job, true);
     } catch (err) {
       if (!mountedRef.current) return;
-      const classified = classifyExportError(err, now());
+      const classified = classifyExportError(err, nowRef.current());
       if (classified.kind === 'rate_limited') {
         setIsPausedLimit(false);
         setLimitClock(classified.retryClock ?? '14:12');
@@ -413,7 +417,7 @@ export function EncryptedBackupCard({
         setBusy(false);
       }
     }
-  }, [applyJobState, busy, now]);
+  }, [applyJobState, busy]);
 
   const handleCancelBackup = useCallback(async () => {
     if (busy || !currentJob?.id) return;
@@ -425,7 +429,7 @@ export function EncryptedBackupCard({
       applyJobState(cancelled, true);
     } catch (err) {
       if (!mountedRef.current) return;
-      const classified = classifyExportError(err, now());
+      const classified = classifyExportError(err, nowRef.current());
       if (classified.kind === 'export_expired') {
         setViewState('exp-expired');
       } else if (classified.kind === 'offline') {
@@ -438,7 +442,7 @@ export function EncryptedBackupCard({
         setBusy(false);
       }
     }
-  }, [applyJobState, busy, currentJob?.id, now, refreshLatest, stopPolling]);
+  }, [applyJobState, busy, currentJob?.id, refreshLatest, stopPolling]);
 
   const handleDownloadClick = useCallback(
     async (e: React.MouseEvent<HTMLAnchorElement>) => {
@@ -447,7 +451,7 @@ export function EncryptedBackupCard({
       if (busy) return;
 
       const expMs = currentJob.expires_at ? Date.parse(currentJob.expires_at) : NaN;
-      if (Number.isFinite(expMs) && expMs <= now()) {
+      if (Number.isFinite(expMs) && expMs <= nowRef.current()) {
         setViewState('exp-expired');
         void refreshLatest();
         return;
@@ -458,7 +462,7 @@ export function EncryptedBackupCard({
         const preflight = await getExport(currentJob.id);
         if (!mountedRef.current) return;
 
-        const preflightState = mapExportJobToViewState(preflight, now());
+        const preflightState = mapExportJobToViewState(preflight, nowRef.current());
         if (preflightState !== 'exp-ready') {
           setViewState('exp-expired');
           await refreshLatest();
@@ -480,7 +484,7 @@ export function EncryptedBackupCard({
         }
       } catch (err) {
         if (!mountedRef.current) return;
-        const classified = classifyExportError(err, now());
+        const classified = classifyExportError(err, nowRef.current());
         if (
           classified.kind === 'export_expired' ||
           classified.kind === 'not_found' ||
@@ -501,7 +505,7 @@ export function EncryptedBackupCard({
         }
       }
     },
-    [busy, currentJob, now, refreshLatest],
+    [busy, currentJob, refreshLatest],
   );
 
   const docsHref = locale === 'vi' ? '/vi/docs#du-lieu' : '/docs#du-lieu';
@@ -509,7 +513,7 @@ export function EncryptedBackupCard({
   const rawTotal = currentJob?.items_total ?? 0;
   const formattedSize = formatBackupFileSize(currentJob?.size_bytes, locale);
   const expiryParts = currentJob?.expires_at
-    ? formatExpiryClock(currentJob.expires_at, now(), locale)
+    ? formatExpiryClock(currentJob.expires_at, nowRef.current(), locale)
     : null;
   const expiryText = expiryParts
     ? expiryParts.kind === 'today'
@@ -661,7 +665,7 @@ export function EncryptedBackupCard({
       )}
 
       <details className="mt-4 text-[13px]">
-        <summary className="min-h-[24px] cursor-pointer py-1 text-body">
+        <summary className="min-h-11 inline-flex cursor-pointer items-center py-2 text-body">
           {t('backup.detailsSummary')}
         </summary>
         <ul className="mt-2 mb-0 list-disc pl-5 text-muted">
@@ -671,7 +675,7 @@ export function EncryptedBackupCard({
           <li>{t('backup.detailsItem4')}</li>
         </ul>
         <p className="m-0 mt-2">
-          <Link href={docsHref} className="text-link text-[13px]">
+          <Link href={docsHref} className="text-link inline-flex min-h-11 items-center py-2 text-[13px]">
             {t('docsLink')}
           </Link>
         </p>

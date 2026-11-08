@@ -92,6 +92,7 @@ export interface DecryptedExportSink {
   write: (chunk: string) => Promise<void>;
   finalize: (filename: string) => Promise<{ filename: string; bytesWritten: number }>;
   abort: () => Promise<void>;
+  dispose?: () => void;
 }
 
 const utf8Encoder = new TextEncoder();
@@ -169,27 +170,35 @@ export function createBlobFallbackSink(
         typeof document !== 'undefined'
       ) {
         objectUrl = URL.createObjectURL(blob);
+        const scheduledUrl = objectUrl;
         const a = document.createElement('a');
         a.href = objectUrl;
         a.download = filename;
         a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        const scheduledUrl = objectUrl;
-        revokeTimer = Number(
-          setTimeout(() => {
-            revokeTimer = null;
-            if (objectUrl === scheduledUrl) {
-              revokeUrlNow();
-            }
-          }, revokeDelayMs),
-        );
+        try {
+          document.body.appendChild(a);
+          a.click();
+        } finally {
+          if (a.parentNode) {
+            a.parentNode.removeChild(a);
+          }
+          revokeTimer = Number(
+            setTimeout(() => {
+              revokeTimer = null;
+              if (objectUrl === scheduledUrl) {
+                revokeUrlNow();
+              }
+            }, revokeDelayMs),
+          );
+        }
       }
       return { filename, bytesWritten };
     },
     async abort() {
       cleanup();
+    },
+    dispose() {
+      revokeUrlNow();
     },
   };
 }
@@ -298,6 +307,7 @@ export interface RunDecryptedExportResult {
     entries: number;
   };
   bytesWritten: number;
+  dispose?: () => void;
 }
 
 function isAbortLikeError(err: unknown): boolean {
@@ -917,12 +927,14 @@ export async function runDecryptedExport(
     bufferedItems.length = 0;
     itemTagsByItemId.clear();
 
+    const disposeSink = sink.dispose ? () => sink?.dispose?.() : undefined;
     return {
       filename: finalized.filename,
       sourceExportId: sourceJob.id,
       totalEntries: entriesWritten,
       counts,
       bytesWritten: finalized.bytesWritten,
+      dispose: disposeSink,
     };
   } catch (err) {
     if (sink) {

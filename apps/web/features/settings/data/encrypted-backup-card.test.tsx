@@ -337,7 +337,28 @@ describe('features/settings/data/encrypted-backup-card (U17a #dulieu)', () => {
     const alertNode = document.getElementById(describedById!);
     expect(alertNode).toHaveTextContent('14:12');
 
-    // Also verify L7 timer transitions exp-limit -> exp-idle after retry_after when short
+    // Verify L7 timer transitions exp-limit -> exp-idle after retry_after when short (Delta N2)
+    unmount();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ job: null }))
+      .mockResolvedValueOnce(problemResponse('rate_limited', 429, { retry_after: 1 }));
+    const { unmount: uLimitTimer } = renderCard({ now: () => baseDate }, 'vi');
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="exp-idle"]')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('export-encrypted-start-btn'));
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="exp-limit"]')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('export-encrypted-start-btn')).toBeDisabled();
+    await waitFor(
+      () => {
+        expect(document.querySelector('[data-view="exp-idle"]')).toBeInTheDocument();
+      },
+      { timeout: 1_500 },
+    );
+    expect(screen.getByTestId('export-encrypted-start-btn')).toBeEnabled();
+
     // Dispatch offline event -> exp-offline
     act(() => {
       window.dispatchEvent(new Event('offline'));
@@ -346,8 +367,7 @@ describe('features/settings/data/encrypted-backup-card (U17a #dulieu)', () => {
       expect(document.querySelector('[data-view="exp-offline"]')).toBeInTheDocument();
     });
     expect(screen.getByTestId('export-encrypted-start-btn')).toBeDisabled();
-    unmount();
-
+    uLimitTimer();
     // Check en docs link
     fetchMock.mockResolvedValueOnce(jsonResponse({ job: null }));
     renderCard({ now: () => baseDate }, 'en');
@@ -358,5 +378,129 @@ describe('features/settings/data/encrypted-backup-card (U17a #dulieu)', () => {
       name: enMessages.settings.data.docsLink,
     });
     expect(enDocsLink).toHaveAttribute('href', '/docs#du-lieu');
+  });
+
+  it('B-1 regression: renders WITHOUT a now prop, calls GET /exports/latest exactly once when ready, and preserves exp-limit (429) and exp-failed (500) across re-renders', async () => {
+    const futureIso = new Date(Date.now() + 24 * 3_600_000).toISOString();
+
+    // 1. Mount WITHOUT `now` prop when latest job is ready -> exactly 1 GET /exports/latest
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        job: {
+          id: TEST_JOB_ID,
+          kind: 'encrypted',
+          status: EXPORT_STATUS.ready,
+          created_at: new Date(Date.now() - 60_000).toISOString(),
+          completed_at: new Date(Date.now() - 30_000).toISOString(),
+          expires_at: futureIso,
+          size_bytes: 2048,
+        } satisfies ExportJob,
+      }),
+    );
+
+    const { rerender, unmount: uReady } = render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <EncryptedBackupCard />
+      </NextIntlClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="exp-ready"]')).toBeInTheDocument();
+    });
+
+    // Re-render parent multiple times without passing `now`
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <EncryptedBackupCard />
+      </NextIntlClientProvider>,
+    );
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <EncryptedBackupCard />
+      </NextIntlClientProvider>,
+    );
+    const wait1 = Promise.withResolvers<void>();
+    setTimeout(wait1.resolve, 50);
+    await wait1.promise;
+    const latestCallsWhenReady = fetchMock.mock.calls.filter(([input]) =>
+      String(input).includes('/api/v1/exports/latest'),
+    );
+    expect(latestCallsWhenReady).toHaveLength(1);
+    uReady();
+
+    // 2. Mount WITHOUT `now` prop -> click start -> 429 rate_limited -> exp-limit persists across re-renders
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ job: null }))
+      .mockResolvedValueOnce(problemResponse('rate_limited', 429, { retry_after: 1800 }))
+      .mockResolvedValue(jsonResponse({ job: null }));
+
+    const { rerender: rerenderLimit, unmount: uLimit } = render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <EncryptedBackupCard />
+      </NextIntlClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="exp-idle"]')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('export-encrypted-start-btn'));
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="exp-limit"]')).toBeInTheDocument();
+    });
+
+    rerenderLimit(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <EncryptedBackupCard />
+      </NextIntlClientProvider>,
+    );
+    const wait2 = Promise.withResolvers<void>();
+    setTimeout(wait2.resolve, 50);
+    await wait2.promise;
+    expect(document.querySelector('[data-view="exp-limit"]')).toBeInTheDocument();
+    expect(screen.getByTestId('export-encrypted-start-btn')).toBeDisabled();
+    const latestCallsAfter429 = fetchMock.mock.calls.filter(([input]) =>
+      String(input).includes('/api/v1/exports/latest'),
+    );
+    expect(latestCallsAfter429).toHaveLength(1);
+    uLimit();
+
+    // 3. Mount WITHOUT `now` prop -> click start -> 500 internal_error -> exp-failed persists across re-renders
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ job: null }))
+      .mockResolvedValueOnce(problemResponse('internal_error', 500))
+      .mockResolvedValue(jsonResponse({ job: null }));
+
+    const { rerender: rerenderFailed, unmount: uFailed } = render(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <EncryptedBackupCard />
+      </NextIntlClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="exp-idle"]')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('export-encrypted-start-btn'));
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="exp-failed"]')).toBeInTheDocument();
+    });
+
+    rerenderFailed(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <EncryptedBackupCard />
+      </NextIntlClientProvider>,
+    );
+    const wait3 = Promise.withResolvers<void>();
+    setTimeout(wait3.resolve, 50);
+    await wait3.promise;
+    expect(document.querySelector('[data-view="exp-failed"]')).toBeInTheDocument();
+    const latestCallsAfter500 = fetchMock.mock.calls.filter(([input]) =>
+      String(input).includes('/api/v1/exports/latest'),
+    );
+    expect(latestCallsAfter500).toHaveLength(1);
+    uFailed();
   });
 });

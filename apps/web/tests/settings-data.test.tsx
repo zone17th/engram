@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -236,6 +236,13 @@ describe('tests/settings-data.test.tsx (Settings #dulieu, #xoataikhoan, and <mai
       expect(screen.getByTestId('export-encrypted-start-btn')).toBeInTheDocument();
     });
     expect(document.getElementById('plainDlg')).not.toBeInTheDocument();
+
+    // Clicking "Readable export" manually clears the stale grant and shows pl-confirm warning instead of auto-starting (Delta N1)
+    fireEvent.click(screen.getByTestId('export-readable-open-btn'));
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-confirm"]')).toBeInTheDocument();
+    });
+    expect(mockClearGrant).toHaveBeenCalled();
 
     window.history.replaceState(null, '', origUrl);
   });

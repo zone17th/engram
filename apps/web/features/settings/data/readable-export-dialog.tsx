@@ -35,6 +35,7 @@ export type ReadableExportViewState =
 
 export const READABLE_EXPORT_ACTION: ReauthAction = 'export.decrypted';
 export const READABLE_EXPORT_RETURN_TO = '/app/settings?reauth=export.decrypted#dulieu';
+const defaultNow = () => Date.now();
 
 export interface ReadableExportDialogProps {
   open: boolean;
@@ -42,6 +43,7 @@ export interface ReadableExportDialogProps {
   returnFocusRef?: RefObject<HTMLElement | null>;
   runnerDeps?: DecryptedExportRunnerDeps;
   now?: () => number;
+  resume?: boolean;
 }
 
 export function ReadableExportDialog({
@@ -49,7 +51,8 @@ export function ReadableExportDialog({
   onOpenChange,
   returnFocusRef,
   runnerDeps,
-  now = () => Date.now(),
+  now = defaultNow,
+  resume,
 }: ReadableExportDialogProps) {
   const t = useTranslations('settings.data.readable');
   const tAuth = useTranslations('auth');
@@ -94,9 +97,15 @@ export function ReadableExportDialog({
   const wasOpenRef = useRef(false);
   const skipFocusReturnRef = useRef(false);
   const mountedRef = useRef(true);
+  const nowRef = useRef(now);
+  nowRef.current = now;
+  const reauthRef = useRef(reauth);
+  reauthRef.current = reauth;
+  const viewStateRef = useRef(viewState);
+  viewStateRef.current = viewState;
+  const sinkDisposeRef = useRef<(() => void) | null>(null);
   const lastLiveUpdateAtRef = useRef(0);
   const pendingLiveTimerRef = useRef<number | null>(null);
-
   const clearLiveTimer = useCallback(() => {
     if (pendingLiveTimerRef.current !== null) {
       clearTimeout(pendingLiveTimerRef.current);
@@ -104,11 +113,18 @@ export function ReadableExportDialog({
     }
   }, []);
 
+  const disposeCompletedSink = useCallback(() => {
+    if (sinkDisposeRef.current) {
+      sinkDisposeRef.current();
+      sinkDisposeRef.current = null;
+    }
+  }, []);
+
   const updateProgressState = useCallback(
     (processed: number, total: number, force = false) => {
       setRawProcessed(processed);
       setRawTotal(total);
-      const currentNow = now();
+      const currentNow = nowRef.current();
       const elapsed = currentNow - lastLiveUpdateAtRef.current;
       if (force || lastLiveUpdateAtRef.current === 0 || elapsed >= LIVE_REGION_THROTTLE_MS) {
         clearLiveTimer();
@@ -121,12 +137,12 @@ export function ReadableExportDialog({
       const remaining = Math.max(10, LIVE_REGION_THROTTLE_MS - elapsed);
       pendingLiveTimerRef.current = window.setTimeout(() => {
         if (!mountedRef.current) return;
-        lastLiveUpdateAtRef.current = now();
+        lastLiveUpdateAtRef.current = nowRef.current();
         setAnnouncedProcessed(processed);
         setAnnouncedTotal(total);
       }, remaining);
     },
-    [clearLiveTimer, now],
+    [clearLiveTimer],
   );
 
   const abortInFlightExport = useCallback(() => {
@@ -134,9 +150,10 @@ export function ReadableExportDialog({
       activeAbortRef.current.abort();
       activeAbortRef.current = null;
     }
+    disposeCompletedSink();
     clearLiveTimer();
     lastLiveUpdateAtRef.current = 0;
-  }, [clearLiveTimer]);
+  }, [clearLiveTimer, disposeCompletedSink]);
 
   const wipeSecretInputs = useCallback(() => {
     setLoginPassword('');
@@ -149,6 +166,13 @@ export function ReadableExportDialog({
     return () => {
       mountedRef.current = false;
       abortInFlightExport();
+      // Clear any residual export.decrypted grant on unmount unless navigating to unlock from pl-locked (Delta N1)
+      if (
+        viewStateRef.current !== 'pl-locked' &&
+        reauthRef.current.grant?.action === READABLE_EXPORT_ACTION
+      ) {
+        reauthRef.current.clearGrant();
+      }
     };
   }, [abortInFlightExport]);
 
@@ -162,7 +186,6 @@ export function ReadableExportDialog({
       }
     });
   }, [abortInFlightExport, open, vault, wipeSecretInputs]);
-
   const startExportFlow = useCallback(
     async (grantToken: string) => {
       abortInFlightExport();
@@ -182,7 +205,7 @@ export function ReadableExportDialog({
       }
 
       const { opGeneration, isCurrent, client } = vault.beginOp();
-      const candidateReuse = isReusableReadySourceJob(reusableSourceJobRef.current, now())
+      const candidateReuse = isReusableReadySourceJob(reusableSourceJobRef.current, nowRef.current())
         ? reusableSourceJobRef.current
         : null;
 
@@ -210,13 +233,17 @@ export function ReadableExportDialog({
             }
           },
           deps: {
-            now,
+            now: () => nowRef.current(),
             ...runnerDeps,
           },
         });
 
-        if (!mountedRef.current || abortController.signal.aborted) return;
+        if (!mountedRef.current || abortController.signal.aborted) {
+          result.dispose?.();
+          return;
+        }
         activeAbortRef.current = null;
+        sinkDisposeRef.current = result.dispose ?? null;
         clearLiveTimer();
         setSavedFilename(result.filename);
         auditIdempotencyKeyRef.current = null;
@@ -229,7 +256,7 @@ export function ReadableExportDialog({
         clearLiveTimer();
 
         if (err instanceof DecryptedExportError) {
-          if (err.sourceJob && isReusableReadySourceJob(err.sourceJob, now())) {
+          if (err.sourceJob && isReusableReadySourceJob(err.sourceJob, nowRef.current())) {
             reusableSourceJobRef.current = err.sourceJob;
           }
           switch (err.kind) {
@@ -275,7 +302,7 @@ export function ReadableExportDialog({
         setViewState('pl-failed');
       }
     },
-    [abortInFlightExport, clearLiveTimer, now, reauth, runnerDeps, updateProgressState, vault],
+    [abortInFlightExport, clearLiveTimer, reauth, runnerDeps, updateProgressState, vault],
   );
 
   // When dialog opens or vault state changes while open
@@ -298,27 +325,30 @@ export function ReadableExportDialog({
         return;
       }
 
-      // Check if returning from OAuth or holding a grant for export.decrypted
+      // Check if returning from OAuth or holding a grant for export.decrypted (Delta N1: auto-start only when resume !== false)
       if (reauth.grant && reauth.grant.action === READABLE_EXPORT_ACTION) {
-        if (grantStillValid(reauth.grant.expires_at, now())) {
+        if (resume === false) {
+          reauth.clearGrant();
+        } else if (grantStillValid(reauth.grant.expires_at, nowRef.current())) {
           activeGrantRef.current = reauth.grant;
           void startExportFlow(reauth.grant.grant);
           return;
+        } else {
+          setViewState('pl-reauth-expired');
+          return;
         }
-        setViewState('pl-reauth-expired');
-        return;
       }
 
       void reauth.begin(READABLE_EXPORT_ACTION, READABLE_EXPORT_RETURN_TO).catch(() => undefined);
       setViewState('pl-confirm');
     }
-  }, [abortInFlightExport, isVaultUnlocked, now, open, reauth, startExportFlow, wipeSecretInputs]);
+  }, [abortInFlightExport, isVaultUnlocked, open, reauth, resume, startExportFlow, wipeSecretInputs]);
 
   // If dialog was in pl-locked and the user unlocked the vault while dialog is open
   useEffect(() => {
     if (!open || viewState !== 'pl-locked' || !isVaultUnlocked) return;
     if (reauth.grant && reauth.grant.action === READABLE_EXPORT_ACTION) {
-      if (grantStillValid(reauth.grant.expires_at, now())) {
+      if (grantStillValid(reauth.grant.expires_at, nowRef.current())) {
         activeGrantRef.current = reauth.grant;
         void startExportFlow(reauth.grant.grant);
         return;
@@ -328,7 +358,7 @@ export function ReadableExportDialog({
     }
     void reauth.begin(READABLE_EXPORT_ACTION, READABLE_EXPORT_RETURN_TO).catch(() => undefined);
     setViewState('pl-confirm');
-  }, [isVaultUnlocked, now, open, reauth, startExportFlow, viewState]);
+  }, [isVaultUnlocked, open, reauth, startExportFlow, viewState]);
 
   // Focus management on state transitions (FE-R1-13)
   useEffect(() => {
@@ -410,25 +440,37 @@ export function ReadableExportDialog({
       await startExportFlow(grant.grant);
     } catch (err) {
       if (!mountedRef.current) return;
+      let wentOffline = false;
       if (err instanceof ProblemError) {
         if (err.problem.code === 'invalid_credentials') {
-          setReauthError(tAuth('errors.invalidCredentialsTitle'));
+          setReauthError(t('invalidPasswordError'));
         } else if (err.problem.code === 'rate_limited') {
           setReauthError(tAuth('errors.rateLimitedTitle'));
         } else {
           setReauthError(tAuth('reauth.failed'));
         }
       } else if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        wentOffline = true;
         setViewState('pl-offline');
       } else {
         setReauthError(tAuth('errors.network'));
+      }
+      if (!wentOffline) {
+        window.requestAnimationFrame(() => {
+          if (!mountedRef.current) return;
+          const targetInput =
+            viewState === 'pl-reauth-expired'
+              ? expiredPasswordRef.current
+              : confirmPasswordRef.current;
+          targetInput?.focus();
+        });
       }
     } finally {
       if (mountedRef.current) {
         setSubmittingReauth(false);
       }
     }
-  }, [loginPassword, startExportFlow, submittingReauth, tAuth]);
+  }, [loginPassword, startExportFlow, submittingReauth, t, tAuth, viewState]);
 
   const handleGoogleReauth = useCallback(async () => {
     if (submittingReauth) return;
@@ -453,13 +495,13 @@ export function ReadableExportDialog({
     if (
       currentGrant &&
       currentGrant.action === READABLE_EXPORT_ACTION &&
-      grantStillValid(currentGrant.expires_at, now())
+      grantStillValid(currentGrant.expires_at, nowRef.current())
     ) {
       void startExportFlow(currentGrant.grant);
       return;
     }
     setViewState('pl-reauth-expired');
-  }, [isVaultUnlocked, now, reauth.grant, startExportFlow]);
+  }, [isVaultUnlocked, reauth.grant, startExportFlow]);
 
   const unlockHref = `/app/unlock?returnTo=${encodeURIComponent(READABLE_EXPORT_RETURN_TO)}`;
 
@@ -543,7 +585,7 @@ export function ReadableExportDialog({
                     tabIndex={-1}
                     role="status"
                     aria-live="polite"
-                    className="auth-status mb-4"
+                    className="auth-status mb-4 outline-none"
                     data-testid="readable-export-cancelled-status"
                   >
                     {t('cancelledStatus')}
@@ -568,11 +610,16 @@ export function ReadableExportDialog({
                     autoComplete="current-password"
                     value={loginPassword}
                     onChange={(e) => setLoginPassword(e.target.value)}
-                    hint={t('passwordHint')}
+                    hint={hasGoogleOauth ? t('passwordHint') : t('passwordOnlyHint')}
                     error={reauthError ?? undefined}
-                    disabled={submittingReauth}
+                    readOnly={submittingReauth}
+                    aria-busy={submittingReauth || undefined}
                     wrapperClassName="mb-4"
                   />
+                )}
+
+                {!hasPassword && hasGoogleOauth && (
+                  <p className="field-hint m-0 mb-3">{t('oauthOnlyHint')}</p>
                 )}
 
                 {!hasPassword && reauthError && (
@@ -581,7 +628,7 @@ export function ReadableExportDialog({
                   </div>
                 )}
 
-                {hasGoogleOauth && (
+                {hasPassword && hasGoogleOauth && (
                   <button
                     ref={confirmOauthBtnRef}
                     type="button"
@@ -604,7 +651,7 @@ export function ReadableExportDialog({
                   >
                     {t('cancelButton')}
                   </Button>
-                  {hasPassword && (
+                  {hasPassword ? (
                     <Button
                       type="submit"
                       variant="primary"
@@ -613,6 +660,19 @@ export function ReadableExportDialog({
                     >
                       {t('exportButton')}
                     </Button>
+                  ) : (
+                    hasGoogleOauth && (
+                      <button
+                        ref={confirmOauthBtnRef}
+                        type="button"
+                        className="touch-target btn btn-primary"
+                        data-testid="readable-export-oauth-btn"
+                        disabled={submittingReauth}
+                        onClick={() => void handleGoogleReauth()}
+                      >
+                        {t('verifyGoogleButton')}
+                      </button>
+                    )
                   )}
                 </div>
               </form>
@@ -625,7 +685,7 @@ export function ReadableExportDialog({
                 ref={statusHeadingRef}
                 tabIndex={-1}
                 role="alert"
-                className="auth-alert mb-4"
+                className="auth-alert mb-4 outline-none"
               >
                 {t('lockedAlert')}
               </div>
@@ -657,7 +717,7 @@ export function ReadableExportDialog({
                 tabIndex={-1}
                 role="status"
                 aria-live="polite"
-                className="auth-status mb-3"
+                className="auth-status mb-3 outline-none"
               >
                 <span>
                   {progressPhase === 'preparing_source'
@@ -694,7 +754,7 @@ export function ReadableExportDialog({
                 ref={statusHeadingRef}
                 tabIndex={-1}
                 role="status"
-                className="auth-status mb-3"
+                className="auth-status mb-3 outline-none"
               >
                 {t('doneStatusPrefix')}{' '}
                 <span className="mono">{savedFilename}</span>
@@ -719,7 +779,7 @@ export function ReadableExportDialog({
                 ref={statusHeadingRef}
                 tabIndex={-1}
                 role="alert"
-                className="auth-alert mb-3"
+                className="auth-alert mb-3 outline-none"
               >
                 {failedKind === 'key_mismatch' ? t('failedAlert') : t('failedGenericAlert')}
               </div>
@@ -750,7 +810,7 @@ export function ReadableExportDialog({
                 ref={statusHeadingRef}
                 tabIndex={-1}
                 role="alert"
-                className="auth-warning mb-3"
+                className="auth-warning mb-3 outline-none"
               >
                 {isPausedLimit
                   ? t('pausedWarning', { clock: limitClock })
@@ -775,7 +835,7 @@ export function ReadableExportDialog({
                 ref={statusHeadingRef}
                 tabIndex={-1}
                 role="status"
-                className="auth-status mb-3"
+                className="auth-status mb-3 outline-none"
               >
                 {t('offlineStatus')}
               </div>
@@ -806,7 +866,7 @@ export function ReadableExportDialog({
                   ref={statusHeadingRef}
                   tabIndex={-1}
                   role="alert"
-                  className="auth-alert mb-3"
+                  className="auth-alert mb-3 outline-none"
                 >
                   {t('reauthExpiredAlert')}
                 </div>
@@ -821,7 +881,8 @@ export function ReadableExportDialog({
                     value={loginPassword}
                     onChange={(e) => setLoginPassword(e.target.value)}
                     error={reauthError ?? undefined}
-                    disabled={submittingReauth}
+                    readOnly={submittingReauth}
+                    aria-busy={submittingReauth || undefined}
                     wrapperClassName="mb-4"
                   />
                 )}
@@ -833,7 +894,7 @@ export function ReadableExportDialog({
                 )}
 
                 <div className="flex flex-wrap justify-between gap-2">
-                  {hasGoogleOauth ? (
+                  {hasPassword && hasGoogleOauth ? (
                     <button
                       ref={expiredOauthBtnRef}
                       type="button"
@@ -857,7 +918,7 @@ export function ReadableExportDialog({
                     >
                       {t('cancelButton')}
                     </Button>
-                    {hasPassword && (
+                    {hasPassword ? (
                       <Button
                         type="submit"
                         variant="primary"
@@ -866,6 +927,19 @@ export function ReadableExportDialog({
                       >
                         {t('continueButton')}
                       </Button>
+                    ) : (
+                      hasGoogleOauth && (
+                        <button
+                          ref={expiredOauthBtnRef}
+                          type="button"
+                          className="touch-target btn btn-primary"
+                          data-testid="readable-export-expired-oauth-btn"
+                          disabled={submittingReauth}
+                          onClick={() => void handleGoogleReauth()}
+                        >
+                          {t('verifyGoogleButton')}
+                        </button>
+                      )
                     )}
                   </div>
                 </div>
@@ -879,7 +953,7 @@ export function ReadableExportDialog({
                 ref={statusHeadingRef}
                 tabIndex={-1}
                 role="alert"
-                className="auth-alert mb-3"
+                className="auth-alert mb-3 outline-none"
               >
                 {t('tooLargeAlert')}
               </div>

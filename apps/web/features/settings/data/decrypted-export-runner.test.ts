@@ -2,8 +2,10 @@ import { ProblemError } from '@engram/shared-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EXPORT_STATUS, type DecryptedExportPage, type ExportJob } from '@/lib/api/export';
 import {
+  createBlobFallbackSink,
   DecryptedExportError,
   FALLBACK_MAX_ESCAPED_BYTES,
+  OBJECT_URL_REVOKE_DELAY_MS,
   runDecryptedExport,
   type ShowSaveFilePickerFn,
   type WritableFileStreamLike,
@@ -619,5 +621,65 @@ describe('features/settings/data/decrypted-export-runner', () => {
 
     expect(mismatchAborted).toBe(true);
     expect(mismatchClosed).toBe(false);
+  });
+
+  it('M4 & N3: createBlobFallbackSink delays URL.revokeObjectURL by OBJECT_URL_REVOKE_DELAY_MS, revokes immediately on dispose(), and still schedules revoke in finally if click() throws', async () => {
+    vi.useFakeTimers();
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    const createUrlSpy = vi.fn().mockReturnValue('blob:engram-test-url-1');
+    const revokeUrlSpy = vi.fn();
+    URL.createObjectURL = createUrlSpy;
+    URL.revokeObjectURL = revokeUrlSpy;
+    const clickMainSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    try {
+      // 1. Delayed revoke after OBJECT_URL_REVOKE_DELAY_MS
+      const sink1 = createBlobFallbackSink();
+      await sink1.write('{"hello":"world"}');
+      await sink1.finalize('test-1.json');
+
+      expect(createUrlSpy).toHaveBeenCalledTimes(1);
+      expect(revokeUrlSpy).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(OBJECT_URL_REVOKE_DELAY_MS - 1);
+      expect(revokeUrlSpy).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+      expect(revokeUrlSpy).toHaveBeenCalledTimes(1);
+      expect(revokeUrlSpy).toHaveBeenCalledWith('blob:engram-test-url-1');
+
+      // 2. Immediate revoke via dispose() (N3)
+      createUrlSpy.mockReturnValue('blob:engram-test-url-2');
+      revokeUrlSpy.mockClear();
+      const sink2 = createBlobFallbackSink();
+      await sink2.write('{"hello":"dispose"}');
+      await sink2.finalize('test-2.json');
+
+      expect(revokeUrlSpy).not.toHaveBeenCalled();
+      sink2.dispose?.();
+      expect(revokeUrlSpy).toHaveBeenCalledTimes(1);
+      expect(revokeUrlSpy).toHaveBeenCalledWith('blob:engram-test-url-2');
+      vi.advanceTimersByTime(OBJECT_URL_REVOKE_DELAY_MS * 2);
+      expect(revokeUrlSpy).toHaveBeenCalledTimes(1);
+
+      // 3. try/finally around appendChild/click ensures anchor removal and delayed revoke even if click() throws (N3)
+      createUrlSpy.mockReturnValue('blob:engram-test-url-3');
+      revokeUrlSpy.mockClear();
+      clickMainSpy.mockImplementationOnce(() => {
+        throw new Error('synthetic click error');
+      });
+      const sink3 = createBlobFallbackSink();
+      await sink3.write('{"hello":"throw"}');
+      await expect(sink3.finalize('test-3.json')).rejects.toThrow('synthetic click error');
+
+      expect(document.querySelector('a[download="test-3.json"]')).toBeNull();
+      vi.advanceTimersByTime(OBJECT_URL_REVOKE_DELAY_MS);
+      expect(revokeUrlSpy).toHaveBeenCalledWith('blob:engram-test-url-3');
+    } finally {
+      clickMainSpy.mockRestore();
+      URL.createObjectURL = origCreate;
+      URL.revokeObjectURL = origRevoke;
+      vi.useRealTimers();
+    }
   });
 });
