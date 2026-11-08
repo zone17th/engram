@@ -385,7 +385,9 @@ func assertCmdBinariesBoot(t *testing.T, apiBin, workerBin, dsn string, smtp bin
 		t.Fatalf("worker binary did not log ready; out=%s", workerOut.String())
 	}
 
-	client := &http.Client{Timeout: 2 * time.Second}
+	// No keep-alives: net/http Shutdown treats a pre-dialed, never-used (StateNew)
+	// connection as busy for 5s, which would push a clean SIGINT past SHUTDOWN_TIMEOUT.
+	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 	readyURL := "http://" + httpAddr + "/api/v1/readyz"
 	deadline := time.Now().Add(15 * time.Second)
 	for {
@@ -436,10 +438,13 @@ func assertCmdBinariesBoot(t *testing.T, apiBin, workerBin, dsn string, smtp bin
 		t.Logf("api+worker binaries (no SMTP_HOST): mail_delivery_available=false, verify-email/send=503 mail_delivery_unavailable, email_verification rows unchanged (%d)", before)
 	}
 
-	for _, p := range []*exec.Cmd{apiCmd, workerCmd} {
-		_ = p.Process.Signal(os.Interrupt)
-		if err := p.Wait(); err != nil {
-			t.Fatalf("binary exit (%s): %v", p.Path, err)
+	for _, p := range []struct {
+		cmd *exec.Cmd
+		out *bytes.Buffer
+	}{{apiCmd, &apiOut}, {workerCmd, &workerOut}} {
+		_ = p.cmd.Process.Signal(os.Interrupt)
+		if err := p.cmd.Wait(); err != nil {
+			t.Fatalf("binary exit (%s): %v\noutput:\n%s", filepath.Base(p.cmd.Path), err, p.out.String())
 		}
 	}
 }
