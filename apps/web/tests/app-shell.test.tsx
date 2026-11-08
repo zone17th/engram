@@ -10,6 +10,8 @@ import { AppHeader } from '../components/app-shell/app-header';
 import AppError from '../app/app/error';
 import { EmptyState } from '../components/app-shell/empty-state';
 import { Omnibox } from '../components/app-shell/omnibox';
+import { Segmented } from '../components/ui/segmented';
+import { AuthChrome } from '../features/auth/auth-chrome';
 import { PreviewNotice } from '../components/app-shell/preview-notice';
 import { Rail } from '../components/app-shell/rail';
 import { ThemeProvider } from '../components/theme-provider';
@@ -137,6 +139,35 @@ describe('AppHeader', () => {
   it('showLogout={false} chỉ để render ngoài SessionProvider', () => {
     renderWithTheme(<AppHeader vault={{ state: 'locked' }} showLogout={false} />);
     expect(screen.queryByRole('button', { name: 'Đăng xuất' })).not.toBeInTheDocument();
+  });
+});
+
+describe('F-05 / F-06 outside the app header', () => {
+  it('Segmented options reach 44px at phone width (max-sm:min-h-11 min-w-11)', () => {
+    renderWithTheme(
+      <Segmented
+        value="a"
+        onChange={() => {}}
+        options={[
+          { value: 'a', label: 'A' },
+          { value: 'b', label: 'B' },
+        ]}
+      />,
+    );
+    for (const name of ['A', 'B']) {
+      expect(screen.getByRole('radio', { name })).toHaveClass('max-sm:min-h-11', 'max-sm:min-w-11');
+    }
+  });
+
+  it('AuthChrome has a skip link to main#main-content and a 44px theme toggle (footer/auth toggle 34x36 fix)', () => {
+    const { container } = renderWithTheme(
+      <AuthChrome>
+        <p>form</p>
+      </AuthChrome>,
+    );
+    expect(screen.getByRole('link', { name: viMessages.nav.skipToContent })).toHaveAttribute('href', '#main-content');
+    expect(container.querySelector('main#main-content')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Đổi giao diện sáng/tối' })).toHaveClass('min-h-11', 'min-w-11');
   });
 });
 
