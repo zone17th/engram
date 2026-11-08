@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/zone17th/engram/apps/api/internal/auth"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
@@ -131,9 +132,15 @@ func NewWithMail(
 	}
 	// Register the notice worker unconditionally: river.InsertTx rejects an
 	// unknown job kind, so with mail delivery disabled every verified-owner
-	// export finalization would roll back (review r1 R1-14). A nil mailer is a
-	// terminal no-delivery inside SecurityNoticeWorker.Work.
-	if err := river.AddWorkerSafely(workers, NewSecurityNoticeWorker(pool, mail, logger)); err != nil {
+	// export finalization would roll back (review r1 R1-14). A nil mailer stays
+	// a nil auth.Mailer (never mailAdapter{nil}, dec-039) and is a terminal
+	// no-delivery inside SecurityNoticeWorker.Work; a real mailer is wrapped so
+	// ops-config's noticeMailAvailable can probe it (dec-041).
+	var noticeMail auth.Mailer
+	if mail != nil {
+		noticeMail = mailAdapter{mail}
+	}
+	if err := river.AddWorkerSafely(workers, NewSecurityNoticeWorker(pool, noticeMail, logger)); err != nil {
 		return nil, fmt.Errorf("đăng ký notice: %w", err)
 	}
 
@@ -255,6 +262,16 @@ func NewWithMail(
 		return nil, fmt.Errorf("tạo river client: %w", err)
 	}
 	return client, nil
+}
+
+type mailAdapter struct {
+	fn interface {
+		Send(ctx context.Context, recipient, purpose, link string) error
+	}
+}
+
+func (m mailAdapter) Send(ctx context.Context, recipient, purpose, link string) error {
+	return m.fn.Send(ctx, recipient, purpose, link)
 }
 
 func resolveExportDeps(ed *ExportDeps) (string, config.Secret) {

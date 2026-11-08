@@ -456,8 +456,10 @@ func TestExportReadyWithDisabledMailRealRiver(t *testing.T) {
 		`SELECT state, attempt FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&noticeState, &noticeAttempt); err != nil {
 		t.Fatal(err)
 	}
-	if noticeState != "completed" || noticeAttempt != 1 {
-		t.Fatalf("security_notice_mail state=%s attempt=%d, want completed on attempt 1 (disabled delivery is terminal)", noticeState, noticeAttempt)
+	// ops-config (dec-041/C13) ends disabled delivery with a terminal JobCancel
+	// (outcome mail_unavailable): settled on attempt 1, never retried.
+	if noticeState != "cancelled" || noticeAttempt != 1 {
+		t.Fatalf("security_notice_mail state=%s attempt=%d, want terminal cancelled on attempt 1 (disabled delivery)", noticeState, noticeAttempt)
 	}
 	var exportState string
 	var exportAttempt int
