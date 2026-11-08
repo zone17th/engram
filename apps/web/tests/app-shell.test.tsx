@@ -141,6 +141,27 @@ describe('AppHeader', () => {
     expect(screen.getByTestId('vault-unlock-button-mobile')).toHaveClass('h-11', 'w-11');
   });
 
+  // R4-L2 (360px): below sm Settings is an icon-only 44px target (text kept as sr-only) and Sign out gets px-2, so six
+  // >= 44px targets fit in 360px in vi + en; from sm up nothing changes. jsdom cannot measure layout: tester_visual
+  // proves scrollWidth <= 360 on the live page; this asserts the classes and that Settings/Sign out stay reachable.
+  it('R4-L2: Settings icon-only dưới sm (tên truy cập giữ nguyên), Đăng xuất px-2, từ sm trở lên không đổi', () => {
+    renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);
+    const settings = screen.getByRole('link', { name: 'Cài đặt' });
+    expect(settings).toHaveClass('min-h-11', 'max-sm:min-w-11', 'max-sm:!px-0');
+    expect(screen.getByTestId('header-settings-icon')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByTestId('header-settings-icon')).toHaveClass('sm:hidden');
+    expect(settings.querySelector('[class~="max-sm:sr-only"]')?.textContent).toBe('Cài đặt');
+    expect(screen.getByRole('button', { name: 'Đăng xuất' })).toHaveAttribute('data-size', 'md'); // real class: tests/route-guard.test.tsx
+  });
+
+  it('R4-L2: trang Settings giữ nhãn "Xong" bằng chữ (không icon-only)', () => {
+    renderWithTheme(<AppHeader vault={{ state: 'locked' }} settingsActive />);
+    const done = screen.getByRole('link', { name: 'Xong' });
+    expect(done).toHaveAttribute('href', '/app');
+    expect(done).not.toHaveClass('max-sm:!px-0');
+    expect(screen.queryByTestId('header-settings-icon')).toBeNull();
+  });
+
   // F-06: first Tab stop is the skip link; the target id lives on each page's <main>.
   it('F-06: skip link là phần tử đầu tiên, trỏ tới #main-content', () => {
     const { container } = renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);

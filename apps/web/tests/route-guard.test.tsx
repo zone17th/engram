@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
 import { describe, expect, it, vi } from 'vitest';
-import { RouteGuard } from '@/features/auth/route-guard';
+import { AppShellLogoutButton, RouteGuard } from '@/features/auth/route-guard';
 import { keepAuthFormMountedWhileLoading, resolveGuardRedirect } from '@/features/auth/guard-redirect';
 import type { Me } from '@/lib/api/auth';
 import en from '../messages/en.json';
@@ -265,5 +265,25 @@ describe('resolveGuardRedirect while the vault holds no key (U5, advisor-dec-048
     ).toBe('/app');
     expect(guard('/app/auth/forgot-password', 'unlocked')).toBeNull();
     expect(guard('/app/auth/reset-password', 'unlocked')).toBeNull();
+  });
+});
+
+describe('AppShellLogoutButton (R4-L2, 360px header)', () => {
+  it('md: 44px target, tighter px-2 below sm only, still labelled "Sign out"; sm default unchanged', () => {
+    const { unmount } = render(
+      <NextIntlClientProvider locale="en" messages={en}>
+        <AppShellLogoutButton size="md" />
+      </NextIntlClientProvider>,
+    );
+    const md = screen.getByRole('button', { name: 'Sign out' });
+    expect(md).toHaveClass('min-h-11', 'max-sm:!px-2');
+    expect(md).not.toHaveClass('sm:!px-2');
+    unmount();
+    render(
+      <NextIntlClientProvider locale="en" messages={en}>
+        <AppShellLogoutButton />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByRole('button', { name: 'Sign out' })).not.toHaveClass('max-sm:!px-2');
   });
 });

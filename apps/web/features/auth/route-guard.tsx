@@ -166,7 +166,7 @@ export function AppShellLogoutButton({ size = 'sm' }: { size?: 'sm' | 'md' }) {
     <Button
       variant="tertiary"
       size={size}
-      className={size === 'md' ? 'min-h-11' : undefined}
+      className={size === 'md' ? 'min-h-11 max-sm:!px-2' : undefined}
       onClick={() => {
         void vault?.lock({ broadcast: true, reason: 'logout' });
         void signOut();

@@ -23,6 +23,11 @@ import { useEffect, useRef } from 'react';
  * V-1 (FU-T26-390-OVERFLOW): below `sm` the row uses `px-3 gap-1` (not `px-5 gap-2`) so logo + lock + Settings + ? + theme + Sign out
  * (all >= 44px) fit in 390px in vi and en; from `sm` up nothing changes (header stays 68px).
  *
+ * R4-L2 (advisor ruling, 360px): below `sm` the Settings link is an icon-only 44px target (the text stays in the DOM as
+ * `sr-only`, so the accessible name and the link are unchanged) and Sign out uses `px-2`; every target is still >= 44px,
+ * Sign out stays visible, and from `sm` up the header is exactly as before. While on /app/settings the short "Done"
+ * label keeps its text. tester_visual proves the real `scrollWidth <= 360` (vi + en); jsdom cannot measure layout.
+ *
  * `showLogout` defaults to `true` so every route (including the item page, which passes no flag) shows Sign out.
  * The prop stays in the API only as an opt-out for isolated renders without a SessionProvider (unit tests); app routes
  * must not pass `false`.
@@ -178,10 +183,20 @@ export function AppHeader({
           )}
           <Link
             href={settingsActive ? '/app' : '/app/settings'}
-            className="btn btn-tertiary touch-target min-h-11 no-underline !text-body"
+            className={`btn btn-tertiary touch-target min-h-11 no-underline !text-body${settingsActive ? '' : ' max-sm:min-w-11 max-sm:!px-0'}`}
             aria-current={settingsActive ? 'page' : undefined}
+            data-testid="header-settings-link"
           >
-            {settingsActive ? tHeader('settingsDone') : tHeader('settings')}
+            {settingsActive ? (
+              tHeader('settingsDone')
+            ) : (
+              <>
+                <span aria-hidden="true" className="text-[16px] leading-none sm:hidden" data-testid="header-settings-icon">
+                  ⚙
+                </span>
+                <span className="max-sm:sr-only">{tHeader('settings')}</span>
+              </>
+            )}
           </Link>
           <Link
             href={docsHref}
