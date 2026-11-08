@@ -97,6 +97,9 @@ func (s *Service) deleteAccount(ctx context.Context, req accountDeleteRequest) (
 		return AccountDeleteResult{}, err
 	}
 	s.enqueueExportCleanup(ctx, res.CleanupIDs)
+	if s.MailDeliveryAvailable() {
+		_ = s.mail.Send(ctx, req.confirmEmail, "security", "")
+	}
 	return res, nil
 }
 
@@ -185,7 +188,20 @@ WHERE kind = ANY($1::text[])
 		}
 	}
 
-	// (e) Cascade every user-owned row.
+	// (e) Remove login-mode oauth_transaction rows (where expected_user_id and
+	// expected_session_id are NULL) that recorded this user's provider UID or
+	// email before cascading the user and its auth_identity rows.
+	if _, err := tx.Exec(ctx, `
+DELETE FROM oauth_transaction ot
+WHERE EXISTS (
+	SELECT 1 FROM auth_identity ai
+	WHERE ai.user_id = $1
+	  AND ai.provider_uid IS NOT NULL
+	  AND ot.identity_provider = ai.provider
+	  AND ot.identity_provider_uid = ai.provider_uid
+) OR ot.identity_email = $2`, u.ID, u.Email); err != nil {
+		return AccountDeleteResult{}, err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM app_user WHERE id = $1`, u.ID); err != nil {
 		return AccountDeleteResult{}, err
 	}

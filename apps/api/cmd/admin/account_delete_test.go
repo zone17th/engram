@@ -64,6 +64,13 @@ func TestAdminDeleteAccountByEmail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var sessID string
+	if err := pool.QueryRow(ctx, `INSERT INTO session (user_id, refresh_token_hash, expires_at) VALUES ($1, decode(repeat('ab', 32), 'hex'), now() + interval '7 days') RETURNING id::text`, u.ID).Scan(&sessID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO session_refresh_used (token_hash, session_id) VALUES (decode(repeat('cd', 32), 'hex'), $1::uuid)`, sessID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := q.InsertItem(ctx, gen.InsertItemParams{UserID: u.ID, Name: "Orphan", NameNormalized: "orphan"}); err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +104,12 @@ VALUES ($1, 'encrypted', 'running', gen_random_uuid(), now() + interval '10 minu
 
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM app_user WHERE id = $1`, u.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("app_user after delete = %d (%v), want 0", count, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM session WHERE user_id = $1`, u.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("session after delete = %d (%v), want 0", count, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM session_refresh_used WHERE session_id = $1::uuid`, sessID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("session_refresh_used after delete = %d (%v), want 0", count, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM item WHERE user_id = $1`, u.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("item after delete = %d (%v), want 0", count, err)
