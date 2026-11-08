@@ -262,6 +262,7 @@ export function Omnibox({
   const tPrivacy = useTranslations('content.privacy');
   const tErrors = useTranslations('content.errors');
   const tSearchHelp = useTranslations('search.help');
+  const tNav = useTranslations('nav');
   const tSearchTab = useTranslations('search.tab');
   const tSearchState = useTranslations('search.state');
   const tSearchLive = useTranslations('search.live');
@@ -2539,7 +2540,13 @@ export function Omnibox({
   useEffect(() => {
     if (showHint) privacyHintShown = true;
   }, [showHint]);
-  const hintVisible = showHint && (!hintCollapsed || hintOpen);
+  // H-2: only the PRIVACY sentence collapses behind the `i` after the first Omnibox of the session; the
+  // guidance messages (Tab cannot fill, tag-filter hint, "press Enter to search") always stay visible.
+  const hintIsPrivacy =
+    !tabCannotFill &&
+    (helpTextKey === 'search.help.sentToServer' || helpTextKey === 'search.help.sentToServerExternal');
+  const privacyCollapsed = hintCollapsed && hintIsPrivacy;
+  const hintVisible = showHint && (!privacyCollapsed || hintOpen);
   const isSearchInvalid = parsed.mode === 'search' && hasNonEmptyInput && !parsed.searchable;
 
   const hasGrammarErr = parsed.mode === 'add-invalid';
@@ -2740,7 +2747,7 @@ export function Omnibox({
             !hintVisible && 'hidden',
           )}
         >
-          {hintCollapsed && hintOpen
+          {privacyCollapsed && hintOpen
             ? [tSearchHelp('privacyHint1'), tSearchHelp('privacyHint2'), tSearchHelp('privacyHint3')].join(' ')
             : tabCannotFill
             ? tSearchTab('cannotFill')
@@ -2757,13 +2764,13 @@ export function Omnibox({
                     })}
         </div>
 
-        {showHint && hintCollapsed ? (
+        {showHint && privacyCollapsed ? (
           <button
             type="button"
             data-testid="omnibox-hint-info"
             aria-expanded={hintOpen}
             aria-controls={hintId}
-            aria-label={tSearchHelp('privacyHint1')}
+            aria-label={tNav('help')}
             title={tSearchHelp('privacyHint1')}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => setHintOpen((open) => !open)}

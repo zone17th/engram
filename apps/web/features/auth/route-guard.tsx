@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { type ReactNode, useEffect } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { OfflineBanner } from '@/components/app-shell/offline-banner';
 import { AuthStatus } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
@@ -93,14 +93,21 @@ export function RouteGuard({ children }: { children: ReactNode }) {
   const router = useRouter();
   const returnTo = readOptionalReturnTo();
   const t = useTranslations('auth.guard');
+  // M-2: "mid-flow" means this page HAD a live session. A cold load with a dead cookie also ends with
+  // reason expired/invalid from the very first /me call, but nothing was open: that keeps the normal redirect.
+  const [hadSession, setHadSession] = useState(false);
+  useEffect(() => {
+    if (me) setHadSession(true);
+  }, [me]);
+  const midflowLoss = hadSession && isMidflowSessionLoss(lastSessionEndReason);
 
   useEffect(() => {
-    if (status === 'signed_out' && !isAuthRoute(pathname) && isMidflowSessionLoss(lastSessionEndReason)) return;
+    if (status === 'signed_out' && !isAuthRoute(pathname) && midflowLoss) return;
     const next = resolveGuardRedirect({ status, pathname, me, vaultState, returnTo });
     if (next && next !== pathname) {
       router.replace(next);
     }
-  }, [status, me, pathname, returnTo, router, vaultState, lastSessionEndReason]);
+  }, [status, me, pathname, returnTo, router, vaultState, midflowLoss]);
   // `me` is still in hand when a session-epoch bump re-keys the query (password
   // replacement, silent refresh). Swapping the tree for the loading frame there
   // unmounts the page and drops transient state such as the account success
@@ -124,7 +131,7 @@ export function RouteGuard({ children }: { children: ReactNode }) {
   }
 
   if (status === 'signed_out' && !isAuthRoute(pathname)) {
-    if (isMidflowSessionLoss(lastSessionEndReason)) {
+    if (midflowLoss) {
       return <SessionExpiredFrame pathname={pathname} />;
     }
     return <AuthLoadingFrame label={t('loading')} />;

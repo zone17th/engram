@@ -1440,6 +1440,16 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     const newTypeSelect = within(card).getByTestId('json-new-type-select-root');
     assertVaultSecretElementAttributes(card);
 
+    // FU-ENTRYUX-N1: native select styled as the composer's type chip, form on the aligned grid class
+    expect(within(card).getByTestId('json-add-field-form-root')).toHaveClass('json-add-field-form');
+    expect(newTypeSelect).toHaveClass('kv-type-chip', 'json-add-field-type');
+    expect(newTypeSelect).toHaveAttribute('data-kv-type', 'string');
+    fireEvent.change(newTypeSelect, { target: { value: 'number' } });
+    expect(newTypeSelect).toHaveAttribute('data-kv-type', 'number');
+    fireEvent.change(newTypeSelect, { target: { value: 'object' } });
+    expect(newTypeSelect).toHaveAttribute('data-kv-type', 'object');
+    fireEvent.change(newTypeSelect, { target: { value: 'string' } });
+
     fireEvent.change(newKeyInput, { target: { value: 'count' } });
     fireEvent.click(within(card).getByTestId('json-confirm-add-field-root'));
     expect(within(card).getByTestId('json-add-field-error-root')).toHaveTextContent(
@@ -1450,6 +1460,15 @@ describe('P04-T16 JSON card U13 (table / raw / edit, lossless byte splice, ARIA 
     fireEvent.change(newTypeSelect, { target: { value: 'true' } });
     fireEvent.click(within(card).getByTestId('json-confirm-add-field-root'));
     expect(within(card).getByTestId('json-cell-btn-root.p2')).toHaveTextContent('true');
+
+    // FU-ENTRYUX-N3: in edit state the byte counter is hidden from the phone header and repeated in the
+    // footer save bar (sm:hidden), so the 390 px header keeps one row; the drag handle also drops at <=420 px.
+    const headerCounter = within(card).getByTestId(`entry-byte-counter-${ENTRY_ID_1}`);
+    const footerCounter = within(card).getByTestId(`entry-byte-counter-footer-${ENTRY_ID_1}`);
+    expect(headerCounter).toHaveClass('max-sm:hidden');
+    expect(footerCounter).toHaveClass('sm:hidden');
+    expect(footerCounter.textContent).toBe(headerCounter.textContent);
+    expect(within(card).getByTestId(`entry-drag-handle-${ENTRY_ID_1}`)).toHaveClass('max-[420px]:hidden');
 
     // 3. Expand "list" (root.p1) and click missing cell "—" on row 2 col 2 (root.p1.e1.c1)
     fireEvent.click(within(card).getByTestId('json-toggle-root.p1'));

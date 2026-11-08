@@ -57,7 +57,6 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
   const [password, setPassword] = useState('');
   const [oauthPending, setOauthPending] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
-  const openerRef = useRef<HTMLElement | null>(null);
 
   const { pending, renewing, failure, timedOut, cancel, register, clearFailure } = usePasskeyRegister({
     returnPath,
@@ -73,14 +72,6 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
   // Post-wrap renewal is in-place only: a full-page Google redirect would destroy the Worker and pending wrap.
   const canUseGoogle = reauth.capabilities.oauthReauthProviders.includes('google') && !renewing;
   const reauthBusy = reauth.submitting || oauthPending;
-
-  // Remember the element that held focus before the dialog opened so Cancel / Escape restores it even when the caller
-  // opened the dialog without a DialogTrigger.
-  useEffect(() => {
-    if (!open || typeof document === 'undefined') return;
-    const active = document.activeElement;
-    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
-  }, [open]);
 
   // Step 1: the grant is taken when "Add passkey" is pressed, before anything else.
   useEffect(() => {
@@ -139,16 +130,10 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
     !reauth.capabilities.hasPassword && !canUseGoogle && !reauth.capabilities.passwordEnrollmentAvailable;
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    // L-4: focus return is the central Dialog's job (returnFocusRef, else the auto-captured opener).
+    <Dialog open={open} onOpenChange={handleOpenChange} returnFocusRef={returnFocusRef}>
       <DialogContent
         id="passkeyAddDlg"
-        onCloseAutoFocus={(event) => {
-          const opener = returnFocusRef?.current ?? openerRef.current;
-          if (opener && opener.isConnected) {
-            event.preventDefault();
-            opener.focus();
-          }
-        }}
       >
         <div className="panel max-h-[90vh] w-[min(560px,94vw)] overflow-auto p-7">
           <DialogHeader title={t('add.title')} description={t('add.description')} />

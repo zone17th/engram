@@ -73,13 +73,27 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
     setTimedOut(false);
     const controller = new AbortController();
     abortRef.current = controller;
-    const timer = setTimeout(() => {
-      if (mountedRef.current) setTimedOut(true);
-      controller.abort();
-    }, PASSKEY_PROMPT_TIMEOUT_MS);
+    // H-1: the 60 s timer belongs to ONE authenticator prompt (create/get), never to the re-auth password
+    // stage or the save round-trip. Each prompt gets its own child signal that follows the dialog's controller.
+    const prompt = async <T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+      const child = new AbortController();
+      const forward = () => child.abort();
+      if (controller.signal.aborted) child.abort();
+      else controller.signal.addEventListener('abort', forward, { once: true });
+      const timer = setTimeout(() => {
+        if (mountedRef.current) setTimedOut(true);
+        child.abort();
+      }, PASSKEY_PROMPT_TIMEOUT_MS);
+      try {
+        return await run(child.signal);
+      } finally {
+        clearTimeout(timer);
+        controller.signal.removeEventListener('abort', forward);
+      }
+    };
     const credentials: Pick<CredentialsContainer, 'create' | 'get'> = {
-      create: (opts) => navigator.credentials.create({ ...opts, signal: controller.signal }),
-      get: (opts) => navigator.credentials.get({ ...opts, signal: controller.signal }),
+      create: (opts) => prompt((signal) => navigator.credentials.create({ ...opts, signal })),
+      get: (opts) => prompt((signal) => navigator.credentials.get({ ...opts, signal })),
     };
 
     const { returnPath } = optionsRef.current;
@@ -129,7 +143,6 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
       }
       return outcome;
     } finally {
-      clearTimeout(timer);
       if (abortRef.current === controller) abortRef.current = null;
       pendingRef.current = false;
       if (mountedRef.current) setPending(false);

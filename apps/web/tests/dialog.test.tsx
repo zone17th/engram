@@ -156,6 +156,61 @@ describe('Dialog focus & dismissible contract (P06 Task 6)', () => {
     });
   });
 
+  it('L-4: with no returnFocusRef and no DialogTrigger, focus returns to the element that was focused when the dialog opened', async () => {
+    function AutoHost() {
+      const [open, setOpen] = useState(false);
+      return (
+        <div>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open without ref
+          </button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogContent aria-describedby={undefined}>
+              <div className="panel p-7">
+                <DialogHeader title="Auto-captured opener" />
+                <DialogClose asChild>
+                  <Button variant="tertiary">Cancel</Button>
+                </DialogClose>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+      );
+    }
+    render(<AutoHost />);
+    const opener = screen.getByRole('button', { name: 'Open without ref' });
+    opener.focus();
+    await userEvent.click(opener);
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(opener).toHaveFocus();
+  });
+
+  it('L-3: dismissible={false} blocks Escape/outside only; an explicit DialogClose press still closes', async () => {
+    function HostedBusy() {
+      const [open, setOpen] = useState(true);
+      return (
+        <Dialog open={open} onOpenChange={setOpen} dismissible={false}>
+          <DialogContent aria-describedby={undefined}>
+            <div className="panel p-7">
+              <DialogHeader title="Busy but cancellable" />
+              <DialogClose asChild>
+                <Button variant="tertiary">Cancel</Button>
+              </DialogClose>
+            </div>
+          </DialogContent>
+        </Dialog>
+      );
+    }
+    render(<HostedBusy />);
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
   it('preserves standard DialogTrigger focus cycle when no custom refs are supplied', async () => {
     render(
       <Dialog>

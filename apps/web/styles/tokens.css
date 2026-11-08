@@ -1925,3 +1925,31 @@ h1 [lang="en"], h2 [lang="en"], h3 [lang="en"] { letter-spacing: normal; }
   .json-table-toolbar .json-cell-input { max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere; }
   textarea.json-cell-input { min-height: 88px; resize: vertical; }
 }
+
+/* FU-ENTRYUX-N1: saved-card add-field form reuses the composer's type chip and an aligned row grid.
+   The native select stays (a11y, keyboard) but looks like `.kv-type-chip`; at phone width key and value
+   take full rows, then type | Add | Cancel share one row instead of sitting left-aligned at unequal widths. */
+.json-add-field-type {
+  width: auto;
+  min-width: 96px;
+  padding-right: 6px;
+  color: var(--body);
+  text-overflow: clip;
+}
+.json-add-field-type[data-kv-type='number'] { color: var(--accent); }
+.json-add-field-type[data-kv-type='boolean'] { color: var(--success-ink); }
+.json-add-field-type[data-kv-type='object'],
+.json-add-field-type[data-kv-type='array'] { color: #8A3A10; }
+[data-theme='dark'] .json-add-field-type[data-kv-type='object'],
+[data-theme='dark'] .json-add-field-type[data-kv-type='array'] { color: #F7A57A; }
+@media (max-width: 639px) {
+  .json-add-field-form {
+    display: grid;
+    grid-template-columns: minmax(96px, 1fr) auto auto;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .json-add-field-form > .field-input { grid-column: 1 / -1; width: 100%; box-sizing: border-box; }
+  .json-add-field-form > .json-add-field-type { grid-column: 1 / 2; width: 100%; }
+  .json-add-field-form > .json-add-field-error { grid-column: 1 / -1; }
+}

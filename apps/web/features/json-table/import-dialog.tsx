@@ -1501,7 +1501,9 @@ export function ImportJsonDialog({
     statusLineText = tJson('importStatusUtf8Error');
     statusLineClass = 'font-medium text-error-ink';
   } else if (isOverCap) {
-    statusLineText = tJson('importStatusOverCap', { bytes: formattedByteCount });
+    // FU-ENTRYUX-N5: the limit is already stated by the alert box and the red source counter;
+    // the status line stays (empty) as the polite live region instead of a third repeat.
+    statusLineText = '';
     statusLineClass = 'font-medium text-error-ink';
   } else if (parseError) {
     statusLineText = tJson('importStatusParseError', {

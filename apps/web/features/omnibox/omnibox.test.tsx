@@ -1512,6 +1512,9 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     });
     const pickerOptions = within(pickerListbox).getAllByRole('option');
     expect(pickerOptions).toHaveLength(3); // 2 items + "Tạo mục mới cùng tên"
+    // F-37: the keyboard legend is hidden on phone width and on coarse pointers (it is noise on touch).
+    const legend = within(pickerDialog).getByTestId('dup-picker-legend');
+    expect(legend).toHaveClass('hidden', 'sm:inline', '[@media(pointer:coarse)]:!hidden');
 
     // Move to 2nd option (index 1 = dupItem2) and press Enter
     fireEvent.keyDown(pickerDialog, { key: 'ArrowDown' });
@@ -4023,6 +4026,27 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
     });
   });
 
+  it('H-2: a failed Tab on a later Omnibox still shows search.tab.cannotFill instead of hiding it behind the i button', async () => {
+    const first = renderOmnibox();
+    typeNativeString(getTextbox(), 'wifi');
+    first.unmount();
+
+    const colonItem: ItemSummary = { ...ITEM_WIFI, name: 'wifi: guest' };
+    vi.spyOn(searchApi, 'suggest').mockResolvedValue(
+      makeEmptySuggestResponse({ items: [makeSuggestItemRow(colonItem)] }),
+    );
+    renderOmnibox();
+    const textarea = getTextbox();
+    typeNativeString(textarea, 'wif');
+    await screen.findByRole('listbox');
+    fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+    pressNativeKey(textarea, 'Tab');
+    const hint = screen.getByTestId('omnibox-hint');
+    expect(hint).toBeVisible();
+    expect(hint).toHaveTextContent(viMessages.search.tab.cannotFill);
+    expect(screen.queryByTestId('omnibox-hint-info')).toBeNull();
+  });
+
   it('429 keeps rows, no toast', async () => {
     let wifiCalls = 0;
     const rows = makeEmptySuggestResponse({
@@ -4996,17 +5020,13 @@ describe('Omnibox — P06 F-23/F-33/F-35 ux-audit polish', () => {
 
   it('F-33: the first Omnibox shows the full privacy hint; later ones show a small i that expands the three lines on demand', async () => {
     const first = renderOmnibox(<Omnibox />, { locale: 'en' });
-    fireEvent.change(screen.getByRole('textbox', { name: enMessages.content.omnibox.ariaLabel }), {
-      target: { value: 'wifi' },
-    });
+    typeNativeString(screen.getByRole('textbox', { name: enMessages.content.omnibox.ariaLabel }), 'wifi');
     expect(screen.getByTestId('omnibox-hint')).toBeVisible();
     expect(screen.queryByTestId('omnibox-hint-info')).toBeNull();
     first.unmount();
 
     renderOmnibox(<Omnibox />, { locale: 'en' });
-    fireEvent.change(screen.getByRole('textbox', { name: enMessages.content.omnibox.ariaLabel }), {
-      target: { value: 'wifi' },
-    });
+    typeNativeString(screen.getByRole('textbox', { name: enMessages.content.omnibox.ariaLabel }), 'wifi');
     const info = screen.getByTestId('omnibox-hint-info');
     expect(info).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByTestId('omnibox-hint')).not.toBeVisible();
@@ -5016,6 +5036,21 @@ describe('Omnibox — P06 F-23/F-33/F-35 ux-audit polish', () => {
     expect(open).toBeVisible();
     expect(open).toHaveTextContent(enMessages.search.help.privacyHint1);
     expect(open).toHaveTextContent(enMessages.search.help.privacyHint3);
+  });
+
+  it('H-2: after the first Omnibox only the privacy sentence collapses; tag-filter and Tab-cannot-fill guidance stay visible', async () => {
+    const first = renderOmnibox(<Omnibox />, { locale: 'en' });
+    typeNativeString(screen.getByRole('textbox', { name: enMessages.content.omnibox.ariaLabel }), 'wifi');
+    first.unmount();
+
+    // Second mount in tag-filter mode: the tag hint is shown and there is no privacy `i` button.
+    renderOmnibox(<Omnibox />, { locale: 'en' });
+    const textarea = screen.getByRole('textbox', { name: enMessages.content.omnibox.ariaLabel });
+    typeNativeString(textarea, '#home');
+    const hint = screen.getByTestId('omnibox-hint');
+    expect(hint).toBeVisible();
+    expect(hint).toHaveTextContent(enMessages.content.omnibox.tagHint);
+    expect(screen.queryByTestId('omnibox-hint-info')).toBeNull();
   });
 
   it('F-35: the Ctrl K keycap is not rendered for touch (coarse-pointer hide class) and F-23: the ≈ toggle has a tooltip', async () => {
