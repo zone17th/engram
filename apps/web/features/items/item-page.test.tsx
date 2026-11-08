@@ -4665,12 +4665,8 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     await h.lock();
     const banner = screen.getByTestId('vault-locked-banner');
     expect(banner).toHaveClass('locked-banner');
-    expect(screen.getByTestId('vault-locked-banner-body-short')).toHaveTextContent(
-      en.content.item.lockedBannerBodyShort,
-    );
-    expect(screen.getByTestId('vault-locked-banner-body-full')).toHaveTextContent(
-      en.vault.locked.bannerBody,
-    );
+    expect(screen.getByTestId('vault-locked-banner-body')).toHaveTextContent(en.states.vaultLocked);
+    expect(screen.queryByTestId('vault-locked-banner-body-full')).toBeNull();
 
     // Verify no Vietnamese diacritics appear anywhere in the rendered item page under English locale (excluding ×/÷ symbols)
     const mainEl = h.container.querySelector('main')!;

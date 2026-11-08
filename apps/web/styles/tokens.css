@@ -479,10 +479,11 @@ textarea.omnibox-input::placeholder {
    keeps the pre-port darker #117A4B (4.56 / 4.52). No :root token change; dark stays on the token. */
 :root:not([data-theme='dark']) .vault-open { color: #117A4B; }
 
+/* F-26: neutral (mockups/states.html #vault-locked-broadcast), not an error colour. */
 .locked-banner {
-  background: color-mix(in srgb, var(--error) 10%, var(--canvas));
+  background: var(--pale-accent);
   border-bottom: 1px solid var(--border);
-  color: var(--error-ink);
+  color: var(--body);
 }
 
 /* App-only: the brand --link (#0091FF) fails AA as text on a card; the

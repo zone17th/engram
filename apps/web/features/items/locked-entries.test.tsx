@@ -608,12 +608,8 @@ describe('P03-T21 Locked state U5', () => {
     const banner = screen.getByTestId('vault-locked-banner');
     expect(banner).toHaveClass('locked-banner');
     expect(banner).toHaveTextContent('Vault locked');
-    expect(screen.getByTestId('vault-locked-banner-body-short')).toHaveTextContent(
-      en.content.item.lockedBannerBodyShort,
-    );
-    expect(screen.getByTestId('vault-locked-banner-body-full')).toHaveTextContent(
-      en.vault.locked.bannerBody,
-    );
+    expect(screen.getByTestId('vault-locked-banner-body')).toHaveTextContent(en.states.vaultLocked);
+    expect(screen.queryByTestId('vault-locked-banner-body-full')).toBeNull();
     expect(screen.getByTestId('vault-locked-unlock-cta')).toHaveAttribute('href', '/app/unlock');
     expect(document.querySelector('textarea, [contenteditable]:not([contenteditable="false"])')).toBeNull();
     expect(

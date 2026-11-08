@@ -13,8 +13,9 @@ import { useOptionalVault } from '@/features/vault/vault-provider';
  * page; only entry bodies are masked, and there is no create/edit control to hide because none is rendered while locked.
  */
 export function LockedBanner() {
-  const t = useTranslations('vault.locked');
-  const tItem = useTranslations('content.item');
+  // F-26 (U5, #vault-locked-broadcast): locking is a normal state, not an error. One neutral sentence; the unlock
+  // call to action stays the single primary action.
+  const t = useTranslations('states');
   const vault = useOptionalVault();
   const pathname = usePathname();
   const routerPush = useOptionalRouterPush();
@@ -36,14 +37,8 @@ export function LockedBanner() {
       className="locked-banner"
     >
       <div className="mx-auto flex max-w-container flex-wrap items-center gap-3 px-5 py-3">
-        <p className="t-body m-0 min-w-0 flex-1">
-          <strong>{t('bannerTitle')}.</strong>{' '}
-          <span className="sm:hidden" data-testid="vault-locked-banner-body-short">
-            {tItem('lockedBannerBodyShort')}
-          </span>
-          <span className="hidden sm:inline" data-testid="vault-locked-banner-body-full">
-            {t('bannerBody')}
-          </span>
+        <p className="t-body m-0 min-w-0 flex-1" data-testid="vault-locked-banner-body">
+          {t('vaultLocked')}
         </p>
         <Link
           href={targetUrl}
@@ -51,7 +46,7 @@ export function LockedBanner() {
           data-testid="vault-locked-unlock-cta"
           className="btn btn-primary btn-sm ml-auto no-underline"
         >
-          {t('unlockCta')}
+          {t('vaultLockedCta')}
         </Link>
       </div>
     </div>
