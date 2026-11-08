@@ -75,16 +75,16 @@
     "jsonViewRaw": "Raw JSON",
     "privacyTitle": "Plainly: what is encrypted and what is not",
     "privacyBody1": "Entry content is locked in your browser with a key only your device holds. Our server stores entry content only as ciphertext and cannot decrypt it, as long as the app code we send to your browser has not been tampered with.",
-    "privacyBody2": "Item names and tags are not encrypted — they are what makes search work. The text you type to search also goes to our server, unencrypted. When similar-meaning search is on (it is on by default where the server supports it, and you can turn it off in Settings or with the ≈ button), item names, tags, hints and the text you type are sent on to a third-party embedding service to compute vectors. Entry content is never sent.",
+    "privacyBody2": "Item names and tags are not encrypted — they are what makes search work. The text you type to search also goes to our server, unencrypted. Similar-meaning search is off by default; you turn it on when you want (and can turn it off anytime in Settings or with the ≈ button). When it is on, item names, tags, hints and the text you type are sent on to a third-party embedding service to compute vectors — entry content is never sent. Turning it off immediately stops sending and deletes your vectors stored on engram’s server.",
     "encLabel": "Encrypted",
     "encBody": "The content of every text and json entry.",
     "plainLabel": "Not encrypted",
-    "plainBody": "Item names, tag names, edit times, entry counts.",
+    "plainBody": "Item names, tag names, hints, entry type and size, edit times, entry counts, search text you type.",
     "cryptoNote": "XChaCha20-Poly1305 · Argon2id · keys never leave the browser",
     "recoveryTitle": "Forgetting your passphrase is not losing everything",
-    "recoveryBody": "Because we do not hold your key, you need your own way back. There are three, set up at sign-up.",
+    "recoveryBody": "Because we do not hold your key (as long as the app code in your browser is untampered with), you need your own way back. There are three, set up at sign-up.",
     "recoveryKeysTitle": "10 recovery keys",
-    "recoveryKeysBody": "Print them, put them away. Each one opens the vault on its own, once.",
+    "recoveryKeysBody": "Print them and keep them safe. Each key opens the vault once on the live server; after use you can generate replacement keys or rotate all 10.",
     "recoveryPasskeyTitle": "Passkey",
     "recoveryPasskeyBody": "Fingerprint or security key. Open the vault without typing anything.",
     "recoveryDeviceTitle": "Remembered device",
@@ -150,7 +150,133 @@
     "segmentedAriaLabel": "Options"
   },
   "footer": {
+    "privacyPolicy": "Privacy Policy",
+    "terms": "Terms of Service",
+    "contact": "Contact",
     "legal": "engram — saved by keyword."
+  },
+  "docs": {
+    "metaTitle": "Docs & privacy",
+    "updatedLabel": "Docs & privacy · Updated 2026-11-07",
+    "title": "How engram works and how your data stays private",
+    "lead": "Written in plain language, aligned with the actual codebase: what is end-to-end encrypted in your browser, what the server sees so search works, what goes to the external embedding service when similar-meaning search is on, how key recovery and old backup limits work, and how data export and account deletion work.",
+    "tocAriaLabel": "Table of contents",
+    "onThisPage": "On this page",
+    "topNav": {
+      "start": "Get started",
+      "privacy": "Privacy",
+      "search": "Search",
+      "recovery": "Recovery",
+      "data": "Data"
+    },
+    "toc": {
+      "s1": "1. Get started in 3 minutes",
+      "s2": "2. Privacy & E2E scope",
+      "s3": "3. Search & ≈",
+      "s4": "4. Recovery & backup limits",
+      "s5": "5. Data, export & deletion",
+      "s6": "6. Known limits",
+      "s7": "7. Contact"
+    },
+    "s1": {
+      "sectionLabel": "Section 1",
+      "heading": "Get started in three minutes",
+      "step1Title": "Create an account and set a separate vault passphrase",
+      "step1Body": "Your account login password (or Google/GitHub sign-in) and your vault passphrase are completely separate. Your login password authenticates with the server; your passphrase unlocks entry contents in your browser and never leaves your device. Resetting your login password by email restores account sign-in only and never unlocks or resets your vault.",
+      "step2Title": "Save your 10 recovery keys",
+      "step2Body": "Your 10 single-use recovery keys are shown only once when you create your vault. Download or print them and store them safely; you can also add a passkey (fingerprint, face, or security key) for one-tap daily unlocking without typing.",
+      "step3Title": "Name items by keyword, keep secrets inside the entry body",
+      "step3Body": "Item names, tags, and hints stay unencrypted so search works. Use plain keywords like home wifi or bank, and never put passwords, card numbers, or secrets into item names, tags, or hints."
+    },
+    "s2": {
+      "sectionLabel": "Section 2",
+      "heading": "Plainly: what is encrypted and what the server sees",
+      "body1": "The body of every entry (text notes and json tables) is end-to-end encrypted in your browser (in a Web Worker using XChaCha20-Poly1305) with a key only your device holds. Our server receives and stores only ciphertext and wrapped keys, never receives plaintext entry bodies, and holds no decryption key — as long as the app code delivered to your browser has not been tampered with.",
+      "body2": "Item names, tags (tag), optional hints (hint), and the text you type to search are not encrypted — they are what makes search and suggestions work. The server also sees entry types (text or json), item/entry/tag counts, creation/edit/last-used timestamps, and the exact byte size of each entry (the UI rounds displayed sizes, but ciphertext is not padded to hide exact length). Never put passwords or secrets in item names, tags, or hints.",
+      "encLabel": "End-to-end encrypted",
+      "encBody": "The body of every text and json entry.",
+      "plainLabel": "Visible to server (plaintext)",
+      "plainBody": "Item names, tag names, hints, entry types (text/json), timestamps, counts, exact entry byte size, and search query text.",
+      "neverLabel": "Never sent to server",
+      "neverBody": "Vault passphrase, vault decryption key, plaintext recovery keys, passkey PRF secret, and browser remembered-device key.",
+      "cryptoNote": "XChaCha20-Poly1305 · Argon2id (64 MiB) · WebAuthn PRF · keys never leave the browser"
+    },
+    "s3": {
+      "sectionLabel": "Section 3",
+      "heading": "How search and similar-meaning (≈) work",
+      "lead": "Type in the search box and results appear in three separate layers (exact text matches always stay on top). When you type quick-add syntax (name #tag: content), anything containing a colon (:), or paste multi-line text, the browser send-gate automatically blocks live search requests so content after name: is never sent to the server for search.",
+      "lexicalTitle": "1 · Prefix match and 2 · Typo-tolerant match (on engram server)",
+      "lexicalBody": "Typing \"wif\" or missing accents matches item names and tags directly on engram’s server.",
+      "semanticTitle": "3 · Similar-meaning search (≈) and external embedding service",
+      "semanticBadge": "Off by default; you turn it on when you want",
+      "semanticBody1": "Helps a search like \"home network\" find an item named \"wifi\". Off by default; you turn it on when you want (during onboarding or in Settings; choosing \"Maybe later\" leaves it off). When enabled on the default deployment, item names, tag names, hints, and your typed search queries are sent to an external embedding service (through engram’s router to OpenRouter and the model provider) to compute similarity vectors. Entry bodies are never sent. (If the server is configured to run its own local embedding model, this data stays on engram’s infrastructure.)",
+      "semanticBody2": "How to turn it off anytime: click the ≈ button in the search bar or toggle it off in Settings › Search. Turning it off immediately stops sending your data to the external service and deletes all vectors for your account stored in engram’s database. Note: requests already sent before you turned it off cannot be recalled from the external provider. Turning it back on re-computes vectors for your items and tags."
+    },
+    "s4": {
+      "sectionLabel": "Section 4",
+      "heading": "Recovery, revocation, and backup limits",
+      "lead": "Because our server does not hold your decryption key (as long as the app code delivered to your browser is untampered with), you unlock your vault using the paths you set up. If your vault is already unlocked (via an active session, a Passkey, or a Remembered device), you can open Settings › Security and set a new passphrase after account re-authentication — without needing your old passphrase.",
+      "passkeyTitle": "Passkeys & revocation",
+      "passkeyBody": "Unlock your vault with a fingerprint, face scan, or security key that supports WebAuthn PRF (devices without PRF support are declined during setup). When you remove a passkey in Settings (requires account re-authentication), the server immediately deletes that passkey’s wrapped key so it can no longer unlock the live vault. You can also remove the passkey entry from your device or OS passkey manager.",
+      "deviceTitle": "Remembered device",
+      "deviceBody": "When you opt in to \"Remember this device\", your browser stores a non-extractable device key in IndexedDB to unlock your vault automatically on that browser. Never enable this on a shared computer. Turning the option off or revoking that session remotely clears the browser device key.",
+      "keysTitle": "10 recovery keys: one-time use, replacement & rotate all 10",
+      "keysBody": "Each recovery key unlocks your vault once on the live server (the server stores only a lookup hash and wrapped key, never the plaintext key). Once used to set a new passphrase, that key slot is permanently deleted on the live server; you can then generate replacement keys for empty slots or rotate all 10 keys in Settings › Security. Changing your passphrase does not invalidate your existing recovery keys or passkeys.",
+      "backupLimitTitle": "Important limit for older backups & copies (no cryptographic revocation of old snapshots)",
+      "backupLimitBody": "To make passphrase changes and key rotation instant without downloading and re-encrypting every entry, your vault keeps the same master decryption key. Therefore, changing your passphrase, using or rotating recovery keys, or removing a passkey only updates or deletes key wrappers on the live server. Anyone holding an older backup file (.sabk.json or an older database snapshot) together with the old passphrase, an old recovery key printout, or the old passkey device that was valid when that snapshot was taken can still unlock that backup and read entries encrypted under that vault key. In addition, if the database ever had to be restored via point-in-time recovery (PITR) after an incident, a recently used recovery key or removed passkey could reappear and should be rotated or removed again.",
+      "resetNote": "Lost every way to unlock? If you forget your passphrase, lose all 10 recovery keys, have no passkey or remembered device, and have no decryptable backup, the last resort is Reset vault: all encrypted entry bodies and vault keys on the server are permanently deleted so you can create a new vault, while your account, item names, and tags are kept."
+    },
+    "s5": {
+      "sectionLabel": "Section 5",
+      "heading": "Data retention, export formats, and account deletion",
+      "tableColData": "Data",
+      "tableColStoredAs": "Stored as",
+      "tableColRetainedUntil": "Retained until",
+      "row1Data": "Entry bodies (text, json)",
+      "row1StoredAs": "End-to-end encrypted, unreadable by server",
+      "row1RetainedUntil": "When you delete an item/entry (kept 30 days in trash for undo, then permanently purged), reset your vault, or delete your account",
+      "row2Data": "Item names, tags, hints, types & exact sizes",
+      "row2StoredAs": "Plaintext (unencrypted)",
+      "row2RetainedUntil": "When you delete the item/tag (permanently purged after 30 days) or delete your account",
+      "row3Data": "Similarity vectors",
+      "row3StoredAs": "Numeric vectors from item names, hints & tags",
+      "row3RetainedUntil": "Deleted immediately on engram’s server when you turn ≈ off, delete the item/tag, or delete your account",
+      "row4Data": "Email, login password, sessions",
+      "row4StoredAs": "Plaintext email; Argon2id password hash",
+      "row4RetainedUntil": "Removed immediately from the live database when you delete your account",
+      "row5Data": "Security audit log",
+      "row5StoredAs": "No entry bodies, search queries, or secret keys; user link cleared to NULL on account deletion",
+      "row5RetainedUntil": "Automatically deleted after 90 days",
+      "row6Data": "System database backups",
+      "row6StoredAs": "Database snapshots encrypted at rest (ciphertext, key wraps, item/tag metadata, account rows at snapshot time)",
+      "row6RetainedUntil": "Purged from all internal backups within 8 days",
+      "exportTitle": "Two export formats (up to 3 per hour)",
+      "exportEncryptedBody": "1. Encrypted backup (.sabk.json, recommended): requires only an active sign-in session (vault does not need to be unlocked). Packages your active items, tags, encrypted entry bodies, key wrappers (passphrase KDF/wrap, recovery key wraps, passkey wraps), and soft-deleted items under 30 days not yet purged so you can restore offline with your passphrase or recovery key. Available on the server for up to 24 hours to the signed-in account owner only, and deleted on expiry, cancellation, replacement, vault reset, or account deletion.",
+      "exportReadableBody": "2. Readable export (unencrypted .json): requires an unlocked vault and account re-authentication. Your browser decrypts entries locally (preserving exact large JSON numbers and duplicate keys) into a plaintext JSON file without uploading plaintext to the server. Readable exports include active items only and do not include items in the 30-day trash window. Warning: anyone with this file can read all your entries.",
+      "exportQuotaNote": "Each new backup or readable export counts as 1; up to 3 per hour, including cancelled ones.",
+      "deleteTitle": "Delete account vs. Reset vault",
+      "resetBody": "Reset vault: deletes only encrypted entry bodies and vault keys (recovery keys and passkeys) so you can create a new vault when all keys are lost; your account, active sessions, item names, and tags are kept.",
+      "deleteBody": "Delete account: two-step confirmation requiring account re-authentication and typing your exact account email. Permanently removes your account, all sessions, vault, recovery keys, passkeys, items, tags, entries, and similarity vectors from the live database, and invalidates any temporary server backup files immediately (bytes on disk are removed within minutes).",
+      "retentionNote": "Retention after deletion & telemetry: soft-deleted items/entries are purged after 30 days; deleted data leaves all internal backups within 8 days; security audit logs (unlinked from your user ID and containing no secrets) are retained for 90 days. Technical access logs and telemetry record only route patterns, status codes, and latency — never entry bodies, search queries, passphrases, recovery keys, export tokens, or raw IP addresses. We use only session, CSRF, and locale/theme preference cookies — no advertising trackers and we never sell your data."
+    },
+    "s6": {
+      "sectionLabel": "Section 6",
+      "heading": "Known limits",
+      "limitSize": "Size & item caps: each entry is up to 256 KiB, with up to 200 entries and 20 tags per item. engram is built for text notes and structured JSON tables, not file attachments.",
+      "limitPlatform": "Connection & modern browser required: encryption and passkey unlock run directly in your browser, and an internet connection is required to search and save.",
+      "limitPlatformDetail": "(Technical details: Argon2id 64 MiB key derivation in a Web Worker; passkey unlock requires WebAuthn PRF support.)",
+      "limitNoSell": "No data selling, no item sharing yet: your vault is private to you; we run no ads and never sell data. In-app backup import, master vault key rotation, and item sharing are planned for future releases.",
+      "limitExportQuota": "Export rate limit: Each new backup or readable export counts as 1; up to 3 per hour, including cancelled ones."
+    },
+    "s7": {
+      "sectionLabel": "Section 7",
+      "heading": "Questions & security reports",
+      "body": "Have a question or found a bug? Reach out below. When opening a public issue, never post your password, vault passphrase, or recovery keys — we will never ask for them.",
+      "issuesCta": "GitHub Issues · Questions & support",
+      "advisoriesCta": "Report a vulnerability privately",
+      "privacyCta": "Privacy Policy",
+      "termsCta": "Terms of Service"
+    }
   },
   "legal": {
     "backToLogin": "Back to sign in",
@@ -200,7 +326,7 @@
       "row4Server": "Plaintext / Hash",
       "row4Purpose": "Account authentication & security audit; login passwords hashed with Argon2id",
       "s21Title": "2.1 · Semantic suggest & access logs",
-      "s21Body": "While semantic suggest (≈) is on (it is on by default where the server supports it; turn it off in Settings or with the ≈ button), item names, tags, hints, and the text you type to search are sent to a third-party embedding service (through our router to OpenRouter, then the model provider) to compute similarity vectors; entry bodies are never sent. Text after \"name:\" when saving content is never sent for search. If the server runs its own embedding (optional), that data does not leave our infrastructure, and turning it off only hides similar-meaning results. Turning semantic suggest off stops sending your data to the third party from that moment and deletes your vectors stored in engram's database; a request already sent before you turn it off cannot be recalled, and we do not promise deletion or a retention limit for that data at OpenRouter or the model provider (it follows their policies). Server access logs do not record search queries and never record entry bodies, passphrases, or recovery keys."
+      "s21Body": "Similar-meaning search (≈) is off by default; you turn it on when you want (during onboarding or in Settings, or toggle it with the ≈ button). While it is on, item names, tags, hints, and the text you type to search are sent to a third-party embedding service (through our router to OpenRouter, then the model provider) to compute similarity vectors; entry bodies are never sent. Text after \"name:\" when saving content is never sent for search. If the server runs its own embedding (optional), that data does not leave our infrastructure, and turning it off only hides similar-meaning results. Turning semantic suggest off stops sending your data to the third party from that moment and deletes your vectors stored in engram's database; a request already sent before you turn it off cannot be recalled, and we do not promise deletion or a retention limit for that data at OpenRouter or the model provider (it follows their policies). Server access logs do not record search queries and never record entry bodies, passphrases, or recovery keys."
     },
     "deletion": {
       "sectionLabel": "Section 3",
@@ -208,7 +334,7 @@
       "noSellTitle": "We do not sell data",
       "noSellBody": "We never sell, rent, or monetize your data for advertising. We use an HttpOnly sign-in session cookie, a JavaScript-readable anti-CSRF cookie, and two UI preference cookies (locale and light/dark theme) — no third-party advertising trackers.",
       "exportDeleteTitle": "Export & account deletion",
-      "exportDeleteBody": "Self-serve data export and account deletion are being added (later release); until then request them through the contact channel below. When an account is deleted, its vault, wrapped recovery keys, passkeys, items, tags, and encrypted entries are removed from the live database; security audit logs are retained by default for 90 days, and database backups / PITR copies age out on their own schedule."
+      "exportDeleteBody": "In Settings › Data you can export your data or delete your account at any time. (1) Encrypted backup (.sabk.json) packages your active items, tags, encrypted entries, key wrappers, and items in the 30-day trash window; the generated file stays on the server for up to 24 hours for the signed-in account owner only to download (and is deleted on expiry, cancellation, replacement, vault reset, or account deletion). (2) Readable export (unencrypted .json) is decrypted locally on your device after unlocking your vault and re-authenticating, and includes active items only (excluding trash). Each new backup or readable export counts as 1; up to 3 per hour, including cancelled ones. Account deletion uses a 2-step confirmation (account re-authentication plus typing your exact email) and immediately removes your account, sessions, vault, keys, items, tags, entries, and vectors from the live database (temporary server backup files are invalidated immediately and removed from disk within minutes). Soft-deleted items purge after 30 days, deleted data leaves all internal backups within 8 days, and unlinked security audit logs (containing no secrets) are retained for 90 days."
     },
     "contact": {
       "sectionLabel": "Section 4",
@@ -219,6 +345,7 @@
       "securitySuffix": ".",
       "issuesCta": "GitHub Issues · General & account requests",
       "advisoriesCta": "Report a vulnerability",
+      "docsCta": "Full documentation",
       "switchPageTerms": "View Terms of Service",
       "switchPagePrivacy": "View Privacy Policy"
     }
@@ -380,7 +507,7 @@
     "explainer": {
       "ariaLabel": "About engram",
       "compactTitle": "engram — keyword notes with end-to-end encrypted entries",
-      "compactEncrypted": "Entry contents (text, json) are encrypted in your browser; the server cannot read them.",
+      "compactEncrypted": "Entry contents (text, json) are encrypted in your browser; the server cannot read them as long as the app code delivered to your browser is untampered with.",
       "compactPlaintext": "Item names, tags, and hints are NOT encrypted so search works (never put secrets there).",
       "compactSteps": "Three steps: 1. Account → 2. Passphrase → 3. 10 recovery keys.",
       "kicker": "What engram is",
@@ -429,7 +556,7 @@
       "submitting": "Creating account…",
       "haveAccount": "Have an account?",
       "signInLink": "Sign in",
-      "privacyNote": "We cannot read the contents of your entries. If you lose every way to unlock, we cannot recover them for you.",
+      "privacyNote": "We cannot read the contents of your entries as long as the app code delivered to your browser is untampered with. If you lose every way to unlock, we cannot recover them for you.",
       "mailResetUnavailable": "Email password reset is not enabled on this server yet — save your login password carefully."
     },
     "forgot": {

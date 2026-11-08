@@ -47,6 +47,11 @@ SET settings = jsonb_set(settings, '{semantic_suggest}', to_jsonb(sqlc.arg('sema
 WHERE id = sqlc.arg('id') AND deleted_at IS NULL
 RETURNING *;
 
+-- name: MarkSemanticConsentSeen :exec
+UPDATE app_user
+SET semantic_consent_seen_at = COALESCE(semantic_consent_seen_at, now())
+WHERE id = $1 AND deleted_at IS NULL;
+
 -- name: InsertPasswordIdentity :one
 INSERT INTO auth_identity (user_id, provider, password_hash)
 VALUES ($1, 'password', $2)
