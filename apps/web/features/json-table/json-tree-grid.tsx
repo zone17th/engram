@@ -64,6 +64,14 @@ export function formatReadOnlyDisplayText(cell: JsonPrimitiveCellView): string {
   return cell.displayText;
 }
 
+/** FU-ENTRYUX-N1: map the add-field type to the composer's type-chip colour family (`.kv-type-chip[data-kv-type]`). */
+export function addFieldChipKind(type: JsonCellValueKind): 'string' | 'number' | 'boolean' | 'object' | 'array' {
+  if (type === 'number') return 'number';
+  if (type === 'true' || type === 'false') return 'boolean';
+  if (type === 'object' || type === 'array') return type;
+  return 'string';
+}
+
 export interface ActiveCellEditState {
   readonly cellKey: string;
   readonly nodeRef: JsonNodeRef;
@@ -1173,7 +1181,7 @@ export function JsonTreeGrid({
       return (
         <div
           data-testid={`json-add-field-form-${containerPath}`}
-          className="json-table-toolbar"
+          className="json-table-toolbar json-add-field-form"
         >
           <input
             ref={addFieldInputRef}
@@ -1183,7 +1191,7 @@ export function JsonTreeGrid({
             aria-label={tJson('addFieldKeyPlaceholder')}
             aria-invalid={activeAddField.error ? 'true' : undefined}
             data-testid={`json-new-key-input-${containerPath}`}
-            className="field-input json-cell-input !w-[168px] shrink-0 px-2 py-1 text-[13px]"
+            className="field-input json-cell-input !w-[168px] shrink-0 px-2 py-1 text-[13px] max-sm:!w-full"
             {...VAULT_SECRET_INPUT_PROPS}
             onChange={(e) =>
               setActiveAddField((prev) =>
@@ -1220,7 +1228,7 @@ export function JsonTreeGrid({
               placeholder={tJson('addFieldValuePlaceholder')}
               aria-label={tJson('addFieldValueAria')}
               data-testid={`json-new-val-input-${containerPath}`}
-              className="field-input json-cell-input !w-[192px] shrink-0 px-2 py-1 text-[13px] [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+              className="field-input json-cell-input !w-[192px] shrink-0 px-2 py-1 text-[13px] max-sm:!w-full [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
               {...VAULT_SECRET_INPUT_PROPS}
               onChange={(e) =>
                 setActiveAddField((prev) =>
@@ -1254,7 +1262,8 @@ export function JsonTreeGrid({
             value={activeAddField.newType}
             aria-label={tJson('addFieldTypeAria')}
             data-testid={`json-new-type-select-${containerPath}`}
-            className="json-type-btn rounded border border-line bg-surface px-1.5 py-1 text-[12px] [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
+            data-kv-type={addFieldChipKind(activeAddField.newType)}
+            className="json-type-btn kv-type-chip json-add-field-type [@media(pointer:coarse)]:min-h-[44px] [@media(pointer:coarse)]:min-w-[44px]"
             onChange={(e) =>
               setActiveAddField((prev) =>
                 prev && prev.containerPath === containerPath
@@ -1300,7 +1309,7 @@ export function JsonTreeGrid({
             <span
               role="alert"
               data-testid={`json-add-field-error-${containerPath}`}
-              className="text-[12px] font-medium text-error-ink"
+              className="json-add-field-error text-[12px] font-medium text-error-ink"
             >
               {activeAddField.error}
             </span>

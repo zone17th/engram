@@ -194,6 +194,18 @@ describe('omnibox status lines stay in frame (FU-T22-429-STICKY, advisor-dec-335
   });
 });
 
+describe('saved add-field form reuses the type chip and row grid (FU-ENTRYUX-N1)', () => {
+  it('lays key/value full-width and type | Add | Cancel on one row at phone width', () => {
+    expect(webCss).toMatch(/\.json-add-field-type\s*\{[^}]*width:\s*auto/);
+    const idx = webCss.lastIndexOf('.json-add-field-form {');
+    expect(idx).toBeGreaterThan(-1);
+    const block = webCss.slice(idx);
+    expect(block).toMatch(/display:\s*grid/);
+    expect(block).toMatch(/grid-template-columns:\s*minmax\(96px,\s*1fr\)\s*auto\s*auto/);
+    expect(block).toMatch(/\.json-add-field-form\s*>\s*\.field-input\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
+  });
+});
+
 describe('token thương hiệu', () => {
   const root = readVars(webCss, ':root');
   it.each([
