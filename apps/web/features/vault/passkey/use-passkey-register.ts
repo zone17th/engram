@@ -13,6 +13,8 @@ import {
 } from './register-flow';
 
 const REGISTER_ACTION: ReauthAction = 'vault.passkey_register';
+/** F-20: an authenticator prompt that nobody answers must not hold the dialog hostage. */
+export const PASSKEY_PROMPT_TIMEOUT_MS = 60_000;
 
 export interface UsePasskeyRegisterOptions {
   /** Where an OAuth re-auth returns to (it navigates the whole page, which drops the Worker and the VK). */
@@ -26,6 +28,10 @@ export interface UsePasskeyRegisterResult {
   renewing: boolean;
   /** Last failed outcome (`stale` is never surfaced), cleared when a new attempt starts. */
   failure: Extract<PasskeyRegisterOutcome, { ok: false }> | null;
+  /** True when the last attempt was aborted because the authenticator prompt got no answer within 60 s. */
+  timedOut: boolean;
+  /** Withdraws a pending authenticator prompt (AbortController signal); a no-op when nothing is pending. */
+  cancel: () => void;
   /** Presses "Add passkey": takes the grant first, then runs plan §2.5 steps 2-6. */
   register: (name: string) => Promise<PasskeyRegisterOutcome>;
   clearFailure: () => void;
@@ -48,6 +54,8 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
   const [pending, setPending] = useState(false);
   const [renewing, setRenewing] = useState(false);
   const [failure, setFailure] = useState<UsePasskeyRegisterResult['failure']>(null);
+  const [timedOut, setTimedOut] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
   const pendingRef = useRef(false);
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -62,6 +70,17 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
     pendingRef.current = true;
     setPending(true);
     setFailure(null);
+    setTimedOut(false);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const timer = setTimeout(() => {
+      if (mountedRef.current) setTimedOut(true);
+      controller.abort();
+    }, PASSKEY_PROMPT_TIMEOUT_MS);
+    const credentials: Pick<CredentialsContainer, 'create' | 'get'> = {
+      create: (opts) => navigator.credentials.create({ ...opts, signal: controller.signal }),
+      get: (opts) => navigator.credentials.get({ ...opts, signal: controller.signal }),
+    };
 
     const { returnPath } = optionsRef.current;
     const grants: PasskeyGrantPort = {
@@ -93,7 +112,7 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
             fetchRegisterOptions: () => fetchPasskeyRegisterOptions(),
             registerPasskey: (body, opts) => registerPasskey(body, opts),
           },
-          credentials: navigator.credentials,
+          credentials,
           createIdempotencyKey,
         },
         { name },
@@ -110,12 +129,18 @@ export function usePasskeyRegister(options: UsePasskeyRegisterOptions): UsePassk
       }
       return outcome;
     } finally {
+      clearTimeout(timer);
+      if (abortRef.current === controller) abortRef.current = null;
       pendingRef.current = false;
       if (mountedRef.current) setPending(false);
     }
   }, []);
 
-  const clearFailure = useCallback(() => setFailure(null), []);
+  const clearFailure = useCallback(() => {
+    setFailure(null);
+    setTimedOut(false);
+  }, []);
+  const cancel = useCallback(() => abortRef.current?.abort(), []);
 
-  return { pending, renewing, failure, register, clearFailure };
+  return { pending, renewing, failure, timedOut, cancel, register, clearFailure };
 }

@@ -152,7 +152,9 @@ describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', 
     fireEvent.change(await screen.findByLabelText('Login password'), { target: { value: 's3cret-login' } });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     await waitFor(() => expect(mocks.reauth.submitPassword).toHaveBeenCalledWith('s3cret-login'));
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+    // F-21: one stage, one primary action - while re-auth is open, neither the name field nor Continue is shown.
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+    expect(screen.queryByLabelText('Passkey name')).toBeNull();
   });
 
   it('OAuth-only user sees Google re-auth and no password field', async () => {
@@ -213,6 +215,72 @@ describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', 
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Passkey registration was cancelled.');
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('F-20: Cancel stays enabled while the authenticator prompt is pending and withdraws it (AbortSignal)', async () => {
+    useValidGrant();
+    mocks.fetchPasskeyRegisterOptions.mockResolvedValue(registerOptionsResponse());
+    let seenSignal: AbortSignal | undefined;
+    mocks.credentialsCreate.mockImplementation(
+      (opts: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          seenSignal = opts.signal;
+          opts.signal?.addEventListener('abort', () => reject(domError('AbortError')));
+        }),
+    );
+    const onOpenChange = vi.fn();
+    renderDialog(undefined, onOpenChange);
+    fireEvent.change(await screen.findByLabelText('Passkey name'), { target: { value: 'Key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(seenSignal).toBeDefined());
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    expect(cancel).toBeEnabled();
+    fireEvent.click(cancel);
+    expect(seenSignal?.aborted).toBe(true);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('F-20: Escape closes the dialog while the authenticator prompt is pending', async () => {
+    useValidGrant();
+    mocks.fetchPasskeyRegisterOptions.mockResolvedValue(registerOptionsResponse());
+    mocks.credentialsCreate.mockImplementation(
+      (opts: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts.signal?.addEventListener('abort', () => reject(domError('AbortError')));
+        }),
+    );
+    const onOpenChange = vi.fn();
+    renderDialog(undefined, onOpenChange);
+    fireEvent.change(await screen.findByLabelText('Passkey name'), { target: { value: 'Key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(mocks.credentialsCreate).toHaveBeenCalled());
+    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('F-20: an unanswered prompt times out after 60 s with the retry message, and Continue works again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      useValidGrant();
+      mocks.fetchPasskeyRegisterOptions.mockResolvedValue(registerOptionsResponse());
+      mocks.credentialsCreate.mockImplementation(
+        (opts: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            opts.signal?.addEventListener('abort', () => reject(domError('AbortError')));
+          }),
+      );
+      renderDialog();
+      fireEvent.change(await screen.findByLabelText('Passkey name'), { target: { value: 'Key' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      await waitFor(() => expect(mocks.credentialsCreate).toHaveBeenCalled());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_500);
+      });
+      expect(await screen.findByRole('alert')).toHaveTextContent(enMessages.vault.passkey.add.timeout);
+      expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a definite POST rejection shows passkey.register_failed and the orphan notice', async () => {

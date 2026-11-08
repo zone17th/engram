@@ -59,7 +59,7 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
   const [oauthError, setOauthError] = useState<string | null>(null);
   const openerRef = useRef<HTMLElement | null>(null);
 
-  const { pending, renewing, failure, register, clearFailure } = usePasskeyRegister({
+  const { pending, renewing, failure, timedOut, cancel, register, clearFailure } = usePasskeyRegister({
     returnPath,
     onRegistered: (outcome) => {
       onRegistered?.(outcome);
@@ -95,8 +95,9 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
 
   const handleOpenChange = (next: boolean) => {
     if (!next) {
-      // An authenticator prompt cannot be withdrawn; an in-place re-auth prompt can.
-      if (pending && !reauthOpen) return;
+      // F-20: Cancel / Escape always work. A pending authenticator prompt is withdrawn through its AbortSignal; if the
+      // flow is already past the prompt (saving), the dialog closes and the save settles in the background.
+      if (pending && !reauthOpen) cancel();
       if (reauthOpen) reauth.cancel();
       setPassword('');
       setName('');
@@ -131,8 +132,8 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
     }
   };
 
-  const key = failure ? failureKey(failure.error, failure.nameReason) : null;
-  const cancelledQuietly = failure?.error === 'register_cancelled';
+  const key = timedOut ? 'add.timeout' : failure ? failureKey(failure.error, failure.nameReason) : null;
+  const cancelledQuietly = !timedOut && failure?.error === 'register_cancelled';
   const statusError = reauth.error ?? oauthError;
   const noMethodAtAll =
     !reauth.capabilities.hasPassword && !canUseGoogle && !reauth.capabilities.passwordEnrollmentAvailable;
@@ -225,6 +226,8 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
                 )}
               </div>
             )}
+            {/* F-21: one stage at a time. While the re-auth prompt is open it is the only field and Confirm the only primary action. */}
+            {!reauthOpen && (
             <Field
               label={t('register.nameLabel')}
               hint={t('register.nameHint', { max: PASSKEY_NAME_MAX_RUNES })}
@@ -238,6 +241,7 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
               disabled={pending}
               wrapperClassName="mb-0"
             />
+            )}
           </div>
 
           {key && (
@@ -259,16 +263,14 @@ export function PasskeyAddDialog({ open, onOpenChange, returnPath, onRegistered,
           )}
 
           <DialogFooter>
-            <Button variant="tertiary" onClick={() => handleOpenChange(false)} disabled={pending && !reauthOpen}>
+            <Button variant="tertiary" onClick={() => handleOpenChange(false)}>
               {t('add.cancel')}
             </Button>
-            <Button
-              onClick={() => void register(name)}
-              disabled={pending || reauthOpen || !grantReady}
-              aria-busy={pending}
-            >
-              {pending ? t('register.pending') : t('add.continue')}
-            </Button>
+            {!reauthOpen && (
+              <Button onClick={() => void register(name)} disabled={pending || !grantReady} aria-busy={pending}>
+                {pending ? t('register.pending') : t('add.continue')}
+              </Button>
+            )}
           </DialogFooter>
         </div>
       </DialogContent>
