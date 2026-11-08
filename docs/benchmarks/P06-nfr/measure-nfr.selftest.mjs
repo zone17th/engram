@@ -85,6 +85,9 @@ test('server p95: missing, foreign, stale, mixed, duplicated, truncated and fail
     'panic inside run': run({ extra: 'panic: boom' }),
     'missing population': run({ p95: ['1ms', null, '1ms'] }),
     'duplicate population line': run({ extra: `    x.go:1: POPULATION pop1_sequential: samples=1 p50=1ms p95=1ms p99=1ms ceiling=150ms` }),
+    'frame A wrapping legacy marker B': run().replace(`NFR_PERF_BEGIN sha=${A}`, `NFR_PERF_BEGIN sha=${A}\nNFR_PERF_SHA=${B}`),
+    'legacy marker A then frame A wrapping legacy B': `NFR_PERF_SHA=${A}\n${run().replace(`NFR_PERF_BEGIN sha=${A}`, `NFR_PERF_BEGIN sha=${A}\nNFR_PERF_SHA=${B}`)}`,
+    'foreign sha field inside the frame': run({ extra: `    x.go:1: candidate sha=${B.slice(0, 12)}` }),
   };
   for (const [name, text] of Object.entries(cases)) {
     const r = evaluateServerPerf(text, A);
@@ -126,6 +129,21 @@ test('semantic: only a complete openai_compat histogram plus jobs is "collected"
   assert.equal(evaluateSemantic([TEI, WORKER]).state, 'no_cache_miss_observed', 'TEI-only cannot complete');
   assert.equal(evaluateSemantic(['embedding_provider_latency_seconds_count{provider="openai_compat",op="query"} 5\n', WORKER]).state, 'invalid_latency', 'count without buckets');
   assert.equal(evaluateSemantic([OC.replace('le="+Inf"} 10', 'le="+Inf"} 9'), WORKER]).state, 'invalid_latency', '+Inf != count');
+  assert.equal(
+    evaluateSemantic([OC.replace('le="1"} 4', 'le="1"} -1'), WORKER]).state,
+    'invalid_latency',
+    'negative cumulative bucket count',
+  );
+  assert.equal(
+    evaluateSemantic([OC.replace('le="1"} 4', 'le="-1"} 4'), WORKER]).state,
+    'invalid_latency',
+    'negative latency bound',
+  );
+  assert.equal(
+    evaluateSemantic([OC.replace('op="query"} 10', 'op="query"} -10').replace('le="+Inf"} 10', 'le="+Inf"} -10'), WORKER]).state,
+    'invalid_latency',
+    'negative count',
+  );
   assert.equal(evaluateSemantic([OC]).state, 'partial');
   const full = evaluateSemantic([OC, TEI, WORKER]);
   assert.equal(full.state, 'collected');

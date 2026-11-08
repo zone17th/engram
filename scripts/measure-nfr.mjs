@@ -296,6 +296,11 @@ export function evaluateServerPerf(logText, headSha) {
   if (reasons.length) return fail();
 
   const seg = logText.slice(begin.index + begin[0].length, end.index);
+  // Provenance inside the frame: no legacy/nested markers, and every SHA-like field must name the tested SHA.
+  if (/NFR_PERF_(SHA|BEGIN|END)/.test(seg)) reasons.push('legacy or nested NFR_PERF marker inside the frame');
+  for (const m of seg.matchAll(/\b[A-Za-z_]*(?:sha|commit)\s*[=:]\s*([0-9a-f]{7,40})\b/gi)) {
+    if (!headSha.startsWith(m[1].toLowerCase())) reasons.push(`foreign sha ${m[1]} inside the frame`);
+  }
   if (/^\s*(--- FAIL|--- SKIP|FAIL\b|panic:)/m.test(seg)) reasons.push('FAIL/SKIP/panic inside the run');
   if (!/^ok\s+\S+\/internal\/perf\b/m.test(seg)) reasons.push('no "ok .../internal/perf" package line (truncated run)');
   for (const test of ['TestEntryCreatePerformanceA10', 'TestEntryCreatePerformanceA10SemanticOn']) {
@@ -380,9 +385,12 @@ export function evaluateSemantic(texts) {
   const buckets = [...byLe].map(([le, count]) => ({ le, count }));
   const sortedCounts = [...buckets].sort((a, b) => a.le - b.le).map((b) => b.count);
   const histogramValid =
+    Number.isFinite(queryCount) &&
+    queryCount > 0 &&
     byLe.has(Infinity) &&
     byLe.get(Infinity) === queryCount &&
     buckets.some((b) => b.le !== Infinity) &&
+    buckets.every((b) => Number.isFinite(b.count) && b.count >= 0 && (b.le === Infinity || (Number.isFinite(b.le) && b.le >= 0))) &&
     sortedCounts.every((c, i) => i === 0 || c >= sortedCounts[i - 1]);
   const sum = (name, key) => {
     const out = {};
