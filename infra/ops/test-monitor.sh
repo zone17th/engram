@@ -57,6 +57,7 @@ for cmd in gpg psql; do
 done
 cat >"$FAKE_BIN/docker" <<'EOF'
 #!/usr/bin/env bash
+env >>"${FAKE_CHILD_ENV_LOG:-/dev/null}"
 case "$1" in
   inspect)
     for a in "$@"; do last="$a"; done
@@ -70,10 +71,27 @@ case "$1" in
     fi
     [ -n "${FAKE_DOCKER_LOGS_FILE:-}" ] && cat "$FAKE_DOCKER_LOGS_FILE"
     ;;
+  run)
+    # Isolated WAL listing (MONITOR_WAL_IMAGE): list the container's view of the archive (FAKE_WAL_VIEW,
+    # standing in for the 999:999 0700 dir the host user cannot read).
+    printf '%s\n' "$*" >>"${FAKE_DOCKER_RUN_LOG:-/dev/null}"
+    [ "${FAKE_DOCKER_RUN_FAIL:-0}" = "1" ] && { echo "docker: run failed" >&2; exit 125; }
+    find "${FAKE_WAL_VIEW:?}" -type f -name '*.gpg' -print0
+    ;;
   *) exit 0 ;;
 esac
 EOF
 chmod +x "$FAKE_BIN/docker"
+# curl recorder: logs every argv (R1-06: the webhook URL must never be in it), then runs the real curl.
+REAL_CURL="$(command -v curl)"
+cat >"$FAKE_BIN/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$WORK/curl-argv.log"
+env >>"$WORK/child-env.log"
+exec "$REAL_CURL" "\$@"
+EOF
+chmod +x "$FAKE_BIN/curl"
+: >"$WORK/curl-argv.log"
 BASE_PATH="$FAKE_BIN:$PATH"
 
 NOW=1794052800 # 2026-11-07T12:00:00Z
@@ -173,16 +191,21 @@ make_clean_fixture "$WORK/c6"
 run_case "$WORK/c6" MONITOR_FAKE_ARCHIVER_ROW="4|$((NOW - 60))|0"
 assert_alert_contains "archiver_failed_count_up" "wal: pg_stat_archiver.failed_count increased (3 -> 4)"
 
-# 7. gpg missing from PATH.
+# 7. R1-10 dependency preflight: a PATH with exactly the documented host tools (no host psql, no gpg) is clean;
+#    dropping a required tool (openssl) is a deps CRIT.
 make_clean_fixture "$WORK/c7"
-NO_GPG_BIN="$WORK/nogpg-bin"
-mkdir -p "$NO_GPG_BIN"
-for cmd in bash env docker psql curl python3 date awk sed grep tr find sort head tail wc sha256sum stat cat mv rm mkdir mktemp basename dirname cut timeout openssl df; do
+MIN_BIN="$WORK/min-bin"
+mkdir -p "$MIN_BIN"
+for cmd in bash env docker curl python3 openssl timeout awk sha256sum date sed grep tr find sort head tail wc stat cat mv rm mkdir mktemp basename dirname cut df od; do
   real="$(PATH="$BASE_PATH" command -v "$cmd" || true)"
-  if [ -n "$real" ]; then ln -sf "$real" "$NO_GPG_BIN/$cmd"; fi
+  if [ -n "$real" ]; then ln -sf "$real" "$MIN_BIN/$cmd"; fi
 done
-run_case "$WORK/c7" PATH="$NO_GPG_BIN"
-assert_alert_contains "missing_gpg_in_path" "deps: required command 'gpg' not found"
+run_case "$WORK/c7" PATH="$MIN_BIN"
+assert_no_alert "deps_minimal_path_no_psql_no_gpg" "$WORK/c7"
+make_clean_fixture "$WORK/c7b"
+rm -f "$MIN_BIN/openssl"
+run_case "$WORK/c7b" PATH="$MIN_BIN"
+assert_alert_contains "deps_missing_openssl" "deps: required command 'openssl' not found"
 
 # 8. Disk 95%.
 make_clean_fixture "$WORK/c8"
@@ -273,6 +296,79 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "PASS [state_unwritable]: exit $LAST_RC"
 else
   echo "SKIP [state_unwritable]: running as root (permissions not enforced)"
+fi
+
+# 22. R1-06: webhook URL (bearer secret) never in any process argv or the alert log, regular + TEST_ALERT delivery.
+CANARY="CANARY$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+make_clean_fixture "$WORK/c22"
+printf '{"ts":"%s","ok":true}\n' "$(ts_fmt $((NOW - 7200)))" >"$WORK/c22/backups/expire/last-sweep.json"
+: >"$WORK/curl-argv.log"
+run_case "$WORK/c22" ALERT_WEBHOOK_URL="$SRV/hook?token=$CANARY"
+assert_alert_contains "webhook_canary_regular" "retention_sweep: stale"
+grep -q "$CANARY" "$WORK/curl-argv.log" && fail "webhook_canary_argv" "webhook URL found in curl argv"
+grep -q -- "-K -" "$WORK/curl-argv.log" || fail "webhook_canary_argv" "curl did not read its config from stdin"
+grep -rq "$CANARY" "$WORK/c22/state" && fail "webhook_canary_state" "webhook URL persisted in monitor state/logs"
+echo "PASS [webhook_canary_argv]: delivered, URL absent from argv and state"
+make_clean_fixture "$WORK/c22b"
+: >"$WORK/curl-argv.log"
+run_case "$WORK/c22b" ALERT_WEBHOOK_URL="$SRV/hook?token=$CANARY" TEST_ALERT=1
+assert_alert_contains "webhook_canary_test_alert" "test_alert: synthetic alert probe"
+grep -q "$CANARY" "$WORK/curl-argv.log" && fail "webhook_canary_test_alert_argv" "webhook URL found in curl argv"
+echo "PASS [webhook_canary_test_alert_argv]: URL absent from argv"
+
+# 22c. R2-01: the URL is also absent from every child's environment and from an xtrace of the whole monitor run.
+make_clean_fixture "$WORK/c22c"
+printf '{"ts":"%s","ok":true}\n' "$(ts_fmt $((NOW - 7200)))" >"$WORK/c22c/backups/expire/last-sweep.json"
+: >"$WORK/curl-argv.log"
+: >"$WORK/child-env.log"
+: >"$WEBHOOK_LOG"
+LAST_RC=0
+env PATH="$BASE_PATH" MONITOR_NOW_EPOCH="$NOW" MONITOR_STATE_DIR="$WORK/c22c/state" MONITOR_BACKUP_ROOT="$WORK/c22c/backups" \
+  MONITOR_API_BASE_URL="$SRV/ok" MONITOR_SKIP_HTTP=1 MONITOR_FAKE_DISK_PCT=40 \
+  MONITOR_FAKE_TLS_ENDDATE="Jan 29 00:00:00 2027 GMT" FAKE_DOCKER_LOGS_FILE="$WORK/c22c/nginx.log" \
+  MONITOR_FAKE_ARCHIVER_ROW="3|$((NOW - 120))|0" FAKE_CHILD_ENV_LOG="$WORK/child-env.log" \
+  ALERT_WEBHOOK_URL="$SRV/hook?token=$CANARY" \
+  bash -x "$MONITOR" 2>"$WORK/c22c/trace.log" || LAST_RC=$?
+assert_alert_contains "webhook_canary_xtrace_delivery" "retention_sweep: stale"
+[ -s "$WORK/child-env.log" ] || fail "webhook_canary_env" "no child environment captured"
+grep -q "$CANARY" "$WORK/child-env.log" && fail "webhook_canary_env" "webhook URL in a child process environment"
+grep -q "$CANARY" "$WORK/c22c/trace.log" && fail "webhook_canary_xtrace" "webhook URL in the bash -x trace"
+grep -q "$CANARY" "$WORK/curl-argv.log" && fail "webhook_canary_xtrace_argv" "webhook URL in curl argv"
+echo "PASS [webhook_canary_env_xtrace]: delivered; URL absent from child env (curl + docker), xtrace and argv"
+
+# 23. Cross-lane 1 (dec-P06-059): WAL dir 999:999 0700 is listed through an isolated docker run, never by the host.
+wal_fixture() { # wal_fixture <dir>: host WAL dir unreadable, container view holds the real names
+  make_clean_fixture "$1"
+  mkdir -p "$1/walview"
+  mv "$1/backups/pitr/wal/"* "$1/walview/"
+  chmod 000 "$1/backups/pitr/wal"
+}
+if [ "$(id -u)" -ne 0 ]; then
+  wal_fixture "$WORK/c23"
+  run_case "$WORK/c23" MONITOR_WAL_IMAGE=pg-pin FAKE_WAL_VIEW="$WORK/c23/walview" FAKE_DOCKER_RUN_LOG="$WORK/c23/run.log"
+  chmod 700 "$WORK/c23/backups/pitr/wal"
+  assert_no_alert "wal_isolated_clean" "$WORK/c23"
+  grep -q -- "--network none --user 999:999 --entrypoint find -v $WORK/c23/backups/pitr/wal:/wal-archive:ro pg-pin /wal-archive" "$WORK/c23/run.log" \
+    || fail "wal_isolated_argv" "unexpected docker run: $(cat "$WORK/c23/run.log")"
+  echo "PASS [wal_isolated_argv]: read-only, no network, uid 999"
+
+  wal_fixture "$WORK/c24"
+  : >"$WORK/c24/walview/$(ts_fmt $((NOW - 7 * 86400 - 23 * 3600 - 1800)))--000000010000000000000009.gz.gpg"
+  run_case "$WORK/c24" MONITOR_WAL_IMAGE=pg-pin FAKE_WAL_VIEW="$WORK/c24/walview"
+  chmod 700 "$WORK/c24/backups/pitr/wal"
+  assert_alert_contains "wal_isolated_old_source" "retention: oldest source backup"
+
+  wal_fixture "$WORK/c25"
+  run_case "$WORK/c25" MONITOR_WAL_IMAGE=pg-pin FAKE_WAL_VIEW="$WORK/c25/walview" FAKE_DOCKER_RUN_FAIL=1
+  chmod 700 "$WORK/c25/backups/pitr/wal"
+  assert_alert_contains "wal_isolated_run_fails" "retention: backup tree scan incomplete"
+
+  wal_fixture "$WORK/c26"
+  run_case "$WORK/c26"
+  chmod 700 "$WORK/c26/backups/pitr/wal"
+  assert_alert_contains "wal_no_image_unreadable" "retention: backup tree scan incomplete"
+else
+  echo "SKIP [wal_isolated_*]: running as root (0700 not enforced)"
 fi
 
 echo "OPSOBS_MONITOR_EXIT=0"

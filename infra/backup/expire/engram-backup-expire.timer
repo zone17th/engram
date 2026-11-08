@@ -1,0 +1,10 @@
+[Unit]
+Description=engram backup retention sweep every hour (Persistent, independent of backups)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=0
+Persistent=true
+
+[Install]
+WantedBy=timers.target

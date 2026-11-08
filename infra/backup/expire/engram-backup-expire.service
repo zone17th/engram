@@ -1,0 +1,12 @@
+[Unit]
+Description=engram 8-day backup retention sweep (P06 Task 22, PROD-STEP-RETENTION, C09)
+# Deliberately no Requires/After on engram-backup.service or engram-pitr-base.service:
+# the sweep runs every hour even when a backup failed (retention contract (b)).
+
+[Service]
+Type=oneshot
+Environment=EXPIRE_BACKUP_ROOT=/home/ubuntu/backups/engram
+# expire.env (0600) sets EXPIRE_WAL_IMAGE=<POSTGRES_IMAGE pin>: the 999:999 0700 WAL dir is swept in an isolated
+# `docker run --network none --user 999:999` of that image. Same file before and after PROD-STEP-4.
+EnvironmentFile=/home/ubuntu/engram-ops/expire/expire.env
+ExecStart=/home/ubuntu/engram-ops/expire/engram-backup-expire.sh

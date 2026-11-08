@@ -1,0 +1,54 @@
+# PROD-STEP-2-PREP overlay (P06 Task 22, ops-prod; advisor-dec-P06-058). Requires its own Advisor GO.
+# Layered on the LIVE pre-P06 stack (P05 checkout 468cc3b + .data/deploy/compose.prod.yml = prodhygiene 4cbffff copy):
+#   docker compose -p engram --env-file infra/image-pins.env --env-file .env.production \
+#     -f infra/docker-compose.yml -f .data/deploy/compose.prod.yml -f .data/deploy/compose.prod-2prep.yml up -d
+# Adds only env + the engram-exports volume. The running P05 binary ignores the new env keys, so no image change.
+# NO worker/web healthcheck here (`-healthcheck` exists only in the P06 binary; added at 8b).
+# The same values are carried by infra/deploy/compose.prod.yml ([2-PREP] tags), which replaces this overlay at 8b.
+# No secret in this file: EXPORT_AT_REST_SECRET / SMTP_* come from .env.production.
+
+x-engram-logging: &engram-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-engram-2prep-env: &engram-2prep-env
+  EXPORT_STORAGE_DIR: /var/lib/engram-exports
+  # ONE value for api and worker (C03); boot of the P06 binary fails without it in production.
+  EXPORT_AT_REST_SECRET: ${EXPORT_AT_REST_SECRET:?EXPORT_AT_REST_SECRET missing}
+  EXPORT_CREATE_PAUSED: 'false'
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_FROM: ${SMTP_FROM:-}
+  SMTP_TLS_MODE: ${SMTP_TLS_MODE:-starttls}
+
+services:
+  # engram-exports owned by distroless nonroot 65532, mode 0700 (never mounted into web/nginx).
+  export-storage-perms:
+    image: ${NODE_IMAGE:?NODE_IMAGE missing}
+    user: '0:0'
+    volumes:
+      - engram-exports:/var/lib/engram-exports
+    command: ['sh', '-c', 'chown 65532:65532 /var/lib/engram-exports && chmod 0700 /var/lib/engram-exports']
+    restart: 'no'
+    logging: *engram-logging
+
+  api:
+    environment: *engram-2prep-env
+    volumes:
+      - engram-exports:/var/lib/engram-exports
+    depends_on:
+      export-storage-perms: { condition: service_completed_successfully }
+
+  worker:
+    environment: *engram-2prep-env
+    volumes:
+      - engram-exports:/var/lib/engram-exports
+    depends_on:
+      export-storage-perms: { condition: service_completed_successfully }
+
+volumes:
+  engram-exports:

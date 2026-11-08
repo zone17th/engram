@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
@@ -84,6 +85,18 @@ func probeHealth() (err error) {
 	return nil
 }
 
+// registerDBMetrics wires the DB-backed collectors served on /api/v1/metrics: the embedding gauges and
+// export_cleanup_pending_age_seconds, which the production monitor requires (P06 Task 4; advisor-dec-P06-061).
+func registerDBMetrics(reg prometheus.Registerer, q obs.DBQuerier) error {
+	if err := obs.RegisterGauges(reg, obs.NewDBGaugeSource(q)); err != nil {
+		return fmt.Errorf("register embedding gauges: %w", err)
+	}
+	if err := obs.RegisterExportCleanupGauge(reg, q); err != nil {
+		return fmt.Errorf("register export cleanup gauge: %w", err)
+	}
+	return nil
+}
+
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -107,8 +120,8 @@ func run() error {
 	logger.Info("preflight database ok")
 
 	reg, metrics := obs.NewRegistry()
-	if err := obs.RegisterGauges(reg, obs.NewDBGaugeSource(pool)); err != nil {
-		return fmt.Errorf("register embedding gauges: %w", err)
+	if err := registerDBMetrics(reg, pool); err != nil {
+		return err
 	}
 
 	riverInsert, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})

@@ -1,23 +1,31 @@
-# engram production override for VPS bro (DEPLOY-P03; advisor-dec-085/086; P06-PRODHYGIENE log rotation).
-# Committed template/mirror of `.data/deploy/compose.prod.yml` on bro.
-# Values come from `.env.production` via `--env-file`; this file holds no secret.
-# Run from ~/projects/engram:
-#   docker compose -p engram --env-file infra/image-pins.env --env-file .env.production \
-#     -f infra/docker-compose.yml -f infra/deploy/compose.prod.yml up -d
-# (or copy `infra/deploy/compose.prod.yml` to `.data/deploy/compose.prod.yml` and keep `.data/deploy/compose-cmd.txt`).
+# engram production override for VPS bro (DEPLOY-P03; advisor-dec-085/086; P06-PRODHYGIENE log rotation;
+# P06 Task 22 ops-prod: PROD-STEP-2-PREP, PROD-STEP-4 and the PROD-STEP-8 config that `release` applies at 8b).
+# Committed source of `.data/deploy/compose.prod.yml` on bro. Values come from `.env.production` via `--env-file`;
+# this file holds no secret (every secret is `${VAR:?}`).
 #
-# APP_ENV stays "development" (advisor-dec-086): the repo has no production mailer and production rejects
-# the mail sink. Every dev-only default is neutralised by an explicit value below.
+# THIS FILE IS THE POST-8b TARGET. It needs the P06 binary (APP_ENV production + production mailer, `-healthcheck` on
+# worker) and the P06 base `infra/docker-compose.yml`. Do NOT copy it to bro before PROD-STEP-8b.
+# Before 8b the live stack gets the same values through the overlays in docs/runbooks/prod-steps.md
+# (`compose.prod-2prep.yml` for PROD-STEP-2-PREP, `compose.prod-step4.yml` for PROD-STEP-4), each with its own Advisor GO.
+# Every line below is tagged by the step that introduces it:
+#   [base]  already live (DEPLOY-P03/P05)          [2-PREP] PROD-STEP-2-PREP (overlay before 8b)
+#   [4]     PROD-STEP-4 (overlay before 8b)         [8b]     PROD-STEP-8 config, only with the P06 image
+#
+# Run from ~/projects/engram (after 8b; ENGRAM_RELEASE_TAG = p06-<sha> from the release lane):
+#   docker compose -p engram --env-file infra/image-pins.env --env-file .env.production \
+#     -f infra/docker-compose.yml -f .data/deploy/compose.prod.yml up -d
+# Rollback = image + env + compose together (docs/runbooks/release-rollback.md): restore compose.prod.yml.bak-<ts> and
+# .env.production.bak-<ts>; never point this file at the :pre-p06 image (P05 binary has no production mailer).
 
-x-engram-logging: &engram-logging
+x-engram-logging: &engram-logging # [base] prodhygiene 4cbffff
   driver: json-file
   options:
     max-size: "20m"
     max-file: "5"
 
 x-engram-app-env: &engram-app-env
-  APP_ENV: development
-  APP_ORIGIN: ${APP_ORIGIN:?APP_ORIGIN missing}
+  APP_ENV: production # [8b] (was development, advisor-dec-086)
+  APP_ORIGIN: ${APP_ORIGIN:?APP_ORIGIN missing} # [8b] must be https://engram.zone17.click (production rejects http)
   WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:?WEBAUTHN_RP_ID missing}
   WEBAUTHN_RP_ORIGIN: ${WEBAUTHN_RP_ORIGIN:?WEBAUTHN_RP_ORIGIN missing}
   DATABASE_URL: postgres://engram:${ENGRAM_DB_PASSWORD:?ENGRAM_DB_PASSWORD missing}@db:5432/engram?sslmode=disable
@@ -35,10 +43,23 @@ x-engram-app-env: &engram-app-env
   OAUTH_GOOGLE_CLIENT_SECRET: ''
   OAUTH_GITHUB_CLIENT_ID: ''
   OAUTH_GITHUB_CLIENT_SECRET: ''
-  # When switching APP_ENV to production in a future gated step (after wiring a production mailer),
-  # set AUTH_MAIL_SINK_DIR: '' explicitly here — do NOT delete this key, or Compose will inherit
-  # AUTH_MAIL_SINK_DIR: /tmp/engram-mail from infra/docker-compose.yml and fail config.Load().
-  AUTH_MAIL_SINK_DIR: /var/lib/engram-mail
+  # [8b] APP_ENV is production: AUTH_MAIL_SINK_DIR is set to '' explicitly here — do NOT delete this key, or Compose
+  # will inherit AUTH_MAIL_SINK_DIR: /tmp/engram-mail from infra/docker-compose.yml and fail config.Load().
+  # It is repeated on api and worker below so a later anchor edit cannot bring the sink back on one of them (C12).
+  AUTH_MAIL_SINK_DIR: ''
+  AUTH_MAIL_CAPTURE_AS_DELIVERY: 'false' # [8b]
+  # [2-PREP] P06 export storage + at-rest key (C03): ONE value shared by api and worker, no fallback.
+  EXPORT_STORAGE_DIR: /var/lib/engram-exports
+  EXPORT_AT_REST_SECRET: ${EXPORT_AT_REST_SECRET:?EXPORT_AT_REST_SECRET missing}
+  EXPORT_CREATE_PAUSED: 'false'
+  # [2-PREP] SMTP (owner credentials). Empty SMTP_HOST = no mail delivery: production boots fail-closed with
+  # mail_delivery_available=false (TestProductionBootNoSMTP).
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_FROM: ${SMTP_FROM:-}
+  SMTP_TLS_MODE: ${SMTP_TLS_MODE:-starttls}
   # P05-T24-2 S2 (advisor-dec-362/364, ADR 0004): openai_compat via the 9router container on the docker bridge gateway (private).
   EMBEDDING_PROVIDER: openai_compat
   EMBEDDING_BASE_URL: http://172.17.0.1:20128/v1
@@ -50,31 +71,58 @@ x-engram-app-env: &engram-app-env
 
 services:
   db:
+    # [4] PITR image (infra/backup/pitr/Dockerfile.db, built on bro at PROD-STEP-4) + archive config.
+    image: ${POSTGRES_PITR_IMAGE:?POSTGRES_PITR_IMAGE missing}
+    command: ['postgres', '-c', 'config_file=/etc/postgresql/postgresql-pitr.conf']
     ports: !reset []
     environment:
       POSTGRES_PASSWORD: ${ENGRAM_DB_PASSWORD:?ENGRAM_DB_PASSWORD missing}
+    volumes:
+      - /home/ubuntu/backups/engram/pitr/wal:/var/lib/postgresql/wal-archive # [4] owner postgres(999) 0700
+      - /home/ubuntu/engram-ops/pitr/secrets/engram_replication.password:/run/secrets/engram_replication.password:ro # [4]
+      - /home/ubuntu/engram-ops/pitr/secrets/engram_replication.pgpass:/run/secrets/engram_replication.pgpass:ro # [4]
     restart: unless-stopped
     logging: *engram-logging
 
   migrate:
+    image: engram-api:${ENGRAM_RELEASE_TAG:?ENGRAM_RELEASE_TAG missing} # [8b]
     environment:
       DATABASE_URL: postgres://engram:${ENGRAM_DB_PASSWORD:?ENGRAM_DB_PASSWORD missing}@db:5432/engram?sslmode=disable
     logging: *engram-logging
 
-  # Mail sink on an engram-only named volume, owned by distroless nonroot (65532), mode 700. Never served.
+  # [8b] mail sink retired: the service stays defined in the base file but never runs and nothing depends on it.
   mail-sink-perms:
+    profiles: ['retired-mail-sink']
+    logging: *engram-logging
+
+  # [2-PREP] engram-exports owned by distroless nonroot 65532, mode 0700 (never mounted into web/nginx).
+  export-storage-perms:
+    image: ${NODE_IMAGE:?NODE_IMAGE missing}
+    user: '0:0'
     volumes: !override
-      - engram-mail:/sink
-    command: ['sh', '-c', 'chown 65532:65532 /sink && chmod 0700 /sink']
+      - engram-exports:/var/lib/engram-exports
+    command: ['sh', '-c', 'chown 65532:65532 /var/lib/engram-exports && chmod 0700 /var/lib/engram-exports']
+    restart: 'no'
     logging: *engram-logging
 
   api:
+    image: engram-api:${ENGRAM_RELEASE_TAG:?ENGRAM_RELEASE_TAG missing} # [8b]
     ports: !reset []
     environment:
       <<: *engram-app-env
       HTTP_ADDR: 0.0.0.0:8080
+      AUTH_MAIL_SINK_DIR: '' # [8b] explicit, do NOT delete (see anchor)
     volumes: !override
-      - engram-mail:/var/lib/engram-mail
+      - engram-exports:/var/lib/engram-exports # [2-PREP]; [8b] engram-mail mount dropped
+    depends_on: !override
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      export-storage-perms: { condition: service_completed_successfully }
+    healthcheck:
+      test: ['CMD', '/app/api', '-healthcheck']
+      interval: 10s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
     logging: *engram-logging
     networks:
@@ -82,15 +130,37 @@ services:
         aliases: [engram-api]
 
   worker:
+    image: engram-worker:${ENGRAM_RELEASE_TAG:?ENGRAM_RELEASE_TAG missing} # [8b]
     environment:
       <<: *engram-app-env
+      AUTH_MAIL_SINK_DIR: '' # [8b] explicit, do NOT delete (see anchor)
     volumes: !override
-      - engram-mail:/var/lib/engram-mail
+      - engram-exports:/var/lib/engram-exports # [2-PREP]; [8b] engram-mail mount dropped
+    depends_on: !override
+      migrate: { condition: service_completed_successfully }
+      export-storage-perms: { condition: service_completed_successfully }
+    healthcheck: # [8b] `-healthcheck` exists only in the P06 worker binary (C19)
+      test: ['CMD', '/app/worker', '-healthcheck']
+      interval: 10s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
     logging: *engram-logging
 
   web:
+    image: engram-web:${ENGRAM_RELEASE_TAG:?ENGRAM_RELEASE_TAG missing} # [8b]
     ports: !reset []
+    healthcheck: # [8b] node is the only runtime in the web image
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/api/v1/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
     logging: *engram-logging
     networks:
@@ -116,4 +186,4 @@ networks:
     external: true
 
 volumes:
-  engram-mail:
+  engram-exports: # [2-PREP]; [8b] engram-mail volume no longer declared (left on disk until release removes it)
