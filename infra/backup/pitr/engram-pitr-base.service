@@ -1,0 +1,6 @@
+[Unit]
+Description=engram encrypted PITR base backup (P06 Task 9)
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/engram-ops/backup/pitr/engram-pitr-base.sh

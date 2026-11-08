@@ -1590,6 +1590,17 @@ func (q *Queries) MarkOAuthReady(ctx context.Context, arg MarkOAuthReadyParams) 
 	return i, err
 }
 
+const markSemanticConsentSeen = `-- name: MarkSemanticConsentSeen :exec
+UPDATE app_user
+SET semantic_consent_seen_at = COALESCE(semantic_consent_seen_at, now())
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) MarkSemanticConsentSeen(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markSemanticConsentSeen, id)
+	return err
+}
+
 const resetThrottle = `-- name: ResetThrottle :exec
 UPDATE auth_throttle
 SET failed_count = 0, locked_until = NULL, last_failed_at = NULL

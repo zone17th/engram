@@ -2,9 +2,13 @@ import { cookies, headers } from 'next/headers';
 import type { components } from '@engram/shared-types';
 import {
   LOCALE_COOKIE,
+  THEME_COOKIE,
   parseLocaleCookie,
+  parseThemeCookie,
   parseAcceptLanguage,
   resolveInitialLocale,
+  resolveInitialTheme,
+  setPreferenceCookies,
 } from '@/lib/preferences/cookies';
 
 export type AppLocale = components['schemas']['Locale'];
@@ -20,4 +24,13 @@ export async function resolveAppLocale(meLocale?: AppLocale | null): Promise<App
   });
 }
 
-export { parseLocaleCookie, parseAcceptLanguage, LOCALE_COOKIE };
+export {
+  parseLocaleCookie,
+  parseThemeCookie,
+  parseAcceptLanguage,
+  resolveInitialLocale,
+  resolveInitialTheme,
+  setPreferenceCookies,
+  LOCALE_COOKIE,
+  THEME_COOKIE,
+};
