@@ -125,7 +125,8 @@ async function cmdLine(cmd, args) {
 async function environment(playwrightVersion, browserVersion) {
   const cpus = os.cpus();
   return {
-    sha: await cmdLine('git', ['rev-parse', 'HEAD']),
+    // safe.directory: inside $PLAYWRIGHT_IMAGE the bind-mounted checkout has another owner.
+    sha: await cmdLine('git', ['-c', `safe.directory=${ROOT}`, 'rev-parse', 'HEAD']),
     cpu_model: cpus[0]?.model ?? null,
     cpu_count: cpus.length,
     mem_total_mb: Math.round(os.totalmem() / 1048576),
