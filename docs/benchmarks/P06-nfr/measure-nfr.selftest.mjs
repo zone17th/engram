@@ -63,6 +63,8 @@ test('server p95: one valid framed same-SHA run passes; boundary 150 ms fails', 
   const ok = evaluateServerPerf(run(), A);
   assert.equal(ok.pass, true, ok.reason);
   assert.equal(ok.max_p95_ms, 100);
+  const sameSha = evaluateServerPerf(run({ extra: `    x.go:1: {"sha":"${A}"} commit='${A.slice(0, 9)}' HEAD ${A.slice(0, 7)}` }), A);
+  assert.equal(sameSha.pass, true, sameSha.reason);
   assert.equal(evaluateServerPerf(run({ p95: ['149.999ms', '1ms', '1ms'] }), A).pass, true);
   assert.equal(evaluateServerPerf(run({ p95: ['150ms', '1ms', '1ms'] }), A).pass, false);
   assert.equal(evaluateServerPerf(run({ semP95: ['1ms', '151ms', '1ms'] }), A).pass, false);
@@ -88,6 +90,10 @@ test('server p95: missing, foreign, stale, mixed, duplicated, truncated and fail
     'frame A wrapping legacy marker B': run().replace(`NFR_PERF_BEGIN sha=${A}`, `NFR_PERF_BEGIN sha=${A}\nNFR_PERF_SHA=${B}`),
     'legacy marker A then frame A wrapping legacy B': `NFR_PERF_SHA=${A}\n${run().replace(`NFR_PERF_BEGIN sha=${A}`, `NFR_PERF_BEGIN sha=${A}\nNFR_PERF_SHA=${B}`)}`,
     'foreign sha field inside the frame': run({ extra: `    x.go:1: candidate sha=${B.slice(0, 12)}` }),
+    'quoted foreign sha': run({ extra: `    x.go:1: sha="${B}"` }),
+    'JSON foreign sha': run({ extra: `    x.go:1: {"sha":"${B}"}` }),
+    'single-quoted foreign commit': run({ extra: `    x.go:1: commit='${B}'` }),
+    'foreign HEAD / revision': run({ extra: `    x.go:1: HEAD ${B.slice(0, 10)} revision: ${B}` }),
   };
   for (const [name, text] of Object.entries(cases)) {
     const r = evaluateServerPerf(text, A);
@@ -129,21 +135,24 @@ test('semantic: only a complete openai_compat histogram plus jobs is "collected"
   assert.equal(evaluateSemantic([TEI, WORKER]).state, 'no_cache_miss_observed', 'TEI-only cannot complete');
   assert.equal(evaluateSemantic(['embedding_provider_latency_seconds_count{provider="openai_compat",op="query"} 5\n', WORKER]).state, 'invalid_latency', 'count without buckets');
   assert.equal(evaluateSemantic([OC.replace('le="+Inf"} 10', 'le="+Inf"} 9'), WORKER]).state, 'invalid_latency', '+Inf != count');
-  assert.equal(
-    evaluateSemantic([OC.replace('le="1"} 4', 'le="1"} -1'), WORKER]).state,
-    'invalid_latency',
-    'negative cumulative bucket count',
-  );
-  assert.equal(
-    evaluateSemantic([OC.replace('le="1"} 4', 'le="-1"} 4'), WORKER]).state,
-    'invalid_latency',
-    'negative latency bound',
-  );
-  assert.equal(
-    evaluateSemantic([OC.replace('op="query"} 10', 'op="query"} -10').replace('le="+Inf"} 10', 'le="+Inf"} -10'), WORKER]).state,
-    'invalid_latency',
-    'negative count',
-  );
+  // Every malformed raw sample of a consumed family is rejected before aggregation (never dropped or masked).
+  const malformed = {
+    'negative cumulative bucket count': OC.replace('le="1"} 4', 'le="1"} -1'),
+    'negative latency bound': OC.replace('le="1"} 4', 'le="-1"} 4'),
+    'negative count': OC.replace('op="query"} 10', 'op="query"} -10').replace('le="+Inf"} 10', 'le="+Inf"} -10'),
+    '+Inf bucket value': OC.replace('le="1"} 4', 'le="1"} +Inf'),
+    'NaN bucket value': OC.replace('le="1"} 4', 'le="1"} NaN'),
+    'NaN bound': OC.replace('le="1"} 4', 'le="NaN"} 4'),
+    'negative sample masked by same bound': `${OC}embedding_provider_latency_seconds_bucket{provider="openai_compat",op="query",le="1"} -1\n`,
+    'non-numeric value': OC.replace('le="1"} 4', 'le="1"} four'),
+    'negative jobs counter': `${OC}embedding_jobs_total{kind="embed_item",outcome="ok"} -3\n`,
+  };
+  for (const [name, text] of Object.entries(malformed)) {
+    const r = evaluateSemantic([text, WORKER]);
+    assert.equal(r.state, 'invalid_samples', `${name}: ${r.state}`);
+    assert.equal(semanticCriterion(r, false).status, 'fail', name);
+    assert.equal(semanticCriterion(r, true).status, 'fail', `${name} (dry-run)`);
+  }
   assert.equal(evaluateSemantic([OC]).state, 'partial');
   const full = evaluateSemantic([OC, TEI, WORKER]);
   assert.equal(full.state, 'collected');

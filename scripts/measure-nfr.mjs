@@ -296,10 +296,11 @@ export function evaluateServerPerf(logText, headSha) {
   if (reasons.length) return fail();
 
   const seg = logText.slice(begin.index + begin[0].length, end.index);
-  // Provenance inside the frame: no legacy/nested markers, and every SHA-like field must name the tested SHA.
+  // Provenance inside the frame (advisor-dec-P06-054): no legacy/nested markers, and every hex token of
+  // 7-40 chars in a sha/commit/head/rev context — quoted, JSON or plain — must be a prefix of the tested SHA.
   if (/NFR_PERF_(SHA|BEGIN|END)/.test(seg)) reasons.push('legacy or nested NFR_PERF marker inside the frame');
-  for (const m of seg.matchAll(/\b[A-Za-z_]*(?:sha|commit)\s*[=:]\s*([0-9a-f]{7,40})\b/gi)) {
-    if (!headSha.startsWith(m[1].toLowerCase())) reasons.push(`foreign sha ${m[1]} inside the frame`);
+  for (const t of shaTokens(seg)) {
+    if (!headSha.startsWith(t.toLowerCase())) reasons.push(`foreign sha ${t} inside the frame`);
   }
   if (/^\s*(--- FAIL|--- SKIP|FAIL\b|panic:)/m.test(seg)) reasons.push('FAIL/SKIP/panic inside the run');
   if (!/^ok\s+\S+\/internal\/perf\b/m.test(seg)) reasons.push('no "ok .../internal/perf" package line (truncated run)');
@@ -336,15 +337,46 @@ function parseLabels(s) {
   return labels;
 }
 
+// Hex tokens of 7-40 chars following a sha/commit/head/rev keyword (any suffix, e.g. candidate_sha, HEAD,
+// revision) within a short run of separators/quotes/brackets: sha=B, sha="B", {"sha":"B"}, commit='B', HEAD B.
+export function shaTokens(text) {
+  const re = /(?<![A-Za-z])(?:sha|commit|head|rev)[A-Za-z0-9_-]*["'`]?\s*[=:]?\s*[\[{(]?\s*["'`]?([0-9a-fA-F]{7,40})(?![0-9a-fA-F])/gi;
+  return [...text.matchAll(re)].map((m) => m[1]);
+}
+
+// Every sample is kept with its raw value text; validation happens in the consumer, never by dropping.
 export function parsePrometheus(text) {
   const samples = [];
   for (const line of text.split(/\r?\n/)) {
     if (!line || line.startsWith('#')) continue;
     const m = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})?\s+(\S+)/.exec(line);
-    const value = m ? Number(m[3]) : NaN;
-    if (m && Number.isFinite(value)) samples.push({ name: m[1], labels: parseLabels(m[2]), value });
+    if (m) samples.push({ name: m[1], labels: parseLabels(m[2]), raw: m[3], value: Number(m[3]) });
   }
   return samples;
+}
+
+const SEMANTIC_FAMILIES = new Set([
+  'embedding_provider_latency_seconds_bucket',
+  'embedding_provider_latency_seconds_count',
+  'embedding_provider_latency_seconds_sum',
+  'embedding_jobs_total',
+  'semantic_query_cache_total',
+]);
+
+// Raw-sample check of every consumed family before any aggregation: value finite and >= 0; bucket `le`
+// is "+Inf" or a finite number >= 0. Returns one reason per invalid sample (metric name + field only).
+export function invalidSemanticSamples(samples) {
+  const bad = [];
+  for (const s of samples) {
+    if (!SEMANTIC_FAMILIES.has(s.name)) continue;
+    if (!/^[0-9.eE+-]+$/.test(s.raw) || !Number.isFinite(s.value) || s.value < 0) bad.push(`${s.name} value ${s.raw}`);
+    if (s.name === 'embedding_provider_latency_seconds_bucket') {
+      const le = s.labels.le;
+      const n = Number(le);
+      if (le !== '+Inf' && (le === undefined || le === '' || !Number.isFinite(n) || n < 0)) bad.push(`${s.name} le=${le}`);
+    }
+  }
+  return bad;
 }
 
 // histogram_quantile over cumulative buckets (linear interpolation inside the bucket, Prometheus rules).
@@ -370,7 +402,9 @@ export function histogramQuantile(q, buckets) {
 export function evaluateSemantic(texts) {
   if (texts.length === 0) return { state: 'pending', reason: 'no --semantic-metrics given (post-deploy bro scrape, protocol §4)' };
   const samples = texts.flatMap((t) => parsePrometheus(t));
-  if (samples.length === 0) return { state: 'invalid', reason: 'no Prometheus samples parsed' };
+  if (!samples.some((s) => Number.isFinite(s.value))) return { state: 'invalid', reason: 'no numeric Prometheus samples parsed' };
+  const bad = invalidSemanticSamples(samples);
+  if (bad.length) return { state: 'invalid_samples', reason: `invalid samples: ${bad.slice(0, 5).join(', ')}${bad.length > 5 ? ` (+${bad.length - 5})` : ''}` };
   // Only provider="openai_compat", op="query" (a real cache miss calls the provider; TEI is not the production path).
   const isMiss = (s) => s.labels.provider === 'openai_compat' && s.labels.op === 'query';
   const byLe = new Map();
@@ -770,7 +804,7 @@ export function semanticCriterion(sem, dryRun) {
   const id = 'semantic.observed';
   const threshold = 'openai_compat cache-miss latency + embedding_jobs_total collected (protocol §4)';
   if (sem.state === 'collected') return crit(id, true, sem.state, threshold);
-  if (dryRun && sem.state !== 'invalid') return pending(id, `${sem.state}: ${sem.reason}`, threshold);
+  if (dryRun && !sem.state.startsWith('invalid')) return pending(id, `${sem.state}: ${sem.reason}`, threshold);
   return crit(id, false, `${sem.state}: ${sem.reason}`, threshold);
 }
 
