@@ -2,14 +2,69 @@
 
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import {
+  createContext,
   forwardRef,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
   type ComponentPropsWithoutRef,
   type ElementRef,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import { cn } from '@/lib/cn';
 
-export const Dialog = DialogPrimitive.Root;
+export interface DialogProps extends ComponentPropsWithoutRef<typeof DialogPrimitive.Root> {
+  returnFocusRef?: RefObject<HTMLElement | null>;
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  dismissible?: boolean;
+}
+
+interface DialogContextValue {
+  returnFocusRef?: RefObject<HTMLElement | null>;
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  dismissible?: boolean;
+  openerRef?: RefObject<HTMLElement | null>;
+}
+
+const DialogContext = createContext<DialogContextValue>({});
+
+export function Dialog({
+  open,
+  onOpenChange,
+  returnFocusRef,
+  initialFocusRef,
+  dismissible,
+  children,
+  ...props
+}: DialogProps) {
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return;
+    const active = document.activeElement;
+    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  }, [open]);
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next && dismissible === false) return;
+    onOpenChange?.(next);
+  };
+
+  const ctxValue = useMemo<DialogContextValue>(
+    () => ({ returnFocusRef, initialFocusRef, dismissible, openerRef }),
+    [returnFocusRef, initialFocusRef, dismissible],
+  );
+
+  return (
+    <DialogContext.Provider value={ctxValue}>
+      <DialogPrimitive.Root open={open} onOpenChange={handleOpenChange} {...props}>
+        {children}
+      </DialogPrimitive.Root>
+    </DialogContext.Provider>
+  );
+}
 export const DialogTrigger = forwardRef<
   ElementRef<typeof DialogPrimitive.Trigger>,
   ComponentPropsWithoutRef<typeof DialogPrimitive.Trigger>
@@ -40,16 +95,79 @@ export const DialogOverlay = forwardRef<
   );
 });
 
+export interface DialogContentProps
+  extends ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
+  returnFocusRef?: RefObject<HTMLElement | null>;
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  dismissible?: boolean;
+}
+
 export const DialogContent = forwardRef<
   ElementRef<typeof DialogPrimitive.Content>,
-  ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(function DialogContent({ className, children, ...props }, ref) {
+  DialogContentProps
+>(function DialogContent(
+  {
+    className,
+    children,
+    returnFocusRef: propReturnFocusRef,
+    initialFocusRef: propInitialFocusRef,
+    dismissible: propDismissible,
+    onOpenAutoFocus,
+    onCloseAutoFocus,
+    onEscapeKeyDown,
+    onPointerDownOutside,
+    onInteractOutside,
+    ...props
+  },
+  ref,
+) {
+  const ctx = useContext(DialogContext);
+  const returnFocusRef = propReturnFocusRef ?? ctx.returnFocusRef;
+  const initialFocusRef = propInitialFocusRef ?? ctx.initialFocusRef;
+  const dismissible = propDismissible ?? ctx.dismissible ?? true;
+
   return (
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
         ref={ref}
         className={cn('dialog-content', className)}
+        onOpenAutoFocus={(event) => {
+          onOpenAutoFocus?.(event);
+          if (event.defaultPrevented) return;
+          const initialTarget = initialFocusRef?.current;
+          if (initialTarget && initialTarget.isConnected) {
+            event.preventDefault();
+            initialTarget.focus();
+          }
+        }}
+        onCloseAutoFocus={(event) => {
+          onCloseAutoFocus?.(event);
+          if (event.defaultPrevented) return;
+          const opener = returnFocusRef?.current ?? ctx.openerRef?.current;
+          if (opener && opener.isConnected) {
+            event.preventDefault();
+            opener.focus();
+          }
+        }}
+        onEscapeKeyDown={(event) => {
+          onEscapeKeyDown?.(event);
+          if (!dismissible) {
+            event.preventDefault();
+          }
+        }}
+        onPointerDownOutside={(event) => {
+          onPointerDownOutside?.(event);
+          if (!dismissible) {
+            event.preventDefault();
+          }
+        }}
+        onInteractOutside={(event) => {
+          onInteractOutside?.(event);
+          if (!dismissible) {
+            event.preventDefault();
+          }
+        }}
         {...props}
       >
         {children}
