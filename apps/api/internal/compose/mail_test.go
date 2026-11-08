@@ -543,7 +543,7 @@ func assertHTTPVerifyEmailViaAPI(t *testing.T, client *http.Client, baseURL stri
 		return resp.StatusCode, raw
 	}
 	csrfStatus, csrfRaw := doJSON(http.MethodGet, "/api/v1/auth/csrf", "", "")
-	initCSRF := cookies["__Host-sabk_csrf"]
+	initCSRF := cookies[authhttp.CookieCSRF]
 	if csrfStatus != http.StatusNoContent || initCSRF == nil || initCSRF.Value == "" {
 		t.Fatalf("GET /api/v1/auth/csrf: status=%d body=%s cookie=%v", csrfStatus, csrfRaw, initCSRF)
 	}
@@ -552,9 +552,9 @@ func assertHTTPVerifyEmailViaAPI(t *testing.T, client *http.Client, baseURL stri
 	if signupStatus != http.StatusCreated {
 		t.Fatalf("POST /api/v1/auth/signup: status=%d body=%s", signupStatus, signupRaw)
 	}
-	csrfCookie := cookies["__Host-sabk_csrf"]
+	csrfCookie := cookies[authhttp.CookieCSRF]
 	if csrfCookie == nil {
-		t.Fatal("missing rotated __Host-sabk_csrf cookie after signup")
+		t.Fatal("missing rotated sabk_csrf cookie after signup")
 	}
 	verifyStatus, verifyRaw := doJSON(http.MethodPost, "/api/v1/auth/verify-email/send", csrfCookie.Value, `{}`)
 	if verifyStatus != http.StatusAccepted {
@@ -572,10 +572,11 @@ func TestProductionStackComposeSmoke(t *testing.T) {
 	if os.Getenv("OPS_CONFIG_COMPOSE_STACK_SMOKE") != "1" {
 		t.Skip("skipping Compose stack production smoke (set OPS_CONFIG_COMPOSE_STACK_SMOKE=1 on cloud-runner)")
 	}
-	repoRoot, err := filepath.Abs("../../..")
+	topOut, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
+	repoRoot := strings.TrimSpace(string(topOut))
 	tmpDir := t.TempDir()
 	_ = os.Chmod(filepath.Dir(tmpDir), 0o755)
 	if err := os.Chmod(tmpDir, 0o755); err != nil {
