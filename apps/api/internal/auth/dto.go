@@ -12,6 +12,9 @@ type Me struct {
 	Identities []MeIdentity `json:"identities"`
 	Features   MeFeatures   `json:"features"`
 	Vault      MeVault      `json:"vault"`
+	// SemanticConsentSeenAt is null until the user answers the onboarding
+	// consent line or the one-time banner (plan P06 mục 2.10).
+	SemanticConsentSeenAt *time.Time `json:"semantic_consent_seen_at"`
 }
 
 type MeUser struct {

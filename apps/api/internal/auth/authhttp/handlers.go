@@ -552,10 +552,11 @@ func (a *API) NotificationRead(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) SettingsPatch(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Locale          json.RawMessage `json:"locale"`
-		Theme           json.RawMessage `json:"theme"`
-		AutoLockMinutes json.RawMessage `json:"auto_lock_minutes"`
-		SemanticSuggest json.RawMessage `json:"semantic_suggest"`
+		Locale              json.RawMessage `json:"locale"`
+		Theme               json.RawMessage `json:"theme"`
+		AutoLockMinutes     json.RawMessage `json:"auto_lock_minutes"`
+		SemanticSuggest     json.RawMessage `json:"semantic_suggest"`
+		SemanticConsentSeen json.RawMessage `json:"semantic_consent_seen"`
 	}
 	if !httpx.DecodeJSON(w, r, &in) {
 		return
@@ -574,6 +575,10 @@ func (a *API) SettingsPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := decodeSettingsPatchField(in.SemanticSuggest, &patch.SemanticSuggest); err != nil {
+		httpx.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "JSON không hợp lệ.")
+		return
+	}
+	if err := decodeSettingsPatchField(in.SemanticConsentSeen, &patch.SemanticConsentSeen); err != nil {
 		httpx.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "JSON không hợp lệ.")
 		return
 	}
