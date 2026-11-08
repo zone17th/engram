@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -138,10 +139,10 @@ func TestDeleteAccount_SecurityGates(t *testing.T) {
 		t.Fatalf("no CSRF = %d %s, want 403 csrf_invalid", code, raw)
 	}
 
-	// 4. Content-Type gate: non-JSON body returns 400 invalid_request.
+	// 4. Content-Type gate: non-JSON body returns 415 invalid_request.
 	code, raw = h.deleteMe(body, delOpts{csrf: true, contentType: "text/plain", grant: validGrant, idemKey: "idem-accdel-nonjson01"})
-	if code != http.StatusBadRequest || problemCode(t, raw) != "invalid_request" {
-		t.Fatalf("text/plain = %d %s, want 400 invalid_request", code, raw)
+	if code != http.StatusUnsupportedMediaType || problemCode(t, raw) != "invalid_request" {
+		t.Fatalf("text/plain = %d %s, want 415 invalid_request", code, raw)
 	}
 
 	// 5. Idempotency-Key gate: missing key, too-short key, and in-progress conflict.
@@ -179,12 +180,12 @@ FROM app_user WHERE email = 'del.me@example.com'`, h.clk.Now(), h.clk.Now().Add(
 	}
 	otherJar := jar{}
 	h.csrfJar(otherJar)
-	otherSignup := h.doAs(otherJar, http.MethodPost, "/api/v1/auth/signup", `{"email":"other-user@example.com","password":"correcthorse"}`, true, "")
+	otherSignup := h.doAs(otherJar, http.MethodPost, "/api/v1/auth/signup", `{"email":"other-user@example.com","password":"correcthorse"}`, true, "198.51.100.20")
 	if otherSignup.StatusCode != http.StatusCreated {
 		t.Fatalf("other signup = %d %s", otherSignup.StatusCode, h.body(otherSignup))
 	}
 	_ = otherSignup.Body.Close()
-	otherReauth := h.doAs(otherJar, http.MethodPost, "/api/v1/auth/reauth", `{"action":"account.delete","password":"correcthorse"}`, true, "")
+	otherReauth := h.doAs(otherJar, http.MethodPost, "/api/v1/auth/reauth", `{"action":"account.delete","password":"correcthorse"}`, true, "198.51.100.20")
 	if otherReauth.StatusCode != http.StatusOK {
 		t.Fatalf("other reauth = %d %s", otherReauth.StatusCode, h.body(otherReauth))
 	}
@@ -198,7 +199,7 @@ FROM app_user WHERE email = 'del.me@example.com'`, h.clk.Now(), h.clk.Now().Add(
 	if code != http.StatusUnauthorized || problemCode(t, raw) != "reauth_invalid" {
 		t.Fatalf("other-user/session grant = %d %s, want 401 reauth_invalid", code, raw)
 	}
-	expGrant := h.grant("account.delete", "correcthorse")
+	expGrant := h.grantAs("198.51.100.21", "account.delete", "correcthorse")
 	h.clk.Advance(6 * time.Minute)
 	code, raw = h.deleteMe(body, delOpts{csrf: true, grant: expGrant, idemKey: "idem-accdel-expgrant01"})
 	if code != http.StatusUnauthorized || problemCode(t, raw) != "reauth_invalid" {
@@ -206,28 +207,26 @@ FROM app_user WHERE email = 'del.me@example.com'`, h.clk.Now(), h.clk.Now().Add(
 	}
 
 	// 7. Wrong confirm_email (400 account_delete_confirm_invalid) and rate limit
-	// vault_sensitive (5 requests / 10m -> 6th returns 429 rate_limited + Retry-After).
-	for i := 1; i <= 5; i++ {
+	// vault_sensitive (10 requests / 1m -> 11th returns 429 rate_limited + Retry-After).
+	rlGrant := h.grantAs("198.51.100.22", "account.delete", "correcthorse")
+	for i := 1; i <= 10; i++ {
 		code, raw = h.deleteMe(`{"confirm_email":"other@example.com"}`, delOpts{
 			csrf:    true,
-			grant:   h.grant("account.delete", "correcthorse"),
-			idemKey: "idem-accdel-wrongmail" + string(rune('0'+i)),
+			grant:   rlGrant,
+			idemKey: fmt.Sprintf("idem-accdel-wrongmail-%02d", i),
 		})
 		if code != http.StatusBadRequest || problemCode(t, raw) != "account_delete_confirm_invalid" {
 			t.Fatalf("attempt %d wrong email = %d %s, want 400 account_delete_confirm_invalid", i, code, raw)
 		}
 	}
-	// Advance 90s so the 1-minute /auth/reauth limiter resets while the
-	// 10-minute vault_sensitive limiter on DELETE /me remains at 5/5.
-	h.clk.Advance(90 * time.Second)
 	rlResp := h.deleteMeResp(body, delOpts{
 		csrf:    true,
-		grant:   h.grant("account.delete", "correcthorse"),
-		idemKey: "idem-accdel-ratelimit6",
+		grant:   rlGrant,
+		idemKey: "idem-accdel-ratelimit11",
 	})
 	rlRaw := h.body(rlResp)
 	if rlResp.StatusCode != http.StatusTooManyRequests || problemCode(t, rlRaw) != "rate_limited" {
-		t.Fatalf("6th request in 10m window = %d %s, want 429 rate_limited", rlResp.StatusCode, rlRaw)
+		t.Fatalf("11th request in 1m window = %d %s, want 429 rate_limited", rlResp.StatusCode, rlRaw)
 	}
 	if rlResp.Header.Get("Retry-After") == "" {
 		t.Fatal("429 rate_limited must set Retry-After header")
@@ -238,9 +237,9 @@ FROM app_user WHERE email = 'del.me@example.com'`, h.clk.Now(), h.clk.Now().Add(
 		t.Fatalf("users after rejected requests = %d (%v), want 2", users, err)
 	}
 
-	// Advance past the 10-minute vault_sensitive window and execute valid delete.
-	h.clk.Advance(11 * time.Minute)
-	code, raw = h.deleteMe(body, delOpts{csrf: true, grant: h.grant("account.delete", "correcthorse"), idemKey: "idem-accdel-success-01"})
+	// Advance past the 1-minute vault_sensitive window and execute valid delete.
+	h.clk.Advance(2 * time.Minute)
+	code, raw = h.deleteMe(body, delOpts{csrf: true, grant: rlGrant, idemKey: "idem-accdel-success-01"})
 	if code != http.StatusNoContent {
 		t.Fatalf("delete = %d %s, want 204", code, raw)
 	}
