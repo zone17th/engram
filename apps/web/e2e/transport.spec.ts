@@ -269,7 +269,7 @@ test.describe('HTTPS auth transport', () => {
     expect(dotted404ScriptSrc).toMatch(/'sha256-[A-Za-z0-9+/=]+'/);
     expect(dotted404ScriptSrc).not.toContain("'unsafe-inline'");
     expect(dotted404ScriptSrc).not.toContain("'unsafe-eval'");
-    await expect(page.locator('body')).toContainText(/This page could not be found|Không có trang này/i);
+    await expect(page.locator('body')).toContainText(/This page does not exist or has moved|Trang này không tồn tại hoặc đã được chuyển đi/i);
     cspMonitor.assertClean('/foo.php');
     // 3. `/app/auth/login` (Turnstile nonce) across 2 requests -> distinct nonces, no unsafe-inline
     const authResponse1 = await page.goto('/app/auth/login', { waitUntil: 'domcontentloaded' });
