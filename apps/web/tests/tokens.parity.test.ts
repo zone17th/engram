@@ -188,6 +188,12 @@ describe('phone-width JSON table wrapping (FU-T26-390-OVERFLOW, advisor-dec-342)
   });
 });
 
+describe('omnibox status lines stay in frame (FU-T22-429-STICKY, advisor-dec-335)', () => {
+  it('pins .sugg-status-line to the bottom of the scrolling dropdown', () => {
+    expect(webCss).toMatch(/\.sugg-status-line:not\(\.sugg-status-line-top\)\s*\{[^}]*position:\s*sticky;[^}]*bottom:\s*0/);
+  });
+});
+
 describe('token thương hiệu', () => {
   const root = readVars(webCss, ':root');
   it.each([

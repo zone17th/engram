@@ -1167,6 +1167,9 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
   border-top: 0;
   border-bottom: 1px solid var(--border);
 }
+/* FU-T22-429-STICKY (advisor-dec-335): the muted 429 / degraded / 409 line must stay in frame at the bottom of a
+   scrolling dropdown instead of sitting after the last row. */
+.sugg-status-line:not(.sugg-status-line-top) { position: sticky; bottom: 0; z-index: 1; }
 
 .sugg-match-badge {
   font-size: 11px;
