@@ -9,7 +9,9 @@
 #             (+ compose.prod-step4.yml): env/volume added, APP_ENV/sink unchanged, NO worker healthcheck.
 #   boot      build the candidate images, up api+worker+web from the resolved target (db swapped for the plain
 #             pgvector pin by a test-only override: the PITR image is Task 9's evidence), without and with
-#             SMTP_HOST: api+worker+web healthy, /api/v1/readyz 200, mail_delivery_available false/true.
+#             SMTP_HOST: api+worker+web healthy, /api/v1/readyz 200, mail_delivery_available false/true;
+#             nosmtp round also runs the reviewed monitor (R1-04): internal metrics 200 + cleanup gauge,
+#             proxied metrics 404, no telemetry/deps/container/http finding.
 # Markers: COMPOSE_RESOLVE_EXIT, COMPOSE_PRE8B_EXIT, COMPOSE_BOOT_NOSMTP_EXIT, COMPOSE_BOOT_SMTP_EXIT,
 # final OPSPROD_COMPOSE_EXIT. Usage: bash infra/deploy/test-compose-prod.sh [resolve|pre8b|boot|all]
 set -uo pipefail
@@ -202,6 +204,31 @@ api_get() {
 fetch('http://api:8080$1').then(async r => { console.log(r.status); console.log(await r.text()); }).catch(e => { console.log('ERR ' + e.message); process.exit(1); })"
 }
 
+# R1-04: the reviewed monitor, configured as PROD-STEP-6 documents (no MONITOR_API_BASE_URL), scrapes the api's
+# INTERNAL address: metrics 200 with the cleanup gauge; the same endpoint through a proxy (X-Forwarded-For) is 404.
+# Only telemetry/deps/container/http findings are asserted absent (markers/WAL/TLS legitimately fail here).
+monitor_check() {
+  local m="$WORK/monitor" rc=0 ip code summary
+  mkdir -p "$m/backups"
+  ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "${PROJECT}-api-1" | awk '{print $1}')"
+  code="$(curl -s -o "$m/metrics" -w '%{http_code}' --max-time 3 "http://$ip:8080/api/v1/metrics" || true)"
+  printf '  internal metrics: %s, cleanup gauge lines: %s\n' "$code" "$(grep -c '^export_cleanup_pending_age_seconds ' "$m/metrics" 2>/dev/null || echo 0)"
+  [ "$code" = 200 ] && grep -q '^export_cleanup_pending_age_seconds ' "$m/metrics" || rc=1
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'X-Forwarded-For: 203.0.113.9' "http://$ip:8080/api/v1/metrics" || true)"
+  printf '  proxied metrics: %s\n' "$code"
+  [ "$code" = 404 ] || rc=1
+  env MONITOR_STATE_DIR="$m/state" MONITOR_BACKUP_ROOT="$m/backups" \
+    MONITOR_API_CONTAINER="${PROJECT}-api-1" MONITOR_DB_CONTAINER="${PROJECT}-db-1" \
+    MONITOR_CONTAINERS="${PROJECT}-api-1 ${PROJECT}-worker-1 ${PROJECT}-web-1" \
+    MONITOR_SKIP_TLS=1 MONITOR_SKIP_EDGE=1 ALERT_WEBHOOK_URL='' \
+    bash infra/ops/engram-monitor.sh >/dev/null 2>&1 || true
+  summary="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["summary"])' "$m/state/status.json" 2>/dev/null || echo 'NO STATUS')"
+  printf '  monitor findings: %s\n' "$(tr ';' '\n' <<<"$summary" | sed 's/^ *//' | cut -c1-90 | paste -sd'|' -)"
+  if grep -qE 'telemetry:|deps:|container:|http:|NO STATUS' <<<"$summary"; then rc=1; fi
+  if [ "$rc" -eq 0 ]; then pass "monitor: internal metrics scraped, deps/containers/http clean"; else fail "monitor integration"; fi
+  return "$rc"
+}
+
 boot_round() { # boot_round <label> <smtp: yes|no>
   local label="$1" smtp="$2" rc=0 out
   EXTRA_ENV="$WORK/smtp-$smtp.env"
@@ -236,6 +263,9 @@ boot_round() { # boot_round <label> <smtp: yes|no>
   else
     printf '  auth/config: %s\n' "$(head -c 300 <<<"$out")"
     rc=1
+  fi
+  if [ "$smtp" = no ]; then
+    monitor_check || rc=1
   fi
   compose_target down -v --remove-orphans >/dev/null 2>&1 || true
   if [ "$rc" -eq 0 ]; then pass "boot $label"; else fail "boot $label"; fi

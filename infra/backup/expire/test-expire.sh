@@ -5,11 +5,16 @@
 #   2  age from NAME only: old name + fresh mtime deleted; fresh name + ancient mtime kept
 #   3  missed sweep: the next sweep deletes, age at deletion < 8d
 #   4  backup failure (nightly/last.json ok:false, no new dump): sweep still deletes, ok:true
-#   5  fail closed: unnamed / impossible-date / future backup files kept + ok:false + exit 1;
-#      non-backup files (markers, env baks) and symlink targets untouched
-#   6  WAL archive swept through `docker exec -u postgres` (shimmed docker), same clock
+#   5  fail closed (R1-01): only exact recognised names are deleted; unexpected/old-timestamped backup-like
+#      names, impossible dates and future names are kept + ok:false + exit 1; recognised sidecars, WAL
+#      .history/.backup and inventoried legacy engram-pre-p0N dumps are deleted; non-backup files and
+#      symlink targets untouched
+#   6  WAL archive swept by `docker run --network none --user 999:999` (shimmed docker), same clock; docker
+#      failure -> ok:false; no WAL image + unreadable WAL dir -> ok:false (non-root only)
 #   7  30-day hourly simulation (daily nightly + base, WAL every 10 min, failed backups, missed
 #      sweeps): no file ever reaches 8d; from day 7 a base aged >= 6d with contiguous WAL after it
+#   8  (OPSPROD_EXPIRE_REAL_DOCKER=1, cloud) real docker run on a 999:999 0700 WAL dir with the pinned
+#      POSTGRES_IMAGE: host user cannot read it, the sweep still deletes by name, 0700/owner unchanged
 # check() evals single-quoted conditions at call time; keep/drop are read through ${!t}.
 # shellcheck disable=SC2016,SC2034,SC2317
 set -uo pipefail
@@ -37,8 +42,10 @@ newroot() {
   printf '%s\n' "$r"
 }
 mk() { mkdir -p "$(dirname "$1")"; : >"$1"; }
-run_sweep() { # run_sweep <root> <now> -> rc in SWEEP_RC
-  EXPIRE_BACKUP_ROOT="$1" EXPIRE_NOW_EPOCH="$2" EXPIRE_WAL_CONTAINER="${3:-}" \
+all_exist() { local f; for f in "$@"; do [ -e "$f" ] || return 1; done; }
+none_exist() { local f; for f in "$@"; do [ ! -e "$f" ] || return 1; done; }
+run_sweep() { # run_sweep <root> <now> [wal-image] -> rc in SWEEP_RC
+  EXPIRE_BACKUP_ROOT="$1" EXPIRE_NOW_EPOCH="$2" EXPIRE_WAL_IMAGE="${3:-}" \
     bash "$SCRIPT" >"$WORK/last.out" 2>&1
   SWEEP_RC=$?
 }
@@ -93,51 +100,111 @@ check "c4 failed backup: expired dump still deleted, ok:true" \
   '[ ! -e "$f" ] && [ "$SWEEP_RC" -eq 0 ] && marker_ok "$R"'
 check "c4 nightly/last.json untouched" 'grep -q "\"ok\":false" "$R/nightly/last.json"'
 
-# 5. Fail closed + scope.
+# 5. Fail closed + exact-name allowlist (R1-01).
 R="$(newroot c5)"
-mk "$R/engram-pre-p04-manual.dump"
-mk "$R/nightly/engram-20261340T000000Z.dump.gpg"
-mk "$R/nightly/engram-$(ts_of $((NOW + D))).dump.gpg"
-mk "$R/env.production.bak-$(ts_of $((NOW - 30 * D)))"
+OLD="$(ts_of $((NOW - 30 * D)))"
+keepers=(
+  "$R/engram-pre-p04-manual.dump"                         # backup-like, no timestamp
+  "$R/nightly/engram-20261340T000000Z.dump.gpg"           # impossible date
+  "$R/nightly/engram-$(ts_of $((NOW + D))).dump.gpg"      # future
+  "$R/not-a-backup-$OLD.sql"                              # old timestamp, unrecognised name
+  "$R/nightly/engram-$OLD.dump.gpg.UNEXPECTED.gpg"        # recognised prefix, unexpected suffix
+  "$R/nightly/x-engram-$OLD.dump.gpg"                     # unexpected prefix
+  "$R/pitr/wal/$OLD--00000001000000000000000a.gz.gpg"     # lowercase hex is not a WAL name
+  "$R/offhost/engram-base-$OLD.tar.gz"                    # unencrypted base name
+)
+for f in "${keepers[@]}"; do mk "$f"; done
+deletes=(
+  "$R/engram-pre-p04-$OLD.dump"
+  "$R/engram-pre-p04-$OLD.dump.sha256"
+  "$R/pitr/base/engram-base-$OLD.tar.gz.gpg.sha256.partial"
+  "$R/pitr/base/engram-base-$OLD.tar.gz.gpg.partial"
+  "$R/nightly/engram-$OLD.dump.gpg.partial"
+  "$R/pitr/wal/$OLD--00000002.history.gz.gpg"
+  "$R/pitr/wal/$OLD--000000010000000000000003.00000028.backup.gz.gpg.sha256"
+  "$R/pitr/wal/$OLD--000000010000000000000004.partial.gz.gpg"
+)
+for f in "${deletes[@]}"; do mk "$f"; done
+mk "$R/env.production.bak-$OLD"
 mk "$R/r1-vars.sh"
-outside="$WORK/outside-$(ts_of $((NOW - 30 * D))).dump.gpg"
+outside="$WORK/outside-$OLD.dump.gpg"
 mk "$outside"
-ln -s "$outside" "$R/nightly/link-$(ts_of $((NOW - 30 * D))).dump.gpg"
+ln -s "$outside" "$R/nightly/engram-$OLD.dump.gpg"
 run_sweep "$R" "$NOW"
-check "c5 problems -> exit 1 + ok:false" \
-  '[ "$SWEEP_RC" -eq 1 ] && grep -q "\"ok\":false" "$R/expire/last-sweep.json" && grep -q "\"problems\":3" "$R/expire/last-sweep.json"'
-check "c5 unnamed/impossible/future kept" \
-  '[ -e "$R/engram-pre-p04-manual.dump" ] && [ -e "$R/nightly/engram-20261340T000000Z.dump.gpg" ] && [ -e "$R/nightly/engram-$(ts_of $((NOW + D))).dump.gpg" ]'
-check "c5 non-backup files untouched" '[ -e "$R/env.production.bak-$(ts_of $((NOW - 30 * D)))" ] && [ -e "$R/r1-vars.sh" ]'
-check "c5 symlink and its target untouched" '[ -L "$R/nightly/link-$(ts_of $((NOW - 30 * D))).dump.gpg" ] && [ -e "$outside" ]'
-check "c5 expire.log records UNNAMED + FUTURE" 'grep -q UNNAMED "$R/expire/expire.log" && grep -q FUTURE "$R/expire/expire.log"'
+check "c5 problems -> exit 1 + ok:false (8 kept problem files)" \
+  '[ "$SWEEP_RC" -eq 1 ] && grep -q "\"ok\":false" "$R/expire/last-sweep.json" && grep -q "\"problems\":8" "$R/expire/last-sweep.json"'
+check "c5 every unrecognised/bad-date/future backup-like file preserved" \
+  'all_exist "${keepers[@]}"'
+check "c5 recognised sidecars, WAL history/backup/partial, legacy pre-p0N dumps deleted" \
+  'none_exist "${deletes[@]}"'
+check "c5 non-backup files untouched" '[ -e "$R/env.production.bak-$OLD" ] && [ -e "$R/r1-vars.sh" ]'
+check "c5 symlink with a recognised name and its target untouched" '[ -L "$R/nightly/engram-$OLD.dump.gpg" ] && [ -e "$outside" ]'
+check "c5 expire.log records UNRECOGNISED + BADDATE + FUTURE" \
+  'grep -q UNRECOGNISED "$R/expire/expire.log" && grep -q BADDATE "$R/expire/expire.log" && grep -q FUTURE "$R/expire/expire.log"'
 
-# 6. WAL via docker exec (shim maps the container dir onto the fixture dir and records argv).
+# 6. WAL via an isolated docker run (shim records argv, maps the -v source onto /wal-archive and runs bash -s).
 R="$(newroot c6)"
 mkdir -p "$WORK/bin"
 cat >"$WORK/bin/docker" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$WORK/docker.argv"
-[ "\$1 \$2 \$3 \$4" = "exec -i -u postgres" ] || exit 99
-shift 5 # exec -i -u postgres <container>
+[ "\$1" = run ] || exit 99
+src=""
+while [ "\$#" -gt 0 ] && [ "\$1" != "-s" ]; do
+  [ "\$1" = -v ] && src="\${2%%:*}"
+  shift
+done
+shift 2 # -s --
 args=("\$@")
-for i in "\${!args[@]}"; do [ "\${args[\$i]}" = /var/lib/postgresql/wal-archive ] && args[\$i]="$R/pitr/wal"; done
-exec "\${args[@]}"
+for i in "\${!args[@]}"; do [ "\${args[\$i]}" = /wal-archive ] && args[\$i]="\$src"; done
+exec bash -s -- "\${args[@]}"
 EOF
 chmod +x "$WORK/bin/docker"
 wold="$R/pitr/wal/$(ts_of $((NOW - 8 * D)))--000000010000000000000001.gz.gpg"
 wnew="$R/pitr/wal/$(ts_of $((NOW - H)))--000000010000000000000002.gz.gpg"
 nold="$R/nightly/engram-$(ts_of $((NOW - 8 * D))).dump.gpg"
 mk "$wold"; mk "$wnew"; mk "$nold"
-PATH="$WORK/bin:$PATH" run_sweep "$R" "$NOW" engram-db-1
-check "c6 WAL swept in container: old deleted, new kept, host dump deleted" \
+PATH="$WORK/bin:$PATH" run_sweep "$R" "$NOW" pg-pin@sha256:test
+check "c6 WAL swept in isolated run: old deleted, new kept, host dump deleted" \
   '[ "$SWEEP_RC" -eq 0 ] && [ ! -e "$wold" ] && [ -e "$wnew" ] && [ ! -e "$nold" ]'
-check "c6 docker exec as postgres in engram-db-1 with the same clock" \
-  'grep -q "^exec -i -u postgres engram-db-1 bash -s -- --sweep-only /var/lib/postgresql/wal-archive $NOW\$" "$WORK/docker.argv"'
+check "c6 docker run --network none --user 999:999, only the WAL dir mounted, same clock" \
+  'grep -qx "run --rm -i --network none --user 999:999 --entrypoint bash -v $R/pitr/wal:/wal-archive pg-pin@sha256:test -s -- --sweep-only /wal-archive $NOW" "$WORK/docker.argv"'
 check "c6 marker counts host + WAL deletions" 'grep -q "\"deleted\":2" "$R/expire/last-sweep.json"'
 printf '#!/usr/bin/env bash\nexit 1\n' >"$WORK/bin/docker"
-PATH="$WORK/bin:$PATH" run_sweep "$R" "$NOW" engram-db-1
-check "c6 WAL exec failure -> ok:false + exit 1" '[ "$SWEEP_RC" -eq 1 ] && grep -q "\"ok\":false" "$R/expire/last-sweep.json"'
+PATH="$WORK/bin:$PATH" run_sweep "$R" "$NOW" pg-pin@sha256:test
+check "c6 WAL docker failure -> ok:false + exit 1" '[ "$SWEEP_RC" -eq 1 ] && grep -q "\"ok\":false" "$R/expire/last-sweep.json"'
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 000 "$R/pitr/wal"
+  run_sweep "$R" "$NOW"
+  chmod 700 "$R/pitr/wal"
+  check "c6 no WAL image + unreadable WAL dir -> scan error, ok:false" \
+    '[ "$SWEEP_RC" -eq 1 ] && grep -q "ERROR scan" "$R/expire/expire.log"'
+else
+  printf 'SKIP c6 unreadable WAL dir (running as root)\n'
+fi
+
+# 8. Real isolated docker run on a production-shaped WAL dir (cloud only: pulls the pinned image).
+if [ "${OPSPROD_EXPIRE_REAL_DOCKER:-0}" = "1" ]; then
+  IMG="$(grep '^POSTGRES_IMAGE=' "$HERE/../../image-pins.env" | cut -d= -f2-)"
+  R="$(newroot c8)"
+  wold="$(ts_of $((NOW - 8 * D)))--000000010000000000000007.gz.gpg"
+  wnew="$(ts_of $((NOW - H)))--000000010000000000000008.gz.gpg"
+  docker run --rm --network none --user 0:0 --entrypoint sh -v "$R/pitr/wal:/w" "$IMG" -c \
+    "touch /w/$wold /w/$wold.sha256 /w/$wnew && chown -R 999:999 /w && chmod 0700 /w" >/dev/null
+  if ls "$R/pitr/wal" >/dev/null 2>&1 && [ "$(id -u)" -ne 0 ]; then
+    fail "c8 fixture: host user can read the 999:999 0700 WAL dir"
+  fi
+  run_sweep "$R" "$NOW" "$IMG"
+  listing="$(docker run --rm --network none --user 999:999 --entrypoint sh -v "$R/pitr/wal:/w" "$IMG" -c \
+    'ls -A /w; stat -c "%u:%g %a" /w')"
+  printf 'c8 WAL dir after sweep: %s\n' "$(tr '\n' ' ' <<<"$listing")"
+  check "c8 real run: expired WAL + sidecar deleted, fresh kept, ok:true" \
+    '[ "$SWEEP_RC" -eq 0 ] && marker_ok "$R" && ! grep -q "$wold" <<<"$listing" && grep -q "$wnew" <<<"$listing"'
+  check "c8 WAL dir still 999:999 0700" 'grep -qx "999:999 700" <<<"$listing"'
+  docker run --rm --network none --user 0:0 --entrypoint sh -v "$R:/r" "$IMG" -c 'rm -rf /r/pitr' >/dev/null
+else
+  printf 'SKIP c8 real docker WAL sweep (set OPSPROD_EXPIRE_REAL_DOCKER=1; cloud spec does)\n'
+fi
 
 # 7. 30-day hourly simulation.
 R="$(newroot c7)"

@@ -3,7 +3,8 @@
 # Runs every 5 minutes via systemd user timer engram-monitor.timer.
 # Read-only: never modifies production state. Every probe failure is a finding
 # (fail closed): a check that cannot observe its signal reports CRIT, never "ok".
-#   1. Required commands in PATH: gpg, docker, psql, curl, python3
+#   1. Required host commands in PATH: docker, curl, python3, openssl, timeout, awk, sha256sum
+#      (psql runs inside the DB container; gpg is not used by the monitor)
 #   2. Container health: engram-db-1, engram-api-1, engram-worker-1, engram-web-1
 #      must be running AND healthy (no healthcheck = CRIT)
 #   3. /api/v1/healthz and /api/v1/readyz HTTP 200 within 2 s
@@ -19,7 +20,9 @@
 #      in [-300 s, 26 h]
 #   9. Retention (C09): oldest source timestamp in ANY backup filename under
 #      BACKUP_ROOT/** > 7d23h -> CRIT; unscannable subtree -> CRIT;
-#      expire/last-sweep.json top-level ok==true, age <= 75 m
+#      expire/last-sweep.json top-level ok==true, age <= 75 m. With MONITOR_WAL_IMAGE
+#      set, the 999:999 0700 WAL archive (pitr/wal) is listed read-only by an isolated
+#      `docker run --network none --user 999:999` of that image (never relaxing 0700).
 #  10. offhost/last-pull.json top-level ok==true, age <= 26 h
 #
 # Writes status.json + alerts.log, dedups identical alert sets within
@@ -127,8 +130,8 @@ print(t)
   return 0
 }
 
-# 1. Dependency commands.
-for cmd in gpg docker psql curl python3; do
+# 1. Dependency commands (host side only; psql runs via `docker exec` in the DB container).
+for cmd in docker curl python3 openssl timeout awk sha256sum; do
   have "$cmd" || add_crit "deps: required command '$cmd' not found in PATH"
 done
 
@@ -306,7 +309,20 @@ if [ -d "$BACKUP_ROOT" ]; then
   scan_out="$(mktemp)" || die "mktemp failed"
   scan_err="$(mktemp)" || die "mktemp failed"
   scan_rc=0
-  find "$BACKUP_ROOT" -type f \( -name '*.gpg' -o -name '*.dump' -o -name '*.tar*' \) -print0 >"$scan_out" 2>"$scan_err" || scan_rc=$?
+  wal_dir="$BACKUP_ROOT/pitr/wal"
+  if [ -n "${MONITOR_WAL_IMAGE:-}" ]; then
+    find "$BACKUP_ROOT" -path "$wal_dir" -prune -o -type f \( -name '*.gpg' -o -name '*.dump' -o -name '*.tar*' \) -print0 \
+      >"$scan_out" 2>"$scan_err" || scan_rc=$?
+    if [ -d "$wal_dir" ]; then
+      wal_rc=0
+      docker run --rm --network none --user "${MONITOR_WAL_UID:-999:999}" --entrypoint find \
+        -v "$wal_dir:/wal-archive:ro" "$MONITOR_WAL_IMAGE" /wal-archive -type f -name '*.gpg' -print0 \
+        >>"$scan_out" 2>>"$scan_err" || wal_rc=$?
+      [ "$wal_rc" -eq 0 ] || scan_rc=$((100 + wal_rc))
+    fi
+  else
+    find "$BACKUP_ROOT" -type f \( -name '*.gpg' -o -name '*.dump' -o -name '*.tar*' \) -print0 >"$scan_out" 2>"$scan_err" || scan_rc=$?
+  fi
   if [ "$scan_rc" -ne 0 ] || [ -s "$scan_err" ]; then
     add_crit "retention: backup tree scan incomplete (find exit $scan_rc): $(head -c 300 "$scan_err" | tr '\n' ' ')"
   fi
@@ -392,7 +408,19 @@ if [ "$status" != "ok" ]; then
     fi
     payload="$(printf '{"ts":"%s","host":"%s","status":"%s","text":"[engram %s] %s"}' \
       "$NOW_ISO" "${HOSTNAME:-bro}" "$status" "$status" "$(json_escape "$summary")")"
-    if curl -sS -f --max-time 10 -H 'Content-Type: application/json' -d "$payload" "$ALERT_WEBHOOK_URL" >/dev/null 2>>"$ALERT_LOG"; then
+    # The webhook URL is a bearer secret: it reaches curl only through a config read from stdin (printf is a
+    # builtin, so it never appears in any process argv); the body goes through a 0600 temp file.
+    payload_file="$(mktemp)" || die "mktemp failed"
+    printf '%s' "$payload" >"$payload_file" || die "cannot write payload"
+    url_cfg="${ALERT_WEBHOOK_URL//\\/\\\\}"
+    url_cfg="${url_cfg//\"/\\\"}"
+    webhook_rc=0
+    printf 'url = "%s"\n' "$url_cfg" |
+      curl -sS -f --max-time 10 -H 'Content-Type: application/json' --data-binary "@$payload_file" -K - \
+        >/dev/null 2>>"$ALERT_LOG" || webhook_rc=$?
+    rm -f "$payload_file"
+    unset url_cfg
+    if [ "$webhook_rc" -eq 0 ]; then
       printf '%s %s\n' "$NOW_EPOCH" "$sig" >"$DEDUP_FILE" || die "cannot persist $DEDUP_FILE"
     else
       printf '%s [webhook_error] delivery failed\n' "$NOW_ISO" >>"$ALERT_LOG" || true

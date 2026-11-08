@@ -6,6 +6,7 @@ Description=engram 8-day backup retention sweep (P06 Task 22, PROD-STEP-RETENTIO
 [Service]
 Type=oneshot
 Environment=EXPIRE_BACKUP_ROOT=/home/ubuntu/backups/engram
-# Set at PROD-STEP-4 (WAL archive owned by the container's postgres); empty before PITR exists.
-EnvironmentFile=-/home/ubuntu/engram-ops/expire/expire.env
+# expire.env (0600) sets EXPIRE_WAL_IMAGE=<POSTGRES_IMAGE pin>: the 999:999 0700 WAL dir is swept in an isolated
+# `docker run --network none --user 999:999` of that image. Same file before and after PROD-STEP-4.
+EnvironmentFile=/home/ubuntu/engram-ops/expire/expire.env
 ExecStart=/home/ubuntu/engram-ops/expire/engram-backup-expire.sh

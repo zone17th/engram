@@ -1,50 +1,71 @@
 #!/usr/bin/env bash
 # engram 8-day backup retention sweep (P06 Task 22, PROD-STEP-RETENTION; contract R1-09/C09 in
-# docs/runbooks/backup-restore-pitr.md "Retention contract" (a)-(e)).
+# docs/runbooks/backup-restore-pitr.md "Retention contract" (a)-(e); review r1 R1-01/R1-07, advisor-dec-P06-059).
 #
-# (a) Age = immutable SOURCE timestamp in the file NAME (first YYYYmmddTHHMMSSZ in the basename):
-#     engram-<ts>.dump.gpg, engram-base-<ts>.tar.gz.gpg, <ts>--<wal>.gz.gpg, their .sha256/.partial
-#     sidecars and every copy with the same name. mtime/ctime are NEVER read.
-# (b) Deletes every backup file with now - source_ts >= 7d22h (684000 s). Runs hourly from
+# (a) Age = immutable SOURCE timestamp in the file NAME. Only these exact names are recognised (anchored, full name):
+#       engram-<ts>.dump.gpg[.sha256|.partial]                                nightly pg_dump (Task 9 interim producer)
+#       engram-base-<ts>.tar.gz.gpg[.sha256|.partial|.sha256.partial]    PITR base (engram-pitr-base.sh)
+#       <ts>--<wal>.gz.gpg[.sha256|.partial|.sha256.partial]             WAL (engram-wal-archive.sh); <wal> = 24 hex
+#                                                                         segment [.partial] | segment.<8 hex>.backup
+#                                                                         | <8 hex>.history
+#       engram-pre-p0<N>-<ts>.dump[.sha256]                              inventoried legacy manual dumps (opsrecon)
+#     <ts> = YYYYmmddTHHMMSSZ. mtime/ctime are NEVER read. Copies keep the same names (off-host: same rule).
+# (b) Deletes every recognised file with now - source_ts >= 7d22h (684000 s). Runs hourly from
 #     engram-backup-expire.timer (Persistent=true), independent of backup success.
 #     Writes BACKUP_ROOT/expire/last-sweep.json (top-level ts + ok) and appends expire.log.
 # (c) The monitor (infra/ops/engram-monitor.sh) alerts on a stale/failed marker or a source > 7d23h.
-# (d) Daily bases + all WAL newer than them are kept until 7d22h, so a base aged 6d..7d22h and its
-#     WAL always exist (PITR target now - 6d).
+# (d) Daily bases + all WAL newer than them are kept until 7d22h, so a base aged 6d..7d22h and its WAL always exist.
 #
-# Backup files = regular files (symlinks are never followed or deleted) whose name ends in
-# .gpg .dump .sha256 .partial .tar .gz .sql. A backup file without a parseable timestamp, or with a
-# timestamp more than 5 min in the future, is kept and makes the sweep ok:false (fail closed: the
-# monitor alerts). Any delete/scan failure also gives ok:false and exit 1.
+# Fail closed: a backup-like file (.gpg .dump .sha256 .partial .tar .gz .sql) that is not an exact recognised name,
+# has an impossible date, or is > 5 min in the future is KEPT and makes the sweep ok:false (exit 1); so does any
+# scan/delete error. Other files (markers, logs, env backups) are not backups and are ignored. Symlinks are never
+# followed or deleted.
 #
-# The PITR WAL archive (BACKUP_ROOT/pitr/wal) is owned by the container's postgres user (0700), so
-# with EXPIRE_WAL_CONTAINER set it is swept INSIDE that container as postgres (docker exec, this
-# same script in --sweep-only mode) and pruned from the host scan.
+# WAL archive (BACKUP_ROOT/pitr/wal) is owned by the container's postgres uid 999, mode 0700 (Task 9). With
+# EXPIRE_WAL_IMAGE set, that subtree is pruned from the host scan and swept by THIS script (--sweep-only) in a
+# throwaway `docker run --network none --user 999:999` of that image with only the WAL dir mounted. It never execs
+# into the production DB container and never relaxes 0700, so it works before PROD-STEP-4, after it and after its
+# rollback. EXPIRE_WAL_IMAGE unset + unreadable WAL dir = scan error = ok:false.
 #
-# Env: EXPIRE_BACKUP_ROOT (default /home/ubuntu/backups/engram), EXPIRE_NOW_EPOCH (test clock;
-# never set in the unit), EXPIRE_WAL_CONTAINER (e.g. engram-db-1; empty = scan pitr/wal directly),
-# EXPIRE_WAL_CONTAINER_DIR (default /var/lib/postgresql/wal-archive).
+# Env: EXPIRE_BACKUP_ROOT (default /home/ubuntu/backups/engram), EXPIRE_NOW_EPOCH (test clock; never set in the
+# unit), EXPIRE_WAL_IMAGE (e.g. the POSTGRES_IMAGE pin), EXPIRE_WAL_UID (default 999:999).
 # Exit: 0 sweep ok, 1 sweep finished with problems (marker ok:false) or could not run.
 set -euo pipefail
 umask 077
 
-MAX_AGE=684000   # 7d22h
-MAX_FUTURE=300   # tolerated clock skew for names ahead of now
-TS_RE='[0-9]{8}T[0-9]{6}Z'
-EXT_RE='\.(gpg|dump|sha256|partial|tar|gz|sql)$'
+MAX_AGE=684000 # 7d22h
+MAX_FUTURE=300 # tolerated clock skew for names ahead of now
+TS='([0-9]{8}T[0-9]{6}Z)'
+WALNAME='([0-9A-F]{24}(\.partial|\.[0-9A-F]{8}\.backup)?|[0-9A-F]{8}\.history)'
+RECOGNISED=(
+  "^engram-${TS}\.dump\.gpg(\.sha256|\.partial)?$"
+  "^engram-base-${TS}\.tar\.gz\.gpg(\.sha256|\.partial|\.sha256\.partial)?$"
+  "^${TS}--${WALNAME}\.gz\.gpg(\.sha256|\.partial|\.sha256\.partial)?$"
+  "^engram-pre-p0[0-9]-${TS}\.dump(\.sha256)?$"
+)
+BACKUP_LIKE='\.(gpg|dump|sha256|partial|tar|gz|sql)$'
 
 die() {
   printf 'engram-backup-expire: %s\n' "$*" >&2
   exit 1
 }
 
-# name_epoch <basename>: sets EPOCH to the UTC epoch of the first YYYYmmddTHHMMSSZ in the name;
-# returns non-zero when there is none or it is not a real calendar time. Pure bash (no fork per
+# recognised_ts <basename>: sets TSV to the source timestamp when the WHOLE name is a recognised backup name.
+recognised_ts() {
+  local re
+  for re in "${RECOGNISED[@]}"; do
+    if [[ "$1" =~ $re ]]; then
+      TSV="${BASH_REMATCH[1]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ts_epoch <YYYYmmddTHHMMSSZ>: sets EPOCH (UTC); non-zero for an impossible calendar time. Pure bash (no fork per
 # file): days-from-civil, proleptic Gregorian, no leap seconds.
-name_epoch() {
-  local ts y m d hh mi ss dim era yoe doy doe
-  [[ "$1" =~ $TS_RE ]] || return 1
-  ts="${BASH_REMATCH[0]}"
+ts_epoch() {
+  local ts="$1" y m d hh mi ss dim era yoe doy doe
   y=$((10#${ts:0:4})) m=$((10#${ts:4:2})) d=$((10#${ts:6:2}))
   hh=$((10#${ts:9:2})) mi=$((10#${ts:11:2})) ss=$((10#${ts:13:2}))
   [ "$m" -ge 1 ] && [ "$m" -le 12 ] && [ "$hh" -le 23 ] && [ "$mi" -le 59 ] && [ "$ss" -le 59 ] || return 1
@@ -62,8 +83,8 @@ name_epoch() {
   EPOCH=$(((era * 146097 + doe - 719468) * 86400 + hh * 3600 + mi * 60 + ss))
 }
 
-# sweep <root> <now> [prune-dir]: deletes expired backup files under root. Prints one record per
-# event (DELETED|UNNAMED|FUTURE|ERROR <path>) and a final "COUNTS deleted kept problems" line.
+# sweep <root> <now> [prune-dir]: deletes expired recognised backups under root. Prints one record per event
+# (DELETED|UNRECOGNISED|BADDATE|FUTURE|ERROR <path>) and a final "COUNTS deleted kept problems" line.
 sweep() {
   local root="$1" now="$2" prune="${3:-}" list err rc=0 f base age
   local deleted=0 kept=0 problems=0
@@ -80,9 +101,15 @@ sweep() {
   fi
   while IFS= read -r -d '' f; do
     base="${f##*/}"
-    [[ "$base" =~ $EXT_RE ]] || continue
-    if ! name_epoch "$base"; then
-      printf 'UNNAMED %s\n' "$f"
+    if ! recognised_ts "$base"; then
+      if [[ "$base" =~ $BACKUP_LIKE ]]; then
+        printf 'UNRECOGNISED %s\n' "$f"
+        problems=$((problems + 1))
+      fi
+      continue
+    fi
+    if ! ts_epoch "$TSV"; then
+      printf 'BADDATE %s\n' "$f"
       problems=$((problems + 1))
       continue
     fi
@@ -107,7 +134,7 @@ sweep() {
 }
 
 if [ "${1:-}" = "--sweep-only" ]; then
-  # In-container mode: engram-backup-expire.sh --sweep-only <dir> <now-epoch>
+  # Isolated-container mode: engram-backup-expire.sh --sweep-only <dir> <now-epoch>
   [ "$#" -eq 3 ] || die "usage: --sweep-only <dir> <now-epoch>"
   [[ "$3" =~ ^[0-9]+$ ]] || die "bad now epoch"
   [ -d "$2" ] || die "missing dir $2"
@@ -117,41 +144,39 @@ fi
 
 ROOT="${EXPIRE_BACKUP_ROOT:-/home/ubuntu/backups/engram}"
 NOW="${EXPIRE_NOW_EPOCH:-$(date -u +%s)}"
-WAL_CONTAINER="${EXPIRE_WAL_CONTAINER:-}"
-WAL_CONTAINER_DIR="${EXPIRE_WAL_CONTAINER_DIR:-/var/lib/postgresql/wal-archive}"
+WAL_IMAGE="${EXPIRE_WAL_IMAGE:-}"
+WAL_UID="${EXPIRE_WAL_UID:-999:999}"
 [[ "$NOW" =~ ^[0-9]+$ ]] || die "EXPIRE_NOW_EPOCH must be epoch seconds"
 [ -d "$ROOT" ] || die "backup root $ROOT missing"
+ROOT="$(cd "$ROOT" && pwd -P)"
 
 STATE="$ROOT/expire"
 mkdir -p "$STATE"
-# One sweep at a time. flock is absent on the owner PC (Git Bash) where the off-host copy is swept with the same
-# script (contract (e)); there a single scheduled task is the serialisation.
-if command -v flock >/dev/null 2>&1; then
-  exec 9>"$STATE/.lock"
-  flock -n 9 || die "another sweep holds $STATE/.lock"
-fi
+# One sweep at a time (flock is util-linux; the off-host PowerShell sweep has its own mutex).
+exec 9>"$STATE/.lock"
+flock -n 9 || die "another sweep holds $STATE/.lock"
 
 NOW_ISO="$(date -u -d "@$NOW" +%Y-%m-%dT%H:%M:%SZ)"
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 
+WAL_DIR="$ROOT/pitr/wal"
 prune=""
-if [ -n "$WAL_CONTAINER" ]; then
-  prune="$ROOT/pitr/wal"
-fi
+[ -n "$WAL_IMAGE" ] && prune="$WAL_DIR"
 sweep "$ROOT" "$NOW" "$prune" >>"$out"
 
-if [ -n "$WAL_CONTAINER" ]; then
-  # Same script, same clock, run as the archive owner inside the DB container.
+if [ -n "$WAL_IMAGE" ] && [ -d "$WAL_DIR" ]; then
+  # Same script, same clock, as the archive owner, with nothing but the WAL dir mounted.
   wal_rc=0
-  docker exec -i -u postgres "$WAL_CONTAINER" bash -s -- --sweep-only "$WAL_CONTAINER_DIR" "$NOW" \
+  docker run --rm -i --network none --user "$WAL_UID" --entrypoint bash \
+    -v "$WAL_DIR:/wal-archive" "$WAL_IMAGE" -s -- --sweep-only /wal-archive "$NOW" \
     <"${BASH_SOURCE[0]}" >>"$out" 2>&1 || wal_rc=$?
-  if [ "$wal_rc" -ne 0 ]; then
-    printf 'ERROR wal sweep in %s exit %s\n' "$WAL_CONTAINER" "$wal_rc" >>"$out"
+  if [ "$wal_rc" -ne 0 ] || ! grep -q '^COUNTS ' <(tail -n 1 "$out"); then
+    printf 'ERROR wal sweep (docker run %s) exit %s\n' "$WAL_IMAGE" "$wal_rc" >>"$out"
   fi
 fi
 
-# Each sweep's COUNTS already includes its scan/delete problems; a failed WAL exec adds one.
+# Each sweep's COUNTS already includes its scan/delete problems; a failed WAL run adds one.
 deleted=0
 kept=0
 problems=0
