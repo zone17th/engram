@@ -287,15 +287,20 @@ Precondition: Task 10 `run-pitr-rehearsal.sh --scratch` PASS on cloud (dec-P06-0
 `PROD-STEP-4`. Procedure is exactly the one rehearsed (`docs/runbooks/backup-restore-pitr.md` §1, Task 9).
 Restart of `db` ≈ 2–3 s; api/worker reconnect.
 
-1. Precondition + backup + pre-dump (STEP-4 is a first install: 2-PREP applied, no prior replication install):
+1. Precondition checkpoint (STEP-4 is a first install: 2-PREP applied, no prior replication install). Run alone; it
+   must print `precheck-ok`, anything else = stop here and ask the Advisor:
    ```sh
-   cd "$PROD"
-   step4_precheck && echo precheck-ok   # anything but precheck-ok = stop here and ask the Advisor
-   systemctl --user start engram-backup.service && cat ~/backups/engram/nightly/last.json   # fresh ok:true
-   bak_files .data/deploy/compose-files.txt .data/deploy/compose-cmd.txt .data/deploy/compose.prod-step4.yml .env.production
-   bak_files ~/engram-ops/backup/pitr/engram-pitr-base.sh
-   bak_units engram-pitr-base.service engram-pitr-base.timer
-   docker exec engram-db-1 cat /var/lib/postgresql/data/pg_hba.conf > ~/engram-ops/pitr-pg_hba.conf.bak-$TS
+   cd "$PROD" && step4_precheck && echo precheck-ok
+   ```
+   Backup + pre-dump, gated on the same check so a pasted block does nothing after a refusal:
+   ```sh
+   cd "$PROD" && step4_precheck && {
+     systemctl --user start engram-backup.service && cat ~/backups/engram/nightly/last.json   # fresh ok:true
+     bak_files .data/deploy/compose-files.txt .data/deploy/compose-cmd.txt .data/deploy/compose.prod-step4.yml .env.production
+     bak_files ~/engram-ops/backup/pitr/engram-pitr-base.sh
+     bak_units engram-pitr-base.service engram-pitr-base.timer
+     docker exec engram-db-1 cat /var/lib/postgresql/data/pg_hba.conf > ~/engram-ops/pitr-pg_hba.conf.bak-$TS
+   }
    ```
 2. Build the PITR image from the reviewed SHA (`--build-arg POSTGRES_IMAGE` = the pinned base; cloud-proven by
    `test-prod-steps-lib.sh build`):
