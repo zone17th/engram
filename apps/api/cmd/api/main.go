@@ -27,6 +27,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/embedding/generation"
 	"github.com/zone17th/engram/apps/api/internal/entry"
 	"github.com/zone17th/engram/apps/api/internal/entry/entryhttp"
+	"github.com/zone17th/engram/apps/api/internal/export/exporthttp"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/item/itemhttp"
 	"github.com/zone17th/engram/apps/api/internal/obs"
@@ -144,6 +145,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("compose search: %w", err)
 	}
+	exportAPI, err := compose.NewExportHTTP(cfg, pool, riverInsert, nil, logger)
+	if err != nil {
+		return fmt.Errorf("compose export: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
@@ -156,7 +161,7 @@ func run() error {
 			Authenticator:    authn,
 			CSRF:             csrfv,
 			Reauth:           reauth,
-			MountAPI:         compose.MountAll(authhttp.Mount(api), vaulthttp.Mount(vaultAPI), itemhttp.Mount(contentComp), taghttp.Mount(contentComp), entryhttp.Mount(contentComp), searchComp.Mount),
+			MountAPI:         compose.MountAll(authhttp.Mount(api), vaulthttp.Mount(vaultAPI), itemhttp.Mount(contentComp), taghttp.Mount(contentComp), entryhttp.Mount(contentComp), searchComp.Mount, exporthttp.Mount(exportAPI)),
 
 			SemanticAvailability: semRuntime.Availability,
 		}),
