@@ -27,21 +27,21 @@ Options:
                         Only for staging "tls internal" or the dry-run.
   --out <dir>           Output directory (default docs/benchmarks/P06-nfr/results).
   --server-perf-log <file>
-                        Raw log of the same-SHA server perf line (protocol §3): must contain
-                        NFR_PERF_SHA=<HEAD sha>, "--- PASS: TestEntryCreatePerformanceA10" and the
-                        POPULATION lines; every population p95 < 150 ms. Required for a pass.
+                        Log holding exactly one framed same-SHA server perf run (protocol §3):
+                        NFR_PERF_BEGIN sha=<HEAD> ... go test -tags perf -v ... NFR_PERF_END
+                        sha=<HEAD> exit=0; both A10 tests PASS, every population p95 < 150 ms.
   --semantic-metrics <file>
-                        Prometheus text scraped on bro (api and/or worker /metrics, protocol §4);
-                        repeatable. Absent = semantic observation "pending" (no exit failure).
+                        Prometheus text scraped on bro (api and worker /metrics, protocol §4);
+                        repeatable. Needs openai_compat query latency + embedding_jobs_total.
   --dry-run             Harness check only: few TTFB samples, LCP on "/", no login/G1;
-                        browser threshold criteria are "skipped". Not NFR evidence.
+                        browser criteria "skipped", missing inputs "pending". Not NFR evidence.
   --help                Show this help.
 
 Env (optional, G1/LCP account): NFR_EMAIL, NFR_PASSWORD, NFR_PASSPHRASE. Without them a
 fresh synthetic account is created through the UI signup + onboarding.
 
-Exit: 0 no criterion failed (JSON "complete" also needs no "pending"), 1 a criterion failed,
-2 usage error.`;
+Exit: real run 0 only when every criterion is "pass" (missing/pending/stale/failed evidence
+= not met = 1); --dry-run 0 when no criterion "fail"; 2 usage error.`;
 
 // ---- protocol constants (protocol.md; change only with a new protocol commit) ----------------------
 const TTFB_PATHS = ['/', '/vi'];
@@ -264,33 +264,63 @@ export function goDurationMs(text) {
   return Number(m[1]) * scale;
 }
 
-// Base A10 populations are required; "SEMANTIC-ON POPULATION" lines of TestEntryCreatePerformanceA10SemanticOn
-// (same ./internal/perf/... run) are gated too when present. The last line per population wins.
+// The perf log must hold exactly one framed run (protocol §3):
+//   NFR_PERF_BEGIN sha=<40 hex>
+//   ... go test -tags perf ./internal/perf/... -v output ...
+//   NFR_PERF_END sha=<40 hex> exit=<go test exit code>
+// Only text inside the frame is read. Both markers must name the tested SHA, the run must exit 0 and
+// end with the package "ok" line, no test may FAIL/SKIP/panic, both A10 tests must PASS exactly once and
+// each required population (base and SEMANTIC-ON) must appear exactly once with p95 < 150 ms.
 export function evaluateServerPerf(logText, headSha) {
   if (logText === null) return { state: 'missing', pass: false, reason: '--server-perf-log not given or unreadable' };
-  const shaMatch = /NFR_PERF_SHA=([0-9a-f]{40})/.exec(logText);
-  const out = { state: 'parsed', log_sha: shaMatch?.[1] ?? null, populations: {}, semantic_on_populations: {} };
-  const lastP95 = (re) => {
-    const all = [...logText.matchAll(re)];
-    return all.length ? goDurationMs(all[all.length - 1][1]) : null;
+  const out = { state: 'parsed', log_sha: null, populations: {}, semantic_on_populations: {} };
+  const reasons = [];
+  const fail = () => {
+    out.pass = false;
+    out.reason = reasons.join('; ');
+    out.max_p95_ms = null;
+    return out;
+  };
+  const begins = [...logText.matchAll(/^NFR_PERF_BEGIN sha=(\S+)\s*$/gm)];
+  const ends = [...logText.matchAll(/^NFR_PERF_END sha=(\S+) exit=(\S+)\s*$/gm)];
+  if (begins.length !== 1 || ends.length !== 1) {
+    reasons.push(`expected exactly one NFR_PERF_BEGIN/END frame, got ${begins.length}/${ends.length}`);
+    return fail();
+  }
+  const [begin] = begins;
+  const [end] = ends;
+  out.log_sha = begin[1];
+  if (end.index < begin.index) reasons.push('NFR_PERF_END before NFR_PERF_BEGIN');
+  if (begin[1] !== headSha || end[1] !== headSha) reasons.push(`frame sha ${begin[1]}/${end[1]} != head ${headSha}`);
+  if (end[2] !== '0') reasons.push(`perf command exit=${end[2]}`);
+  if (reasons.length) return fail();
+
+  const seg = logText.slice(begin.index + begin[0].length, end.index);
+  if (/^\s*(--- FAIL|--- SKIP|FAIL\b|panic:)/m.test(seg)) reasons.push('FAIL/SKIP/panic inside the run');
+  if (!/^ok\s+\S+\/internal\/perf\b/m.test(seg)) reasons.push('no "ok .../internal/perf" package line (truncated run)');
+  for (const test of ['TestEntryCreatePerformanceA10', 'TestEntryCreatePerformanceA10SemanticOn']) {
+    const n = [...seg.matchAll(new RegExp(`^\\s*--- PASS: ${test} \\(`, 'gm'))].length;
+    if (n !== 1) reasons.push(`${test} PASS lines = ${n} (want 1)`);
+  }
+  const onceP95 = (prefix, name, into) => {
+    const all = [...seg.matchAll(new RegExp(`${prefix}POPULATION ${name}: .*? p95=(\\S+)`, 'g'))];
+    if (all.length !== 1) {
+      reasons.push(`${prefix}POPULATION ${name} p95 lines = ${all.length} (want 1)`);
+      into[name] = null;
+      return;
+    }
+    into[name] = goDurationMs(all[0][1]);
+    if (into[name] === null) reasons.push(`unparsable p95 for ${prefix}${name}`);
   };
   for (const name of SERVER_POPULATIONS) {
-    out.populations[name] = lastP95(new RegExp(`(?<!SEMANTIC-ON )POPULATION ${name}: .*? p95=(\\S+)`, 'g'));
-    const sem = lastP95(new RegExp(`SEMANTIC-ON POPULATION ${name}: .*? p95=(\\S+)`, 'g'));
-    if (sem !== null) out.semantic_on_populations[name] = sem;
+    onceP95('(?<!SEMANTIC-ON )', name, out.populations);
+    onceP95('SEMANTIC-ON ', name, out.semantic_on_populations);
   }
-  const testPassed = /--- PASS: TestEntryCreatePerformanceA10\b/.test(logText);
-  const base = Object.values(out.populations);
-  const all = [...base, ...Object.values(out.semantic_on_populations)];
-  const reasons = [];
-  if (!out.log_sha) reasons.push('no NFR_PERF_SHA line');
-  else if (out.log_sha !== headSha) reasons.push(`log sha ${out.log_sha} != head ${headSha}`);
-  if (!testPassed) reasons.push('TestEntryCreatePerformanceA10 did not PASS');
-  if (base.some((v) => v === null)) reasons.push('missing population p95');
+  const all = [...Object.values(out.populations), ...Object.values(out.semantic_on_populations)];
   if (all.some((v) => v !== null && !(v < SERVER_P95_MS))) reasons.push(`population p95 >= ${SERVER_P95_MS} ms`);
-  out.max_p95_ms = base.every((v) => v !== null) ? Math.max(...all) : null;
-  out.pass = reasons.length === 0;
-  if (reasons.length) out.reason = reasons.join('; ');
+  if (reasons.length) return fail();
+  out.max_p95_ms = Math.max(...all);
+  out.pass = true;
   return out;
 }
 
@@ -336,16 +366,24 @@ export function evaluateSemantic(texts) {
   if (texts.length === 0) return { state: 'pending', reason: 'no --semantic-metrics given (post-deploy bro scrape, protocol §4)' };
   const samples = texts.flatMap((t) => parsePrometheus(t));
   if (samples.length === 0) return { state: 'invalid', reason: 'no Prometheus samples parsed' };
+  // Only provider="openai_compat", op="query" (a real cache miss calls the provider; TEI is not the production path).
+  const isMiss = (s) => s.labels.provider === 'openai_compat' && s.labels.op === 'query';
   const byLe = new Map();
   let queryCount = 0;
   for (const s of samples) {
-    if (s.name === 'embedding_provider_latency_seconds_bucket' && s.labels.op === 'query') {
+    if (s.name === 'embedding_provider_latency_seconds_bucket' && isMiss(s)) {
       const le = s.labels.le === '+Inf' ? Infinity : Number(s.labels.le);
-      byLe.set(le, (byLe.get(le) ?? 0) + s.value);
+      if (!Number.isNaN(le)) byLe.set(le, (byLe.get(le) ?? 0) + s.value);
     }
-    if (s.name === 'embedding_provider_latency_seconds_count' && s.labels.op === 'query') queryCount += s.value;
+    if (s.name === 'embedding_provider_latency_seconds_count' && isMiss(s)) queryCount += s.value;
   }
   const buckets = [...byLe].map(([le, count]) => ({ le, count }));
+  const sortedCounts = [...buckets].sort((a, b) => a.le - b.le).map((b) => b.count);
+  const histogramValid =
+    byLe.has(Infinity) &&
+    byLe.get(Infinity) === queryCount &&
+    buckets.some((b) => b.le !== Infinity) &&
+    sortedCounts.every((c, i) => i === 0 || c >= sortedCounts[i - 1]);
   const sum = (name, key) => {
     const out = {};
     for (const s of samples.filter((x) => x.name === name)) {
@@ -357,16 +395,17 @@ export function evaluateSemantic(texts) {
   const jobs = sum('embedding_jobs_total', (l) => `${l.kind ?? '?'}/${l.outcome ?? '?'}`);
   const cache = sum('semantic_query_cache_total', (l) => l.result ?? '?');
   const toMs = (v) => (v === null ? null : v * 1000);
+  const p50 = histogramValid ? toMs(histogramQuantile(0.5, buckets)) : null;
+  const p95 = histogramValid ? toMs(histogramQuantile(0.95, buckets)) : null;
   const result = {
-    provider_query_latency_ms: {
-      cache_miss_calls: queryCount,
-      p50: toMs(histogramQuantile(0.5, buckets)),
-      p95: toMs(histogramQuantile(0.95, buckets)),
-    },
+    provider_query_latency_ms: { provider: 'openai_compat', cache_miss_calls: queryCount, p50, p95 },
     query_cache: cache,
     embedding_jobs_total: jobs,
   };
-  if (queryCount === 0) return { state: 'no_cache_miss_observed', ...result, reason: 'no provider query call (real cache miss) in the scrape' };
+  if (queryCount === 0) return { state: 'no_cache_miss_observed', ...result, reason: 'no openai_compat query call (real cache miss) in the scrape' };
+  if (!histogramValid || !Number.isFinite(p50) || !Number.isFinite(p95)) {
+    return { state: 'invalid_latency', ...result, reason: 'openai_compat query histogram missing or inconsistent with its count' };
+  }
   if (Object.keys(jobs).length === 0) return { state: 'partial', ...result, reason: 'embedding_jobs_total absent (worker /metrics not scraped)' };
   return { state: 'collected', ...result };
 }
@@ -685,7 +724,7 @@ async function main() {
     criteria.push(crit('server.p95', false, null, 'no --server-perf-log in --dry-run', true));
   }
 
-  // (4) semantic observation: observation only (P05 targets unchanged); absent = pending, unreadable/empty = fail.
+  // (4) semantic observation: observation only (P05 targets unchanged); real run needs "collected".
   if (opts.semanticMetrics.length || !opts.dryRun) {
     let sem;
     try {
@@ -694,20 +733,18 @@ async function main() {
       sem = { state: 'invalid', reason: `cannot read --semantic-metrics: ${err.code ?? 'error'}` };
     }
     result.semantic = sem;
-    const id = 'semantic.observed';
-    const threshold = 'provider query latency + embedding_jobs_total collected (protocol §4)';
-    if (sem.state === 'collected') criteria.push(crit(id, true, sem.state, threshold));
-    else if (sem.state === 'invalid') criteria.push(crit(id, false, sem.reason, threshold));
-    else criteria.push(pending(id, `${sem.state}: ${sem.reason}`, threshold));
+    criteria.push(semanticCriterion(sem, opts.dryRun));
   } else {
     criteria.push(crit('semantic.observed', false, null, 'no --semantic-metrics in --dry-run', true));
   }
 
   result.finished_at = new Date().toISOString();
   result.criteria = criteria;
-  const failed = criteria.filter((c) => c.status === 'fail');
-  result.pass = failed.length === 0;
-  result.complete = result.pass && !opts.dryRun && criteria.every((c) => c.status === 'pass');
+  const { pass, complete, notMet } = decide(criteria, opts.dryRun);
+  result.pass = pass;
+  result.complete = complete;
+  if (notMet.length) result.not_met = notMet;
+  const failed = notMet;
 
   mkdirSync(opts.out, { recursive: true });
   const stamp = startedAt.toISOString().replace(/[:.]/g, '-');
@@ -717,6 +754,24 @@ async function main() {
   for (const c of criteria) console.log(`${c.status.padEnd(7)} ${c.id} value=${JSON.stringify(display(c.value))} (${c.threshold})`);
   console.log(`measure-nfr: ${result.pass ? 'PASS' : `FAIL (${failed.length})`} complete=${result.complete} -> ${file}`);
   return result.pass ? 0 : 1;
+}
+
+// advisor-dec-P06-054: in a real run every criterion must be "pass"; missing/pending/stale/foreign/failed
+// evidence is "not met" and the run exits != 0. Only --dry-run may carry pending/skipped and still pass.
+export function semanticCriterion(sem, dryRun) {
+  const id = 'semantic.observed';
+  const threshold = 'openai_compat cache-miss latency + embedding_jobs_total collected (protocol §4)';
+  if (sem.state === 'collected') return crit(id, true, sem.state, threshold);
+  if (dryRun && sem.state !== 'invalid') return pending(id, `${sem.state}: ${sem.reason}`, threshold);
+  return crit(id, false, `${sem.state}: ${sem.reason}`, threshold);
+}
+
+export function decide(criteria, dryRun) {
+  const notMet = criteria
+    .filter((c) => (dryRun ? c.status === 'fail' : c.status !== 'pass'))
+    .map((c) => ({ id: c.id, status: c.status, value: c.value }));
+  const pass = notMet.length === 0;
+  return { pass, complete: pass && !dryRun, notMet };
 }
 
 // Importable for the self-test (docs/benchmarks/P06-nfr/measure-nfr.selftest.mjs) without running.
