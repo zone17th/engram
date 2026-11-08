@@ -387,7 +387,8 @@ export function DupPickerDialog({
         ) : null}
 
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[12px] text-muted">
+          {/* F-37: the keyboard legend is noise on touch / phone widths. */}
+          <span className="hidden text-[12px] text-muted sm:inline [@media(pointer:coarse)]:!hidden" data-testid="dup-picker-legend">
             <Kbd>↑↓</Kbd> <Kbd>Enter</Kbd> <Kbd>Esc</Kbd> · {tOmni('dupShortcutHint')}
           </span>
           <button

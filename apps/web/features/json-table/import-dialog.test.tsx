@@ -842,6 +842,18 @@ function makeFileFromBytes(
 }
 
 describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone C, omnibox handoff dec-209)', () => {
+  it('F-41: the title names the item and the repeated "Save into" line is visually hidden (kept for assistive tech)', async () => {
+    await setupImportHarness();
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-import-json')).toBeEnabled();
+    });
+    fireEvent.click(screen.getByTestId('btn-import-json'));
+    const dialog = screen.getByTestId('import-json-dialog');
+    const destination = within(dialog).getByTestId('import-json-destination');
+    expect(destination).toHaveClass('sr-only');
+    expect(destination.textContent ?? '').not.toBe('');
+  });
+
   it('imports a UTF-8 BOM .json file and saves exact bytes minus at most one leading BOM, keeping a second BOM for strict parser rejection or Save as text', async () => {
     const h = await setupImportHarness();
     await waitFor(() => {

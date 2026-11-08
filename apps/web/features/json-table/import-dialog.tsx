@@ -1560,7 +1560,9 @@ export function ImportJsonDialog({
           <p
             id="importDestination"
             data-testid="import-json-destination"
-            className="mb-3 text-[13px] text-body"
+            // F-41: the title already names the item, so the repeated "Save into" line is not shown; it stays for
+            // assistive tech and tests.
+            className="sr-only"
           >
             {effectiveIsCurrentItem
               ? tJson('importDestCurrent', { name: effectiveItemName })
