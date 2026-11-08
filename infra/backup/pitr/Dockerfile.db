@@ -1,0 +1,25 @@
+# engram DB image with WAL archiving tools (P06 Task 9, R1-10).
+# Build from the repo root:
+#   set -a; . infra/image-pins.env; set +a
+#   docker build -f infra/backup/pitr/Dockerfile.db --build-arg POSTGRES_IMAGE="$POSTGRES_IMAGE" -t "$POSTGRES_PITR_IMAGE" .
+# Same pinned Postgres/pgvector image as production plus gnupg+gzip and the archive/restore scripts.
+# GNUPGHOME holds ONLY the public backup key (F2C47029...); the private key never enters this image or the host.
+ARG POSTGRES_IMAGE
+FROM ${POSTGRES_IMAGE}
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gnupg gzip \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY infra/backup/pitr/engram-wal-archive.sh infra/backup/pitr/engram-wal-restore.sh /etc/postgresql/
+COPY infra/backup/pitr/postgresql-pitr.conf /etc/postgresql/postgresql-pitr.conf
+COPY infra/backup/interim/engram-backup-pub.asc /etc/postgresql/engram-backup-pub.asc
+
+ENV GNUPGHOME=/etc/postgresql/.gnupg
+RUN chmod 0755 /etc/postgresql/engram-wal-archive.sh /etc/postgresql/engram-wal-restore.sh \
+ && chmod 0644 /etc/postgresql/postgresql-pitr.conf /etc/postgresql/engram-backup-pub.asc \
+ && install -d -o postgres -g postgres -m 0700 "$GNUPGHOME" \
+ && gosu postgres gpg --batch --import /etc/postgresql/engram-backup-pub.asc \
+ && gosu postgres gpg --batch --list-keys F2C47029212F6EE7A9D4D1779D5A1ABAB6A75AD7 >/dev/null \
+ && chown -R postgres:postgres "$GNUPGHOME" \
+ && chmod 0700 "$GNUPGHOME"

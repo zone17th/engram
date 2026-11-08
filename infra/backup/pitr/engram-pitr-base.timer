@@ -1,0 +1,9 @@
+[Unit]
+Description=engram PITR base backup daily at 03:45 Asia/Ho_Chi_Minh
+
+[Timer]
+OnCalendar=*-*-* 03:45:00 Asia/Ho_Chi_Minh
+Persistent=true
+
+[Install]
+WantedBy=timers.target
