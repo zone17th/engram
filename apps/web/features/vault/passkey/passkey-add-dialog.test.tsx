@@ -283,6 +283,56 @@ describe('T19 bullet 1 - PasskeyAddDialog (Add passkey entry + naming dialog)', 
     }
   });
 
+  it('H-1: the 60 s timeout covers the authenticator prompt only - a slow re-auth stage and a slow save never show it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // The stored grant has expired, so register() has to re-authenticate in place before the prompt.
+      mocks.reauth.grant = {
+        grant: 'old-grant',
+        action: 'vault.passkey_register',
+        expires_at: new Date(Date.now() - 60_000).toISOString(),
+      };
+      mocks.reauth.hasUsableGrant.mockImplementation(() => true);
+      let finishReauth: (g: unknown) => void = () => {};
+      mocks.reauth.begin.mockImplementationOnce(
+        () => new Promise((resolve) => { finishReauth = resolve; }),
+      );
+      stubRegistration({ enabled: true, first: PRF_OUTPUT });
+      let finishSave: (v: unknown) => void = () => {};
+      mocks.registerPasskey.mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
+      const onRegistered = vi.fn();
+      renderDialog(onRegistered);
+      fireEvent.change(await screen.findByLabelText('Passkey name'), { target: { value: 'Key' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      await waitFor(() => expect(mocks.reauth.begin).toHaveBeenCalled());
+      // The user takes 90 s at the password step: no timeout message, the prompt has not even started.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90_000);
+      });
+      expect(mocks.credentialsCreate).not.toHaveBeenCalled();
+      expect(screen.queryByText(enMessages.vault.passkey.add.timeout)).toBeNull();
+      await act(async () => {
+        finishReauth({
+          grant: 'grant-token-2',
+          action: 'vault.passkey_register',
+          expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+        });
+      });
+      await waitFor(() => expect(mocks.registerPasskey).toHaveBeenCalled());
+      // A slow save after the prompt must not surface the prompt-timeout message either.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90_000);
+      });
+      expect(screen.queryByText(enMessages.vault.passkey.add.timeout)).toBeNull();
+      await act(async () => {
+        finishSave(SAVED);
+      });
+      await waitFor(() => expect(onRegistered).toHaveBeenCalledTimes(1));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a definite POST rejection shows passkey.register_failed and the orphan notice', async () => {
     useValidGrant();
     stubRegistration({ enabled: true, first: PRF_OUTPUT });
