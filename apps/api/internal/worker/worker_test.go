@@ -19,6 +19,8 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db"
 	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
+	"github.com/zone17th/engram/apps/api/internal/export"
+	"github.com/zone17th/engram/apps/api/internal/jobs/exportcleanup"
 	"github.com/zone17th/engram/apps/api/internal/notification"
 	"github.com/zone17th/engram/apps/api/internal/secevent"
 	"github.com/zone17th/engram/apps/api/internal/worker"
@@ -337,5 +339,157 @@ func TestSecurityNoticeWorkerContextQueryFailureReturnsErrorForRetry(t *testing.
 	}
 	if secMails, _ := sink.EntriesFor(email, "security"); len(secMails) != 0 {
 		t.Fatalf("must not silently downgrade to generic security mail on JSON decode error, got %d", len(secMails))
+	}
+}
+
+// TestExportWorkersRegistered verifies that worker.NewWithMail registers
+// export_encrypted, export_file_cleanup, and export_prune without panicking or
+// rejecting River insert/start.
+func TestExportWorkersRegistered(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	client, err := worker.NewWithMail(pool, silentLogger(), 90, nil, worker.Deps{
+		Export: &worker.ExportDeps{
+			StorageDir: t.TempDir(),
+			Secret:     config.NewSecretBytes([]byte(config.DevExportAtRestSecret)),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithMail: %v", err)
+	}
+	if _, err := client.Insert(ctx, exportcleanup.Args{CleanupID: uuid.New()}, nil); err != nil {
+		t.Fatalf("Insert exportcleanup.Args: %v", err)
+	}
+	if _, err := client.Insert(ctx, export.ExportPruneArgs{}, nil); err != nil {
+		t.Fatalf("Insert ExportPruneArgs: %v", err)
+	}
+	// r1 R1-14: security_notice_mail must be registered even with a nil mailer,
+	// otherwise every verified-owner export finalize rolls back on insert.
+	if _, err := client.Insert(ctx, notification.SecurityNoticeArgs{NotificationID: 1}, nil); err != nil {
+		t.Fatalf("Insert SecurityNoticeArgs with nil mailer: %v", err)
+	}
+}
+
+// TestExportReadyWithDisabledMailRealRiver is the dec-039 R1-14 runtime proof:
+// a real River client built by worker.NewWithMail with a nil (disabled) mailer
+// runs a verified owner's export end to end. The export reaches ready exactly
+// once, the download opens, exactly one success audit and one in-app security
+// notice commit, and the security_notice_mail job completes terminally on the
+// first attempt (no retry, no rollback of finalization).
+func TestExportReadyWithDisabledMailRealRiver(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	storage := t.TempDir()
+	secret := config.NewSecretBytes([]byte(config.DevExportAtRestSecret))
+	client, err := worker.NewWithMail(pool, silentLogger(), 90, nil, worker.Deps{
+		Export: &worker.ExportDeps{StorageDir: storage, Secret: secret},
+	})
+	if err != nil {
+		t.Fatalf("NewWithMail: %v", err)
+	}
+	if err := client.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, c := context.WithTimeout(context.Background(), 30*time.Second)
+		defer c()
+		_ = client.Stop(stopCtx)
+	})
+
+	userID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO app_user (id, email, email_verified_at) VALUES ($1, $2, now())`,
+		userID, "export-nomail-"+userID.String()+"@example.com"); err != nil {
+		t.Fatalf("insert verified user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO vault (user_id, version, kdf, vault_key_id, vault_key_wrapped_by_kek, x25519_public, ed25519_public, private_keys_wrapped)
+		VALUES ($1, 1, '{"alg":"argon2id"}', 'vk:AAECAwQFBgcICQoLDA0ODw', $2, $3, $3, $4)
+	`, userID, make([]byte, 73), make([]byte, 32), make([]byte, 105)); err != nil {
+		t.Fatalf("insert vault: %v", err)
+	}
+
+	cfg := &config.Config{
+		Env:                "development",
+		ExportStorageDir:   storage,
+		ExportAtRestSecret: secret,
+	}
+	svc, err := export.NewService(cfg, pool, client, nil, nil)
+	if err != nil {
+		t.Fatalf("export.NewService: %v", err)
+	}
+	job, _, err := svc.Create(ctx, userID, "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	waitFor := func(what, query string, args ...any) {
+		t.Helper()
+		for {
+			var ok bool
+			if err := pool.QueryRow(ctx, query, args...).Scan(&ok); err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+			if ok {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("timed out waiting for %s", what)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	waitFor("export ready", `SELECT status = 'ready' FROM export_job WHERE id = $1`, job.ID)
+	waitFor("security_notice_mail settled",
+		`SELECT count(*) = 1 AND bool_and(state IN ('completed','discarded','cancelled')) FROM river_job WHERE kind = 'security_notice_mail'`)
+
+	var noticeState string
+	var noticeAttempt int
+	if err := pool.QueryRow(ctx,
+		`SELECT state, attempt FROM river_job WHERE kind = 'security_notice_mail'`).Scan(&noticeState, &noticeAttempt); err != nil {
+		t.Fatal(err)
+	}
+	// ops-config (dec-041/C13) ends disabled delivery with a terminal JobCancel
+	// (outcome mail_unavailable): settled on attempt 1, never retried.
+	if noticeState != "cancelled" || noticeAttempt != 1 {
+		t.Fatalf("security_notice_mail state=%s attempt=%d, want terminal cancelled on attempt 1 (disabled delivery)", noticeState, noticeAttempt)
+	}
+	var exportState string
+	var exportAttempt int
+	if err := pool.QueryRow(ctx,
+		`SELECT state, attempt FROM river_job WHERE kind = 'export_encrypted'`).Scan(&exportState, &exportAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if exportState != "completed" || exportAttempt != 1 {
+		t.Fatalf("export_encrypted state=%s attempt=%d, want completed once", exportState, exportAttempt)
+	}
+	var audits, notices int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM audit_log WHERE user_id = $1 AND event = $2 AND result = $3`,
+		userID, secevent.EventExportEncrypted, secevent.ResultSuccess).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_notification WHERE user_id = $1 AND kind = 'security'`, userID).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 || notices != 1 {
+		t.Fatalf("audits=%d notices=%d, want exactly 1 each", audits, notices)
+	}
+	dl, err := svc.OpenDownload(ctx, userID, job.ID)
+	if err != nil {
+		t.Fatalf("OpenDownload after ready: %v", err)
+	}
+	b, err := io.ReadAll(dl)
+	_ = dl.Close()
+	if err != nil || !strings.HasPrefix(string(b), `{"format":`) {
+		t.Fatalf("download body: err=%v prefix=%q", err, string(b[:min(len(b), 16)]))
 	}
 }

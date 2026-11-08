@@ -1,0 +1,129 @@
+{
+  "entries": [
+    {
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "item_id": "22222222-3333-4444-8555-666666666666",
+      "type": "text",
+      "position": 0,
+      "version": 1,
+      "plaintext_len_bucket": 256,
+      "envelope": {
+        "v": 1,
+        "alg": "xchacha20poly1305-ietf",
+        "key_id": "vk:AAECAwQFBgcICQoLDA0ODw",
+        "nonce": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+        "ct_enc": "utf8"
+      },
+      "ciphertext": "_XqFAVnJKAhLPgs-qoPZeXy-AevN2G4AWL9XJQLB7lCRrFaKiD5bruwx9gxbb900Ddw4R1OXE-dI24AHaA",
+      "created_at": "2026-10-01T00:05:00Z",
+      "updated_at": "2026-10-01T00:05:00Z",
+      "deleted_at": null,
+      "deleted_via": null,
+      "delete_batch": null
+    },
+    {
+      "id": "8b4e2a10-9c3d-4e5f-a1b2-c3d4e5f60718",
+      "item_id": "22222222-3333-4444-8555-666666666666",
+      "type": "json",
+      "position": 1,
+      "version": 1,
+      "plaintext_len_bucket": 256,
+      "envelope": {
+        "v": 1,
+        "alg": "xchacha20poly1305-ietf",
+        "key_id": "vk:AAECAwQFBgcICQoLDA0ODw",
+        "nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4",
+        "ct_enc": "utf8"
+      },
+      "ciphertext": "EvJj1Wv346Z1iisG6CqPme-0JaRQyoUrp9IFzEq5n1nekxY5Y2hm_STyc1svUlH5aii7VVhN8CUhi1s9lfRFfR_OF1Ad3oVFd3f28R2EXBJ1raQTJGrKCUY-Qk1zGmuYP-HYBr0T1oMr",
+      "created_at": "2026-10-01T00:06:00Z",
+      "updated_at": "2026-10-01T00:06:00Z",
+      "deleted_at": "2026-11-02T00:00:00Z",
+      "deleted_via": "entry",
+      "delete_batch": null
+    }
+  ],
+  "exported_at": "2026-11-07T08:30:00Z",
+  "format": "engram.sabk",
+  "item_tags": [
+    {
+      "item_id": "22222222-3333-4444-8555-666666666666",
+      "tag_id": "11111111-2222-4333-8444-555555555555",
+      "created_at": "2026-10-01T00:00:00Z"
+    }
+  ],
+  "items": [
+    {
+      "id": "22222222-3333-4444-8555-666666666666",
+      "name": "wifi",
+      "name_normalized": "wifi",
+      "hint": "Tầng 2",
+      "entry_count": 1,
+      "version": 1,
+      "last_used_at": "2026-11-05T12:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z",
+      "updated_at": "2026-11-05T12:00:00Z",
+      "deleted_at": null,
+      "delete_batch": null
+    }
+  ],
+  "snapshot": {
+    "consistency": "repeatable_read",
+    "includes_active": true,
+    "includes_soft_deleted_unpurged": true,
+    "excludes_purged": true,
+    "soft_delete_retention_days": 30,
+    "counts": {
+      "tags": 1,
+      "items": 1,
+      "item_tags": 1,
+      "entries": 2
+    }
+  },
+  "tags": [
+    {
+      "id": "11111111-2222-4333-8444-555555555555",
+      "display": "wifi-khách",
+      "normalized": "wifi-khách",
+      "item_count": 1,
+      "last_used_at": "2026-11-01T00:00:00Z",
+      "created_at": "2026-10-01T00:00:00Z",
+      "deleted_at": null
+    }
+  ],
+  "vault": {
+    "vault_key_id": "vk:AAECAwQFBgcICQoLDA0ODw",
+    "version": 3,
+    "kdf": {
+      "alg": "argon2id13",
+      "ops": 3,
+      "mem": 67108864,
+      "parallelism": 1,
+      "salt": "oKGio6SlpqeoqaqrrK2urw"
+    },
+    "vault_key_wrapped_by_kek": "AbCxsrO0tba3uLm6u7y9vr_AwcLDxMXGxyfYfNv-vuDRS6i3Up5z_wCEX2cLt1xXgujuY7dGa_eirv2y5QQSBXkKR95PrK-ilA",
+    "x25519_public": "EIT5fcwxJb3Sw8y-V9yHL-JGU5pDVlgw9H5ueCV7OnI",
+    "ed25519_public": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+    "private_keys_wrapped": "AeDh4uPk5ebn6Onq6-zt7u_w8fLz9PX299I6ypcubNr8Ofy8RwtQE-3gVPZ1cTrHgeO1ZMoyFkOJgqz7gG75ofa4qHejTdUrskM0hqoPmKH-rt_ZLSoHn2BH9MF-TUGyovpu_punj7v-",
+    "recovery_keys": [
+      {
+        "slot": 1,
+        "lookup_hash": "Tk13ljAuzyznVe3jKHwrjVktSmiO5TfazfbtINCB3xI",
+        "wrap": "AcDBwsPExcbHyMnKy8zNzs_Q0dLT1NXW18dWA3zmQXAPuHHij0feHrlM3pVUBUhmQ3zog3pdtAPVR3sl2xkLHUk5qkxO2bwUUQ"
+      }
+    ],
+    "passkeys": [
+      {
+        "id": "33333333-4444-4555-8666-777777777777",
+        "name": "MacBook Touch ID",
+        "cred_id": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI",
+        "prf_salt": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ",
+        "vk_wrap": "AdDR0tPU1dbX2Nna29zd3t_g4eLj5OXm5yuCCO2hEXARm4p_GXZn52-vZ5OatvqyYLFBsBvtKtluw2iEWtQJtwvGhQaDTvYt0w",
+        "pubkey": "mZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZk",
+        "aaguid": "adce0002-35bc-c60a-648b-0b25f1f05503",
+        "created_at": "2026-10-29T10:00:00Z"
+      }
+    ]
+  },
+  "version": 1
+}
