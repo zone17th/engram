@@ -37,6 +37,8 @@ const AUTH_PAGES: readonly AuthPageCapture[] = [
   { name: 'terms-vi', path: '/vi/terms', locale: 'vi' },
   { name: 'privacy-en', path: '/privacy', locale: 'en' },
   { name: 'privacy-vi', path: '/vi/privacy', locale: 'vi' },
+  { name: 'docs-en', path: '/docs', locale: 'en' },
+  { name: 'docs-vi', path: '/vi/docs', locale: 'vi' },
 ];
 
 async function setPrefs(page: Page, locale: 'en' | 'vi', theme: 'light' | 'dark') {

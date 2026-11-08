@@ -75,16 +75,16 @@
     "jsonViewRaw": "JSON thô",
     "privacyTitle": "Nói thẳng chỗ nào mã hoá, chỗ nào không",
     "privacyBody1": "Nội dung entry được khoá ngay trên trình duyệt bằng khoá chỉ thiết bị của bạn giữ. Máy chủ chỉ lưu nội dung entry ở dạng bản mã và không thể giải mã, miễn là mã ứng dụng chúng tôi gửi tới trình duyệt của bạn không bị can thiệp.",
-    "privacyBody2": "Tên mục và tag thì không mã hoá — chính chúng làm cho việc tìm kiếm chạy được. Chữ bạn gõ để tìm cũng được gửi tới máy chủ của chúng tôi, không mã hoá. Khi bật tìm gần nghĩa (mặc định bật nếu máy chủ hỗ trợ, tắt được trong Cài đặt hoặc bằng nút ≈), tên mục, tag, gợi nhớ và chữ bạn gõ được gửi tiếp tới dịch vụ embedding của bên thứ ba để tính vector. Nội dung entry thì không bao giờ được gửi.",
+    "privacyBody2": "Tên mục và tag thì không mã hoá — chính chúng làm cho việc tìm kiếm chạy được. Chữ bạn gõ để tìm cũng được gửi tới máy chủ của chúng tôi, không mã hoá. Tìm gần nghĩa tắt mặc định; bạn bật khi muốn (và tắt được bất kỳ lúc nào trong Cài đặt hoặc bằng nút ≈). Khi bật, tên mục, tag, gợi nhớ và chữ bạn gõ được gửi tiếp tới dịch vụ embedding của bên thứ ba để tính vector — nội dung entry không bao giờ được gửi. Khi tắt, hệ thống ngừng gửi ngay và xoá các vector của bạn trên máy chủ engram.",
     "encLabel": "Được mã hoá",
     "encBody": "Nội dung mọi entry text và json.",
     "plainLabel": "Không mã hoá",
-    "plainBody": "Tên mục, tên tag, thời điểm sửa, số lượng entry.",
+    "plainBody": "Tên mục, tên tag, gợi nhớ, loại và kích thước entry, thời điểm sửa, số lượng entry, chữ bạn gõ tìm kiếm.",
     "cryptoNote": "XChaCha20-Poly1305 · Argon2id · khoá không rời trình duyệt",
     "recoveryTitle": "Quên passphrase không phải là mất hết",
-    "recoveryBody": "Vì chúng tôi không giữ khoá của bạn, nên bạn cần đường về của riêng mình. Có ba đường, dựng sẵn từ lúc đăng ký.",
+    "recoveryBody": "Vì chúng tôi không giữ khoá của bạn (miễn là mã ứng dụng trên trình duyệt không bị can thiệp), nên bạn cần đường về của riêng mình. Có ba đường, dựng sẵn từ lúc đăng ký.",
     "recoveryKeysTitle": "10 recovery key",
-    "recoveryKeysBody": "In ra, cất đi. Mỗi key mở được vault một mình, dùng xong thì thôi.",
+    "recoveryKeysBody": "In ra, cất kỹ. Mỗi key tự mở được vault một lần trên máy chủ; dùng xong có thể tạo key bù hoặc xoay bộ 10 key mới.",
     "recoveryPasskeyTitle": "Passkey",
     "recoveryPasskeyBody": "Vân tay hoặc khoá bảo mật. Mở vault không cần gõ gì.",
     "recoveryDeviceTitle": "Thiết bị đã nhớ",
@@ -150,7 +150,133 @@
     "segmentedAriaLabel": "Lựa chọn"
   },
   "footer": {
+    "privacyPolicy": "Chính sách quyền riêng tư",
+    "terms": "Điều khoản sử dụng",
+    "contact": "Liên hệ",
     "legal": "engram — lưu theo từ khoá."
+  },
+  "docs": {
+    "metaTitle": "Tài liệu & quyền riêng tư",
+    "updatedLabel": "Tài liệu & quyền riêng tư · Cập nhật 07/11/2026",
+    "title": "Cách engram hoạt động và cách dữ liệu của bạn được giữ kín",
+    "lead": "Viết bằng lời thường, đối chiếu trực tiếp với mã nguồn: cái gì khoá ngay trên trình duyệt của bạn, cái gì máy chủ nhìn thấy để tìm kiếm chạy được, cái gì gửi tới dịch vụ tạo vector bên ngoài khi bật tìm gần nghĩa, cách khôi phục khoá kèm giới hạn của bản sao lưu cũ, và cách xuất dữ liệu hay xoá tài khoản.",
+    "tocAriaLabel": "Mục lục tài liệu",
+    "onThisPage": "Trên trang này",
+    "topNav": {
+      "start": "Bắt đầu",
+      "privacy": "Riêng tư",
+      "search": "Tìm kiếm",
+      "recovery": "Khôi phục",
+      "data": "Dữ liệu"
+    },
+    "toc": {
+      "s1": "1. Bắt đầu trong 3 phút",
+      "s2": "2. Riêng tư & phạm vi E2E",
+      "s3": "3. Tìm kiếm & ≈",
+      "s4": "4. Khôi phục & bản sao lưu",
+      "s5": "5. Dữ liệu, xuất & xoá",
+      "s6": "6. Giới hạn cần biết",
+      "s7": "7. Liên hệ"
+    },
+    "s1": {
+      "sectionLabel": "Phần 1",
+      "heading": "Bắt đầu trong ba phút",
+      "step1Title": "Tạo tài khoản và đặt passphrase riêng cho kho",
+      "step1Body": "Mật khẩu đăng nhập tài khoản (hoặc Google/GitHub) và passphrase của kho là hai thứ hoàn toàn tách biệt. Mật khẩu đăng nhập dùng với máy chủ; passphrase mở nội dung entry ngay trên trình duyệt và không bao giờ rời thiết bị của bạn. Đặt lại mật khẩu đăng nhập qua email chỉ lấy lại quyền vào tài khoản, tuyệt đối không mở khoá hay đặt lại kho.",
+      "step2Title": "Cất kỹ 10 recovery key",
+      "step2Body": "Bộ 10 key dùng một lần chỉ hiện đúng một lần lúc tạo kho. Hãy tải file, in ra giấy hoặc cất vào trình quản lý mật khẩu; bạn cũng có thể thêm passkey (vân tay, khuôn mặt hoặc khoá bảo mật) để mở kho hàng ngày không cần gõ.",
+      "step3Title": "Đặt tên mục bằng từ khoá bạn sẽ nhớ, để bí mật ở phần nội dung",
+      "step3Body": "Tên mục, tag và gợi nhớ giúp tìm lại nhanh nên không được mã hoá. Hãy đặt tên như wifi nhà hay ngân hàng, tuyệt đối không viết mật khẩu, số thẻ hay bí mật vào tên mục, tag hoặc gợi nhớ."
+    },
+    "s2": {
+      "sectionLabel": "Phần 2",
+      "heading": "Nói thẳng chỗ nào mã hoá, chỗ nào máy chủ nhìn thấy",
+      "body1": "Nội dung bên trong mỗi entry (văn bản text và bảng json) được mã hoá đầu-cuối ngay trên trình duyệt (trong Web Worker bằng XChaCha20-Poly1305) với khoá chỉ thiết bị của bạn giữ. Máy chủ chỉ nhận và lưu bản mã cùng các bản bọc khoá, không bao giờ nhận bản rõ và không có khoá giải mã — miễn là mã ứng dụng gửi tới trình duyệt của bạn không bị can thiệp.",
+      "body2": "Tên mục, nhãn (tag), gợi nhớ (hint) và chữ bạn gõ tìm kiếm thì không mã hoá — chính chúng làm việc tìm kiếm và gợi ý chạy được. Máy chủ cũng biết loại entry (text hoặc json), số lượng mục/entry/tag, thời điểm tạo/sửa/dùng gần nhất và kích thước byte thực tế của từng entry (giao diện làm tròn số hiển thị nhưng không độn dữ liệu giả để che độ dài thật). Tuyệt đối không đặt mật khẩu hay bí mật vào tên mục, tag hoặc gợi nhớ.",
+      "encLabel": "Được mã hoá đầu-cuối",
+      "encBody": "Nội dung mọi entry text và json.",
+      "plainLabel": "Máy chủ nhìn thấy (không mã hoá)",
+      "plainBody": "Tên mục, tên tag, gợi nhớ, loại entry (text/json), thời điểm tạo/sửa, số lượng, kích thước thực của entry và chữ bạn gõ khi tìm kiếm.",
+      "neverLabel": "Không bao giờ gửi lên máy chủ",
+      "neverBody": "Passphrase của kho, khoá giải mã kho, recovery key dạng rõ, khoá sinh từ passkey và khoá nhớ thiết bị trên trình duyệt.",
+      "cryptoNote": "XChaCha20-Poly1305 · Argon2id (64 MiB) · WebAuthn PRF · khoá không rời trình duyệt"
+    },
+    "s3": {
+      "sectionLabel": "Phần 3",
+      "heading": "Tìm kiếm và tìm gần nghĩa (≈) gửi dữ liệu đi đâu",
+      "lead": "Gõ vào ô tìm kiếm, kết quả xếp theo ba lớp tách biệt (lớp khớp chữ luôn đứng trên). Khi bạn gõ cú pháp lưu nhanh (tên #tag: nội dung), chuỗi có dấu hai chấm (:), hoặc dán văn bản nhiều dòng, cổng gửi trên trình duyệt tự động chặn không gửi phần nội dung sau dấu hai chấm đi tìm kiếm.",
+      "lexicalTitle": "1 · Khớp từ đầu và 2 · Gõ sai dấu vẫn ra (chạy trên máy chủ engram)",
+      "lexicalBody": "Gõ \"wif\" hay \"hoa don\" sẽ khớp ngay với tên mục \"wifi nhà\", \"hoá đơn\" và các tag trên máy chủ của engram.",
+      "semanticTitle": "3 · Tìm gần nghĩa (≈) và dịch vụ embedding bên ngoài",
+      "semanticBadge": "Tắt mặc định; bạn bật khi muốn",
+      "semanticBody1": "Giúp gõ \"mạng nhà\" vẫn tìm ra mục tên \"wifi\". Tắt mặc định; bạn bật khi muốn (ở bước cuối khi tạo kho hoặc trong Cài đặt; chọn \"Để sau\" là tắt). Khi bật, ở cấu hình mặc định, tên mục, tên tag, gợi nhớ và chữ bạn gõ tìm kiếm được gửi tới dịch vụ tạo vector (embedding) bên ngoài (qua bộ định tuyến của engram → OpenRouter → nhà cung cấp chạy mô hình) để tính vector so sánh nghĩa. Nội dung bên trong entry không bao giờ được gửi đi. (Nếu máy chủ cấu hình tự chạy mô hình nội bộ, các dữ liệu này không rời hạ tầng engram.)",
+      "semanticBody2": "Cách tắt bất kỳ lúc nào: bấm nút ≈ ngay trên ô tìm kiếm hoặc gạt công tắc trong Cài đặt › Tìm kiếm. Ngay khi tắt, engram ngừng gửi dữ liệu của bạn tới dịch vụ bên ngoài và xoá toàn bộ vector của bạn đang lưu trên máy chủ engram. Lưu ý: những yêu cầu đã gửi đi trước thời điểm bạn tắt thì không thể thu hồi từ phía dịch vụ bên ngoài. Khi bật lại, hệ thống sẽ tạo lại vector cho các mục và tag của bạn."
+    },
+    "s4": {
+      "sectionLabel": "Phần 4",
+      "heading": "Khôi phục khoá, thu hồi và giới hạn của bản sao lưu cũ",
+      "lead": "Vì máy chủ không giữ khoá giải mã của bạn (miễn là mã ứng dụng gửi tới trình duyệt không bị can thiệp), bạn mở lại kho bằng những đường đã chuẩn bị sẵn. Nếu kho vẫn đang mở (nhờ phiên đang mở, Passkey hoặc Thiết bị đã nhớ), bạn có thể vào Cài đặt › Bảo mật để đặt passphrase mới ngay sau khi xác thực lại tài khoản — không cần nhớ passphrase cũ.",
+      "passkeyTitle": "Passkey và cách gỡ",
+      "passkeyBody": "Mở kho bằng vân tay, khuôn mặt hoặc khoá bảo mật hỗ trợ WebAuthn PRF (thiết bị không hỗ trợ PRF sẽ bị từ chối lúc đăng ký). Khi bạn bấm Gỡ một passkey trong Cài đặt (cần xác thực lại tài khoản), máy chủ xoá ngay bản bọc khoá của passkey đó nên không dùng nó để mở kho trực tuyến được nữa. Bạn vẫn nên tự xoá passkey thừa trong trình quản lý thiết bị/hệ điều hành.",
+      "deviceTitle": "Thiết bị đã nhớ",
+      "deviceBody": "Khi bạn chủ động bật \"Nhớ thiết bị này\", trình duyệt giữ một khoá thiết bị riêng không thể trích xuất trong IndexedDB để tự mở lại kho trên trình duyệt đó. Đừng bật trên máy dùng chung. Khi bạn tắt tuỳ chọn này hoặc khi phiên đăng nhập của máy đó bị thu hồi từ xa, khoá thiết bị trong trình duyệt sẽ tự động bị xoá.",
+      "keysTitle": "10 recovery key: dùng một lần, tạo bù và xoay cả 10",
+      "keysBody": "Mỗi recovery key tự mở được kho một lần trên máy chủ trực tuyến (máy chủ chỉ lưu mã băm tra cứu và bản bọc khoá, không biết key gốc). Khi dùng xong một key để đặt lại passphrase mới, key đó bị xoá hẳn trên máy chủ trực tuyến; sau đó bạn có thể Tạo key mới để bù vào ô trống hoặc bấm Xoay cả 10 trong Cài đặt › Bảo mật để thay toàn bộ 10 key mới. Việc đổi passphrase không làm mất hiệu lực các recovery key hay passkey hiện có.",
+      "backupLimitTitle": "Giới hạn quan trọng của bản sao lưu cũ (không thu hồi mật mã học đối với snapshot cũ)",
+      "backupLimitBody": "Để đổi passphrase và xoay key diễn ra tức thì mà không phải tải về mã hoá lại mọi mục, kho của bạn giữ một khoá giải mã chính cố định. Vì vậy, khi bạn đổi passphrase, dùng hoặc xoay recovery key, hay gỡ passkey, các cách mở cũ chỉ bị xoá hoặc cập nhật trên máy chủ trực tuyến. Nếu ai đó nắm giữ một bản sao lưu cũ (file .sabk.json hoặc bản sao lưu cơ sở dữ liệu cũ) cùng với passphrase cũ, bản in recovery key cũ hoặc thiết bị passkey cũ tương ứng tại thời điểm tạo bản sao lưu đó, họ vẫn mở được bản sao lưu đó và giải mã được các entry. Ngoài ra, nếu hệ thống phải khôi phục cơ sở dữ liệu theo thời điểm (PITR) sau sự cố, recovery key vừa dùng hoặc passkey vừa gỡ sau mốc khôi phục có thể xuất hiện lại nên cần xoay hoặc gỡ lại.",
+      "resetNote": "Mất hết mọi đường mở kho? Nếu quên passphrase, mất cả 10 recovery key, không còn passkey, không còn thiết bị đã nhớ và không còn file sao lưu mở được, lựa chọn cuối cùng là Đặt lại vault (Reset vault): toàn bộ nội dung entry đã mã hoá và các khoá của kho trên máy chủ bị xoá vĩnh viễn để tạo kho mới, còn tài khoản, tên mục và tag được giữ lại."
+    },
+    "s5": {
+      "sectionLabel": "Phần 5",
+      "heading": "Dữ liệu chúng tôi giữ, xuất sao lưu và xoá tài khoản",
+      "tableColData": "Dữ liệu",
+      "tableColStoredAs": "Ở dạng",
+      "tableColRetainedUntil": "Giữ đến khi",
+      "row1Data": "Nội dung entry (text, json)",
+      "row1StoredAs": "Đã mã hoá đầu-cuối, máy chủ không đọc được",
+      "row1RetainedUntil": "Khi bạn xoá mục/entry (giữ 30 ngày trong thùng rác để hoàn tác rồi xoá vĩnh viễn), đặt lại kho hoặc xoá tài khoản",
+      "row2Data": "Tên mục, tag, gợi nhớ, loại & kích thước thực",
+      "row2StoredAs": "Văn bản thường (không mã hoá)",
+      "row2RetainedUntil": "Khi bạn xoá mục/tag (xoá vĩnh viễn sau 30 ngày) hoặc xoá tài khoản",
+      "row3Data": "Vector tìm gần nghĩa",
+      "row3StoredAs": "Vector số sinh từ tên mục, gợi nhớ và tag",
+      "row3RetainedUntil": "Xoá ngay trên máy chủ engram khi bạn tắt nút ≈, xoá mục/tag hoặc xoá tài khoản",
+      "row4Data": "Email, mật khẩu đăng nhập, phiên",
+      "row4StoredAs": "Email văn bản thường; mật khẩu chỉ lưu dạng băm Argon2id",
+      "row4RetainedUntil": "Xoá ngay khỏi cơ sở dữ liệu hoạt động khi bạn xoá tài khoản",
+      "row5Data": "Nhật ký bảo mật",
+      "row5StoredAs": "Không chứa nội dung entry, câu tìm kiếm hay khoá bí mật; gỡ liên kết tài khoản về NULL khi xoá",
+      "row5RetainedUntil": "Tự xoá sau 90 ngày",
+      "row6Data": "Bản sao lưu hệ thống",
+      "row6StoredAs": "Bản sao cơ sở dữ liệu đã mã hoá khi lưu trữ (gồm bản mã entry, bản bọc khoá, tên mục/tag và dòng tài khoản tại thời điểm sao lưu)",
+      "row6RetainedUntil": "Rời mọi bản sao lưu nội bộ chậm nhất sau 8 ngày",
+      "exportTitle": "Hai định dạng xuất dữ liệu (tối đa 3 lượt mỗi giờ)",
+      "exportEncryptedBody": "1. Tải bản sao lưu mã hoá (.sabk.json, khuyên dùng): chỉ cần đang đăng nhập (không cần mở kho). Đóng gói các mục đang dùng, tag, bản mã entry, thông tin bọc khoá (passphrase, recovery key, passkey) và các mục đang nằm trong thùng rác chưa quá 30 ngày để bạn mở lại độc lập bằng passphrase hoặc recovery key. File giữ trên máy chủ tối đa 24 giờ để chỉ chủ tài khoản đang đăng nhập tải về, và tự xoá khi hết hạn, bị huỷ, tạo bản mới, đặt lại kho hoặc xoá tài khoản.",
+      "exportReadableBody": "2. Xuất bản đọc được (không mã hoá, .json): cần kho đang mở và xác thực lại tài khoản. Trình duyệt tự giải mã cục bộ trên máy bạn (giữ nguyên số dài và khoá trùng trong JSON) thành file văn bản rõ mà không gửi bản rõ lên máy chủ. Bản đọc được chỉ gồm các mục đang dùng, không gồm thùng rác 30 ngày. Cảnh báo: bất kỳ ai có file này đều đọc được toàn bộ nội dung ngay lập tức.",
+      "exportQuotaNote": "Mỗi lần tạo bản sao lưu mới hoặc bản đọc được mới tính 1 lượt; tối đa 3 lượt mỗi giờ, kể cả lượt đã huỷ.",
+      "deleteTitle": "Xoá tài khoản khác gì Đặt lại vault",
+      "resetBody": "Đặt lại vault (Reset vault): chỉ xoá các nội dung entry đã mã hoá và bộ khoá cũ (recovery key, passkey) để tạo kho mới khi bạn mất hết khoá; tài khoản, các phiên đăng nhập, tên mục và tag vẫn giữ nguyên.",
+      "deleteBody": "Xoá tài khoản (Delete account): quy trình 2 bước cần xác thực lại tài khoản và gõ đúng địa chỉ email xác nhận. Tài khoản, mọi phiên đăng nhập, kho, recovery key, passkey, mục, tag, entry và vector bị xoá ngay khỏi cơ sở dữ liệu hoạt động; các bản sao lưu tạm trên máy chủ bị vô hiệu ngay và xoá khỏi đĩa trong vài phút.",
+      "retentionNote": "Lưu giữ sau khi xoá & nhật ký kỹ thuật: mục/entry xoá tạm được dọn vĩnh viễn sau 30 ngày; dữ liệu đã xoá rời khỏi mọi bản sao lưu nội bộ chậm nhất sau 8 ngày; nhật ký sự kiện bảo mật (đã gỡ liên kết tài khoản và không chứa bí mật) tự xoá sau 90 ngày. Nhật ký truy cập kỹ thuật và telemetry chỉ ghi đường dẫn mẫu, mã trạng thái và độ trễ — không bao giờ ghi nội dung entry, câu tìm kiếm, passphrase, recovery key, token xuất dữ liệu hay địa chỉ IP thô. Chúng tôi chỉ dùng cookie phiên đăng nhập, CSRF và tuỳ chọn ngôn ngữ/giao diện — không có trình theo dõi quảng cáo và không bán dữ liệu."
+    },
+    "s6": {
+      "sectionLabel": "Phần 6",
+      "heading": "Giới hạn cần biết trước",
+      "limitSize": "Dung lượng và số lượng: mỗi entry tối đa 256 KiB, mỗi mục tối đa 200 entry và 20 tag. Đây là nơi lưu ghi chú văn bản và bảng cấu hình JSON, không phải nơi chứa file đính kèm.",
+      "limitPlatform": "Cần kết nối mạng và trình duyệt đời mới: việc mã hoá và mở kho bằng passkey chạy trực tiếp trên trình duyệt; bản hiện tại cần kết nối mạng để tìm và lưu.",
+      "limitPlatformDetail": "(Chi tiết kỹ thuật: dẫn xuất khoá Argon2id 64 MiB trong Web Worker, mở khoá passkey qua chuẩn WebAuthn PRF.)",
+      "limitNoSell": "Không bán dữ liệu, chưa có chia sẻ mục: kho là của riêng bạn; chúng tôi không dùng quảng cáo và không bán dữ liệu. Tính năng nhập lại file sao lưu trên giao diện, xoay khoá giải mã chính và chia sẻ mục nằm ở các bản nâng cấp sau.",
+      "limitExportQuota": "Giới hạn tạo bản xuất dữ liệu: Mỗi lần tạo bản sao lưu mới hoặc bản đọc được mới tính 1 lượt; tối đa 3 lượt mỗi giờ, kể cả lượt đã huỷ."
+    },
+    "s7": {
+      "sectionLabel": "Phần 7",
+      "heading": "Còn thắc mắc hoặc cần báo lỗi",
+      "body": "Hỏi thẳng, kể cả câu khó về mã hoá. Khi báo lỗi trên kênh công khai, tuyệt đối không gửi mật khẩu, passphrase hay recovery key — chúng tôi không bao giờ hỏi xin các thông tin đó.",
+      "issuesCta": "GitHub Issues · Câu hỏi & hỗ trợ",
+      "advisoriesCta": "Báo cáo lỗ hổng riêng tư",
+      "privacyCta": "Chính sách quyền riêng tư",
+      "termsCta": "Điều khoản sử dụng"
+    }
   },
   "legal": {
     "backToLogin": "Về đăng nhập",
@@ -200,7 +326,7 @@
       "row4Server": "Plaintext / Hash",
       "row4Purpose": "Xác thực tài khoản; mật khẩu đăng nhập băm Argon2id",
       "s21Title": "2.1 · Gợi ý gần nghĩa và nhật ký truy cập",
-      "s21Body": "Khi gợi ý \"gần nghĩa\" (≈) đang bật (mặc định bật nếu máy chủ hỗ trợ; tắt trong Cài đặt hoặc bằng nút ≈), tên mục, tag, gợi nhớ và cả chữ bạn gõ khi tìm được gửi tới dịch vụ embedding của bên thứ ba (qua bộ định tuyến của chúng tôi, tới OpenRouter, rồi nhà cung cấp mô hình) để tạo vector đối chiếu ngữ nghĩa; nội dung entry không bao giờ được gửi. Chữ sau \"tên:\" khi lưu nội dung không bao giờ được gửi để tìm. Nếu máy chủ tự vận hành embedding (tuỳ chọn), các dữ liệu đó không rời hạ tầng của chúng tôi và tắt chỉ ẩn kết quả gần nghĩa. Tắt gợi ý \"gần nghĩa\" sẽ ngừng gửi dữ liệu của bạn tới bên thứ ba từ lúc đó và xoá các vector của bạn đang lưu trong cơ sở dữ liệu của engram; yêu cầu đã gửi trước lúc tắt không thu hồi được, và chúng tôi không cam kết xoá hay giới hạn thời gian lưu giữ dữ liệu đó ở OpenRouter hay nhà cung cấp mô hình (theo chính sách của họ). Nhật ký truy cập máy chủ không ghi từ khoá tìm kiếm và không bao giờ ghi nội dung entry, passphrase hay recovery key."
+      "s21Body": "Tìm theo nghĩa (≈) tắt mặc định; bạn bật khi muốn (ở bước cuối tạo kho, trong Cài đặt hoặc bằng nút ≈). Khi đang bật, tên mục, tag, gợi nhớ và cả chữ bạn gõ khi tìm được gửi tới dịch vụ embedding của bên thứ ba (qua bộ định tuyến của chúng tôi, tới OpenRouter, rồi nhà cung cấp mô hình) để tạo vector đối chiếu ngữ nghĩa; nội dung entry không bao giờ được gửi. Chữ sau \"tên:\" khi lưu nội dung không bao giờ được gửi để tìm. Nếu máy chủ tự vận hành embedding (tuỳ chọn), các dữ liệu đó không rời hạ tầng của chúng tôi và tắt chỉ ẩn kết quả gần nghĩa. Tắt gợi ý \"gần nghĩa\" sẽ ngừng gửi dữ liệu của bạn tới bên thứ ba từ lúc đó và xoá các vector của bạn đang lưu trong cơ sở dữ liệu của engram; yêu cầu đã gửi trước lúc tắt không thu hồi được, và chúng tôi không cam kết xoá hay giới hạn thời gian lưu giữ dữ liệu đó ở OpenRouter hay nhà cung cấp mô hình (theo chính sách của họ). Nhật ký truy cập máy chủ không ghi từ khoá tìm kiếm và không bao giờ ghi nội dung entry, passphrase hay recovery key."
     },
     "deletion": {
       "sectionLabel": "Phần 3",
@@ -208,7 +334,7 @@
       "noSellTitle": "Không bán dữ liệu",
       "noSellBody": "Chúng tôi không bán, không cho thuê và không dùng dữ liệu của bạn để quảng cáo. Hệ thống chỉ dùng cookie phiên đăng nhập (HttpOnly), cookie chống giả mạo yêu cầu (CSRF, trình duyệt đọc được để đính kèm header bảo vệ) và hai cookie tuỳ chọn giao diện (ngôn ngữ, giao diện sáng/tối) — không có trình theo dõi quảng cáo của bên thứ ba.",
       "exportDeleteTitle": "Xuất dữ liệu & Xoá tài khoản",
-      "exportDeleteBody": "Tính năng tự xuất dữ liệu (backup) và tự xoá tài khoản trong ứng dụng đang được bổ sung (ở bản phát hành tiếp theo); trong thời gian chờ, bạn có thể gửi yêu cầu qua kênh liên hệ bên dưới. Khi tài khoản được xoá, dữ liệu trên cơ sở dữ liệu hoạt động sẽ bị xoá; nhật ký kiểm toán bảo mật được lưu mặc định 90 ngày, và các bản sao lưu hệ thống / PITR sẽ tự hết hạn rồi xoá theo chu kỳ lưu trữ riêng."
+      "exportDeleteBody": "Trong Cài đặt › Dữ liệu, bạn có thể tự xuất dữ liệu hoặc tự xoá tài khoản bất kỳ lúc nào. (1) Bản sao lưu mã hoá (.sabk.json) đóng gói các mục đang dùng, tag, bản mã entry, các bản bọc khoá và các mục trong thùng rác 30 ngày; file tạo ra được giữ trên máy chủ tối đa 24 giờ và chỉ chủ tài khoản đang đăng nhập mới tải về được (tự xoá khi hết hạn, bị huỷ, tạo bản mới, đặt lại kho hoặc xoá tài khoản). (2) Bản đọc được (.json không mã hoá) được tạo ngay trên máy bạn sau khi mở kho và xác thực lại tài khoản, chỉ gồm các mục đang dùng (không gồm thùng rác). Mỗi lần tạo bản sao lưu mới hoặc bản đọc được mới tính 1 lượt; tối đa 3 lượt mỗi giờ, kể cả lượt đã huỷ. Xoá tài khoản qua 2 bước xác nhận (xác thực lại tài khoản và gõ đúng email) sẽ xoá ngay tài khoản, phiên, kho, khoá, mục, tag, entry và vector khỏi cơ sở dữ liệu hoạt động (file sao lưu tạm trên máy chủ bị vô hiệu ngay và xoá khỏi đĩa trong vài phút). Mục/entry trong thùng rác xoá vĩnh viễn sau 30 ngày, dữ liệu đã xoá rời khỏi mọi bản sao lưu nội bộ chậm nhất sau 8 ngày, và nhật ký kiểm toán bảo mật (đã gỡ liên kết tài khoản, không chứa bí mật) tự xoá sau 90 ngày."
     },
     "contact": {
       "sectionLabel": "Phần 4",
@@ -219,6 +345,7 @@
       "securitySuffix": ".",
       "issuesCta": "GitHub Issues · Yêu cầu chung & tài khoản",
       "advisoriesCta": "Báo cáo lỗ hổng riêng tư",
+      "docsCta": "Xem tài liệu chi tiết",
       "switchPageTerms": "Xem Điều khoản sử dụng",
       "switchPagePrivacy": "Xem Chính sách quyền riêng tư"
     }
@@ -380,7 +507,7 @@
     "explainer": {
       "ariaLabel": "Giới thiệu engram",
       "compactTitle": "engram — lưu theo từ khoá, mã hoá đầu-cuối nội dung entry",
-      "compactEncrypted": "Nội dung entry (text, json) được mã hoá trên trình duyệt — máy chủ không đọc được.",
+      "compactEncrypted": "Nội dung entry (text, json) được mã hoá trên trình duyệt — máy chủ không đọc được, miễn là mã ứng dụng tải về trình duyệt không bị can thiệp.",
       "compactPlaintext": "Tên mục, tag và gợi nhớ (hint) KHÔNG được mã hoá để tìm kiếm chạy được (đừng ghi bí mật vào đó).",
       "compactSteps": "Ba bước khởi tạo: 1. Tài khoản → 2. Passphrase → 3. 10 recovery key.",
       "kicker": "engram là gì",
@@ -429,7 +556,7 @@
       "submitting": "Đang tạo tài khoản…",
       "haveAccount": "Đã có tài khoản?",
       "signInLink": "Đăng nhập",
-      "privacyNote": "Chúng tôi không đọc được nội dung các entry của bạn. Nếu bạn mất toàn bộ các đường mở khoá, chúng tôi không thể khôi phục giúp bạn.",
+      "privacyNote": "Chúng tôi không đọc được nội dung các entry của bạn, miễn là mã ứng dụng tải về trình duyệt không bị can thiệp. Nếu bạn mất toàn bộ các đường mở khoá, chúng tôi không thể khôi phục giúp bạn.",
       "mailResetUnavailable": "Máy chủ này chưa bật gửi email đặt lại mật khẩu — hãy lưu kỹ mật khẩu đăng nhập."
     },
     "forgot": {
