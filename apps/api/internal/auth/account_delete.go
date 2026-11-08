@@ -188,9 +188,12 @@ WHERE kind = ANY($1::text[])
 		}
 	}
 
-	// (e) Remove login-mode oauth_transaction rows (where expected_user_id and
-	// expected_session_id are NULL) that recorded this user's provider UID or
-	// email before cascading the user and its auth_identity rows.
+	// (e) Remove login-mode oauth_transaction rows (expected_user_id and
+	// expected_session_id NULL) that Complete would resolve to this user, using
+	// the same keys Complete uses: provider + provider UID linked to this user,
+	// or, for a provider UID linked to no account, the identity email equal to
+	// this user's email. A row whose provider UID is linked to another account
+	// belongs to that account and is never deleted by email equality.
 	if _, err := tx.Exec(ctx, `
 DELETE FROM oauth_transaction ot
 WHERE EXISTS (
@@ -199,7 +202,12 @@ WHERE EXISTS (
 	  AND ai.provider_uid IS NOT NULL
 	  AND ot.identity_provider = ai.provider
 	  AND ot.identity_provider_uid = ai.provider_uid
-) OR ot.identity_email = $2`, u.ID, u.Email); err != nil {
+) OR (ot.identity_email = $2 AND NOT EXISTS (
+	SELECT 1 FROM auth_identity other
+	WHERE other.user_id <> $1
+	  AND other.provider = ot.identity_provider
+	  AND other.provider_uid = ot.identity_provider_uid
+))`, u.ID, u.Email); err != nil {
 		return AccountDeleteResult{}, err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM app_user WHERE id = $1`, u.ID); err != nil {

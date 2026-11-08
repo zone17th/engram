@@ -58,20 +58,33 @@ func delCfg() *config.Config {
 	}
 }
 
-type delTestMailer struct {
-	available bool
-	failErr   error
-	sent      []auth.SinkEntry
+// delSendObservation is what an independent connection saw at the moment the
+// mailer's Send was called.
+type delSendObservation struct {
+	recipient, purpose string
+	userRows           int
+	auditRows          int
 }
 
-func (m *delTestMailer) MailDeliveryAvailable() bool { return m.available }
+// delTestMailer records every Send attempt (before any simulated failure) and,
+// through a separate pool connection, whether the deletion is already
+// committed at Send time. Service.MailDeliveryAvailable treats any non-sink
+// mailer as available, so this fake is only used for available delivery.
+type delTestMailer struct {
+	pool    *pgxpool.Pool
+	userID  uuid.UUID
+	failErr error
+	sent    []delSendObservation
+}
 
-func (m *delTestMailer) Send(_ context.Context, recipient, purpose, link string) error {
-	if m.failErr != nil {
-		return m.failErr
+func (m *delTestMailer) Send(ctx context.Context, recipient, purpose, _ string) error {
+	obs := delSendObservation{recipient: recipient, purpose: purpose, userRows: -1, auditRows: -1}
+	if m.pool != nil {
+		_ = m.pool.QueryRow(ctx, `SELECT count(*) FROM app_user WHERE id = $1`, m.userID).Scan(&obs.userRows)
+		_ = m.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE event = 'account.delete' AND user_id IS NULL`).Scan(&obs.auditRows)
 	}
-	m.sent = append(m.sent, auth.SinkEntry{Recipient: recipient, Purpose: purpose, Link: link})
-	return nil
+	m.sent = append(m.sent, obs)
+	return m.failErr
 }
 
 func delRiver(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx.Tx] {
@@ -84,6 +97,11 @@ func delRiver(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx.Tx] {
 }
 
 func delServiceWithMail(t *testing.T, pool *pgxpool.Pool, withRiver bool, mail auth.Mailer) (*auth.Service, *auth.SinkMailer) {
+	t.Helper()
+	return delServiceWithCfg(t, pool, withRiver, mail, delCfg())
+}
+
+func delServiceWithCfg(t *testing.T, pool *pgxpool.Pool, withRiver bool, mail auth.Mailer, cfg *config.Config) (*auth.Service, *auth.SinkMailer) {
 	t.Helper()
 	var rc *river.Client[pgx.Tx]
 	if withRiver {
@@ -98,7 +116,7 @@ func delServiceWithMail(t *testing.T, pool *pgxpool.Pool, withRiver bool, mail a
 		}
 		mail = sink
 	}
-	svc, _, _, err := compose.NewAuth(delCfg(), pool, rc, clock.NewFixed(semFixedNow), mail, nil)
+	svc, _, _, err := compose.NewAuth(cfg, pool, rc, clock.NewFixed(semFixedNow), mail, nil)
 	if err != nil {
 		t.Fatalf("compose.NewAuth: %v", err)
 	}
@@ -617,48 +635,110 @@ func TestDeleteAccountByEmail(t *testing.T) {
 	var _ authctx.Principal
 }
 
-// TestDeleteAccountMailNotice verifies plan P06 mục 2.8: post-commit best-effort
-// security notice is sent when mail_delivery_available is true, skipped when
-// false, never sent on rejected/rolled-back deletion, and a mail failure never
-// fails a committed deletion.
+// TestDeleteAccountMailNotice verifies plan P06 mục 2.8: the security notice is
+// sent only after the delete transaction commits (an independent connection
+// already sees the user gone and the account.delete audit row at Send time),
+// skipped when Service.MailDeliveryAvailable is false (sink mailer without
+// capture-as-delivery), never sent when the transaction rolls back after the
+// destructive statements, and a send failure never fails a committed deletion.
 func TestDeleteAccountMailNotice(t *testing.T) {
 	ctx := context.Background()
 	pool := semNewPool(t)
+	auditCount := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE event = 'account.delete' AND user_id IS NULL`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
 
-	// 1. Available mailer receives notice only after commit; rejected delete sends nothing.
-	okMail := &delTestMailer{available: true}
+	// 1. Available mailer: rejected delete sends nothing; a committed delete
+	// sends exactly one notice and the deletion is already visible at Send.
+	okMail := &delTestMailer{pool: pool}
 	svcOK, _ := delServiceWithMail(t, pool, false, okMail)
+	if !svcOK.MailDeliveryAvailable() {
+		t.Fatal("non-sink mailer must be available")
+	}
 	alice := delSeedUser(t, pool, svcOK, nil, "alice-mail@example.com", 1)
+	okMail.userID = alice.id
 	if err := svcOK.DeleteAccount(ctx, alice.principal, "wrong@example.com", "", ""); !errors.Is(err, auth.ErrAccountDeleteConfirmInvalid) {
 		t.Fatalf("wrong email = %v", err)
 	}
 	if len(okMail.sent) != 0 {
-		t.Fatalf("rejected delete must not send mail, got %v", okMail.sent)
+		t.Fatalf("rejected delete must not send mail, got %+v", okMail.sent)
 	}
+	before := auditCount()
 	if err := svcOK.DeleteAccount(ctx, alice.principal, alice.email, "", ""); err != nil {
 		t.Fatalf("DeleteAccount with available mail: %v", err)
 	}
-	if len(okMail.sent) != 1 || okMail.sent[0].Recipient != alice.email || okMail.sent[0].Purpose != "security" {
+	if len(okMail.sent) != 1 || okMail.sent[0].recipient != alice.email || okMail.sent[0].purpose != "security" {
 		t.Fatalf("post-commit mail = %+v, want 1 security notice to %s", okMail.sent, alice.email)
 	}
+	if okMail.sent[0].userRows != 0 || okMail.sent[0].auditRows != before+1 {
+		t.Fatalf("at Send time other connection saw app_user=%d audit=%d, want 0 and %d (deletion committed before mail)",
+			okMail.sent[0].userRows, okMail.sent[0].auditRows, before+1)
+	}
 
-	// 2. Unavailable mailer is not called; deletion still succeeds.
-	offMail := &delTestMailer{available: false, failErr: errors.New("must not be called")}
-	svcOff, _ := delServiceWithMail(t, pool, false, offMail)
+	// 2. Late rollback: the audit insert fails after the destructive statements
+	// ran in the transaction; no notice is attempted and the account is intact.
+	if _, err := pool.Exec(ctx, `
+CREATE FUNCTION del_test_fail_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'forced late failure'; END $$;
+CREATE TRIGGER del_test_fail_audit BEFORE INSERT ON audit_log
+FOR EACH ROW WHEN (NEW.event = 'account.delete') EXECUTE FUNCTION del_test_fail_audit();`); err != nil {
+		t.Fatalf("install failing audit trigger: %v", err)
+	}
+	rbMail := &delTestMailer{pool: pool}
+	svcRB, _ := delServiceWithMail(t, pool, false, rbMail)
+	dave := delSeedUser(t, pool, svcRB, nil, "dave-rollback@example.com", 4)
+	rbMail.userID = dave.id
+	daveBefore := delSeedRows(t, pool, dave)
+	if err := svcRB.DeleteAccount(ctx, dave.principal, dave.email, "", ""); err == nil {
+		t.Fatal("DeleteAccount must fail when the transaction rolls back late")
+	}
+	if len(rbMail.sent) != 0 {
+		t.Fatalf("rolled-back delete attempted mail: %+v", rbMail.sent)
+	}
+	for tbl, n := range delSeedRows(t, pool, dave) {
+		if n != daveBefore[tbl] {
+			t.Fatalf("rolled-back delete changed %s rows: %d -> %d", tbl, daveBefore[tbl], n)
+		}
+	}
+	if daveBefore["app_user"] != 1 {
+		t.Fatalf("dave app_user before = %d, want 1", daveBefore["app_user"])
+	}
+	if _, err := pool.Exec(ctx, `DROP TRIGGER del_test_fail_audit ON audit_log; DROP FUNCTION del_test_fail_audit();`); err != nil {
+		t.Fatalf("drop failing audit trigger: %v", err)
+	}
+
+	// 3. Unavailable delivery (sink mailer, capture-as-delivery off): no notice
+	// is captured; deletion still succeeds.
+	offCfg := delCfg()
+	offCfg.MailCaptureAsDelivery = false
+	svcOff, offSink := delServiceWithCfg(t, pool, false, nil, offCfg)
+	if svcOff.MailDeliveryAvailable() {
+		t.Fatal("sink mailer without capture-as-delivery must be unavailable")
+	}
 	bob := delSeedUser(t, pool, svcOff, nil, "bob-nomail@example.com", 2)
 	if err := svcOff.DeleteAccount(ctx, bob.principal, bob.email, "", ""); err != nil {
 		t.Fatalf("DeleteAccount with unavailable mail: %v", err)
 	}
-	if len(offMail.sent) != 0 {
-		t.Fatalf("unavailable mailer sent = %+v", offMail.sent)
+	if ents, _ := offSink.EntriesFor(bob.email, "security"); len(ents) != 0 {
+		t.Fatalf("unavailable delivery captured %d security notices", len(ents))
 	}
 
-	// 3. Failing mailer (e.g. SMTP error post-commit) does not fail the committed deletion.
-	failMail := &delTestMailer{available: true, failErr: auth.ErrMailDeliveryUnavailable}
+	// 4. Failing mailer (SMTP error post-commit) is attempted once and does not
+	// fail the committed deletion.
+	failMail := &delTestMailer{pool: pool, failErr: auth.ErrMailDeliveryUnavailable}
 	svcFail, _ := delServiceWithMail(t, pool, false, failMail)
 	carol := delSeedUser(t, pool, svcFail, nil, "carol-failmail@example.com", 3)
+	failMail.userID = carol.id
 	if err := svcFail.DeleteAccount(ctx, carol.principal, carol.email, "", ""); err != nil {
 		t.Fatalf("DeleteAccount must not fail when post-commit mail fails: %v", err)
+	}
+	if len(failMail.sent) != 1 || failMail.sent[0].userRows != 0 {
+		t.Fatalf("failing mailer attempts = %+v, want 1 attempt after commit", failMail.sent)
 	}
 	if delSeedRows(t, pool, carol)["app_user"] != 0 {
 		t.Fatal("carol must be deleted even when post-commit mail fails")

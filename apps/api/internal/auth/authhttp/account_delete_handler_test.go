@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -384,5 +385,80 @@ func TestDeleteAccount_OAuthLoginTransactionsRemoved(t *testing.T) {
 	var users int
 	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM app_user`).Scan(&users); err != nil || users != 0 {
 		t.Fatalf("app_user count after rejected oauth/complete = %d (%v), want 0", users, err)
+	}
+}
+
+// TestDeleteAccount_OAuthOtherAccountLoginPreserved verifies R2-1: account A
+// owns a linked Google identity whose provider email equals account B's app
+// email (A later changed its own app email). Deleting B must not delete A's
+// ready login oauth_transaction, and A can still complete that login.
+func TestDeleteAccount_OAuthOtherAccountLoginPreserved(t *testing.T) {
+	const shared = "shared-owner@example.com"
+	fake := oauth.NewFake("google", true, oauth.Identity{
+		Provider: "google", UID: "g-owner-A", Email: shared, EmailVerified: true,
+	})
+	h := newHarness(t, []oauth.Provider{fake})
+	fake.SetAuthorizeBase(h.srv.URL + "/api/v1/__fake/oauth/google")
+	ctx := context.Background()
+
+	// 1. A signs up via Google, then its app email moves away from the provider email.
+	h.csrf()
+	if got := statusFromCallback(h.followOAuth("/api/v1/auth/oauth/google/start")); got != "login_ready" {
+		t.Fatalf("A signup callback = %s, want login_ready", got)
+	}
+	h.csrf()
+	resp := h.do(http.MethodPost, "/api/v1/auth/oauth/complete", "", true)
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		t.Fatalf("A oauth complete = %d %s", resp.StatusCode, h.body(resp))
+	}
+	_ = resp.Body.Close()
+	var aID string
+	if err := h.pool.QueryRow(ctx, `UPDATE app_user SET email = 'a-moved@example.com' WHERE email = $1 RETURNING id::text`, shared).Scan(&aID); err != nil {
+		t.Fatalf("move A email: %v", err)
+	}
+
+	// 2. A starts a new login flow in a fresh browser and reaches status='ready'.
+	aLoginJar := jar{}
+	h.jar = aLoginJar
+	if got := statusFromCallback(h.followOAuth("/api/v1/auth/oauth/google/start")); got != "login_ready" {
+		t.Fatalf("A login callback = %s, want login_ready", got)
+	}
+
+	// 3. B signs up with the shared address as its app email and deletes itself.
+	h.jar = jar{}
+	h.csrf()
+	resp = h.do(http.MethodPost, "/api/v1/auth/signup", `{"email":"`+shared+`","password":"correcthorse"}`, true)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("B signup = %d %s", resp.StatusCode, h.body(resp))
+	}
+	_ = resp.Body.Close()
+	code, raw := h.deleteMe(`{"confirm_email":"`+shared+`"}`, delOpts{
+		csrf:    true,
+		grant:   h.grant("account.delete", "correcthorse"),
+		idemKey: "idem-accdel-oauth-other1",
+	})
+	if code != http.StatusNoContent {
+		t.Fatalf("B DELETE /me = %d %s, want 204", code, raw)
+	}
+
+	// 4. A's ready login transaction survives and completes as A.
+	var ready int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM oauth_transaction WHERE identity_provider_uid = 'g-owner-A' AND status = 'ready' AND consumed_at IS NULL`).Scan(&ready); err != nil || ready != 1 {
+		t.Fatalf("A ready login rows after B delete = %d (%v), want 1", ready, err)
+	}
+	h.csrfJar(aLoginJar)
+	compResp := h.doAs(aLoginJar, http.MethodPost, "/api/v1/auth/oauth/complete", "", true, "")
+	if compResp.StatusCode != http.StatusOK && compResp.StatusCode != http.StatusCreated {
+		t.Fatalf("A oauth/complete after B delete = %d %s, want success", compResp.StatusCode, h.body(compResp))
+	}
+	_ = compResp.Body.Close()
+	meResp := h.doAs(aLoginJar, http.MethodGet, "/api/v1/auth/me", "", false, "")
+	meRaw := h.body(meResp)
+	if meResp.StatusCode != http.StatusOK || !strings.Contains(meRaw, aID) {
+		t.Fatalf("A /auth/me = %d %s, want A (%s)", meResp.StatusCode, meRaw, aID)
+	}
+	var users int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM app_user`).Scan(&users); err != nil || users != 1 {
+		t.Fatalf("app_user count = %d (%v), want 1 (A only)", users, err)
 	}
 }
