@@ -101,8 +101,10 @@ export function ReadableExportDialog({
   nowRef.current = now;
   const reauthRef = useRef(reauth);
   reauthRef.current = reauth;
-  const viewStateRef = useRef(viewState);
-  viewStateRef.current = viewState;
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
+  const runnerDepsRef = useRef(runnerDeps);
+  runnerDepsRef.current = runnerDeps;
   const sinkDisposeRef = useRef<(() => void) | null>(null);
   const lastLiveUpdateAtRef = useRef(0);
   const pendingLiveTimerRef = useRef<number | null>(null);
@@ -165,14 +167,10 @@ export function ReadableExportDialog({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      abortInFlightExport();
-      // Clear any residual export.decrypted grant on unmount unless navigating to unlock from pl-locked (Delta N1)
-      if (
-        viewStateRef.current !== 'pl-locked' &&
-        reauthRef.current.grant?.action === READABLE_EXPORT_ACTION
-      ) {
-        reauthRef.current.clearGrant();
+      if (activeAbortRef.current) {
+        wasOpenRef.current = false;
       }
+      abortInFlightExport();
     };
   }, [abortInFlightExport]);
 
@@ -204,15 +202,15 @@ export function ReadableExportDialog({
         createIdempotencyKeyRef.current = createIdempotencyKey();
       }
 
-      const { opGeneration, isCurrent, client } = vault.beginOp();
+      const { opGeneration, isCurrent, client } = vaultRef.current.beginOp();
       const candidateReuse = isReusableReadySourceJob(reusableSourceJobRef.current, nowRef.current())
         ? reusableSourceJobRef.current
         : null;
 
       try {
         const result = await runDecryptedExport({
-          getVaultState: () => vault.state,
-          getCurrentVaultKeyId: () => vault.vaultMeta?.vault_key_id ?? null,
+          getVaultState: () => vaultRef.current.state,
+          getCurrentVaultKeyId: () => vaultRef.current.vaultMeta?.vault_key_id ?? null,
           openEntry: (entryParams) => client.openEntry(entryParams),
           opGeneration,
           isOpCurrent: isCurrent,
@@ -220,7 +218,7 @@ export function ReadableExportDialog({
           auditIdempotencyKey: auditIdempotencyKeyRef.current,
           createIdempotencyKey: createIdempotencyKeyRef.current,
           preferredSourceJob: candidateReuse,
-          registerSecretFormReset: vault.registerSecretFormReset,
+          registerSecretFormReset: vaultRef.current.registerSecretFormReset,
           signal: abortController.signal,
           onSourceJobReady: (sourceJob) => {
             reusableSourceJobRef.current = sourceJob;
@@ -234,7 +232,7 @@ export function ReadableExportDialog({
           },
           deps: {
             now: () => nowRef.current(),
-            ...runnerDeps,
+            ...runnerDepsRef.current,
           },
         });
 
@@ -248,7 +246,7 @@ export function ReadableExportDialog({
         setSavedFilename(result.filename);
         auditIdempotencyKeyRef.current = null;
         createIdempotencyKeyRef.current = null;
-        reauth.clearGrant();
+        reauthRef.current.clearGrant();
         setViewState('pl-done');
       } catch (err) {
         if (!mountedRef.current) return;
@@ -266,6 +264,10 @@ export function ReadableExportDialog({
               setViewState('pl-locked');
               return;
             case 'reauth_expired':
+              activeGrantRef.current = null;
+              if (reauthRef.current.grant?.action === READABLE_EXPORT_ACTION) {
+                reauthRef.current.clearGrant();
+              }
               setLoginPassword('');
               setReauthError(null);
               setViewState('pl-reauth-expired');
@@ -302,7 +304,7 @@ export function ReadableExportDialog({
         setViewState('pl-failed');
       }
     },
-    [abortInFlightExport, clearLiveTimer, reauth, runnerDeps, updateProgressState, vault],
+    [abortInFlightExport, clearLiveTimer, updateProgressState],
   );
 
   // When dialog opens or vault state changes while open
@@ -325,24 +327,26 @@ export function ReadableExportDialog({
         return;
       }
 
-      // Check if returning from OAuth or holding a grant for export.decrypted (Delta N1: auto-start only when resume !== false)
-      if (reauth.grant && reauth.grant.action === READABLE_EXPORT_ACTION) {
+      // Check if returning from OAuth or holding a grant for export.decrypted (Delta N1 / R1: auto-start only when resume !== false; clear on expiry or manual open)
+      const currentReauth = reauthRef.current;
+      if (currentReauth.grant && currentReauth.grant.action === READABLE_EXPORT_ACTION) {
         if (resume === false) {
-          reauth.clearGrant();
-        } else if (grantStillValid(reauth.grant.expires_at, nowRef.current())) {
-          activeGrantRef.current = reauth.grant;
-          void startExportFlow(reauth.grant.grant);
+          currentReauth.clearGrant();
+        } else if (grantStillValid(currentReauth.grant.expires_at, nowRef.current())) {
+          activeGrantRef.current = currentReauth.grant;
+          void startExportFlow(currentReauth.grant.grant);
           return;
         } else {
+          currentReauth.clearGrant();
           setViewState('pl-reauth-expired');
           return;
         }
       }
 
-      void reauth.begin(READABLE_EXPORT_ACTION, READABLE_EXPORT_RETURN_TO).catch(() => undefined);
+      void currentReauth.begin(READABLE_EXPORT_ACTION, READABLE_EXPORT_RETURN_TO).catch(() => undefined);
       setViewState('pl-confirm');
     }
-  }, [abortInFlightExport, isVaultUnlocked, open, reauth, resume, startExportFlow, wipeSecretInputs]);
+  }, [abortInFlightExport, isVaultUnlocked, open, resume, startExportFlow, wipeSecretInputs]);
 
   // If dialog was in pl-locked and the user unlocked the vault while dialog is open
   useEffect(() => {
@@ -353,6 +357,7 @@ export function ReadableExportDialog({
         void startExportFlow(reauth.grant.grant);
         return;
       }
+      reauth.clearGrant();
       setViewState('pl-reauth-expired');
       return;
     }
@@ -500,8 +505,12 @@ export function ReadableExportDialog({
       void startExportFlow(currentGrant.grant);
       return;
     }
+    activeGrantRef.current = null;
+    if (reauth.grant?.action === READABLE_EXPORT_ACTION) {
+      reauth.clearGrant();
+    }
     setViewState('pl-reauth-expired');
-  }, [isVaultUnlocked, reauth.grant, startExportFlow]);
+  }, [isVaultUnlocked, reauth, startExportFlow]);
 
   const unlockHref = `/app/unlock?returnTo=${encodeURIComponent(READABLE_EXPORT_RETURN_TO)}`;
 

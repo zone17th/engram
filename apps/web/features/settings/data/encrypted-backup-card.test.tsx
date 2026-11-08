@@ -337,37 +337,51 @@ describe('features/settings/data/encrypted-backup-card (U17a #dulieu)', () => {
     const alertNode = document.getElementById(describedById!);
     expect(alertNode).toHaveTextContent('14:12');
 
-    // Verify L7 timer transitions exp-limit -> exp-idle after retry_after when short (Delta N2)
+    // Verify L7 timer transitions exp-limit -> exp-idle after retry_after (Delta N2 / R2: deterministic fake timers)
     unmount();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ job: null }))
-      .mockResolvedValueOnce(problemResponse('rate_limited', 429, { retry_after: 1 }));
-    const { unmount: uLimitTimer } = renderCard({ now: () => baseDate }, 'vi');
-    await waitFor(() => {
+    vi.useFakeTimers();
+    try {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ job: null }))
+        .mockResolvedValueOnce(problemResponse('rate_limited', 429, { retry_after: 2 }));
+      const { unmount: uLimitTimer } = renderCard({ now: () => baseDate }, 'vi');
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
       expect(document.querySelector('[data-view="exp-idle"]')).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByTestId('export-encrypted-start-btn'));
-    await waitFor(() => {
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('export-encrypted-start-btn'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
       expect(document.querySelector('[data-view="exp-limit"]')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('export-encrypted-start-btn')).toBeDisabled();
-    await waitFor(
-      () => {
-        expect(document.querySelector('[data-view="exp-idle"]')).toBeInTheDocument();
-      },
-      { timeout: 1_500 },
-    );
-    expect(screen.getByTestId('export-encrypted-start-btn')).toBeEnabled();
+      expect(screen.getByTestId('export-encrypted-start-btn')).toBeDisabled();
 
-    // Dispatch offline event -> exp-offline
-    act(() => {
-      window.dispatchEvent(new Event('offline'));
-    });
-    await waitFor(() => {
+      // Before 2000ms elapses, still in exp-limit
+      act(() => {
+        vi.advanceTimersByTime(1_999);
+      });
+      expect(document.querySelector('[data-view="exp-limit"]')).toBeInTheDocument();
+
+      // At 2000ms, transitions back to exp-idle and re-enables button
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(document.querySelector('[data-view="exp-idle"]')).toBeInTheDocument();
+      expect(screen.getByTestId('export-encrypted-start-btn')).toBeEnabled();
+
+      // Dispatch offline event -> exp-offline
+      act(() => {
+        window.dispatchEvent(new Event('offline'));
+      });
       expect(document.querySelector('[data-view="exp-offline"]')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('export-encrypted-start-btn')).toBeDisabled();
-    uLimitTimer();
+      expect(screen.getByTestId('export-encrypted-start-btn')).toBeDisabled();
+      uLimitTimer();
+    } finally {
+      vi.useRealTimers();
+    }
+    // (offline check ran above before uLimitTimer)
     // Check en docs link
     fetchMock.mockResolvedValueOnce(jsonResponse({ job: null }));
     renderCard({ now: () => baseDate }, 'en');

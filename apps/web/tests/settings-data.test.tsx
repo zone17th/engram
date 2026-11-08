@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
-import type { ReactNode } from 'react';
+import { StrictMode, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsPage from '@/app/app/settings/page';
 import { ThemeProvider } from '@/components/theme-provider';
@@ -179,9 +179,14 @@ describe('tests/settings-data.test.tsx (Settings #dulieu, #xoataikhoan, and <mai
     expect(screen.getByTestId('delete-account-open-btn')).toBeInTheDocument();
   });
 
-  it('auto-opens #plainDlg when returning to /app/settings?reauth=export.decrypted#dulieu and cleans query param via replaceState', async () => {
+  it('auto-opens #plainDlg and preserves reauth grant under <StrictMode> when returning to /app/settings?reauth=export.decrypted#dulieu and cleans query param via replaceState (R1)', async () => {
     const origUrl = window.location.href;
     window.history.replaceState(null, '', '/app/settings?reauth=export.decrypted#dulieu');
+    mockGrant = {
+      grant: 'resume-grant-token',
+      action: 'export.decrypted',
+      expires_at: new Date(Date.now() + 300_000).toISOString(),
+    };
 
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -189,11 +194,13 @@ describe('tests/settings-data.test.tsx (Settings #dulieu, #xoataikhoan, and <mai
 
     function Wrapper({ children }: { children: ReactNode }) {
       return (
-        <QueryClientProvider client={queryClient}>
-          <NextIntlClientProvider locale="en" messages={enMessages}>
-            {children}
-          </NextIntlClientProvider>
-        </QueryClientProvider>
+        <StrictMode>
+          <QueryClientProvider client={queryClient}>
+            <NextIntlClientProvider locale="en" messages={enMessages}>
+              {children}
+            </NextIntlClientProvider>
+          </QueryClientProvider>
+        </StrictMode>
       );
     }
 
@@ -201,8 +208,10 @@ describe('tests/settings-data.test.tsx (Settings #dulieu, #xoataikhoan, and <mai
 
     await waitFor(() => {
       expect(document.getElementById('plainDlg')).toBeInTheDocument();
+      expect(document.querySelector('[data-view="pl-progress"]')).toBeInTheDocument();
     });
     expect(window.location.search).toBe('');
+    expect(mockClearGrant).not.toHaveBeenCalled();
 
     window.history.replaceState(null, '', origUrl);
   });

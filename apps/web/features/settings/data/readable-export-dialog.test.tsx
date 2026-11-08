@@ -1,7 +1,7 @@
 import { ProblemError } from '@engram/shared-types';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
-import { useRef, useState, type ReactNode } from 'react';
+import { StrictMode, useEffect, useRef, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReauthAction, ReauthGrant } from '@/lib/api/auth';
 import { EXPORT_STATUS, type DecryptedExportPage, type ExportJob } from '@/lib/api/export';
@@ -750,66 +750,182 @@ describe('features/settings/data/readable-export-dialog (U17a #plainDlg)', () =>
     u2();
   });
 
-  it('Delta N1: clears export.decrypted grant on unmount (unless in pl-locked) and does not auto-start when manually opened with resume={false}', async () => {
+  it('R1 + N1: survives <StrictMode> mount/unmount/remount and OAuth round trip with resume={true}, clears grant only on cancel/close/consumption/expiry, and does not auto-start on manual open with a leftover grant', async () => {
     const nowMs = Date.parse('2026-11-08T14:00:00Z');
+    const readyJob = makeReadyJob({
+      created_at: '2026-11-08T13:58:00Z',
+      completed_at: '2026-11-08T13:59:00Z',
+      expires_at: '2026-11-09T13:59:00Z',
+    });
+
+    // 1. Manual open with a leftover grant (resume={false}) does NOT auto-start and clears the leftover grant (N1)
     mockGrant = {
       grant: 'residual-grant-token',
       action: 'export.decrypted',
       expires_at: '2026-11-08T14:05:00Z',
     };
-
-    // 1. Opening manually with resume={false} clears stale grant and shows pl-confirm instead of auto-starting
-    const getLatestMock = vi.fn();
+    const getLatestManualMock = vi.fn();
     const { unmount: uManual } = render(
-      <NextIntlClientProvider locale="vi" messages={viMessages}>
-        <ReadableExportDialog
-          open={true}
-          onOpenChange={() => undefined}
-          resume={false}
-          now={() => nowMs}
-          runnerDeps={{
-            now: () => nowMs,
-            getLatestExport: getLatestMock,
-          }}
-        />
-      </NextIntlClientProvider>,
+      <StrictMode>
+        <NextIntlClientProvider locale="vi" messages={viMessages}>
+          <ReadableExportDialog
+            open={true}
+            onOpenChange={() => undefined}
+            resume={false}
+            now={() => nowMs}
+            runnerDeps={{
+              now: () => nowMs,
+              getLatestExport: getLatestManualMock,
+            }}
+          />
+        </NextIntlClientProvider>
+      </StrictMode>,
     );
 
     await waitFor(() => {
       expect(document.querySelector('[data-view="pl-confirm"]')).toBeInTheDocument();
     });
-    expect(mockClearGrant).toHaveBeenCalled();
-    expect(getLatestMock).not.toHaveBeenCalled();
+    expect(mockClearGrant).toHaveBeenCalledTimes(1);
+    expect(getLatestManualMock).not.toHaveBeenCalled();
     uManual();
 
-    // 2. Unmounting while in pl-limit clears the active grant
+    // 2. <StrictMode> double-mount + unmount/remount with a valid grant + resume={true} preserves the grant and auto-resumes export to pl-done (R1)
     mockClearGrant.mockClear();
     mockGrant = {
-      grant: 'grant-before-unmount',
+      grant: 'strictmode-resume-grant',
       action: 'export.decrypted',
       expires_at: '2026-11-08T14:05:00Z',
     };
-    const { unmount: uUnmount } = renderDialogHost({
-      now: () => nowMs,
-      runnerDeps: {
-        now: () => nowMs,
-        showSaveFilePicker: null,
-        getLatestExport: async () => ({ job: null }),
-        createExport: async () => {
-          throw new ProblemError({
-            type: 'https://engram.zone17.click/problems/rate_limited',
-            title: 'rate_limited',
-            status: 429,
-            code: 'rate_limited',
-            retry_after: 600,
-          });
-        },
-      },
-    });
+
+    // First mount closed under <StrictMode> (simulates DataSection mounting before ?reauth= effect or before navigating back from /app/unlock)
+    const { unmount: uPreMount } = render(
+      <StrictMode>
+        <NextIntlClientProvider locale="vi" messages={viMessages}>
+          <ReadableExportDialog
+            open={false}
+            onOpenChange={() => undefined}
+            resume={false}
+            now={() => nowMs}
+          />
+        </NextIntlClientProvider>
+      </StrictMode>,
+    );
+    // Unmounting must NEVER clear the grant
+    uPreMount();
+    expect(mockClearGrant).not.toHaveBeenCalled();
+    expect(mockGrant?.grant).toBe('strictmode-resume-grant');
+
+    // Remount under <StrictMode> where parent effect opens the dialog with resume={true} (just like DataSection on ?reauth=export.decrypted)
+    function StrictResumeHost() {
+      const [open, setOpen] = useState(false);
+      const [resume, setResume] = useState(false);
+      useEffect(() => {
+        setResume(true);
+        setOpen(true);
+      }, []);
+      return (
+        <ReadableExportDialog
+          open={open}
+          onOpenChange={setOpen}
+          resume={resume}
+          now={() => nowMs}
+          runnerDeps={{
+            now: () => nowMs,
+            showSaveFilePicker: null,
+            onTriggerBlobDownload: () => undefined,
+            getLatestExport: async () => ({ job: readyJob }),
+            getDecryptedPage: async () => ({
+              source_export_id: TEST_JOB_ID,
+              vault_key_id: TEST_VAULT_KEY_ID,
+              total_entries: 0,
+              section: 'entries',
+              items: [],
+              next_cursor: null,
+            }),
+            postDecryptedAudit: async () => undefined,
+          }}
+        />
+      );
+    }
+
+    const { unmount: uStrictResume } = render(
+      <StrictMode>
+        <NextIntlClientProvider locale="vi" messages={viMessages}>
+          <StrictResumeHost />
+        </NextIntlClientProvider>
+      </StrictMode>,
+    );
+
     await waitFor(() => {
-      expect(document.querySelector('[data-view="pl-limit"]')).toBeInTheDocument();
+      expect(document.querySelector('[data-view="pl-done"]')).toBeInTheDocument();
     });
-    uUnmount();
-    expect(mockClearGrant).toHaveBeenCalled();
+    // Cleared exactly once on successful consumption
+    expect(mockClearGrant).toHaveBeenCalledTimes(1);
+    expect(mockGrant).toBeNull();
+    uStrictResume();
+    // 3. Direct <StrictMode> mount with open={true} and resume={true} also survives simulated unmount/remount and completes to pl-done
+    mockClearGrant.mockClear();
+    mockGrant = {
+      grant: 'strictmode-direct-open-grant',
+      action: 'export.decrypted',
+      expires_at: '2026-11-08T14:05:00Z',
+    };
+    const { unmount: uDirectStrict } = render(
+      <StrictMode>
+        <NextIntlClientProvider locale="vi" messages={viMessages}>
+          <ReadableExportDialog
+            open={true}
+            onOpenChange={() => undefined}
+            resume={true}
+            now={() => nowMs}
+            runnerDeps={{
+              now: () => nowMs,
+              showSaveFilePicker: null,
+              onTriggerBlobDownload: () => undefined,
+              getLatestExport: async () => ({ job: readyJob }),
+              getDecryptedPage: async () => ({
+                source_export_id: TEST_JOB_ID,
+                vault_key_id: TEST_VAULT_KEY_ID,
+                total_entries: 0,
+                section: 'entries',
+                items: [],
+                next_cursor: null,
+              }),
+              postDecryptedAudit: async () => undefined,
+            }}
+          />
+        </NextIntlClientProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-done"]')).toBeInTheDocument();
+    });
+    expect(mockClearGrant).toHaveBeenCalledTimes(1);
+    uDirectStrict();
+
+    // 4. Expired grant on resume clears the grant and lands in pl-reauth-expired
+    mockClearGrant.mockClear();
+    mockGrant = {
+      grant: 'expired-resume-grant',
+      action: 'export.decrypted',
+      expires_at: '2026-11-08T13:59:00Z',
+    };
+    const { unmount: uExpired } = render(
+      <StrictMode>
+        <NextIntlClientProvider locale="vi" messages={viMessages}>
+          <ReadableExportDialog
+            open={true}
+            onOpenChange={() => undefined}
+            resume={true}
+            now={() => nowMs}
+          />
+        </NextIntlClientProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-reauth-expired"]')).toBeInTheDocument();
+    });
+    expect(mockClearGrant).toHaveBeenCalledTimes(1);
+    uExpired();
   });
 });
