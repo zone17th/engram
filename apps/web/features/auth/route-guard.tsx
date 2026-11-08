@@ -1,11 +1,14 @@
 'use client';
 
+import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { type ReactNode, useEffect } from 'react';
+import { OfflineBanner } from '@/components/app-shell/offline-banner';
 import { AuthStatus } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/features/auth/session-provider';
+import { loginUrl } from '@/lib/auth/return-to';
 import { isAuthRoute, keepAuthFormMountedWhileLoading, resolveGuardRedirect } from '@/features/auth/guard-redirect';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 function AuthLoadingFrame({ label }: { label: string }) {
@@ -41,6 +44,29 @@ function UnavailableFrame({
     </div>
   );
 }
+
+/**
+ * U18 `#auth-session-expired-midflow`: a 401 while working in the app (expired / revoked / invalid session). The session
+ * provider has already cleared private caches and the vault locks on sign-out; this frame stays on screen (no silent
+ * redirect) and names the reason, with one primary action back to login (returnTo = this page).
+ */
+function SessionExpiredFrame({ pathname }: { pathname: string }) {
+  const t = useTranslations('states');
+  return (
+    <div className="mx-auto flex min-h-[50vh] max-w-[520px] flex-col justify-center px-5">
+      <div role="alert" data-testid="session-expired-midflow" className="card border-error p-5">
+        <p className="m-0 mb-1 text-[14px] font-semibold text-body">{t('sessionExpiredTitle')}</p>
+        <p className="m-0 mb-3 text-[13px] text-body">{t('sessionExpiredBody')}</p>
+        <Link href={loginUrl(pathname)} data-testid="session-expired-cta" className="btn btn-primary btn-sm no-underline">
+          {t('sessionExpiredCta')}
+        </Link>
+      </div>
+    </div>
+  );
+}
+function isMidflowSessionLoss(reason: string | null | undefined): boolean {
+  return reason === 'expired' || reason === 'revoked' || reason === 'invalid';
+}
 function readOptionalReturnTo(): string | null {
   try {
     // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -60,7 +86,7 @@ function readOptionalReturnTo(): string | null {
 
 
 export function RouteGuard({ children }: { children: ReactNode }) {
-  const { status, me, refetchMe } = useSession();
+  const { status, me, refetchMe, lastSessionEndReason } = useSession();
   const vault = useOptionalVault();
   const vaultState = vault?.state;
   const pathname = usePathname() ?? '/app';
@@ -69,11 +95,12 @@ export function RouteGuard({ children }: { children: ReactNode }) {
   const t = useTranslations('auth.guard');
 
   useEffect(() => {
+    if (status === 'signed_out' && !isAuthRoute(pathname) && isMidflowSessionLoss(lastSessionEndReason)) return;
     const next = resolveGuardRedirect({ status, pathname, me, vaultState, returnTo });
     if (next && next !== pathname) {
       router.replace(next);
     }
-  }, [status, me, pathname, returnTo, router, vaultState]);
+  }, [status, me, pathname, returnTo, router, vaultState, lastSessionEndReason]);
   // `me` is still in hand when a session-epoch bump re-keys the query (password
   // replacement, silent refresh). Swapping the tree for the loading frame there
   // unmounts the page and drops transient state such as the account success
@@ -97,14 +124,18 @@ export function RouteGuard({ children }: { children: ReactNode }) {
   }
 
   if (status === 'signed_out' && !isAuthRoute(pathname)) {
+    if (isMidflowSessionLoss(lastSessionEndReason)) {
+      return <SessionExpiredFrame pathname={pathname} />;
+    }
     return <AuthLoadingFrame label={t('loading')} />;
   }
 
   return (
     <>
+      <OfflineBanner />
       {children}
       {status !== 'signed_out' && me && (
-        <span className="sr-only" data-testid="session-status">
+        <span className="sr-only" aria-hidden="true" data-testid="session-status">
           {status === 'loading'
             ? me.vault.status === 'present'
               ? 'authenticated_with_vault'

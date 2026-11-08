@@ -70,6 +70,19 @@ describe('RouteGuard', () => {
     );
     expect(screen.getByText('settings content')).toBeInTheDocument();
   });
+
+  it('F-04: the raw session-status string is hidden from assistive tech but kept for tests', () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={en}>
+        <RouteGuard>
+          <div>settings content</div>
+        </RouteGuard>
+      </NextIntlClientProvider>,
+    );
+    const status = screen.getByTestId('session-status');
+    expect(status).toHaveAttribute('aria-hidden', 'true');
+    expect(status).toHaveTextContent('authenticated_without_vault');
+  });
 });
 
 describe('keepAuthFormMountedWhileLoading', () => {
