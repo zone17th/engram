@@ -22,8 +22,8 @@ Phép đo chỉ dùng **tài khoản tổng hợp** (email `nfr.<timestamp>.<ran
 ## 1. Landing TTFB < 200 ms (SPEC §10.1)
 
 - URL: `GET /` và `GET /vi` (mỗi URL đo riêng, tiêu chí áp cho từng URL).
-- Mỗi URL: **5 warmup** (bỏ) rồi **100 request tuần tự**, header `Cache-Control: no-cache`, `curl -s -o /dev/null -w '%{http_code} %{time_starttransfer}'` (`-k` chỉ khi `--insecure-tls`). Không chạy song song.
-- Thống kê: n, p50, p95, p99 (nearest-rank), max, số lỗi (status ≠ 200).
+- Mỗi URL: **5 warmup** (bỏ) rồi **100 request tuần tự**, header `Cache-Control: no-cache`, `curl -s --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code} %{time_starttransfer}'` (`-k` chỉ khi `--insecure-tls`). Không chạy song song. Request quá hạn = mẫu lỗi (không retry, không bỏ mẫu).
+- Thống kê: n, p50, p95, p99 (nearest-rank), max, số lỗi (status ≠ 200). Quyết định pass/fail dùng giá trị thô; làm tròn chỉ khi hiển thị.
 - **Tiêu chí (cả hai URL):** p95 < 200 ms; 0 lỗi; response cuối có:
   - header SSG: `x-nextjs-cache: HIT|STALE` **hoặc** `x-nextjs-prerender: 1` **hoặc** `cache-control` chứa `s-maxage`;
   - `content-security-policy` có mặt;
@@ -32,11 +32,11 @@ Phép đo chỉ dùng **tài khoản tổng hợp** (email `nfr.<timestamp>.<ran
 ## 2. App Shell LCP < 2 s trên 4G (SPEC §10.1)
 
 - Trang: `/app` sau login (App Shell + Omnibox). libsodium/WASM chỉ được tải ở `/app`.
-- Profile mạng (CDP `Network.emulateNetworkConditions`, "Fast 4G"): `latency 40 ms`, `download 9 Mbps` (`9*1024*1024/8` B/s), `upload 3 Mbps`; CPU 1x (`Emulation.setCPUThrottlingRate rate=1`); CPU model ghi vào JSON. Viewport 1440×900.
+- Profile mạng (CDP `Network.emulateNetworkConditions`, "Fast 4G"): `latency 40 ms`, `download 9 Mbps` (đơn vị thập phân: `9 000 000/8 = 1 125 000` B/s), `upload 3 Mbps` (`375 000` B/s); CPU 1x (`Emulation.setCPUThrottlingRate rate=1`); CPU model ghi vào JSON. Viewport 1440×900.
 - Đo: `new PerformanceObserver(...).observe({type:'largest-contentful-paint', buffered:true})`; lấy `startTime` của entry LCP cuối cùng sau khi trang `load` + chờ thêm 1 s (hoặc lần input đầu, không có).
-- Mẫu: **15 cold** (mỗi mẫu một browser context mới chỉ mang cookie phiên, cache trống) và **15 warm** (cùng một context, điều hướng lại `/app` sau một lượt nạp cache). Cold và warm báo cáo tách riêng.
+- Mẫu: **15 cold** (mỗi mẫu một browser context mới chỉ mang cookie phiên, cache trống; cookie phiên được chuyển tiếp từ context trước vì refresh rotation không có grace window) và **15 warm** (cùng một context, điều hướng lại `/app` sau một lượt nạp cache). Cold và warm báo cáo tách riêng. Mẫu không kết thúc ở `/app` có `#omni` (redirect login, trang lỗi) bị loại và làm tiêu chí số mẫu trượt.
 - **Tiêu chí:** cold p75 < 2000 ms **và** cold median < 2000 ms; warm p75 < 2000 ms **và** warm median < 2000 ms.
-- **WASM lazy:** nạp `/` (không đăng nhập, context mới) đến `networkidle`; **0 request `.wasm`** và 0 response `content-type: application/wasm`.
+- **WASM lazy:** nạp `/` (không đăng nhập, context mới) đến `networkidle`; **0 request `.wasm`** (đếm ở sự kiện request, kể cả request bị chặn/hỏng) và 0 response `content-type: application/wasm`.
 
 ## 3. Quick-add G1 ≤ 3 s (`P04-A10`, `P06-A6`)
 
@@ -44,17 +44,21 @@ Phép đo chỉ dùng **tài khoản tổng hợp** (email `nfr.<timestamp>.<ran
 - Thao tác mỗi mẫu: ghi `g1-<run>-<n> #g1: payload-<n>` vào omnibox (`#omni textarea[data-vault-secret]`), bấm `Enter`, bấm giờ từ `Enter` đến khi toast `undo-toast-item` chứa tên item hiện ra (seal trong Worker → `POST /items` + `POST /items/{id}/entries` trả `201` → omnibox xoá). Mỗi mẫu cũng kiểm hai response `201` và omnibox rỗng.
 - Mẫu: **15** liên tiếp, không mạng giả lập (mạng thật runner → target), cùng profile CPU 1x.
 - **Tiêu chí:** median ≤ 3000 ms; 0 mẫu lỗi.
-- **Server p95 < 150 ms:** `(cd apps/api && CGO_ENABLED=1 go test -tags perf ./internal/perf/... -count=1 -timeout 18m -v)` (job `Content perf`, dòng `CONTENT_PERF_EXIT` của group `full`), cùng SHA ứng viên. Script ghi thêm thời gian từng response `POST` nhìn từ trình duyệt (`timing.responseEnd`) chỉ để tham khảo, không thay tiêu chí này.
+- **Server p95 < 150 ms:** cùng round runner, cùng SHA ứng viên: `echo NFR_PERF_SHA=$(git rev-parse HEAD); (cd apps/api && CGO_ENABLED=1 go test -tags perf ./internal/perf/... -count=1 -timeout 18m -v)` ghi vào một log, rồi `measure-nfr.mjs --server-perf-log <log>`. Tiêu chí `server.p95`: log có `NFR_PERF_SHA` = SHA đang đo, `--- PASS: TestEntryCreatePerformanceA10`, đủ ba dòng `POPULATION pop1_sequential|pop2_burst_no_purge|pop3_burst_purge_overlap` và mọi p95 (kể cả `SEMANTIC-ON POPULATION` nếu có) < 150 ms. Thiếu log, sai SHA, test fail hoặc p95 ≥ 150 ms = `fail`. Thời gian `POST` nhìn từ trình duyệt chỉ để tham khảo.
 
 ## 4. Semantic (`FU-P06-SEM-OBSERVE`, `FU-T23-RUNNER`)
 
 - Tham chiếu nền: [`2026-11-03-T23-full.md`](../P05-search/results/2026-11-03-T23-full.md) và [`2026-11-03-5bc77b3-full-arm64.md`](../P05-search/results/2026-11-03-5bc77b3-full-arm64.md) (protocol P05 giữ nguyên).
-- Sau deploy (21c), trên `bro`, chỉ đọc: latency `openai_compat` khi cache miss thật (log path pattern + latency, không `q`) và `embedding_jobs_total` từ metric nội bộ. Không tạo tải, không đổi cấu hình. Ghi số vào report Task 20; không có tiêu chí pass/fail mới (P05 targets giữ nguyên).
+- Sau deploy (21c), trên `bro`, chỉ đọc (không tạo tải, không đổi cấu hình): scrape metric nội bộ qua mạng Docker (guard `RequireInternalOrLoopback` cho phép):
+  `ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' engram-api-1); curl -s --max-time 10 "http://$ip:8080/api/v1/metrics" > api.prom` và, khi `WORKER_METRICS_ADDR` bật, tương tự cho `engram-worker-1` → `worker.prom`. Hai file chép sang runner (chỉ số tổng hợp, không có `q`).
+- `measure-nfr.mjs --semantic-metrics api.prom --semantic-metrics worker.prom` tính: latency `openai_compat` khi cache miss thật = `embedding_provider_latency_seconds{op="query"}` (số lần gọi, p50/p95 theo `histogram_quantile`), `semantic_query_cache_total{result}`, `embedding_jobs_total{kind,outcome}`. Chỉ các họ metric này được đưa vào JSON.
+- Trạng thái `semantic.observed`: `collected` = pass; `pending` (chưa có scrape, ví dụ 21a trước deploy), `no_cache_miss_observed`, `partial` (thiếu worker) = `pending` — không làm exit ≠ 0 nhưng JSON `complete=false`; file không đọc được / không có sample = `fail`. Không có ngưỡng mới (P05 targets giữ nguyên).
 
 ## 5. Script và kết quả
 
-- `node scripts/measure-nfr.mjs --target <https-url> [--insecure-tls] [--out <dir>]` chạy (1)–(3) theo đúng mục trên; `--insecure-tls` = Playwright `ignoreHTTPSErrors: true` + `curl -k`, chỉ cho staging `tls internal` hoặc dry-run.
-- Mặc định `--out docs/benchmarks/P06-nfr/results/`; file `nfr-<UTC>-<sha7>.json` gồm môi trường, mẫu thô, thống kê, từng tiêu chí `{id, pass, value, threshold}`.
-- Exit `0` khi mọi tiêu chí pass; `1` khi có tiêu chí fail; `2` lỗi dùng sai CLI. Dòng spec runner bắt mã thoát vào `NFR_EXIT`.
-- `--dry-run` (chỉ kiểm harness, không phải bằng chứng NFR): 1 warmup + 3 mẫu TTFB mỗi URL, 1 mẫu LCP trên `/`, kiểm `.wasm` ở `/`; bỏ đăng nhập, LCP `/app` và G1; tiêu chí ngưỡng ghi `skipped`; exit `0` khi harness chạy trọn (TLS tự ký chấp nhận, JSON ghi ra).
+- `node scripts/measure-nfr.mjs --target <https-url> [--insecure-tls] [--out <dir>] [--server-perf-log <log>] [--semantic-metrics <file>]...` chạy (1)–(4) theo đúng mục trên; `--insecure-tls` = Playwright `ignoreHTTPSErrors: true` + `curl -k`, chỉ cho staging `tls internal` hoặc dry-run.
+- Mặc định `--out docs/benchmarks/P06-nfr/results/`; file `nfr-<UTC>-<sha7>.json` gồm môi trường, mẫu thô, thống kê, từng tiêu chí `{id, status: pass|fail|pending|skipped, value, threshold}`, `pass` (không tiêu chí `fail`) và `complete` (mọi tiêu chí `pass`, không dry-run).
+- Exit `0` khi không tiêu chí nào `fail`; `1` khi có tiêu chí `fail`; `2` lỗi dùng sai CLI. Dòng spec runner bắt mã thoát vào `NFR_EXIT`. Nghiệm thu `P06-A6` cần `complete=true` (sau 21c).
+- `--dry-run` (chỉ kiểm harness, không phải bằng chứng NFR, JSON `dry_run: true`, tên file `-dryrun`): 1 warmup + 3 mẫu TTFB mỗi URL, 1 mẫu LCP trên `/`, kiểm `.wasm` ở `/`; bỏ đăng nhập, LCP `/app` và G1; ngưỡng trình duyệt ghi `skipped`; `server.p95`/`semantic.observed` chỉ được đánh giá khi có file đầu vào, ngược lại `skipped`; exit `0` khi harness chạy trọn (TLS tự ký chấp nhận, JSON ghi ra).
+- Hàm quyết định thuần (thống kê, profile mạng, `server.p95`, `semantic.observed`) có self-test: `node --test docs/benchmarks/P06-nfr/measure-nfr.selftest.mjs`.
 - Report Task 20: `docs/benchmarks/P06-nfr/results/2026-11-07-p06-nfr-report.md` (URL run, SHA ứng viên = SHA 21a, phần cứng runner, phương pháp = file này).
