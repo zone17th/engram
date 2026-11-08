@@ -51,6 +51,7 @@ func Mount(api *API) func(v1 chi.Router, d httpx.Deps) {
 			g.Get("/auth/audit", api.AuditList)
 			g.Get("/me/notifications", api.NotificationsList)
 		})
+		v1.Delete("/me", api.AccountDeleteRoute(d).ServeHTTP)
 
 		v1.Group(func(g chi.Router) {
 			g.Use(httpx.RequireOrigin(origin))

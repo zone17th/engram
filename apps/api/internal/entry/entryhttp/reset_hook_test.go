@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -23,6 +24,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/content/contenttest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/entry"
+	"github.com/zone17th/engram/apps/api/internal/entry/entryhttp"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
 	"github.com/zone17th/engram/apps/api/internal/textnorm"
 	"github.com/zone17th/engram/apps/api/internal/vault"
@@ -1108,6 +1110,138 @@ func TestVaultResetRacingPostEntriesBarrier(t *testing.T) {
 		t.Fatalf("total entries after reset racing POST entries = %d, want 0", totalEntries)
 	}
 	contenttest.AssertInvariants(t, h.Pool, meA.User.ID)
+}
+
+// TestPostEntriesFirstThenVaultResetBarrier is the opposite acquisition order
+// of TestVaultResetRacingPostEntriesBarrier (dec-039 reset vs entry-create in
+// both orders): POST entries holds its content locks (LockUserContent +
+// LockItemForUpdate) and pauses; DELETE /vault — app_user FOR NO KEY UPDATE ->
+// vault FOR UPDATE -> ResetHook — is proven blocked on it via pg_locks; after
+// release the entry commits 201 and the reset commits 204 and deletes it. No
+// deadlock (40P01/55P03 or a 503 retry) occurs and 0 entries remain.
+func TestPostEntriesFirstThenVaultResetBarrier(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		active      bool
+		entered     = make(chan struct{}, 1)
+		release     = make(chan struct{})
+		releaseOnce sync.Once
+	)
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	h := contenttest.NewHarness(t, contenttest.HarnessOpts{
+		ExtraMounts: []func(h *contenttest.Harness, v1 chi.Router, d httpx.Deps){
+			func(h *contenttest.Harness, v1 chi.Router, d httpx.Deps) {
+				v1.Group(func(g chi.Router) {
+					g.Use(func(next http.Handler) http.Handler {
+						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							ctx := entryhttp.WithLockHeldHook(r.Context(), func(ctx context.Context, _, _ uuid.UUID) {
+								mu.Lock()
+								on := active
+								mu.Unlock()
+								if !on {
+									return
+								}
+								entered <- struct{}{}
+								select {
+								case <-release:
+								case <-ctx.Done():
+								}
+							})
+							next.ServeHTTP(w, r.WithContext(ctx))
+						})
+					})
+					g.Route("/__barrier_entry", func(sub chi.Router) {
+						entryhttp.Mount(h.Content)(sub, d)
+					})
+				})
+			},
+		},
+	})
+	t.Cleanup(closeRelease)
+
+	password := "correct-horse-battery-staple-a"
+	jar, me := h.SignupUser("entry-first-reset@example.com", password)
+	vf := createVaultForUser(t, h, jar, 0x30)
+	item := insertTestItem(t, h, me.User.ID, "Entry First Item")
+	grant := issueReauthGrant(t, h, jar, "vault.reset", password)
+	h.VaultSvc.SetResetHook(entry.ResetHook) // production wiring (cmd/api compose.NewVault)
+
+	type res struct {
+		resp contenttest.TestResponse
+		raw  string
+	}
+	postDone, resetDone := make(chan res, 1), make(chan res, 1)
+	entryID := uuid.NewString()
+	sealed := sealEntryFixture(t, entryID, vf.VaultKeyID, vf.VK, []byte("entry before reset"), seqBytes(vault.WrapNonceBytes, 0x31))
+	mu.Lock()
+	active = true
+	mu.Unlock()
+	go func() {
+		resp, raw := h.DoReq(jar, http.MethodPost, "/api/v1/__barrier_entry/items/"+item.ID.String()+"/entries",
+			makeCreateBody(entryID, entry.TypeText, sealed.EnvelopeRaw, sealed.CiphertextB64, sealed.PlaintextLenBucket),
+			contenttest.ReqOptions{IdemKey: "idem_entry_first_reset_post"})
+		postDone <- res{resp, raw}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("POST entries did not reach its lock-held hook")
+	}
+	mu.Lock()
+	active = false
+	mu.Unlock()
+
+	go func() {
+		resp, raw := h.DoReq(jar, http.MethodDelete, "/api/v1/vault", "", contenttest.ReqOptions{
+			IdemKey: "idem_entry_first_reset_delete",
+			IfMatch: formatVaultIfMatch(vf.VaultKeyID, vf.Version),
+			Grant:   grant,
+		})
+		resetDone <- res{resp, raw}
+	}()
+
+	// The reset backend must be waiting on a lock held by another backend
+	// (the paused POST entries transaction) before we release it.
+	ctx := context.Background()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := h.Pool.QueryRow(ctx, `
+			SELECT count(*) FROM pg_stat_activity a
+			WHERE a.datname = current_database() AND cardinality(pg_blocking_pids(a.pid)) > 0`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("DELETE /vault never blocked behind the paused POST entries transaction")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	closeRelease()
+
+	var rPost, rReset res
+	select {
+	case rPost = <-postDone:
+	case <-time.After(15 * time.Second):
+		t.Fatal("POST entries did not finish")
+	}
+	select {
+	case rReset = <-resetDone:
+	case <-time.After(15 * time.Second):
+		t.Fatal("DELETE /vault did not finish (suspected deadlock)")
+	}
+	if rPost.resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST entries (first) = %d %s, want 201", rPost.resp.StatusCode, rPost.raw)
+	}
+	if rReset.resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /vault (second) = %d %s, want 204 (no deadlock/503)", rReset.resp.StatusCode, rReset.raw)
+	}
+	if total, _, _ := countEntriesForUser(t, ctx, h, me.User.ID); total != 0 {
+		t.Fatalf("entries after reset = %d, want 0", total)
+	}
+	contenttest.AssertInvariants(t, h.Pool, me.User.ID)
 }
 
 // TestVaultResetRacingItemDeleteRestoreAndPurgeBarriers covers Task 8 bullet 4 (and P04-A2, P04-A9):

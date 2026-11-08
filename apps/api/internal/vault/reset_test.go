@@ -10,13 +10,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/zone17th/engram/apps/api/internal/audit"
+	"github.com/zone17th/engram/apps/api/internal/auth"
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/clock"
+	"github.com/zone17th/engram/apps/api/internal/compose"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db/dbtest"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
@@ -263,5 +267,268 @@ func TestServiceResetHookRollbackOtherUserIsolationAndNewVaultKeyID(t *testing.T
 	ve, ok := vault.AsError(err)
 	if !ok || ve.Code != "version_mismatch" || ve.CurrentVersion == nil || *ve.CurrentVersion != 1 {
 		t.Fatalf("Reset with old vault_key_id after recreate = %v (%+v), want 412 version_mismatch(current=1)", err, ve)
+	}
+}
+
+// TestResetCancelsExportJobsAndRecordsCleanup verifies (plan P06 mục 2.4, 2.9,
+// Task 2) that DELETE /vault cancels queued/running/ready export jobs of the
+// user and records export_file_cleanup rows for their attempt files inside the
+// same transaction.
+func TestResetCancelsExportJobsAndRecordsCleanup(t *testing.T) {
+	dsn := dbtest.StartPostgres(t)
+	dbtest.MigrateUp(t, dsn)
+	pool := dbtest.Pool(t, dsn)
+	ctx := context.Background()
+
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("APP_ORIGIN", "http://localhost:3000")
+	t.Setenv("APP_ENV", "development")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+	clk := clock.NewFixed(time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC))
+	aud := audit.NewStore(pool)
+	notes := notification.NewStore(pool, nil)
+	_, obsMetrics := obs.NewRegistry()
+	svc, err := vault.NewService(cfg, pool, clk, aud, notes, nil, vault.MetricsFromObs(obsMetrics), nil, logger)
+	if err != nil {
+		t.Fatalf("vault.NewService: %v", err)
+	}
+
+	q := gen.New(pool)
+	user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "reset-export@example.com", Locale: "en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := authctx.Principal{UserID: user.ID, SessionID: uuid.New()}
+	created, err := svc.Create(ctx, p, makeValidCreateInput(t, 0x41))
+	if err != nil {
+		t.Fatalf("Create vault: %v", err)
+	}
+
+	attID := uuid.New()
+	readyJobID := uuid.New()
+	readyFile := readyJobID.String() + "." + attID.String() + ".sabk.enc"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO export_job (id, user_id, kind, status, attempt_id, file_name, size_bytes, completed_at, expires_at)
+		VALUES ($1, $2, 'encrypted', 'ready', $3, $4, 128, now(), now() + interval '24 hours')
+	`, readyJobID, user.ID, attID, readyFile); err != nil {
+		t.Fatalf("insert ready export_job: %v", err)
+	}
+
+	if err := svc.Reset(ctx, p, vault.ResetInput{
+		IfMatch: httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 1},
+		IP:      "127.0.0.1",
+		UA:      "reset-export-test",
+	}); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM export_job WHERE id = $1`, readyJobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("export_job status after Reset = %q, want cancelled", status)
+	}
+	var cleanupCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM export_file_cleanup WHERE job_id = $1 AND reason = 'reset'`, readyJobID).Scan(&cleanupCount); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupCount != 2 {
+		t.Fatalf("cleanup rows after Reset = %d, want 2 (.tmp and .sabk.enc)", cleanupCount)
+	}
+}
+
+// TestResetVsAccountDeletionBarrier is the dec-039 reset-vs-account-deletion
+// proof in both acquisition orders, using the REAL vault.Reset (app_user FOR
+// NO KEY UPDATE -> vault FOR UPDATE) and the REAL auth account deletion
+// (generation set -> app_user FOR UPDATE -> vault -> export_job -> content ->
+// DELETE). The second side is proven blocked by the first via
+// pg_blocking_pids before release; neither side sees 40P01/55P03 (including
+// ones DeleteAccount's single retry would hide); no ready export survives.
+func TestResetVsAccountDeletionBarrier(t *testing.T) {
+	for _, resetFirst := range []bool{true, false} {
+		name := "DeleteFirstThenReset"
+		if resetFirst {
+			name = "ResetFirstThenDelete"
+		}
+		t.Run(name, func(t *testing.T) {
+			dsn := dbtest.StartPostgres(t)
+			dbtest.MigrateUp(t, dsn)
+			pool := dbtest.Pool(t, dsn)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			t.Setenv("DATABASE_URL", dsn)
+			t.Setenv("APP_ORIGIN", "http://localhost:3000")
+			t.Setenv("APP_ENV", "development")
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, obsMetrics := obs.NewRegistry()
+			svc, err := vault.NewService(cfg, pool, clock.System{}, audit.NewStore(pool), notification.NewStore(pool, nil),
+				nil, vault.MetricsFromObs(obsMetrics), nil, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := gen.New(pool)
+			user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "reset-delete@example.com", Locale: "en"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := authctx.Principal{UserID: user.ID, SessionID: uuid.New()}
+			created, err := svc.Create(ctx, p, makeValidCreateInput(t, 0x52))
+			if err != nil {
+				t.Fatal(err)
+			}
+			att := uuid.New()
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO export_job (user_id, kind, status, attempt_id, file_name, size_bytes, completed_at, expires_at)
+				SELECT $1, 'encrypted', 'ready', $2::uuid, gen_random_uuid()::text || '.' || $2::uuid::text || '.sabk.enc', 1, now(), now() + interval '1 day'`,
+				user.ID, att); err != nil {
+				t.Fatal(err)
+			}
+			reset := func(ctx context.Context) error {
+				return svc.Reset(ctx, p, vault.ResetInput{
+					IfMatch: httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 1},
+					IP:      "127.0.0.1", UA: "barrier",
+				})
+			}
+			k := func(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
+			sink, err := auth.NewSinkMailer(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			deleter, _, _, err := compose.NewAuth(&config.Config{
+				AppOrigin: "http://localhost:3000", AuthJWTSecret: k(1), AuthCSRFSecret: k(2), AuthReauthSecret: k(3),
+				AuthIPPepper: k(4), AuthEmailPepper: k(5), MailCaptureAsDelivery: true,
+			}, pool, nil, clock.System{}, sink, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(deleter.Close)
+			deleteAccount := func(ctx context.Context) error {
+				_, err := deleter.DeleteAccountByEmail(ctx, user.Email)
+				return err
+			}
+			// DeleteAccount retries once on 40P01/55P03, so a deadlock would be
+			// hidden from its return value: assert the server counter instead.
+			deadlocks := func() int64 {
+				var n int64
+				if _, err := pool.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
+					t.Fatal(err)
+				}
+				if err := pool.QueryRow(ctx, `SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()`).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				return n
+			}
+			deadlocksBefore := deadlocks()
+
+			var resetErr, delErr error
+			if resetFirst {
+				held, release := make(chan int32, 1), make(chan struct{})
+				svc.SetResetHook(func(ctx context.Context, tx pgx.Tx, _ uuid.UUID) error {
+					var pid int32
+					if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+						return err
+					}
+					held <- pid
+					<-release
+					return nil
+				})
+				resetDone := make(chan error, 1)
+				go func() { resetDone <- reset(ctx) }()
+				pid := <-held
+				delDone := make(chan error, 1)
+				go func() { delDone <- deleteAccount(ctx) }()
+				awaitBlockedByPID(t, ctx, pool, pid)
+				close(release)
+				resetErr, delErr = <-resetDone, <-delDone
+				if resetErr != nil {
+					t.Fatalf("Reset (first): %v", resetErr)
+				}
+				if delErr != nil {
+					t.Fatalf("DeleteAccount after reset: %v", delErr)
+				}
+			} else {
+				// Pause the REAL deletion at its final DELETE FROM app_user, after it
+				// holds every lock in its order, via a trigger waiting on an
+				// advisory lock held by a dedicated connection.
+				if _, err := pool.Exec(ctx, `
+					CREATE FUNCTION gate_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+					BEGIN PERFORM pg_advisory_xact_lock(4711); RETURN OLD; END $$;
+					CREATE TRIGGER gate_delete BEFORE DELETE ON app_user FOR EACH ROW EXECUTE FUNCTION gate_delete();`); err != nil {
+					t.Fatal(err)
+				}
+				gate, err := pool.Acquire(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var gatePID int32
+				if err := gate.QueryRow(ctx, `SELECT pg_backend_pid() FROM (SELECT pg_advisory_lock(4711)) s`).Scan(&gatePID); err != nil {
+					t.Fatal(err)
+				}
+				delDone := make(chan error, 1)
+				go func() { delDone <- deleteAccount(ctx) }()
+				deletePID := awaitBlockedByPID(t, ctx, pool, gatePID)
+				resetDone := make(chan error, 1)
+				go func() { resetDone <- reset(ctx) }()
+				awaitBlockedByPID(t, ctx, pool, deletePID)
+				if _, err := gate.Exec(ctx, `SELECT pg_advisory_unlock(4711)`); err != nil {
+					t.Fatal(err)
+				}
+				gate.Release()
+				if delErr = <-delDone; delErr != nil {
+					t.Fatalf("DeleteAccount (first): %v", delErr)
+				}
+				resetErr = <-resetDone
+				if resetErr == nil {
+					t.Fatal("Reset after committed account deletion succeeded")
+				}
+			}
+			for side, err := range map[string]error{"reset": resetErr, "delete": delErr} {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "55P03") {
+					t.Fatalf("%s: lock failure %s: %v", side, pgErr.Code, err)
+				}
+			}
+			if after := deadlocks(); after != deadlocksBefore {
+				t.Fatalf("server deadlocks %d -> %d", deadlocksBefore, after)
+			}
+			var exports int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM export_job WHERE user_id = $1 AND status = 'ready'`,
+				user.ID).Scan(&exports); err != nil {
+				t.Fatal(err)
+			}
+			if exports != 0 {
+				t.Fatalf("ready exports after reset/delete = %d", exports)
+			}
+		})
+	}
+}
+
+// awaitBlockedByPID waits until some backend lists holder in pg_blocking_pids
+// and returns that backend's pid.
+func awaitBlockedByPID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, holder int32) int32 {
+	t.Helper()
+	for {
+		var pid int32
+		if err := pool.QueryRow(ctx, `SELECT COALESCE(min(pid), 0) FROM pg_stat_activity
+			WHERE datname = current_database() AND pid <> $1 AND $1 = ANY(pg_blocking_pids(pid))`, holder).Scan(&pid); err != nil {
+			t.Fatalf("pg_blocking_pids: %v", err)
+		}
+		if pid != 0 {
+			return pid
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("no backend became blocked by pid %d", holder)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }

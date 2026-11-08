@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
 	"github.com/zone17th/engram/apps/api/internal/httpx"
@@ -45,8 +47,19 @@ func (s *Service) Reset(ctx context.Context, p authctx.Principal, in ResetInput)
 
 	q := s.q.WithTx(tx)
 
-	// 1. Lock vault row FOR UPDATE and verify If-Match (404 vault_absent takes precedence over 412 version_mismatch).
+	// 1. Lock app_user FOR NO KEY UPDATE -> vault FOR UPDATE (same parent-first
+	// order as export Finalize CAS app_user FOR SHARE -> vault FOR SHARE ->
+	// export_job FOR UPDATE and DELETE /me, plan P06 mục 2.4, 2.9; review r1
+	// R1-03). NO KEY UPDATE is used instead of UPDATE so the lock stays
+	// compatible with the FK FOR KEY SHARE that a concurrent idempotency Claim
+	// tx takes when inserting idempotency_key rows (P04 barrier test).
+	if _, err := q.LockExportOwnerNoKeyUpdate(ctx, p.UserID); err != nil {
+		return err
+	}
 	if _, err := LockVaultAndCheckIfMatch(ctx, q, p.UserID, in.IfMatch); err != nil {
+		return err
+	}
+	if err := cancelAndCleanupUserExportsTx(ctx, q, p.UserID); err != nil {
 		return err
 	}
 
@@ -98,5 +111,32 @@ func (s *Service) Reset(ctx context.Context, p authctx.Principal, in ResetInput)
 		return err
 	}
 
+	return nil
+}
+
+// cancelAndCleanupUserExportsTx cancels all queued/running/ready export jobs of
+// userID and records durable export_file_cleanup rows for their attempt files
+// inside the reset transaction (plan P06 mục 2.4, 2.9).
+func cancelAndCleanupUserExportsTx(ctx context.Context, q *gen.Queries, userID uuid.UUID) error {
+	jobs, err := q.CancelUserExportJobs(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for _, j := range jobs {
+		if j.AttemptID == nil {
+			continue
+		}
+		for _, ext := range []string{"tmp", "sabk.enc"} {
+			fn := j.ID.String() + "." + j.AttemptID.String() + "." + ext
+			if _, err := q.InsertExportFileCleanup(ctx, gen.InsertExportFileCleanupParams{
+				FileName:  fn,
+				JobID:     j.ID,
+				AttemptID: j.AttemptID,
+				Reason:    "reset",
+			}); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }

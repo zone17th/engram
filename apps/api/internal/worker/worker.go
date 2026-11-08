@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/zone17th/engram/apps/api/internal/auth"
 	"github.com/zone17th/engram/apps/api/internal/config"
 	"github.com/zone17th/engram/apps/api/internal/db"
 	"github.com/zone17th/engram/apps/api/internal/embedding"
@@ -25,6 +26,7 @@ import (
 	"github.com/zone17th/engram/apps/api/internal/embedding/jobs"
 	"github.com/zone17th/engram/apps/api/internal/embedding/lifecycle"
 	"github.com/zone17th/engram/apps/api/internal/entry"
+	"github.com/zone17th/engram/apps/api/internal/export"
 	"github.com/zone17th/engram/apps/api/internal/obs"
 )
 
@@ -44,11 +46,20 @@ type EmbeddingDeps struct {
 	BootstrapFlipInterval time.Duration
 }
 
-// Deps gom các phụ thuộc mở rộng của NewWithMail (metrics và embedding). Giá trị
-// zero tương đương hành vi P04.
+// ExportDeps configures the P06 export workers (export_encrypted,
+// export_file_cleanup, export_prune). Zero values fall back to development/test
+// defaults so New(pool, logger) remains a one-line call in unit tests.
+type ExportDeps struct {
+	StorageDir string
+	Secret     config.Secret
+}
+
+// Deps gom các phụ thuộc mở rộng của NewWithMail (metrics, embedding, export).
+// Giá trị zero tương đương hành vi P04.
 type Deps struct {
 	Metrics   *obs.Metrics
 	Embedding *EmbeddingDeps
+	Export    *ExportDeps
 }
 
 // RunOptions cấu hình tuỳ chọn cho Run (plan P05 Task 11a, FS-35).
@@ -104,10 +115,33 @@ func NewWithMail(
 	if err := river.AddWorkerSafely(workers, entry.NewContentPurgeWorker(pool, nil)); err != nil {
 		return nil, fmt.Errorf("đăng ký content purge: %w", err)
 	}
+	exportDir, exportSecret := resolveExportDeps(deps.Export)
+	if err := river.AddWorkerSafely(workers, export.NewExportWorker(export.WorkerDeps{
+		Pool:       pool,
+		StorageDir: exportDir,
+		Secret:     exportSecret,
+		Logger:     logger,
+	})); err != nil {
+		return nil, fmt.Errorf("đăng ký export_encrypted: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, export.NewCleanupWorker(pool, exportDir, logger)); err != nil {
+		return nil, fmt.Errorf("đăng ký export_file_cleanup: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, export.NewPruneWorker(pool, exportDir, nil, logger)); err != nil {
+		return nil, fmt.Errorf("đăng ký export_prune: %w", err)
+	}
+	// Register the notice worker unconditionally: river.InsertTx rejects an
+	// unknown job kind, so with mail delivery disabled every verified-owner
+	// export finalization would roll back (review r1 R1-14). A nil mailer stays
+	// a nil auth.Mailer (never mailAdapter{nil}, dec-039) and is a terminal
+	// no-delivery inside SecurityNoticeWorker.Work; a real mailer is wrapped so
+	// ops-config's noticeMailAvailable can probe it (dec-041).
+	var noticeMail auth.Mailer
 	if mail != nil {
-		if err := river.AddWorkerSafely(workers, NewSecurityNoticeWorker(pool, mailAdapter{mail}, logger)); err != nil {
-			return nil, fmt.Errorf("đăng ký notice: %w", err)
-		}
+		noticeMail = mailAdapter{mail}
+	}
+	if err := river.AddWorkerSafely(workers, NewSecurityNoticeWorker(pool, noticeMail, logger)); err != nil {
+		return nil, fmt.Errorf("đăng ký notice: %w", err)
 	}
 
 	periodic := []*river.PeriodicJob{
@@ -143,6 +177,13 @@ func NewWithMail(
 			river.PeriodicInterval(time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return entry.ContentPurgeArgs{}, nil
+			},
+			nil,
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(export.ExportPruneInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return export.ExportPruneArgs{}, nil
 			},
 			nil,
 		),
@@ -233,12 +274,31 @@ func (m mailAdapter) Send(ctx context.Context, recipient, purpose, link string) 
 	return m.fn.Send(ctx, recipient, purpose, link)
 }
 
+func resolveExportDeps(ed *ExportDeps) (string, config.Secret) {
+	var dir string
+	var sec config.Secret
+	if ed != nil {
+		dir = ed.StorageDir
+		sec = ed.Secret
+	}
+	if dir == "" {
+		dir = os.TempDir() + "/engram-exports"
+	}
+	if sec.IsEmpty() {
+		sec = config.NewSecretBytes([]byte(config.DevExportAtRestSecret))
+	}
+	return dir, sec
+}
+
 // Run chạy worker cho tới khi nhận SIGINT/SIGTERM rồi dừng gọn.
 func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...RunOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	reg, metrics := obs.NewRegistry()
+	if err := RegisterNoticeMailMetrics(reg); err != nil {
+		return fmt.Errorf("register notice mail metrics: %w", err)
+	}
 	var calibOverride embedid.CalibrationLookup
 	var beforeStartHooks []func(ctx context.Context, pool *pgxpool.Pool)
 	var afterStartHooks []func(ctx context.Context, pool *pgxpool.Pool)
@@ -272,7 +332,13 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 		return err
 	}
 
-	workerDeps := Deps{Metrics: metrics}
+	workerDeps := Deps{
+		Metrics: metrics,
+		Export: &ExportDeps{
+			StorageDir: cfg.ExportStorageDir,
+			Secret:     cfg.ExportAtRestSecret,
+		},
+	}
 	if cfg.SearchSemanticEnabled && cfg.EmbeddingProvider != "" && cfg.EmbeddingProvider != embedding.ProviderNoop {
 		var shadowPtr *embedding.ClientConfig
 		if shadowCfg, ok := cfg.EmbeddingShadow(); ok {
