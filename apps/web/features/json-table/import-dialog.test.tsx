@@ -1080,6 +1080,11 @@ describe('P04-T17 Import JSON U14 (import-dialog.tsx, item-detail-page Milestone
       expect(within(dialog).getByTestId('import-json-over-cap-error')).toBeInTheDocument();
     });
     expect(within(dialog).getByTestId('import-json-submit-btn')).toBeDisabled();
+    // FU-ENTRYUX-N5: the limit is stated by the alert box and the red source counter only; the status line
+    // under the textarea no longer repeats it a third time.
+    expect(within(dialog).getByTestId('import-json-over-cap-error')).toHaveTextContent(/262[.,]144/);
+    expect(within(dialog).getByTestId('import-json-source-badge')).toHaveTextContent(/262[.,]145/);
+    expect(within(dialog).getByTestId('import-json-status-line')).toBeEmptyDOMElement();
 
     // 1b. IP17-R1-8: file with size > 4 MiB is rejected by checking file.size before reading arrayBuffer()
     const arrayBufferSpy = vi.fn(async () => new ArrayBuffer(0));
