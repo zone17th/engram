@@ -97,7 +97,7 @@ fi
 if ! golangci-lint --version 2>/dev/null | grep -qF "${GOLANGCI_LINT_VERSION#v}"; then
   # GitHub release-asset CDN can 504 while proxy.golang.org stays up; fall back
   # to `go install` so provisioning survives the outage (exportbe r1 round).
-  if ! (curl -fsSL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+  if ! (set -o pipefail; curl -fsSL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
     | $SUDO sh -s -- -b /usr/local/bin "$GOLANGCI_LINT_VERSION"); then
     echo "golangci-lint tarball fetch failed; installing via go install"
     GOBIN="$(go env GOPATH)/bin" go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
