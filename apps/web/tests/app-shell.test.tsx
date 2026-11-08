@@ -128,6 +128,19 @@ describe('AppHeader', () => {
     expect(screen.getByTestId('vault-unlock-button-mobile')).toHaveClass('h-11', 'w-11');
   });
 
+  // V-1 (visual-1, FU-T26-390-OVERFLOW): the six 44px targets only fit in 390px with the tight phone padding.
+  // jsdom cannot measure layout: it asserts the classes, the real scrollWidth <= 390 is proved by tester_visual.
+  it('V-1: hàng header dùng px-3/gap-1 dưới sm, giữ px-5/gap-4 từ sm, cao 68px, mọi đích chạm >= 44px', () => {
+    renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);
+    const row = screen.getByTestId('app-header-row');
+    expect(row).toHaveClass('px-3', 'gap-1', 'sm:px-5', 'sm:gap-4');
+    expect(row).not.toHaveClass('px-5');
+    expect(row.parentElement).toHaveClass('h-[68px]');
+    expect(screen.getByTestId('header-help-link')).toHaveClass('min-h-11', 'min-w-11');
+    expect(screen.getByRole('button', { name: 'Đăng xuất' })).toHaveAttribute('data-size', 'md'); // real button: min-h-11 (route-guard.tsx)
+    expect(screen.getByTestId('vault-unlock-button-mobile')).toHaveClass('h-11', 'w-11');
+  });
+
   // F-06: first Tab stop is the skip link; the target id lives on each page's <main>.
   it('F-06: skip link là phần tử đầu tiên, trỏ tới #main-content', () => {
     const { container } = renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);

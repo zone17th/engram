@@ -20,6 +20,9 @@ import { useEffect, useRef } from 'react';
  * (the mockup's `btn btn-tertiary`, 38px / 15px): vault pill, Settings, theme toggle, Sign out. Sign out takes the
  * mockup avatar slot at the end.
  *
+ * V-1 (FU-T26-390-OVERFLOW): below `sm` the row uses `px-3 gap-1` (not `px-5 gap-2`) so logo + lock + Settings + ? + theme + Sign out
+ * (all >= 44px) fit in 390px in vi and en; from `sm` up nothing changes (header stays 68px).
+ *
  * `showLogout` defaults to `true` so every route (including the item page, which passes no flag) shows Sign out.
  * The prop stays in the API only as an opt-out for isolated renders without a SessionProvider (unit tests); app routes
  * must not pass `false`.
@@ -100,7 +103,7 @@ export function AppHeader({
     <>
     <SkipLink />
     <header className="sticky top-0 z-30 h-[68px] border-b border-line bg-surface/80 backdrop-blur">
-      <div className="mx-auto flex h-full min-w-0 max-w-container items-center gap-2 px-5 sm:gap-4">
+      <div className="mx-auto flex h-full min-w-0 max-w-container items-center gap-1 px-3 sm:gap-4 sm:px-5" data-testid="app-header-row">
         <Link href="/app" className="touch-target inline-flex min-h-11 min-w-11 shrink-0 items-center no-underline" aria-label={tHeader('logoLabel')}>
           <Logo wordmarkClassName="hidden min-[480px]:inline" />
         </Link>
