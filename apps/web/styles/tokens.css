@@ -1109,10 +1109,19 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
   border-color: var(--accent);
   color: var(--accent);
 }
+.omni-sem-btn[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--pale-pink);
+  border-color: var(--accent-hover);
+  color: var(--accent-hover);
+}
 [data-theme='dark'] .omni-sem-btn[aria-pressed='true'] {
   background: var(--surface-alt);
 }
-
+[data-theme='dark'] .omni-sem-btn[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--pale-accent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .omni-listbox .sugg-row {
   min-height: 44px;
 }

@@ -164,6 +164,15 @@ describe('component rules (advisor-dec-129, P04 UIA-11)', () => {
     // Dark keeps the mockup token rule.
     expect(webCss).toMatch(/\.vault-open\s*\{[^}]*color:\s*var\(--success-ink\)/);
   });
+
+  it('keeps distinct hover state on pressed omnibox semantic chip (FU-T22-SEMCHIP-HOVER, advisor-dec-347)', () => {
+    expect(webCss).toMatch(
+      /\.omni-sem-btn\[aria-pressed='true'\]:hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--pale-pink\);[^}]*border-color:\s*var\(--accent-hover\);[^}]*color:\s*var\(--accent-hover\);/,
+    );
+    expect(webCss).toMatch(
+      /\[data-theme='dark'\]\s+\.omni-sem-btn\[aria-pressed='true'\]:hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--pale-accent\);[^}]*border-color:\s*var\(--accent\);[^}]*color:\s*var\(--accent\);/,
+    );
+  });
 });
 
 describe('token thương hiệu', () => {
