@@ -8,12 +8,12 @@ import { useTheme } from '@/components/theme-provider';
 
 /**
  * Nav pill của landing — chép rhythm từ mockups/landing.html.
- * Theme toggle dùng ThemeProvider (Task 11). Hai CTA như mockup: "Đăng nhập" (ẩn dưới sm)
- * và "Tạo tài khoản", mở các trang auth thật (advisor-dec-186/187, audit UIA-5).
+ * Theme toggle dùng ThemeProvider (Task 11). Hai CTA như mockup: "Đăng nhập" và "Tạo tài khoản",
+ * mở các trang auth thật (advisor-dec-186/187, audit UIA-5, F-09).
  * Ba link mục hiện từ `lg` (mockup: `md`): ở 768 pill không đủ chỗ cho cả link lẫn hai CTA
- * (RV-UI2-2). Ở 390 px (FU15-LOCALE-SWITCH, RV-T25-FE1-4), pill có thêm `LocaleSwitch` nên
- * ẩn chữ wordmark `engram` dưới 420px (như `AppHeader`), thu hẹp padding của switch/CTA
- * để tổng bề ngang ~270 px nằm gọn trong lòng pill 324 px mà vẫn giữ đủ CTA và touch target 44 px.
+ * (RV-UI2-2). Ở 390 px (FU15-LOCALE-SWITCH, F-05, F-09, BLK-DOCSPRIVACY-01), nav dùng
+ * `flex-wrap rounded-2xl sm:rounded-pill` và cụm nút phải `flex-wrap justify-end` để không tràn
+ * ngang (`scrollWidth <= 390`) mà vẫn giữ đủ 6 control khả dụng với touch target >= 44x44px.
  */
 export function SiteHeader() {
   const t = useTranslations('nav');
@@ -22,16 +22,22 @@ export function SiteHeader() {
 
   return (
     <div className="max-w-container mx-auto px-5 pt-5">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:border focus:border-line focus:bg-canvas focus:px-4 focus:py-2 focus:font-semibold focus:!text-body"
+      >
+        {t('skipToContent')}
+      </a>
       <nav
-        className="flex items-center gap-1.5 sm:gap-4 rounded-pill border border-line bg-canvas px-3 sm:px-5 py-2.5 sm:py-3"
+        className="flex flex-wrap items-center justify-between gap-x-1 gap-y-2 rounded-2xl border border-line bg-canvas px-2.5 py-2 sm:flex-nowrap sm:justify-start sm:gap-4 sm:rounded-pill sm:px-5 sm:py-3"
         aria-label="Primary"
       >
         <a
           href={locale === 'en' ? '/' : `/${locale}`}
           aria-label="engram"
-          className="touch-target shrink-0 no-underline"
+          className="touch-target inline-flex min-h-11 min-w-11 shrink-0 items-center no-underline"
         >
-          <Logo wordmarkClassName="hidden min-[420px]:inline" />
+          <Logo wordmarkClassName="hidden min-[480px]:inline" />
         </a>
         <div className="ml-4 hidden items-center gap-1 lg:flex">
           <a
@@ -53,11 +59,11 @@ export function SiteHeader() {
             {t('recovery')}
           </a>
         </div>
-        <div className="ml-auto flex items-center gap-1 sm:gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1 sm:flex-nowrap sm:gap-2">
           <LocaleSwitch mode="landing" />
           <button
             type="button"
-            className="btn btn-tertiary touch-target !px-2.5 sm:!px-3"
+            className="btn btn-tertiary touch-target min-h-11 min-w-11 !px-2.5 sm:!px-3"
             onClick={toggle}
             aria-label={locale === 'vi' ? 'Đổi giao diện sáng/tối' : 'Toggle light/dark theme'}
           >
@@ -65,13 +71,13 @@ export function SiteHeader() {
           </button>
           <Link
             href="/app/auth/login"
-            className="btn btn-tertiary touch-target no-underline !text-body hidden sm:inline-flex"
+            className="touch-target inline-flex min-h-11 min-w-11 items-center justify-center rounded-md px-2 text-[14px] font-semibold !text-body no-underline whitespace-nowrap hover:bg-surface sm:btn sm:btn-tertiary sm:text-[15px]"
           >
             {t('signIn')}
           </Link>
           <Link
             href="/app/auth/signup"
-            className="btn btn-primary touch-target no-underline !px-3 !text-[14px] sm:!px-[18px] sm:!text-[15px]"
+            className="btn btn-primary touch-target min-h-11 min-w-11 no-underline !px-2.5 !text-[13px] sm:!px-[18px] sm:!text-[15px]"
           >
             {t('signUp')}
           </Link>

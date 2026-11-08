@@ -1,15 +1,20 @@
 import Link from 'next/link';
-import { getTranslations } from 'next-intl/server';
+import { useLocale, useTranslations } from 'next-intl';
 import { Logo } from '@/components/landing/logo';
 
 /**
  * Footer tối của landing — layout theo mockups/landing.html.
  * Không đặt nhãn cột: mỗi nhãn chỉ lặp lại đúng link bên dưới nó (audit UIA-24).
  */
-export async function SiteFooter() {
-  const tNav = await getTranslations('nav');
-  const tFooter = await getTranslations('footer');
-  const tBrand = await getTranslations('brand');
+export function SiteFooter() {
+  const locale = useLocale();
+  const tNav = useTranslations('nav');
+  const tFooter = useTranslations('footer');
+  const tBrand = useTranslations('brand');
+  const termsHref = locale === 'vi' ? '/vi/terms' : '/terms';
+  const privacyHref = locale === 'vi' ? '/vi/privacy' : '/privacy';
+  const docsHref = locale === 'vi' ? '/vi/docs' : '/docs';
+  const contactHref = `${docsHref}#lien-he`;
 
   return (
     <footer className="max-w-container mx-auto px-5 pb-8">
@@ -38,6 +43,18 @@ export async function SiteFooter() {
             </div>
             <div>
               <div className="flex flex-col gap-2 text-[15px]">
+                <Link href={docsHref} className="no-underline text-white/85">
+                  {tNav('help')}
+                </Link>
+                <Link href={privacyHref} className="no-underline text-white/85">
+                  {tFooter('privacyPolicy')}
+                </Link>
+                <Link href={termsHref} className="no-underline text-white/85">
+                  {tFooter('terms')}
+                </Link>
+                <Link href={contactHref} className="no-underline text-white/85">
+                  {tFooter('contact')}
+                </Link>
                 <Link href="/app" className="no-underline text-white/85">
                   {tNav('openApp')}
                 </Link>

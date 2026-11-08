@@ -1,6 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseAcceptLanguage, resolveInitialLocale, resolveInitialTheme } from '@/lib/preferences/cookies';
+import { LOCALE_COOKIE, resolveAppLocale } from '@/i18n/app-locale';
 
+vi.mock('next/headers', () => ({
+  cookies: async () => ({
+    get: (name: string) => (name === 'sabk_locale' ? { value: 'vi' } : undefined),
+  }),
+  headers: async () => ({
+    get: (name: string) => (name === 'accept-language' ? 'en-US,en;q=0.9' : null),
+  }),
+}));
 describe('resolveInitialLocale', () => {
   it('prefers Me locale over cookie and Accept-Language', () => {
     expect(
@@ -49,5 +58,13 @@ describe('parseAcceptLanguage', () => {
     expect(parseAcceptLanguage('english;q=1, en-US;q=0.5')).toBe('en');
     expect(parseAcceptLanguage('en-foo;q=1, vi-VN;q=0.5')).toBe('vi');
     expect(parseAcceptLanguage('en_US;q=1, vi-VN;q=0.5')).toBe('vi');
+  });
+});
+
+describe('resolveAppLocale server helper', () => {
+  it('exports LOCALE_COOKIE and resolves meLocale over cookie and header', async () => {
+    expect(LOCALE_COOKIE).toBe('sabk_locale');
+    expect(await resolveAppLocale('en')).toBe('en');
+    expect(await resolveAppLocale(null)).toBe('vi');
   });
 });
