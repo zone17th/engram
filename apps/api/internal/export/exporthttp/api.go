@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/zone17th/engram/apps/api/internal/authctx"
 	"github.com/zone17th/engram/apps/api/internal/export"
@@ -234,10 +236,13 @@ func (a *API) Download(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Disposition", `attachment; filename="`+stream.FileName+`"`)
 	h.Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, stream); err != nil && r.Context().Err() == nil {
-		// Headers are already sent: the truncated body fails the client's
-		// JSON parse; the AEAD frame reader never emits unauthenticated bytes.
-		a.logger.WarnContext(r.Context(), "export download stream aborted", slog.String("error", err.Error()))
+	if _, err := io.Copy(w, stream); err != nil {
+		if r.Context().Err() == nil {
+			a.logFailure(r, "export download stream aborted", err)
+		}
+		// Headers are already sent: abort the connection so the client sees a
+		// transport error instead of a clean, truncated 200 attachment.
+		panic(http.ErrAbortHandler)
 	}
 }
 
@@ -251,8 +256,7 @@ func (a *API) Cancel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var in struct{}
-	if !httpx.DecodeJSON(w, r, &in) {
+	if !decodeEmptyObject(w, r) {
 		return
 	}
 	job, err := a.svc.Cancel(r.Context(), p.UserID, id)
@@ -295,8 +299,7 @@ func (a *API) DecryptedAudit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var in struct{}
-	if !httpx.DecodeJSON(w, r, &in) {
+	if !decodeEmptyObject(w, r) {
 		return
 	}
 	if err := a.svc.RecordDecryptedAudit(r.Context(), p, httpx.ClientIP(r, a.trusted), r.UserAgent()); err != nil {
@@ -333,8 +336,54 @@ func (a *API) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case httpx.IsContentRetryableTxError(err), errors.Is(err, context.DeadlineExceeded):
 		httpx.WriteProblem(w, r, http.StatusServiceUnavailable, "dependency_unavailable", httpx.ProblemTitle("dependency_unavailable")+".")
 	default:
-		a.logger.ErrorContext(r.Context(), "export handler error", slog.String("error", err.Error()))
+		a.logFailure(r, "export handler error", err)
 		httpx.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", httpx.ProblemTitle("internal_error")+".")
+	}
+}
+
+// decodeEmptyObject accepts exactly the JSON object `{}` (OpenAPI
+// EmptyObject); `null`, arrays, scalars and unknown fields are 400.
+func decodeEmptyObject(w http.ResponseWriter, r *http.Request) bool {
+	var in *struct{}
+	if !httpx.DecodeJSON(w, r, &in) {
+		return false
+	}
+	if in == nil {
+		httpx.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "Nội dung phải là đối tượng JSON {}.")
+		return false
+	}
+	return true
+}
+
+// logFailure logs a bounded error class and the route pattern only: raw
+// error strings can carry spool paths, job/attempt IDs or DB values
+// (plan mục 2.5.5).
+func (a *API) logFailure(r *http.Request, msg string, err error) {
+	route := ""
+	if rc := chi.RouteContext(r.Context()); rc != nil {
+		route = rc.RoutePattern()
+	}
+	a.logger.ErrorContext(r.Context(), msg, slog.String("route", route), slog.String("error_class", errorClass(err)))
+}
+
+func errorClass(err error) string {
+	var pgErr *pgconn.PgError
+	var pathErr *fs.PathError
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "context"
+	case errors.Is(err, fs.ErrNotExist):
+		return "fs_not_exist"
+	case errors.Is(err, fs.ErrPermission):
+		return "fs_permission"
+	case errors.As(err, &pathErr):
+		return "fs"
+	case errors.As(err, &pgErr):
+		return "db_" + pgErr.Code
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return "truncated"
+	default:
+		return "other"
 	}
 }
 

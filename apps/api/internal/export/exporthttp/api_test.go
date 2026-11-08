@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/zone17th/engram/apps/api/internal/auth"
@@ -66,6 +69,8 @@ type env struct {
 	grants  *auth.Grants
 	handler http.Handler
 	paused  bool
+	logs    *syncBuffer
+	storage string
 	users   map[string]authctx.Principal // session token -> principal
 }
 
@@ -83,14 +88,21 @@ func newEnv(t *testing.T) *env {
 		AuthIPPepper:        bytes.Repeat([]byte{0x11}, 32),
 		AuthEmailPepper:     bytes.Repeat([]byte{0x22}, 32),
 	}
-	svc, err := export.NewService(cfg, pool, nil, nil, clock.System{})
+	// Real insert-only River client: security_notice_mail must be enqueued.
+	riverc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatalf("river client: %v", err)
+	}
+	svc, err := export.NewService(cfg, pool, riverc, nil, clock.System{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 	e := &env{
-		t:    t,
-		pool: pool,
-		svc:  svc,
+		t:       t,
+		pool:    pool,
+		svc:     svc,
+		logs:    &syncBuffer{},
+		storage: cfg.ExportStorageDir,
 		worker: export.NewExportWorker(export.WorkerDeps{
 			Pool:       pool,
 			StorageDir: cfg.ExportStorageDir,
@@ -103,7 +115,7 @@ func newEnv(t *testing.T) *env {
 			"sess-novault": {UserID: e2eUser(t, pool, false), SessionID: uuid.New()},
 		},
 	}
-	api := exporthttp.NewAPI(svc, httpx.NewIdempotency(pool, clock.System{}), func() bool { return e.paused }, cfg.TrustedProxyContains, nil)
+	api := exporthttp.NewAPI(svc, httpx.NewIdempotency(pool, clock.System{}), func() bool { return e.paused }, cfg.TrustedProxyContains, slog.New(slog.NewTextHandler(e.logs, nil)))
 	e.handler = httpx.NewRouter(httpx.Deps{
 		Config:        cfg,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -113,6 +125,23 @@ func newEnv(t *testing.T) *env {
 		MountAPI:      exporthttp.Mount(api),
 	})
 	return e
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 var vkSeq struct {
@@ -426,6 +455,8 @@ func TestExportHTTPEndpoints(t *testing.T) {
 	})
 
 	t.Run("audit_export_decrypted", func(t *testing.T) {
+		e.exec(`DELETE FROM user_notification`)
+		e.exec(`DELETE FROM river_job WHERE kind = 'security_notice_mail'`)
 		g := e.grant("sess-a", exporthttp.ReauthAction)
 		uid := e.users["sess-a"].UserID
 		want(t, e.do(http.MethodPost, "/api/v1/audit/export-decrypted", `{"x":1}`, reqOpts{sess: "sess-a", csrf: true, idem: "idem-audit-extra-001", reauth: g}), http.StatusBadRequest, "invalid_request")
@@ -434,12 +465,11 @@ func TestExportHTTPEndpoints(t *testing.T) {
 		if len(r.body) != 0 {
 			t.Fatalf("204 body = %q", r.body)
 		}
-		if n := e.count(`SELECT count(*) FROM audit_log WHERE user_id=$1 AND event='export.decrypted' AND meta = '{}'::jsonb`, uid); n != 1 {
-			t.Fatalf("audit rows = %d", n)
-		}
-		if n := e.count(`SELECT count(*) FROM user_notification WHERE user_id=$1`, uid); n < 1 {
-			t.Fatalf("user_notification rows = %d", n)
-		}
+		e.assertDecryptedAuditSideEffects(t, uid, 1)
+		// Replay with the same key: 204, no second audit/notice/mail job.
+		r = e.do(http.MethodPost, "/api/v1/audit/export-decrypted", `{}`, reqOpts{sess: "sess-a", csrf: true, idem: "idem-audit-ok-000001", reauth: g})
+		want(t, r, http.StatusNoContent, "")
+		e.assertDecryptedAuditSideEffects(t, uid, 1)
 	})
 
 	t.Run("paused_503_before_any_write", func(t *testing.T) {
@@ -633,5 +663,143 @@ func TestExportHTTPDecryptedReauth(t *testing.T) {
 	want(t, audit(other, "idem-reauth-audit-003"), http.StatusUnauthorized, "reauth_invalid")
 	if e.count(`SELECT count(*) FROM audit_log WHERE event='export.decrypted'`) != 0 {
 		t.Fatal("reauth-rejected audit was recorded")
+	}
+}
+
+// assertDecryptedAuditSideEffects checks exactly n export.decrypted audits
+// (meta {}), n notifications and n security_notice_mail River jobs, each job
+// linked to one of those notification IDs.
+func (e *env) assertDecryptedAuditSideEffects(t *testing.T, uid uuid.UUID, n int) {
+	t.Helper()
+	if got := e.count(`SELECT count(*) FROM audit_log WHERE user_id=$1 AND event='export.decrypted' AND meta = '{}'::jsonb`, uid); got != n {
+		t.Fatalf("export.decrypted audit rows = %d, want %d", got, n)
+	}
+	if got := e.count(`SELECT count(*) FROM user_notification WHERE user_id=$1`, uid); got != n {
+		t.Fatalf("user_notification rows = %d, want %d", got, n)
+	}
+	if got := e.count(`SELECT count(*) FROM river_job WHERE kind='security_notice_mail'`); got != n {
+		t.Fatalf("security_notice_mail jobs = %d, want %d", got, n)
+	}
+	if got := e.count(`SELECT count(*) FROM river_job j JOIN user_notification u ON u.id = (j.args->>'notification_id')::bigint
+		WHERE j.kind='security_notice_mail' AND u.user_id=$1`, uid); got != n {
+		t.Fatalf("mail jobs linked to the user's notification = %d, want %d", got, n)
+	}
+}
+
+// TestExportHTTPStrictEmptyObjectBodies: cancel and the decrypted audit accept
+// only `{}`; null, arrays, scalars, unknown/duplicate fields and trailing
+// JSON are 400 invalid_request with no state change.
+func TestExportHTTPStrictEmptyObjectBodies(t *testing.T) {
+	e := newEnv(t)
+	uid := e.users["sess-a"].UserID
+	j := e.create("sess-a", "idem-strict-create-01").job(t)
+	g := e.grant("sess-a", exporthttp.ReauthAction)
+	bad := []string{`null`, `[]`, `"x"`, `1`, `true`, `{"a":1}`, `{"a":1,"a":1}`, `{} {}`, `{}null`}
+	for i, body := range bad {
+		r := e.do(http.MethodPost, "/api/v1/exports/"+j.ID.String()+"/cancel", body, reqOpts{sess: "sess-a", csrf: true, idem: fmt.Sprintf("idem-strict-cancel-%02d", i)})
+		want(t, r, http.StatusBadRequest, "invalid_request")
+		r = e.do(http.MethodPost, "/api/v1/audit/export-decrypted", body, reqOpts{sess: "sess-a", csrf: true, reauth: g, idem: fmt.Sprintf("idem-strict-audit-%02d", i)})
+		want(t, r, http.StatusBadRequest, "invalid_request")
+	}
+	if e.count(`SELECT count(*) FROM export_job WHERE id=$1 AND status='queued'`, j.ID) != 1 {
+		t.Fatal("invalid cancel body changed the job")
+	}
+	e.assertDecryptedAuditSideEffects(t, uid, 0)
+	want(t, e.cancel("sess-a", j.ID, "idem-strict-cancel-ok"), http.StatusOK, "")
+}
+
+// seedTags adds n tags so the snapshot spans several 64 KiB ENGX1 frames.
+func (e *env) seedTags(sess string, n int) {
+	e.t.Helper()
+	e.exec(`INSERT INTO tag (user_id, display, normalized)
+		SELECT $1, d, d FROM (SELECT 'tag-' || lpad(g::text, 40, '0') AS d FROM generate_series(1, $2) g) s`,
+		e.users[sess].UserID, n)
+}
+
+func (e *env) jobFilePath(id uuid.UUID) string {
+	e.t.Helper()
+	var name string
+	if err := e.pool.QueryRow(context.Background(), `SELECT file_name FROM export_job WHERE id=$1`, id).Scan(&name); err != nil {
+		e.t.Fatal(err)
+	}
+	return filepath.Join(e.storage, name)
+}
+
+func httpGet(t *testing.T, url, sess string) (*http.Response, []byte, error) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: "sabk_session", Value: sess})
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, err := io.ReadAll(res.Body)
+	return res, body, err
+}
+
+// TestExportHTTPDownloadCorruptStreamAborts: over real HTTP, an intact
+// multi-frame snapshot downloads completely; a corrupted later frame makes
+// the client see a transport error, never a clean truncated 200.
+func TestExportHTTPDownloadCorruptStreamAborts(t *testing.T) {
+	e := newEnv(t)
+	e.seedTags("sess-a", 3000)
+	j := e.readyJob("sess-a", "idem-corrupt-ready-01")
+	srv := httptest.NewServer(e.handler)
+	defer srv.Close()
+	url := srv.URL + "/api/v1/exports/" + j.ID.String() + "/download"
+
+	res, body, err := httpGet(t, url, "sess-a")
+	if err != nil || res.StatusCode != http.StatusOK || !json.Valid(body) || len(body) < 3*65536 {
+		t.Fatalf("intact download: err=%v len=%d", err, len(body))
+	}
+
+	path := e.jobFilePath(j.ID)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)-1] ^= 0xff // break the final frame's AEAD tag
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, body, err = httpGet(t, url, "sess-a")
+	if err == nil {
+		t.Fatalf("corrupt download completed cleanly: status=%d len=%d", res.StatusCode, len(body))
+	}
+	if !strings.Contains(e.logs.String(), "export download stream aborted") {
+		t.Fatalf("abort not logged: %s", e.logs.String())
+	}
+}
+
+// TestExportHTTPDownloadErrorLogPrivacy: a missing spool file yields a
+// generic 500 and the log line carries no path, job or attempt ID.
+func TestExportHTTPDownloadErrorLogPrivacy(t *testing.T) {
+	e := newEnv(t)
+	j := e.readyJob("sess-a", "idem-logpriv-ready-01")
+	path := e.jobFilePath(j.ID)
+	var attempt uuid.UUID
+	if err := e.pool.QueryRow(context.Background(), `SELECT attempt_id FROM export_job WHERE id=$1`, j.ID).Scan(&attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	r := e.do(http.MethodGet, "/api/v1/exports/"+j.ID.String()+"/download", "", reqOpts{sess: "sess-a"})
+	want(t, r, http.StatusInternalServerError, "internal_error")
+	if r.header.Get("Cache-Control") != "no-store" || bytes.Contains(r.body, []byte(j.ID.String())) {
+		t.Fatalf("500 response = %v %s", r.header, r.body)
+	}
+	logs := e.logs.String()
+	if !strings.Contains(logs, "error_class=fs_not_exist") {
+		t.Fatalf("missing error class: %s", logs)
+	}
+	for _, secret := range []string{e.storage, filepath.Base(path), j.ID.String(), attempt.String()} {
+		if strings.Contains(logs, secret) {
+			t.Fatalf("log leaks %q: %s", secret, logs)
+		}
 	}
 }
