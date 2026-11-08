@@ -378,23 +378,34 @@ async function measureWasmOnLanding(browser, opts, criteria) {
   return { wasm_requests: wasm, lcp_ms: lcp };
 }
 
+// Each sample must land on /app with the App Shell omnibox; a redirect to login would otherwise be measured silently.
+// The session cookies are chained context to context: refresh rotation has no grace window, so reusing an
+// already-rotated refresh cookie would revoke the session (reuse detection) halfway through the samples.
+async function appSample(page) {
+  const lcp = await readLcp(page, '/app');
+  const onApp = new URL(page.url()).pathname === '/app' && (await page.locator('#omni').count()) > 0;
+  return onApp ? lcp : null;
+}
+
 async function measureAppLcp(browser, opts, storageState, criteria) {
+  let state = storageState;
   const cold = [];
   for (let i = 0; i < LCP_SAMPLES; i += 1) {
-    const ctx = await newContext(browser, opts, storageState);
+    const ctx = await newContext(browser, opts, state);
     const page = await ctx.newPage();
     await installLcpObserver(page);
     await throttle(page);
-    cold.push(await readLcp(page, '/app'));
+    cold.push(await appSample(page));
+    state = await ctx.storageState(); // in memory only
     await ctx.close();
   }
   const warm = [];
-  const ctx = await newContext(browser, opts, storageState);
+  const ctx = await newContext(browser, opts, state);
   const page = await ctx.newPage();
   await installLcpObserver(page);
   await throttle(page);
   await readLcp(page, '/app'); // primes the HTTP cache, not a sample
-  for (let i = 0; i < LCP_SAMPLES; i += 1) warm.push(await readLcp(page, '/app'));
+  for (let i = 0; i < LCP_SAMPLES; i += 1) warm.push(await appSample(page));
   await ctx.close();
 
   const result = {};
