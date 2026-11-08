@@ -3,9 +3,14 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/zone17th/engram/apps/api/internal/config"
@@ -17,7 +22,17 @@ import (
 // `error_class`, xem runWorker).
 const metricsListenerComponent = "worker_metrics_listener"
 
+// healthcheckTimeout là ngân sách của `worker -healthcheck` (kết nối + SELECT 1).
+const healthcheckTimeout = 2 * time.Second
+
 func main() {
+	// -healthcheck: image distroless không có shell/psql, nên healthcheck của
+	// Compose gọi lại chính binary. Nhánh nằm TRƯỚC config.Load và registry để
+	// không khởi động worker thứ hai và không phụ thuộc secret ngoài DATABASE_URL.
+	if len(os.Args) == 2 && os.Args[1] == "-healthcheck" {
+		os.Exit(healthcheck(context.Background(), os.Getenv("DATABASE_URL"), healthcheckTimeout, os.Stderr))
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("cấu hình không hợp lệ", slog.String("err", err.Error()))
@@ -32,6 +47,49 @@ func main() {
 		Stderr: os.Stderr,
 	}
 	os.Exit(defaultRegistry.dispatch(context.Background(), env, os.Args[1:], runWorker))
+}
+
+// healthcheck mở một kết nối riêng tới DATABASE_URL, chạy `SELECT 1` trong
+// timeout rồi trả 0 (khoẻ) hoặc 1. Lỗi in ra stderr KHÔNG kèm DSN (có mật khẩu).
+func healthcheck(ctx context.Context, dsn string, timeout time.Duration, stderr io.Writer) int {
+	if err := pingDB(ctx, dsn, timeout); err != nil {
+		_, _ = fmt.Fprintln(stderr, "worker healthcheck:", err)
+		return 1
+	}
+	return 0
+}
+
+func pingDB(ctx context.Context, dsn string, timeout time.Duration) error {
+	if dsn == "" {
+		return errors.New("DATABASE_URL trống")
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return errors.New("DATABASE_URL không hợp lệ")
+	}
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("kết nối DB thất bại: %w", sanitizeConnErr(ctx, err))
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	var one int
+	if err := conn.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil || one != 1 {
+		return fmt.Errorf("SELECT 1 thất bại: %w", sanitizeConnErr(ctx, err))
+	}
+	return nil
+}
+
+// sanitizeConnErr bỏ chi tiết pgconn (có thể chứa host/user) và chỉ giữ loại lỗi.
+func sanitizeConnErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err == nil {
+		return errors.New("kết quả sai")
+	}
+	return errors.New("lỗi kết nối hoặc truy vấn")
 }
 
 // runWorker là nhánh chạy worker không args (subcommand của registry không bao

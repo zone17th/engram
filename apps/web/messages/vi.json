@@ -128,6 +128,8 @@
     "notFoundTitle": "Không tìm thấy",
     "notFoundBody": "Mục này đã bị xoá, hoặc đường dẫn không thuộc tài khoản của bạn.",
     "backToList": "Về danh sách",
+    "pageNotFoundBody": "Trang này không tồn tại hoặc đã được chuyển đi.",
+    "backHome": "Về trang chủ",
     "sessionExpiredTitle": "Phiên đăng nhập đã hết hạn",
     "sessionExpiredBody": "Đăng nhập lại để tiếp tục. Thay đổi chưa lưu trên trang này đã được xoá để bảo vệ bạn.",
     "sessionExpiredCta": "Đăng nhập lại"
