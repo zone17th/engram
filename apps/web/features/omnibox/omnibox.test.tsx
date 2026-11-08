@@ -1512,6 +1512,9 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
     });
     const pickerOptions = within(pickerListbox).getAllByRole('option');
     expect(pickerOptions).toHaveLength(3); // 2 items + "Tạo mục mới cùng tên"
+    // F-37: the keyboard legend is hidden on phone width and on coarse pointers (it is noise on touch).
+    const legend = within(pickerDialog).getByTestId('dup-picker-legend');
+    expect(legend).toHaveClass('hidden', 'sm:inline', '[@media(pointer:coarse)]:!hidden');
 
     // Move to 2nd option (index 1 = dupItem2) and press Enter
     fireEvent.keyDown(pickerDialog, { key: 'ArrowDown' });
