@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -203,7 +204,7 @@ func TestProductionBootNoSMTP(t *testing.T) {
 		}
 
 		// With SMTP_HOST: api + worker boot and verification mail lands in the sink.
-		port, certFile, messages := startSTARTTLSSink(t)
+		port, certFile, messages := startSMTPSink(t, false)
 		cfgSMTP := loadProd(t, map[string]string{
 			"DATABASE_URL":  dsn,
 			"SSL_CERT_FILE": certFile,
@@ -247,25 +248,68 @@ func TestProductionBootNoSMTP(t *testing.T) {
 				t.Fatalf("go build %s: %v\n%s", target[1], err, out)
 			}
 		}
-		assertCmdBinariesBoot(t, apiBin, workerBin, dsn, "", 0, "", false, nil)
-		assertCmdBinariesBoot(t, apiBin, workerBin, dsn, "127.0.0.1", port, certFile, true, messages)
+		countTokens := func() int {
+			var n int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM email_verification`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		iport, icertFile, imessages := startSMTPSink(t, true)
+		t.Run("binary_no_smtp_host_boots_and_refuses_mail", func(t *testing.T) {
+			assertCmdBinariesBoot(t, apiBin, workerBin, dsn, binarySMTP{}, false, nil, countTokens, "binary-nosmtp@example.org")
+		})
+		t.Run("binary_starttls_delivers", func(t *testing.T) {
+			assertCmdBinariesBoot(t, apiBin, workerBin, dsn, binarySMTP{host: "127.0.0.1", port: port, certFile: certFile, tlsMode: "starttls"}, true, messages, countTokens, "binary-starttls@example.org")
+		})
+		t.Run("binary_implicit_tls_delivers", func(t *testing.T) {
+			assertCmdBinariesBoot(t, apiBin, workerBin, dsn, binarySMTP{host: "127.0.0.1", port: iport, certFile: icertFile, tlsMode: "implicit"}, true, imessages, countTokens, "binary-implicit@example.org")
+		})
+		for _, tc := range incompleteSMTPCases {
+			t.Run("binary_rejects_"+tc.name, func(t *testing.T) {
+				for _, bin := range []string{apiBin, workerBin} {
+					env := prodBinaryEnv(dsn, freeLocalAddr(t))
+					for k, v := range tc.env {
+						env = append(env, k+"="+v)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					cmd := exec.CommandContext(ctx, bin)
+					cmd.Env = env
+					out, err := cmd.CombinedOutput()
+					timedOut := ctx.Err() != nil
+					cancel()
+					var exitErr *exec.ExitError
+					if timedOut || !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || !strings.Contains(string(out), tc.want) {
+						t.Fatalf("%s with %s: err=%v timedOut=%v, want nonzero exit naming %s; out=%s", filepath.Base(bin), tc.name, err, timedOut, tc.want, out)
+					}
+					t.Logf("%s rejected %s: exit=%d", filepath.Base(bin), tc.name, exitErr.ExitCode())
+				}
+			})
+		}
 	})
 }
 
-func freeLocalAddr(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
+// incompleteSMTPCases are production SMTP configurations that config.Load must
+// reject, so api and worker fail closed at startup instead of booting without mail.
+var incompleteSMTPCases = []struct {
+	name string
+	env  map[string]string
+	want string
+}{
+	{"missing_from", map[string]string{"SMTP_HOST": "smtp.invalid", "SMTP_FROM": ""}, "SMTP_FROM"},
+	{"username_without_password", map[string]string{"SMTP_HOST": "smtp.invalid", "SMTP_FROM": "engram <no-reply@engram.example>", "SMTP_USERNAME": "mailer"}, "SMTP_PASSWORD"},
+	{"password_without_username", map[string]string{"SMTP_HOST": "smtp.invalid", "SMTP_FROM": "engram <no-reply@engram.example>", "SMTP_PASSWORD": "pw-only-test"}, "SMTP_USERNAME"},
+	{"tls_mode_none", map[string]string{"SMTP_HOST": "smtp.invalid", "SMTP_FROM": "engram <no-reply@engram.example>", "SMTP_TLS_MODE": "none"}, "SMTP_TLS_MODE"},
 }
 
-func assertCmdBinariesBoot(t *testing.T, apiBin, workerBin, dsn, smtpHost string, smtpPort int, certFile string, wantMail bool, messages func() []string) {
-	t.Helper()
-	httpAddr := freeLocalAddr(t)
+type binarySMTP struct {
+	host     string
+	port     int
+	certFile string
+	tlsMode  string
+}
+
+func prodBinaryEnv(dsn, httpAddr string) []string {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
@@ -287,13 +331,31 @@ func assertCmdBinariesBoot(t *testing.T, apiBin, workerBin, dsn, smtpHost string
 	} {
 		env = append(env, k+"="+secretB64(byte(i*35+1)))
 	}
-	if smtpHost != "" {
+	return env
+}
+
+func freeLocalAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr
+}
+
+func assertCmdBinariesBoot(t *testing.T, apiBin, workerBin, dsn string, smtp binarySMTP, wantMail bool, messages func() []string, countTokens func() int, email string) {
+	t.Helper()
+	httpAddr := freeLocalAddr(t)
+	env := prodBinaryEnv(dsn, httpAddr)
+	if smtp.host != "" {
 		env = append(env,
-			"SSL_CERT_FILE="+certFile,
-			"SMTP_HOST="+smtpHost,
-			"SMTP_PORT="+strconv.Itoa(smtpPort),
+			"SSL_CERT_FILE="+smtp.certFile,
+			"SMTP_HOST="+smtp.host,
+			"SMTP_PORT="+strconv.Itoa(smtp.port),
 			"SMTP_FROM=engram <no-reply@engram.example>",
-			"SMTP_TLS_MODE=starttls",
+			"SMTP_TLS_MODE="+smtp.tlsMode,
 		)
 	}
 	apiCmd := exec.Command(apiBin)
@@ -353,13 +415,25 @@ func assertCmdBinariesBoot(t *testing.T, apiBin, workerBin, dsn, smtpHost string
 		t.Fatalf("api binary /api/v1/auth/config: status=%d body=%s, want mail_delivery_available=%v", cfgResp.StatusCode, rawBody, wantMail)
 	}
 
-	if wantMail && messages != nil {
+	if wantMail {
 		beforeCount := len(messages())
-		assertHTTPVerifyEmailViaAPI(t, client, "http://"+httpAddr)
+		status, raw := httpSignupAndSendVerify(t, client, "http://"+httpAddr, email, nil)
+		if status != http.StatusAccepted {
+			t.Fatalf("POST /api/v1/auth/verify-email/send (%s): status=%d body=%s", smtp.tlsMode, status, raw)
+		}
 		afterMsgs := messages()
 		if len(afterMsgs) != beforeCount+1 || !strings.Contains(afterMsgs[len(afterMsgs)-1], "https://engram.example/app/auth/verify-email#token=") {
-			t.Fatalf("HTTP verify email via api binary: messages=%d (before %d)", len(afterMsgs), beforeCount)
+			t.Fatalf("HTTP verify email via api binary (%s): messages=%d (before %d)", smtp.tlsMode, len(afterMsgs), beforeCount)
 		}
+		t.Logf("api+worker binaries (%s): mail_delivery_available=true, verify-email/send=202, SMTP sink received message", smtp.tlsMode)
+	} else {
+		var before int
+		status, raw := httpSignupAndSendVerify(t, client, "http://"+httpAddr, email, func() { before = countTokens() })
+		assertMailUnavailable(t, status, raw)
+		if after := countTokens(); after != before {
+			t.Fatalf("email_verification rows %d -> %d: token created despite 503", before, after)
+		}
+		t.Logf("api+worker binaries (no SMTP_HOST): mail_delivery_available=false, verify-email/send=503 mail_delivery_unavailable, email_verification rows unchanged (%d)", before)
 	}
 
 	for _, p := range []*exec.Cmd{apiCmd, workerCmd} {
@@ -401,7 +475,7 @@ func startWorker(t *testing.T, ctx context.Context, cfg *config.Config) (context
 	return cancel, done
 }
 
-func startSTARTTLSSink(t *testing.T) (port int, certFile string, messages func() []string) {
+func startSMTPSink(t *testing.T, implicit bool) (port int, certFile string, messages func() []string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -442,10 +516,17 @@ func startSTARTTLSSink(t *testing.T) (port int, certFile string, messages func()
 			go func(c net.Conn) {
 				defer func() { _ = c.Close() }()
 				_ = c.SetDeadline(time.Now().Add(20 * time.Second))
+				tlsDone := false
+				if implicit {
+					tc := tls.Server(c, tlsCfg)
+					if tc.Handshake() != nil {
+						return
+					}
+					c, tlsDone = tc, true
+				}
 				r := bufio.NewReader(c)
 				w := func(l string) { _, _ = c.Write([]byte(l + "\r\n")) }
 				w("220 sink")
-				tlsDone := false
 				for {
 					line, err := r.ReadString('\n')
 					if err != nil {
@@ -502,19 +583,20 @@ func startSTARTTLSSink(t *testing.T) (port int, certFile string, messages func()
 	}
 }
 
-func assertHTTPVerifyEmailViaAPI(t *testing.T, client *http.Client, baseURL string) {
+func assertMailUnavailable(t *testing.T, status int, raw []byte) {
+	t.Helper()
+	if status != http.StatusServiceUnavailable || !strings.Contains(string(raw), "mail_delivery_unavailable") {
+		t.Fatalf("POST /api/v1/auth/verify-email/send: status=%d body=%s, want 503 mail_delivery_unavailable", status, raw)
+	}
+}
+
+// httpSignupAndSendVerify signs up email over HTTP (CSRF + cookies), calls
+// beforeSend (if any), then POSTs /api/v1/auth/verify-email/send and returns its
+// status and body.
+func httpSignupAndSendVerify(t *testing.T, client *http.Client, baseURL, email string, beforeSend func()) (int, []byte) {
 	t.Helper()
 	cookies := map[string]*http.Cookie{}
-	saveCookies := func(resp *http.Response) {
-		for _, c := range resp.Cookies() {
-			if c.Value == "" {
-				delete(cookies, c.Name)
-			} else {
-				cookies[c.Name] = c
-			}
-		}
-	}
-	doJSON := func(method, path, csrf, body string) (int, []byte) {
+	doJSON := func(method, path, body string) (int, []byte) {
 		var rdr io.Reader
 		if body != "" {
 			rdr = strings.NewReader(body)
@@ -527,8 +609,8 @@ func assertHTTPVerifyEmailViaAPI(t *testing.T, client *http.Client, baseURL stri
 		if body != "" {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		if csrf != "" {
-			req.Header.Set("X-CSRF-Token", csrf)
+		if c := cookies[authhttp.CookieCSRF]; c != nil {
+			req.Header.Set("X-CSRF-Token", c.Value)
 		}
 		for _, c := range cookies {
 			req.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
@@ -539,27 +621,29 @@ func assertHTTPVerifyEmailViaAPI(t *testing.T, client *http.Client, baseURL stri
 		}
 		raw, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		saveCookies(resp)
+		for _, c := range resp.Cookies() {
+			if c.Value == "" {
+				delete(cookies, c.Name)
+			} else {
+				cookies[c.Name] = c
+			}
+		}
 		return resp.StatusCode, raw
 	}
-	csrfStatus, csrfRaw := doJSON(http.MethodGet, "/api/v1/auth/csrf", "", "")
-	initCSRF := cookies[authhttp.CookieCSRF]
-	if csrfStatus != http.StatusNoContent || initCSRF == nil || initCSRF.Value == "" {
-		t.Fatalf("GET /api/v1/auth/csrf: status=%d body=%s cookie=%v", csrfStatus, csrfRaw, initCSRF)
+	if status, raw := doJSON(http.MethodGet, "/api/v1/auth/csrf", ""); status != http.StatusNoContent || cookies[authhttp.CookieCSRF] == nil {
+		t.Fatalf("GET /api/v1/auth/csrf: status=%d body=%s", status, raw)
 	}
-	signupStatus, signupRaw := doJSON(http.MethodPost, "/api/v1/auth/signup", initCSRF.Value,
-		`{"email":"binary-prod@example.org","password":"correcthorsebatterystaple"}`)
-	if signupStatus != http.StatusCreated {
-		t.Fatalf("POST /api/v1/auth/signup: status=%d body=%s", signupStatus, signupRaw)
+	body, _ := json.Marshal(map[string]string{"email": email, "password": "correcthorsebatterystaple"})
+	if status, raw := doJSON(http.MethodPost, "/api/v1/auth/signup", string(body)); status != http.StatusCreated {
+		t.Fatalf("POST /api/v1/auth/signup: status=%d body=%s", status, raw)
 	}
-	csrfCookie := cookies[authhttp.CookieCSRF]
-	if csrfCookie == nil {
+	if cookies[authhttp.CookieCSRF] == nil {
 		t.Fatal("missing rotated sabk_csrf cookie after signup")
 	}
-	verifyStatus, verifyRaw := doJSON(http.MethodPost, "/api/v1/auth/verify-email/send", csrfCookie.Value, `{}`)
-	if verifyStatus != http.StatusAccepted {
-		t.Fatalf("POST /api/v1/auth/verify-email/send: status=%d body=%s", verifyStatus, verifyRaw)
+	if beforeSend != nil {
+		beforeSend()
 	}
+	return doJSON(http.MethodPost, "/api/v1/auth/verify-email/send", `{}`)
 }
 
 // TestProductionStackComposeSmoke boots the actual infra/docker-compose.yml api
@@ -624,12 +708,12 @@ import tls from "node:tls";
 const cert = fs.readFileSync("/tmp/smtp/ca.pem");
 const key = fs.readFileSync("/tmp/smtp/key.pem");
 const msgs = [];
-const srv = net.createServer((c) => {
-  let s = c, tlsDone = false, buf = "", inData = false, dataBuf = "";
+const handle = (c, mode) => {
+  let s = c, tlsDone = mode === "implicit", buf = "", inData = false, dataBuf = "";
   const send = (l) => s.write(l + "\r\n");
   const onLine = (line) => {
     if (inData) {
-      if (line === ".") { inData = false; msgs.push(dataBuf); dataBuf = ""; send("250 queued"); }
+      if (line === ".") { inData = false; msgs.push({ mode, data: dataBuf }); dataBuf = ""; send("250 queued"); }
       else { dataBuf += line + "\n"; }
       return;
     }
@@ -653,8 +737,9 @@ const srv = net.createServer((c) => {
   };
   c.on("data", onChunk);
   send("220 sink");
-});
-srv.listen(2525, "0.0.0.0");
+};
+net.createServer((c) => handle(c, "starttls")).listen(2525, "0.0.0.0");
+tls.createServer({ cert, key }, (c) => handle(c, "implicit")).listen(2465, "0.0.0.0");
 http.createServer((_req, res) => {
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify(msgs));
@@ -693,6 +778,8 @@ http.createServer((_req, res) => {
       SMTP_PORT: ${SMOKE_SMTP_PORT:-587}
       SMTP_FROM: ${SMOKE_SMTP_FROM:-}
       SMTP_TLS_MODE: ${SMOKE_SMTP_TLS_MODE:-starttls}
+      SMTP_USERNAME: ${SMOKE_SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMOKE_SMTP_PASSWORD:-}
     volumes:
       - %s:/tmp/smtp:ro
   worker:
@@ -713,6 +800,8 @@ http.createServer((_req, res) => {
       SMTP_PORT: ${SMOKE_SMTP_PORT:-587}
       SMTP_FROM: ${SMOKE_SMTP_FROM:-}
       SMTP_TLS_MODE: ${SMOKE_SMTP_TLS_MODE:-starttls}
+      SMTP_USERNAME: ${SMOKE_SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMOKE_SMTP_PASSWORD:-}
     volumes:
       - %s:/tmp/smtp:ro
 `,
@@ -784,40 +873,108 @@ http.createServer((_req, res) => {
 		}
 	}
 
-	// Phase 1: APP_ENV=production without SMTP_HOST -> mail_delivery_available: false.
-	noSMTPEnv := []string{"SMOKE_SMTP_HOST=", "SMOKE_SMTP_PORT=587", "SMOKE_SMTP_FROM=", "SMOKE_SMTP_TLS_MODE=starttls"}
-	runCompose(noSMTPEnv, "up", "-d", "--build", "db", "migrate", "mail-sink-perms", "smtp-sink", "api", "worker")
-	waitAPIReady(false)
-	psNoSMTP := runCompose(noSMTPEnv, "ps")
-	t.Logf("docker compose ps (no SMTP):\n%s", psNoSMTP)
-	if !strings.Contains(psNoSMTP, "api") || !strings.Contains(psNoSMTP, "worker") || strings.Contains(psNoSMTP, "Exit ") {
-		t.Fatalf("unexpected docker compose ps (no SMTP):\n%s", psNoSMTP)
+	countTokens := func() int {
+		out := runCompose(nil, "exec", "-T", "db", "psql", "-U", "engram", "-d", "engram", "-tAc", "SELECT count(*) FROM email_verification")
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		n, err := strconv.Atoi(strings.TrimSpace(lines[len(lines)-1]))
+		if err != nil {
+			t.Fatalf("count email_verification: %v (%s)", err, out)
+		}
+		return n
+	}
+	assertPS := func(phase string, env []string) {
+		ps := runCompose(env, "ps")
+		t.Logf("docker compose ps (%s):\n%s", phase, ps)
+		if !strings.Contains(ps, "engram-api-1") || !strings.Contains(ps, "engram-worker-1") || strings.Contains(ps, "Exit") || strings.Contains(ps, "Restarting") {
+			t.Fatalf("unexpected docker compose ps (%s):\n%s", phase, ps)
+		}
+	}
+	type sinkMsg struct {
+		Mode string `json:"mode"`
+		Data string `json:"data"`
+	}
+	sinkMessages := func() []sinkMsg {
+		resp, err := client.Get("http://127.0.0.1:18025/messages")
+		if err != nil {
+			t.Fatalf("GET smtp-sink /messages: %v", err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		var msgs []sinkMsg
+		if err := json.Unmarshal(raw, &msgs); err != nil {
+			t.Fatalf("smtp-sink /messages: %v (%s)", err, raw)
+		}
+		return msgs
 	}
 
-	// Phase 2: APP_ENV=production with SMTP_HOST=smtp-sink -> mail_delivery_available: true + verify mail delivered.
-	smtpEnvVars := []string{
-		"SMOKE_SMTP_HOST=smtp-sink",
-		"SMOKE_SMTP_PORT=2525",
-		"SMOKE_SMTP_FROM=engram <no-reply@engram.example>",
-		"SMOKE_SMTP_TLS_MODE=starttls",
-	}
-	runCompose(smtpEnvVars, "up", "-d", "api", "worker")
-	waitAPIReady(true)
-	psSMTP := runCompose(smtpEnvVars, "ps")
-	t.Logf("docker compose ps (with SMTP):\n%s", psSMTP)
-	if !strings.Contains(psSMTP, "api") || !strings.Contains(psSMTP, "worker") || strings.Contains(psSMTP, "Exit ") {
-		t.Fatalf("unexpected docker compose ps (with SMTP):\n%s", psSMTP)
+	t.Run("stack_no_smtp_host_boots_and_refuses_mail", func(t *testing.T) {
+		env := []string{"SMOKE_SMTP_HOST=", "SMOKE_SMTP_PORT=587", "SMOKE_SMTP_FROM=", "SMOKE_SMTP_TLS_MODE=starttls"}
+		runCompose(env, "up", "-d", "--build", "db", "migrate", "mail-sink-perms", "smtp-sink", "api", "worker")
+		waitAPIReady(false)
+		assertPS("no SMTP_HOST", env)
+		var before int
+		status, raw := httpSignupAndSendVerify(t, client, "http://127.0.0.1:8080", "stack-nosmtp@example.org", func() { before = countTokens() })
+		assertMailUnavailable(t, status, raw)
+		if after := countTokens(); after != before {
+			t.Fatalf("email_verification rows %d -> %d: token created despite 503", before, after)
+		}
+		if n := len(sinkMessages()); n != 0 {
+			t.Fatalf("smtp-sink received %d messages without SMTP_HOST", n)
+		}
+		t.Logf("no SMTP_HOST: verify-email/send=503 mail_delivery_unavailable, email_verification rows unchanged (%d), sink empty", before)
+	})
+
+	for i, tc := range []struct{ mode, port string }{{"starttls", "2525"}, {"implicit", "2465"}} {
+		t.Run("stack_"+tc.mode+"_delivers", func(t *testing.T) {
+			env := []string{
+				"SMOKE_SMTP_HOST=smtp-sink",
+				"SMOKE_SMTP_PORT=" + tc.port,
+				"SMOKE_SMTP_FROM=engram <no-reply@engram.example>",
+				"SMOKE_SMTP_TLS_MODE=" + tc.mode,
+			}
+			runCompose(env, "up", "-d", "api", "worker")
+			waitAPIReady(true)
+			assertPS(tc.mode, env)
+			email := "stack-" + tc.mode + "@example.org"
+			if status, raw := httpSignupAndSendVerify(t, client, "http://127.0.0.1:8080", email, nil); status != http.StatusAccepted {
+				t.Fatalf("POST /api/v1/auth/verify-email/send (%s): status=%d body=%s", tc.mode, status, raw)
+			}
+			msgs := sinkMessages()
+			if len(msgs) != i+1 {
+				t.Fatalf("smtp-sink messages after %s = %d, want %d", tc.mode, len(msgs), i+1)
+			}
+			last := msgs[len(msgs)-1]
+			if last.Mode != tc.mode || !strings.Contains(last.Data, "https://engram.example/app/auth/verify-email#token=") || !strings.Contains(last.Data, email) {
+				t.Fatalf("smtp-sink last message (want %s to %s) = %+v", tc.mode, email, last)
+			}
+			t.Logf("SMTP_TLS_MODE=%s: mail_delivery_available=true, verify-email/send=202, smtp-sink received via %s listener", tc.mode, last.Mode)
+		})
 	}
 
-	assertHTTPVerifyEmailViaAPI(t, client, "http://127.0.0.1:8080")
-	sinkResp, err := client.Get("http://127.0.0.1:18025/messages")
-	if err != nil {
-		t.Fatalf("GET smtp-sink /messages: %v", err)
-	}
-	sinkRaw, _ := io.ReadAll(sinkResp.Body)
-	_ = sinkResp.Body.Close()
-	var sinkMsgs []string
-	if err := json.Unmarshal(sinkRaw, &sinkMsgs); err != nil || len(sinkMsgs) != 1 || !strings.Contains(sinkMsgs[0], "https://engram.example/app/auth/verify-email#token=") {
-		t.Fatalf("Docker smtp-sink messages = %s", sinkRaw)
+	for _, tc := range incompleteSMTPCases {
+		t.Run("stack_rejects_"+tc.name, func(t *testing.T) {
+			env := []string{"SMOKE_SMTP_PORT=587", "SMOKE_SMTP_TLS_MODE=starttls"}
+			for k, v := range tc.env {
+				env = append(env, "SMOKE_"+k+"="+v)
+			}
+			for _, svc := range []string{"api", "worker"} {
+				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+				cmd := exec.CommandContext(ctx, "docker", "compose",
+					"--env-file", filepath.Join(repoRoot, "infra", "image-pins.env"),
+					"-f", filepath.Join(repoRoot, "infra", "docker-compose.yml"),
+					"-f", overridePath,
+					"run", "--rm", "--no-deps", "-T", svc)
+				cmd.Dir = repoRoot
+				cmd.Env = append(os.Environ(), env...)
+				out, err := cmd.CombinedOutput()
+				timedOut := ctx.Err() != nil
+				cancel()
+				var exitErr *exec.ExitError
+				if timedOut || !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || !strings.Contains(string(out), tc.want) {
+					t.Fatalf("container %s with %s: err=%v timedOut=%v, want nonzero exit naming %s; out=%s", svc, tc.name, err, timedOut, tc.want, out)
+				}
+				t.Logf("container %s rejected %s: exit=%d", svc, tc.name, exitErr.ExitCode())
+			}
+		})
 	}
 }
