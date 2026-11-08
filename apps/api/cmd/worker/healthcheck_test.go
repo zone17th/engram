@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -34,24 +35,44 @@ func TestWorkerHealthcheck(t *testing.T) {
 		if err != nil {
 			t.Fatalf("listen: %v", err)
 		}
-		defer func() { _ = ln.Close() }()
+		// Hold every accepted socket open (never reply) until teardown, so the
+		// healthcheck must fail through its 2s context deadline, not EOF.
+		var mu sync.Mutex
+		var conns []net.Conn
+		done := make(chan struct{})
 		go func() {
+			defer close(done)
 			for {
 				c, err := ln.Accept()
 				if err != nil {
 					return
 				}
-				_ = c.Close()
+				mu.Lock()
+				conns = append(conns, c)
+				mu.Unlock()
 			}
 		}()
+		t.Cleanup(func() {
+			_ = ln.Close()
+			<-done
+			mu.Lock()
+			defer mu.Unlock()
+			for _, c := range conns {
+				_ = c.Close()
+			}
+		})
 		var stderr bytes.Buffer
 		dsn := "postgres://engram:SecretPw123@" + ln.Addr().String() + "/engram?sslmode=disable&connect_timeout=30"
 		start := time.Now()
 		if code := healthcheck(context.Background(), dsn, healthcheckTimeout, &stderr); code != 1 {
 			t.Fatalf("exit = %d, muốn 1", code)
 		}
-		if el := time.Since(start); el > healthcheckTimeout+time.Second {
-			t.Fatalf("healthcheck mất %v, vượt timeout %v", el, healthcheckTimeout)
+		el := time.Since(start)
+		if el < healthcheckTimeout-200*time.Millisecond || el > healthcheckTimeout+time.Second {
+			t.Fatalf("healthcheck mất %v, muốn ≈ timeout %v (stalled handshake)", el, healthcheckTimeout)
+		}
+		if !strings.Contains(stderr.String(), context.DeadlineExceeded.Error()) {
+			t.Fatalf("stderr = %q, muốn lỗi deadline", stderr.String())
 		}
 		if strings.Contains(stderr.String(), "SecretPw123") || strings.Contains(stderr.String(), ln.Addr().String()) {
 			t.Fatalf("stderr lộ DSN: %q", stderr.String())

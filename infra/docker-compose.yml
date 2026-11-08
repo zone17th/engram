@@ -7,13 +7,14 @@ x-engram-logging: &engram-logging
     max-size: '20m'
     max-file: '5'
 
-# Shared api+worker env (P06 Task 4, C03): ONE export at-rest secret for both
-# processes. The value is a public test-only key for dev/e2e stacks (decodes to
-# 51 bytes); staging/production take EXPORT_AT_REST_SECRET from
-# infra/deploy/compose.prod.yml, which rejects dev constants.
+# Shared api+worker env (P06 Task 4, C03). No compose-level export key fallback:
+# when EXPORT_AT_REST_SECRET is unset both processes receive "" and
+# config.loadExportAtRestSecret uses the SAME config.DevExportAtRestSecret in
+# APP_ENV=development only; staging/production reject "" and the dev constant
+# (boot fails closed). Production supplies a real shared value (Task 22).
 x-engram-app-env: &engram-app-env
   EXPORT_STORAGE_DIR: /var/lib/engram-exports
-  EXPORT_AT_REST_SECRET: ${EXPORT_AT_REST_SECRET:-ZW5ncmFtLWNvbXBvc2UtZGV2LWUyZS1leHBvcnQtYXQtcmVzdC10ZXN0LW9ubHktdjE=}
+  EXPORT_AT_REST_SECRET: ${EXPORT_AT_REST_SECRET:-}
   EXPORT_CREATE_PAUSED: ${EXPORT_CREATE_PAUSED:-false}
   # SMTP passthrough (empty SMTP_HOST -> mail sink / Noop per compose/mail.go).
   SMTP_HOST: ${SMTP_HOST:-}
