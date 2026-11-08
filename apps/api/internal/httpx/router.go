@@ -51,7 +51,7 @@ func NewRouter(d Deps) http.Handler {
 	r.Route("/api/v1", func(v1 chi.Router) {
 		v1.Get("/healthz", healthz)
 		v1.Get("/readyz", readyz(d))
-		v1.Handle("/metrics", d.Metrics)
+		v1.With(RequireInternalOrLoopback).Handle("/metrics", d.Metrics)
 		if d.MountAPI != nil {
 			d.MountAPI(v1, d)
 		}
