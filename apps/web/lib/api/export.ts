@@ -199,6 +199,10 @@ function isProblemBody(value: unknown): value is ProblemDetails {
   );
 }
 
+// NOTE (L1): `authMutate` in `@/lib/api/auth-fetch` (line 109) discards response bodies on HTTP 202.
+// `POST /api/v1/exports` returns `202 Accepted` with the created `ExportJob` JSON body, so we
+// perform the fetch here and mirror `auth-fetch.ts` (`access_expired` silent refresh + `session_invalid`
+// broadcast/device-key purge). Keep in sync with `apps/web/lib/api/auth-fetch.ts`.
 async function postCreateExportRaw(
   idempotencyKey: string,
   signal?: AbortSignal,

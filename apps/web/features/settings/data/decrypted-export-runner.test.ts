@@ -446,8 +446,59 @@ describe('features/settings/data/decrypted-export-runner', () => {
     expect(caughtErr?.sourceJob?.id).toBe(TEST_JOB_ID);
     expect(writableAborted).toBe(true);
     expect(writableClosed).toBe(false);
-  });
 
+    // Sub-case B: 401 reauth_required on POST /audit/export-decrypted -> sink aborted, no finalize, reauth_expired
+    let auditWritableAborted = false;
+    let auditWritableClosed = false;
+    const auditSaveFilePicker: ShowSaveFilePickerFn = async () => ({
+      createWritable: async () => ({
+        write: async () => undefined,
+        close: async () => {
+          auditWritableClosed = true;
+        },
+        abort: async () => {
+          auditWritableAborted = true;
+        },
+      }),
+    });
+
+    let auditCaughtErr: DecryptedExportError | null = null;
+    try {
+      await runDecryptedExport({
+        getVaultState: () => 'unlocked',
+        getCurrentVaultKeyId: () => TEST_VAULT_KEY_ID,
+        openEntry: async () => {
+          throw new Error('not reached');
+        },
+        opGeneration: 1,
+        reauthToken: 'expiring-at-audit',
+        deps: {
+          now: () => nowMs,
+          showSaveFilePicker: auditSaveFilePicker,
+          getLatestExport: async () => ({ job: readyJob }),
+          getDecryptedPage: async () => ({
+            source_export_id: TEST_JOB_ID,
+            vault_key_id: TEST_VAULT_KEY_ID,
+            total_entries: 0,
+            section: 'entries',
+            items: [],
+            next_cursor: null,
+          }),
+          postDecryptedAudit: async () => {
+            throw makeReauthError('reauth_required');
+          },
+        },
+      });
+    } catch (err) {
+      auditCaughtErr = err as DecryptedExportError;
+    }
+
+    expect(auditCaughtErr).toBeInstanceOf(DecryptedExportError);
+    expect(auditCaughtErr?.kind).toBe('reauth_expired');
+    expect(auditCaughtErr?.sourceJob?.id).toBe(TEST_JOB_ID);
+    expect(auditWritableAborted).toBe(true);
+    expect(auditWritableClosed).toBe(false);
+  });
   it('aborts sink immediately on vault lock (registerSecretFormReset) or key_id mismatch', async () => {
     const nowMs = Date.parse('2026-11-08T10:02:00Z');
     const readyJob = makeReadyJob();
@@ -503,5 +554,70 @@ describe('features/settings/data/decrypted-export-runner', () => {
     });
 
     expect(aborted).toBe(true);
+
+    // Sub-case B: entry.envelope.key_id mismatch -> sink aborted, key_mismatch
+    let mismatchAborted = false;
+    let mismatchClosed = false;
+    const mismatchPicker: ShowSaveFilePickerFn = async () => ({
+      createWritable: async () => ({
+        write: async () => undefined,
+        close: async () => {
+          mismatchClosed = true;
+        },
+        abort: async () => {
+          mismatchAborted = true;
+        },
+      }),
+    });
+
+    await expect(
+      runDecryptedExport({
+        getVaultState: () => 'unlocked',
+        getCurrentVaultKeyId: () => TEST_VAULT_KEY_ID,
+        openEntry: async () => {
+          throw new Error('must not be called when envelope.key_id mismatches');
+        },
+        opGeneration: 1,
+        reauthToken: 'grant-ok',
+        deps: {
+          now: () => nowMs,
+          showSaveFilePicker: mismatchPicker,
+          getLatestExport: async () => ({ job: readyJob }),
+          getDecryptedPage: async () => ({
+            source_export_id: TEST_JOB_ID,
+            vault_key_id: TEST_VAULT_KEY_ID,
+            total_entries: 1,
+            section: 'entries',
+            items: [
+              {
+                id: '3fa85f64-5717-4562-b3fc-2c963f66afa6',
+                item_id: '22222222-3333-4444-8555-666666666666',
+                type: 'text',
+                position: 0,
+                version: 1,
+                plaintext_len_bucket: 256,
+                envelope: {
+                  v: 1,
+                  alg: 'xchacha20poly1305-ietf',
+                  key_id: 'vk:mismatchedEntryKeyId00',
+                  nonce: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY',
+                  ct_enc: 'utf8',
+                },
+                ciphertext: 'ct-text',
+                created_at: '2026-10-01T00:05:00Z',
+                updated_at: '2026-10-01T00:05:00Z',
+              },
+            ],
+            next_cursor: null,
+          }),
+          postDecryptedAudit: async () => undefined,
+        },
+      }),
+    ).rejects.toMatchObject({
+      kind: 'key_mismatch',
+    });
+
+    expect(mismatchAborted).toBe(true);
+    expect(mismatchClosed).toBe(false);
   });
 });

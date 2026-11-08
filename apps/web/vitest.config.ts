@@ -19,6 +19,7 @@ export default defineConfig({
       'tests/**/*.test.{ts,tsx}',
       'lib/**/*.test.ts',
       'features/settings/security/vault/**/*.test.{ts,tsx}',
+      'features/settings/data/**/*.test.{ts,tsx}',
       'features/{items,entries,json-table,omnibox,tags}/**/*.test.{ts,tsx}',
       'components/**/*.test.{ts,tsx}',
     ],

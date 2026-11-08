@@ -27,8 +27,8 @@ export const SOURCE_REUSE_WINDOW_MS = 10 * 60 * 1000;
 /** 64 MiB UTF-8 byte budget for fallback `BlobPart[]` sink (plan §2.7.3). */
 export const FALLBACK_MAX_ESCAPED_BYTES = 64 * 1024 * 1024;
 
-export const SOURCE_POLL_INTERVAL_MS = 1_000;
-
+export const SOURCE_POLL_INTERVAL_MS = 1_500;
+export const OBJECT_URL_REVOKE_DELAY_MS = 30_000;
 export type DecryptedExportErrorKind =
   | 'vault_locked'
   | 'key_mismatch'
@@ -100,19 +100,21 @@ export function createBlobFallbackSink(
   options: {
     maxBytes?: number;
     onTriggerDownload?: (blob: Blob, filename: string) => void;
+    revokeDelayMs?: number;
   } = {},
 ): DecryptedExportSink {
   const maxBytes = options.maxBytes ?? FALLBACK_MAX_ESCAPED_BYTES;
+  const revokeDelayMs = options.revokeDelayMs ?? OBJECT_URL_REVOKE_DELAY_MS;
   let parts: BlobPart[] | null = [];
   let bytesWritten = 0;
   let objectUrl: string | null = null;
+  let revokeTimer: number | null = null;
   let aborted = false;
 
-  const cleanup = () => {
-    aborted = true;
-    if (parts) {
-      parts.length = 0;
-      parts = null;
+  const revokeUrlNow = () => {
+    if (revokeTimer !== null) {
+      clearTimeout(revokeTimer);
+      revokeTimer = null;
     }
     if (objectUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
       try {
@@ -124,6 +126,14 @@ export function createBlobFallbackSink(
     }
   };
 
+  const cleanup = () => {
+    aborted = true;
+    if (parts) {
+      parts.length = 0;
+      parts = null;
+    }
+    revokeUrlNow();
+  };
   return {
     kind: 'blob',
     maxBytes,
@@ -159,18 +169,22 @@ export function createBlobFallbackSink(
         typeof document !== 'undefined'
       ) {
         objectUrl = URL.createObjectURL(blob);
-        try {
-          const a = document.createElement('a');
-          a.href = objectUrl;
-          a.download = filename;
-          a.style.display = 'none';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-        } finally {
-          URL.revokeObjectURL(objectUrl);
-          objectUrl = null;
-        }
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        const scheduledUrl = objectUrl;
+        revokeTimer = Number(
+          setTimeout(() => {
+            revokeTimer = null;
+            if (objectUrl === scheduledUrl) {
+              revokeUrlNow();
+            }
+          }, revokeDelayMs),
+        );
       }
       return { filename, bytesWritten };
     },

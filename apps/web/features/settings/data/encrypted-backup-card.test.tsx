@@ -83,13 +83,21 @@ describe('features/settings/data/encrypted-backup-card (U17a #dulieu)', () => {
     const tomorrowExp = new Date(2026, 10, 9, 9, 5, 0).toISOString();
     const futureExp = new Date(2026, 10, 12, 16, 30, 0).toISOString();
 
-    expect(formatExpiryClock(todayExp, now, 'vi')).toBe('Tải được tới 14:12 hôm nay');
-    expect(formatExpiryClock(tomorrowExp, now, 'vi')).toBe('Tải được tới 09:05 ngày mai');
-    expect(formatExpiryClock(futureExp, now, 'vi')).toBe('Tải được tới 16:30 ngày 12/11/2026');
+    expect(formatExpiryClock(todayExp, now, 'vi')).toEqual({ kind: 'today', clock: '14:12' });
+    expect(formatExpiryClock(tomorrowExp, now, 'vi')).toEqual({ kind: 'tomorrow', clock: '09:05' });
+    expect(formatExpiryClock(futureExp, now, 'vi')).toEqual({
+      kind: 'date',
+      clock: '16:30',
+      date: '12/11/2026',
+    });
 
-    expect(formatExpiryClock(todayExp, now, 'en')).toBe('Available until 14:12 today');
-    expect(formatExpiryClock(tomorrowExp, now, 'en')).toBe('Available until 09:05 tomorrow');
-    expect(formatExpiryClock(futureExp, now, 'en')).toBe('Available until 16:30 on 2026-11-12');
+    expect(formatExpiryClock(todayExp, now, 'en')).toEqual({ kind: 'today', clock: '14:12' });
+    expect(formatExpiryClock(tomorrowExp, now, 'en')).toEqual({ kind: 'tomorrow', clock: '09:05' });
+    expect(formatExpiryClock(futureExp, now, 'en')).toEqual({
+      kind: 'date',
+      clock: '16:30',
+      date: '2026-11-12',
+    });
   });
 
   it('maps getLatestExport on mount across all states: null -> exp-idle, cancelled -> exp-idle, failed -> exp-failed, expired/ready<=now -> exp-expired', async () => {
@@ -329,6 +337,7 @@ describe('features/settings/data/encrypted-backup-card (U17a #dulieu)', () => {
     const alertNode = document.getElementById(describedById!);
     expect(alertNode).toHaveTextContent('14:12');
 
+    // Also verify L7 timer transitions exp-limit -> exp-idle after retry_after when short
     // Dispatch offline event -> exp-offline
     act(() => {
       window.dispatchEvent(new Event('offline'));

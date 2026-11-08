@@ -3,7 +3,7 @@
 import { ProblemError } from '@engram/shared-types';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
-import { useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader } from '@/components/ui/dialog';
 import { Field } from '@/components/ui/field';
@@ -55,7 +55,7 @@ export function ReadableExportDialog({
   const tAuth = useTranslations('auth');
   const { reauth } = useSession();
   const vault = useVault();
-  const pwHintId = useId();
+  const [progressPhase, setProgressPhase] = useState<'preparing_source' | 'decrypting'>('preparing_source');
 
   const isVaultUnlocked = vault.state === 'unlocked';
   const hasPassword = reauth.capabilities.hasPassword;
@@ -76,7 +76,9 @@ export function ReadableExportDialog({
     formatReadableExportFilename(now()),
   );
   const [limitClock, setLimitClock] = useState('14:12');
-
+  const [isPausedLimit, setIsPausedLimit] = useState(false);
+  const [failedKind, setFailedKind] = useState<'key_mismatch' | 'generic'>('key_mismatch');
+  const [wasCancelledInProgress, setWasCancelledInProgress] = useState(false);
   const confirmPasswordRef = useRef<HTMLInputElement | null>(null);
   const confirmOauthBtnRef = useRef<HTMLButtonElement | null>(null);
   const unlockLinkRef = useRef<HTMLAnchorElement | null>(null);
@@ -139,6 +141,7 @@ export function ReadableExportDialog({
   const wipeSecretInputs = useCallback(() => {
     setLoginPassword('');
     setReauthError(null);
+    setWasCancelledInProgress(false);
   }, []);
 
   useEffect(() => {
@@ -166,6 +169,8 @@ export function ReadableExportDialog({
       const abortController = new AbortController();
       activeAbortRef.current = abortController;
 
+      setWasCancelledInProgress(false);
+      setProgressPhase('preparing_source');
       setViewState('pl-progress');
       updateProgressState(0, 0, true);
 
@@ -199,7 +204,10 @@ export function ReadableExportDialog({
           },
           onProgress: (prog) => {
             if (!mountedRef.current || abortController.signal.aborted) return;
-            updateProgressState(prog.processedEntries, prog.totalEntries);
+            setProgressPhase(prog.phase);
+            if (prog.phase === 'decrypting') {
+              updateProgressState(prog.processedEntries, prog.totalEntries);
+            }
           },
           deps: {
             now,
@@ -236,8 +244,14 @@ export function ReadableExportDialog({
               setViewState('pl-reauth-expired');
               return;
             case 'rate_limited':
+              createIdempotencyKeyRef.current = null;
+              setIsPausedLimit(false);
+              setLimitClock(err.retryClock ?? '14:12');
+              setViewState('pl-limit');
+              return;
             case 'paused':
               createIdempotencyKeyRef.current = null;
+              setIsPausedLimit(true);
               setLimitClock(err.retryClock ?? '14:12');
               setViewState('pl-limit');
               return;
@@ -247,11 +261,17 @@ export function ReadableExportDialog({
             case 'too_large':
               setViewState('pl-too-large');
               return;
+            case 'key_mismatch':
+              setFailedKind('key_mismatch');
+              setViewState('pl-failed');
+              return;
             default:
+              setFailedKind('generic');
               setViewState('pl-failed');
               return;
           }
         }
+        setFailedKind('generic');
         setViewState('pl-failed');
       }
     },
@@ -316,7 +336,9 @@ export function ReadableExportDialog({
     const handle = window.requestAnimationFrame(() => {
       if (!mountedRef.current) return;
       if (viewState === 'pl-confirm') {
-        if (hasPassword && confirmPasswordRef.current) {
+        if (wasCancelledInProgress && statusHeadingRef.current) {
+          statusHeadingRef.current.focus();
+        } else if (hasPassword && confirmPasswordRef.current) {
           confirmPasswordRef.current.focus();
         } else if (confirmOauthBtnRef.current) {
           confirmOauthBtnRef.current.focus();
@@ -340,11 +362,15 @@ export function ReadableExportDialog({
       statusHeadingRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(handle);
-  }, [hasPassword, open, viewState]);
+  }, [hasPassword, open, viewState, wasCancelledInProgress]);
 
   const handleClose = useCallback(() => {
     abortInFlightExport();
     wipeSecretInputs();
+    activeGrantRef.current = null;
+    if (reauth.grant?.action === READABLE_EXPORT_ACTION) {
+      reauth.clearGrant();
+    }
     if (reauth.pendingAction === READABLE_EXPORT_ACTION) {
       reauth.cancel();
     }
@@ -354,8 +380,17 @@ export function ReadableExportDialog({
   const handleCancelProgress = useCallback(() => {
     abortInFlightExport();
     wipeSecretInputs();
-    onOpenChange(false);
-  }, [abortInFlightExport, onOpenChange, wipeSecretInputs]);
+    activeGrantRef.current = null;
+    if (reauth.grant?.action === READABLE_EXPORT_ACTION) {
+      reauth.clearGrant();
+    }
+    if (reauth.pendingAction === READABLE_EXPORT_ACTION) {
+      reauth.cancel();
+    }
+    void reauth.begin(READABLE_EXPORT_ACTION, READABLE_EXPORT_RETURN_TO).catch(() => undefined);
+    setWasCancelledInProgress(true);
+    setViewState('pl-confirm');
+  }, [abortInFlightExport, reauth, wipeSecretInputs]);
 
   const handlePasswordConfirm = useCallback(async () => {
     if (submittingReauth || !loginPassword) return;
@@ -371,6 +406,7 @@ export function ReadableExportDialog({
       const grant = await reauthPassword(READABLE_EXPORT_ACTION, pwd);
       if (!mountedRef.current) return;
       activeGrantRef.current = grant;
+      setSubmittingReauth(false);
       await startExportFlow(grant.grant);
     } catch (err) {
       if (!mountedRef.current) return;
@@ -493,73 +529,93 @@ export function ReadableExportDialog({
 
           {viewState === 'pl-confirm' && (
             <section data-view="pl-confirm">
-              <div
-                className="mb-4 rounded-md p-3.5"
-                style={{ background: 'var(--pale-orange)' }}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (hasPassword && loginPassword && !submittingReauth) {
+                    void handlePasswordConfirm();
+                  }
+                }}
               >
-                <p className="m-0 text-[13px] text-body">
-                  <strong>{t('warningStrong')}</strong> {t('warningRest')}
-                </p>
-              </div>
+                {wasCancelledInProgress && (
+                  <div
+                    ref={statusHeadingRef}
+                    tabIndex={-1}
+                    role="status"
+                    aria-live="polite"
+                    className="auth-status mb-4"
+                    data-testid="readable-export-cancelled-status"
+                  >
+                    {t('cancelledStatus')}
+                  </div>
+                )}
 
-              {hasPassword && (
-                <Field
-                  ref={confirmPasswordRef}
-                  id="plain-export-password"
-                  label={t('passwordLabel')}
-                  type="password"
-                  autoComplete="current-password"
-                  aria-describedby={pwHintId}
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  hint={t('passwordHint')}
-                  error={reauthError ?? undefined}
-                  disabled={submittingReauth}
-                  wrapperClassName="mb-4"
-                />
-              )}
-
-              {!hasPassword && reauthError && (
-                <div role="alert" className="auth-alert mb-3">
-                  {reauthError}
+                <div
+                  className="mb-4 rounded-md p-3.5"
+                  style={{ background: 'var(--pale-orange)' }}
+                >
+                  <p className="m-0 text-[13px] text-body">
+                    <strong>{t('warningStrong')}</strong> {t('warningRest')}
+                  </p>
                 </div>
-              )}
 
-              {hasGoogleOauth && (
-                <button
-                  ref={confirmOauthBtnRef}
-                  type="button"
-                  className="touch-target btn btn-secondary btn-sm mb-4"
-                  data-testid="readable-export-oauth-btn"
-                  disabled={submittingReauth}
-                  onClick={() => void handleGoogleReauth()}
-                >
-                  {t('verifyGoogleButton')}
-                </button>
-              )}
-
-              <div className="flex flex-wrap justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="tertiary"
-                  data-testid="readable-export-cancel-btn"
-                  disabled={submittingReauth}
-                  onClick={handleClose}
-                >
-                  {t('cancelButton')}
-                </Button>
                 {hasPassword && (
+                  <Field
+                    ref={confirmPasswordRef}
+                    id="plain-export-password"
+                    label={t('passwordLabel')}
+                    type="password"
+                    autoComplete="current-password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    hint={t('passwordHint')}
+                    error={reauthError ?? undefined}
+                    disabled={submittingReauth}
+                    wrapperClassName="mb-4"
+                  />
+                )}
+
+                {!hasPassword && reauthError && (
+                  <div role="alert" className="auth-alert mb-3">
+                    {reauthError}
+                  </div>
+                )}
+
+                {hasGoogleOauth && (
+                  <button
+                    ref={confirmOauthBtnRef}
+                    type="button"
+                    className="touch-target btn btn-secondary btn-sm mb-4"
+                    data-testid="readable-export-oauth-btn"
+                    disabled={submittingReauth}
+                    onClick={() => void handleGoogleReauth()}
+                  >
+                    {t('verifyGoogleButton')}
+                  </button>
+                )}
+
+                <div className="flex flex-wrap justify-end gap-2">
                   <Button
                     type="button"
-                    variant="primary"
-                    data-testid="readable-export-submit-btn"
-                    disabled={submittingReauth || !loginPassword}
-                    onClick={() => void handlePasswordConfirm()}
+                    variant="tertiary"
+                    data-testid="readable-export-cancel-btn"
+                    disabled={submittingReauth}
+                    onClick={handleClose}
                   >
-                    {t('exportButton')}
+                    {t('cancelButton')}
                   </Button>
-                )}
-              </div>
+                  {hasPassword && (
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      data-testid="readable-export-submit-btn"
+                      disabled={submittingReauth || !loginPassword}
+                    >
+                      {t('exportButton')}
+                    </Button>
+                  )}
+                </div>
+              </form>
             </section>
           )}
 
@@ -604,15 +660,17 @@ export function ReadableExportDialog({
                 className="auth-status mb-3"
               >
                 <span>
-                  {t('progressStatus', {
-                    processed: announcedProcessed,
-                    total: announcedTotal,
-                  })}
+                  {progressPhase === 'preparing_source'
+                    ? t('preparingSourceStatus')
+                    : t('progressStatus', {
+                        processed: announcedProcessed,
+                        total: announcedTotal,
+                      })}
                 </span>
                 <progress
                   className="mt-2 block w-full"
-                  max={rawTotal > 0 ? rawTotal : 1}
-                  value={rawTotal > 0 ? Math.min(rawProcessed, rawTotal) : 0}
+                  max={progressPhase === 'decrypting' && rawTotal > 0 ? rawTotal : 1}
+                  value={progressPhase === 'decrypting' && rawTotal > 0 ? Math.min(rawProcessed, rawTotal) : 0}
                   aria-label={t('progressLabel')}
                 />
               </div>
@@ -663,7 +721,7 @@ export function ReadableExportDialog({
                 role="alert"
                 className="auth-alert mb-3"
               >
-                {t('failedAlert')}
+                {failedKind === 'key_mismatch' ? t('failedAlert') : t('failedGenericAlert')}
               </div>
               <div className="flex flex-wrap justify-end gap-2">
                 <Button
@@ -694,7 +752,9 @@ export function ReadableExportDialog({
                 role="alert"
                 className="auth-warning mb-3"
               >
-                {t('limitWarning', { clock: limitClock })}
+                {isPausedLimit
+                  ? t('pausedWarning', { clock: limitClock })
+                  : t('limitWarning', { clock: limitClock })}
               </div>
               <div className="flex justify-end">
                 <Button
@@ -734,74 +794,82 @@ export function ReadableExportDialog({
 
           {viewState === 'pl-reauth-expired' && (
             <section data-view="pl-reauth-expired">
-              <div
-                ref={statusHeadingRef}
-                tabIndex={-1}
-                role="alert"
-                className="auth-alert mb-3"
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (hasPassword && loginPassword && !submittingReauth) {
+                    void handlePasswordConfirm();
+                  }
+                }}
               >
-                {t('reauthExpiredAlert')}
-              </div>
-
-              {hasPassword && (
-                <Field
-                  ref={expiredPasswordRef}
-                  id="plain-export-expired-password"
-                  label={t('passwordLabel')}
-                  type="password"
-                  autoComplete="current-password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  error={reauthError ?? undefined}
-                  disabled={submittingReauth}
-                  wrapperClassName="mb-4"
-                />
-              )}
-
-              {!hasPassword && reauthError && (
-                <div role="alert" className="auth-alert mb-3">
-                  {reauthError}
+                <div
+                  ref={statusHeadingRef}
+                  tabIndex={-1}
+                  role="alert"
+                  className="auth-alert mb-3"
+                >
+                  {t('reauthExpiredAlert')}
                 </div>
-              )}
 
-              <div className="flex flex-wrap justify-between gap-2">
-                {hasGoogleOauth ? (
-                  <button
-                    ref={expiredOauthBtnRef}
-                    type="button"
-                    className="touch-target btn btn-secondary btn-sm"
-                    data-testid="readable-export-expired-oauth-btn"
+                {hasPassword && (
+                  <Field
+                    ref={expiredPasswordRef}
+                    id="plain-export-expired-password"
+                    label={t('passwordLabel')}
+                    type="password"
+                    autoComplete="current-password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    error={reauthError ?? undefined}
                     disabled={submittingReauth}
-                    onClick={() => void handleGoogleReauth()}
-                  >
-                    {t('verifyGoogleButton')}
-                  </button>
-                ) : (
-                  <span />
+                    wrapperClassName="mb-4"
+                  />
                 )}
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="tertiary"
-                    data-testid="readable-export-cancel-btn"
-                    disabled={submittingReauth}
-                    onClick={handleClose}
-                  >
-                    {t('cancelButton')}
-                  </Button>
-                  {hasPassword && (
+
+                {!hasPassword && reauthError && (
+                  <div role="alert" className="auth-alert mb-3">
+                    {reauthError}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap justify-between gap-2">
+                  {hasGoogleOauth ? (
+                    <button
+                      ref={expiredOauthBtnRef}
+                      type="button"
+                      className="touch-target btn btn-secondary btn-sm"
+                      data-testid="readable-export-expired-oauth-btn"
+                      disabled={submittingReauth}
+                      onClick={() => void handleGoogleReauth()}
+                    >
+                      {t('verifyGoogleButton')}
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+                  <div className="flex gap-2">
                     <Button
                       type="button"
-                      variant="primary"
-                      data-testid="readable-export-continue-btn"
-                      disabled={submittingReauth || !loginPassword}
-                      onClick={() => void handlePasswordConfirm()}
+                      variant="tertiary"
+                      data-testid="readable-export-cancel-btn"
+                      disabled={submittingReauth}
+                      onClick={handleClose}
                     >
-                      {t('continueButton')}
+                      {t('cancelButton')}
                     </Button>
-                  )}
+                    {hasPassword && (
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        data-testid="readable-export-continue-btn"
+                        disabled={submittingReauth || !loginPassword}
+                      >
+                        {t('continueButton')}
+                      </Button>
+                    )}
+                  </div>
                 </div>
-              </div>
+              </form>
             </section>
           )}
 

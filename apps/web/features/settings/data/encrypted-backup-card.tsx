@@ -39,21 +39,26 @@ function isSameLocalDay(a: Date, b: Date): boolean {
   );
 }
 
+export type ExpiryClockParts =
+  | { kind: 'today'; clock: string; date?: undefined }
+  | { kind: 'tomorrow'; clock: string; date?: undefined }
+  | { kind: 'date'; clock: string; date: string };
+
 /**
  * Formats an expiry timestamp (`expires_at`) relative to `now` in `vi` or `en`
  * per plan Task 12 (`FE-R1-17`):
- * - same local day: "Tải được tới 14:12 hôm nay" / "Available until 14:12 today"
- * - next local day: "Tải được tới 09:05 ngày mai" / "Available until 09:05 tomorrow"
- * - further: includes date.
+ * - same local day: `{ kind: 'today', clock }`
+ * - next local day: `{ kind: 'tomorrow', clock }`
+ * - further: `{ kind: 'date', clock, date }`.
  */
 export function formatExpiryClock(
   expiresAtIso: string,
   nowInput: number | Date = Date.now(),
   locale: string = 'vi',
-): string {
+): ExpiryClockParts {
   const exp = new Date(expiresAtIso);
   if (Number.isNaN(exp.getTime())) {
-    return expiresAtIso;
+    return { kind: 'date', clock: expiresAtIso, date: expiresAtIso };
   }
   const now = typeof nowInput === 'number' ? new Date(nowInput) : new Date(nowInput.getTime());
   const clock = `${pad2(exp.getHours())}:${pad2(exp.getMinutes())}`;
@@ -62,21 +67,18 @@ export function formatExpiryClock(
   const isVi = locale === 'vi' || locale.startsWith('vi-');
 
   if (isSameLocalDay(exp, now)) {
-    return isVi ? `Tải được tới ${clock} hôm nay` : `Available until ${clock} today`;
+    return { kind: 'today', clock };
   }
   if (isSameLocalDay(exp, tomorrow)) {
-    return isVi ? `Tải được tới ${clock} ngày mai` : `Available until ${clock} tomorrow`;
+    return { kind: 'tomorrow', clock };
   }
 
   const day = pad2(exp.getDate());
   const month = pad2(exp.getMonth() + 1);
   const year = exp.getFullYear();
-  if (isVi) {
-    return `Tải được tới ${clock} ngày ${day}/${month}/${year}`;
-  }
-  return `Available until ${clock} on ${year}-${month}-${day}`;
+  const date = isVi ? `${day}/${month}/${year}` : `${year}-${month}-${day}`;
+  return { kind: 'date', clock, date };
 }
-
 export function formatBackupFileSize(sizeBytes: number | null | undefined, locale: string = 'vi'): string | null {
   if (typeof sizeBytes !== 'number' || !Number.isFinite(sizeBytes) || sizeBytes < 0) {
     return null;
@@ -156,7 +158,8 @@ export function EncryptedBackupCard({
   const pollAbortRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<number | null>(null);
   const expiryTimerRef = useRef<number | null>(null);
-
+  const limitTimerRef = useRef<number | null>(null);
+  const [limitRetryAfterSec, setLimitRetryAfterSec] = useState<number | null>(null);
   const stopPolling = useCallback(() => {
     if (pollAbortRef.current) {
       pollAbortRef.current.abort();
@@ -175,6 +178,12 @@ export function EncryptedBackupCard({
     }
   }, []);
 
+  const clearLimitTimer = useCallback(() => {
+    if (limitTimerRef.current !== null) {
+      clearTimeout(limitTimerRef.current);
+      limitTimerRef.current = null;
+    }
+  }, []);
   const clearLiveTimer = useCallback(() => {
     if (pendingLiveTimerRef.current !== null) {
       clearTimeout(pendingLiveTimerRef.current);
@@ -293,6 +302,24 @@ export function EncryptedBackupCard({
     };
   }, [clearExpiryTimer, currentJob?.expires_at, now, viewState]);
 
+  // Client timer transitioning exp-limit -> exp-idle when retry window passes (L7)
+  useEffect(() => {
+    clearLimitTimer();
+    if (viewState !== 'exp-limit' || !limitRetryAfterSec || limitRetryAfterSec <= 0) {
+      return;
+    }
+    limitTimerRef.current = window.setTimeout(() => {
+      if (!mountedRef.current) return;
+      setLimitRetryAfterSec(null);
+      setIsPausedLimit(false);
+      setViewState('exp-idle');
+    }, limitRetryAfterSec * 1000);
+
+    return () => {
+      clearLimitTimer();
+    };
+  }, [clearLimitTimer, limitRetryAfterSec, viewState]);
+
   const refreshLatest = useCallback(
     async (signal?: AbortSignal) => {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -342,13 +369,14 @@ export function EncryptedBackupCard({
       controller.abort();
       stopPolling();
       clearExpiryTimer();
+      clearLimitTimer();
       clearLiveTimer();
       if (typeof window !== 'undefined') {
         window.removeEventListener('offline', handleOffline);
         window.removeEventListener('online', handleOnline);
       }
     };
-  }, [clearExpiryTimer, clearLiveTimer, refreshLatest, stopPolling]);
+  }, [clearExpiryTimer, clearLimitTimer, clearLiveTimer, refreshLatest, stopPolling]);
 
   const handleStartBackup = useCallback(async () => {
     if (busy) return;
@@ -368,10 +396,12 @@ export function EncryptedBackupCard({
       if (classified.kind === 'rate_limited') {
         setIsPausedLimit(false);
         setLimitClock(classified.retryClock ?? '14:12');
+        setLimitRetryAfterSec(classified.retryAfterSeconds ?? 60);
         setViewState('exp-limit');
       } else if (classified.kind === 'paused') {
         setIsPausedLimit(true);
         setLimitClock(classified.retryClock ?? '14:12');
+        setLimitRetryAfterSec(classified.retryAfterSeconds ?? 600);
         setViewState('exp-limit');
       } else if (classified.kind === 'offline') {
         setViewState('exp-offline');
@@ -425,52 +455,42 @@ export function EncryptedBackupCard({
 
       setBusy(true);
       try {
-        const href = downloadUrl(currentJob.id);
-        const res = await fetch(href, {
-          method: 'GET',
-          credentials: 'same-origin',
-        });
+        const preflight = await getExport(currentJob.id);
         if (!mountedRef.current) return;
 
-        if (res.status === 410 || res.status === 404 || res.status === 409) {
+        const preflightState = mapExportJobToViewState(preflight, now());
+        if (preflightState !== 'exp-ready') {
           setViewState('exp-expired');
           await refreshLatest();
           return;
         }
-        if (!res.ok) {
-          setViewState('exp-failed');
+
+        setCurrentJob(preflight);
+        const href = downloadUrl(preflight.id);
+        const filename = `engram-backup-${(preflight.completed_at ?? preflight.created_at).slice(0, 10)}.sabk.json`;
+
+        if (typeof document !== 'undefined') {
+          const nativeLink = document.createElement('a');
+          nativeLink.href = href;
+          nativeLink.download = filename;
+          nativeLink.style.display = 'none';
+          document.body.appendChild(nativeLink);
+          nativeLink.click();
+          document.body.removeChild(nativeLink);
+        }
+      } catch (err) {
+        if (!mountedRef.current) return;
+        const classified = classifyExportError(err, now());
+        if (
+          classified.kind === 'export_expired' ||
+          classified.kind === 'not_found' ||
+          classified.kind === 'export_not_ready'
+        ) {
+          setViewState('exp-expired');
+          await refreshLatest();
           return;
         }
-
-        const blob = await res.blob();
-        if (!mountedRef.current) return;
-
-        let filename = `engram-backup-${(currentJob.completed_at ?? currentJob.created_at).slice(0, 10)}.sabk.json`;
-        const disposition = res.headers.get('Content-Disposition') ?? res.headers.get('content-disposition');
-        if (disposition) {
-          const match = /filename="([^"]+)"/.exec(disposition);
-          if (match?.[1]) {
-            filename = match[1];
-          }
-        }
-
-        if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
-          const objUrl = URL.createObjectURL(blob);
-          try {
-            const tempLink = document.createElement('a');
-            tempLink.href = objUrl;
-            tempLink.download = filename;
-            tempLink.style.display = 'none';
-            document.body.appendChild(tempLink);
-            tempLink.click();
-            document.body.removeChild(tempLink);
-          } finally {
-            URL.revokeObjectURL(objUrl);
-          }
-        }
-      } catch {
-        if (!mountedRef.current) return;
-        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        if (classified.kind === 'offline') {
           setViewState('exp-offline');
         } else {
           setViewState('exp-failed');
@@ -488,13 +508,19 @@ export function EncryptedBackupCard({
   const rawProcessed = currentJob?.items_processed ?? 0;
   const rawTotal = currentJob?.items_total ?? 0;
   const formattedSize = formatBackupFileSize(currentJob?.size_bytes, locale);
-  const expiryText = currentJob?.expires_at
+  const expiryParts = currentJob?.expires_at
     ? formatExpiryClock(currentJob.expires_at, now(), locale)
+    : null;
+  const expiryText = expiryParts
+    ? expiryParts.kind === 'today'
+      ? t('backup.expiryToday', { clock: expiryParts.clock })
+      : expiryParts.kind === 'tomorrow'
+        ? t('backup.expiryTomorrow', { clock: expiryParts.clock })
+        : t('backup.expiryDate', { clock: expiryParts.clock, date: expiryParts.date })
     : '';
   const defaultDownloadFilename = currentJob
     ? `engram-backup-${(currentJob.completed_at ?? currentJob.created_at).slice(0, 10)}.sabk.json`
     : 'engram-backup.sabk.json';
-
   return (
     <div className="card mb-3 p-5" data-testid="encrypted-backup-card">
       <div className="mb-1 text-[15px] font-semibold text-body">{t('backup.title')}</div>

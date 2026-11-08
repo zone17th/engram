@@ -254,7 +254,7 @@ describe('features/settings/data/readable-export-dialog (U17a #plainDlg)', () =>
     u3();
   });
 
-  it('runs pl-confirm -> pl-progress -> pl-done, and Escape in pl-progress aborts sink & returns focus to opener', async () => {
+  it('runs pl-confirm -> pl-progress -> pl-done, and Escape in pl-progress aborts sink, stays open showing cancelled status, and closing returns focus to opener', async () => {
     const nowMs = Date.parse('2026-11-08T10:02:00Z');
     const readyJob = makeReadyJob();
 
@@ -299,13 +299,24 @@ describe('features/settings/data/readable-export-dialog (U17a #plainDlg)', () =>
       expect(document.querySelector('[data-view="pl-progress"]')).toBeInTheDocument();
     });
 
-    // Press Escape during pl-progress -> aborts export, closes dialog, returns focus to opener
+    // Press Escape during pl-progress -> aborts export, stays open in pl-confirm with cancelled status focused (M8)
     fireEvent.keyDown(document.getElementById('plainDlg')!, { key: 'Escape', code: 'Escape' });
 
     await waitFor(() => {
-      expect(document.getElementById('plainDlg')).not.toBeInTheDocument();
+      expect(document.querySelector('[data-view="pl-confirm"]')).toBeInTheDocument();
     });
     expect(sinkAborted).toBe(true);
+    const cancelledStatus = screen.getByTestId('readable-export-cancelled-status');
+    expect(cancelledStatus).toHaveTextContent(viMessages.settings.data.readable.cancelledStatus);
+    await waitFor(() => {
+      expect(document.activeElement).toBe(cancelledStatus);
+    });
+
+    // Now close dialog -> returns focus to opener
+    fireEvent.click(screen.getByTestId('readable-export-cancel-btn'));
+    await waitFor(() => {
+      expect(document.getElementById('plainDlg')).not.toBeInTheDocument();
+    });
     expect(document.activeElement).toBe(screen.getByTestId('host-open-btn'));
     unmount();
 
@@ -541,7 +552,69 @@ describe('features/settings/data/readable-export-dialog (U17a #plainDlg)', () =>
     await waitFor(() => {
       expect(document.querySelector('[data-view="pl-failed"]')).toBeInTheDocument();
     });
+    expect(screen.getByRole('alert')).toHaveTextContent(viMessages.settings.data.readable.failedAlert);
     u4();
+
+    // 5. pl-limit paused variant when createExport returns 503 dependency_unavailable (M7)
+    mockGrant = {
+      grant: 'grant-active',
+      action: 'export.decrypted',
+      expires_at: '2026-11-08T14:05:00Z',
+    };
+    const { unmount: u5 } = renderDialogHost({
+      now: () => nowMs,
+      runnerDeps: {
+        now: () => nowMs,
+        showSaveFilePicker: null,
+        getLatestExport: async () => ({ job: null }),
+        createExport: async () => {
+          throw new ProblemError({
+            type: 'https://engram.zone17.click/problems/dependency_unavailable',
+            title: 'dependency_unavailable',
+            status: 503,
+            code: 'dependency_unavailable',
+            retry_after: 600,
+          });
+        },
+      },
+    });
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-limit"]')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('tạm dừng');
+    u5();
+
+    // 6. pl-failed generic variant when source export fails (non-key-mismatch, M7)
+    mockGrant = {
+      grant: 'grant-active',
+      action: 'export.decrypted',
+      expires_at: '2026-11-08T14:05:00Z',
+    };
+    const { unmount: u6 } = renderDialogHost({
+      now: () => nowMs,
+      runnerDeps: {
+        now: () => nowMs,
+        showSaveFilePicker: null,
+        getLatestExport: async () => ({
+          job: makeReadyJob({ status: EXPORT_STATUS.failed }),
+        }),
+        createExport: async () => {
+          throw new ProblemError({
+            type: 'https://engram.zone17.click/problems/internal_error',
+            title: 'internal_error',
+            status: 500,
+            code: 'internal_error',
+          });
+        },
+      },
+    });
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="pl-failed"]')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      viMessages.settings.data.readable.failedGenericAlert,
+    );
+    u6();
   });
 
   it('OAuth returnTo resume: when dialog opens while vault is locked and user then unlocks with valid grant, transitions directly to pl-progress -> pl-done', async () => {

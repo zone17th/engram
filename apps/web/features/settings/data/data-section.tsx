@@ -2,7 +2,6 @@
 
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState } from 'react';
-import { useSession } from '@/features/auth/session-provider';
 import { EncryptedBackupCard, type EncryptedBackupCardProps } from './encrypted-backup-card';
 import {
   READABLE_EXPORT_ACTION,
@@ -17,22 +16,20 @@ export interface DataSectionProps {
 
 export function DataSection({ backupCardProps, readableDialogProps }: DataSectionProps = {}) {
   const t = useTranslations('settings.data');
-  const { reauth } = useSession();
   const [readableOpen, setReadableOpen] = useState(false);
   const openerRef = useRef<HTMLElement | null>(null);
   const autoOpenedResumeRef = useRef(false);
 
   // OAuth re-auth resume (FE-R1-14 / advisor-dec-P06-019):
-  // Returning from Google OAuth to `/app/settings?reauth=export.decrypted#dulieu` or holding
-  // an active `export.decrypted` grant automatically opens `#plainDlg`.
+  // Returning from Google OAuth to `/app/settings?reauth=export.decrypted#dulieu`
+  // automatically opens `#plainDlg` once and strips the query parameter.
   useEffect(() => {
     if (autoOpenedResumeRef.current) return;
     const hasQueryResume =
       typeof window !== 'undefined' &&
       new URLSearchParams(window.location.search).get('reauth') === READABLE_EXPORT_ACTION;
-    const hasGrantResume = reauth.grant?.action === READABLE_EXPORT_ACTION;
 
-    if (hasQueryResume || hasGrantResume) {
+    if (hasQueryResume) {
       autoOpenedResumeRef.current = true;
       const defaultTrigger =
         typeof document !== 'undefined'
@@ -43,7 +40,7 @@ export function DataSection({ backupCardProps, readableDialogProps }: DataSectio
       }
       setReadableOpen(true);
 
-      if (hasQueryResume && typeof window !== 'undefined' && window.history?.replaceState) {
+      if (typeof window !== 'undefined' && window.history?.replaceState) {
         const params = new URLSearchParams(window.location.search);
         params.delete('reauth');
         const qs = params.toString();
@@ -54,8 +51,7 @@ export function DataSection({ backupCardProps, readableDialogProps }: DataSectio
         );
       }
     }
-  }, [reauth.grant?.action]);
-
+  }, []);
   return (
     <section id="dulieu" aria-labelledby="dulieuTitle">
       <h2 id="dulieuTitle" className="t-title-md mb-1 text-ink">
