@@ -212,22 +212,35 @@ describe.each(LOCALES)('U18 #err-server-500 / #err-not-found ($locale)', (entry)
     expect(screen.getByRole('link', { name: entry.messages.states.backToList })).toHaveAttribute('href', '/app');
   });
 
-  it('F2/W-1: public-site not-found (/vi/<x>, /<x>) is branded; locale comes from the URL on the client', () => {
-    // The shell is static (prerendered once), so the server markup is English and the client switches by pathname.
+  it('F2/W-1/R6-H1: public-site not-found is statically bilingual (vi + en in one server render), no client swap', () => {
+    // The shell is prerendered once, so it cannot depend on the URL: the same markup renders for /vi/<x>, /en/<x> and /<x>.
+    // Nothing reads window.location: change it and the markup must not change.
     window.history.replaceState(null, '', entry.locale === 'vi' ? '/vi/zzz-nothing' : '/zzz-nothing');
+    const { vi: viStates, en: enStates } = { vi: viMessages.states, en: enMessages.states };
     render(<GlobalNotFound />);
-    expect(screen.getByRole('heading', { name: entry.messages.states.notFoundTitle })).toBeInTheDocument();
-    // M-1 / R2-M1: page-level body, no item-specific sentence and no way into /app for an anonymous visitor; the only
-    // action is the site home, named in plain words (not the literal brand).
-    expect(screen.getByText(entry.messages.states.pageNotFoundBody)).toBeInTheDocument();
-    expect(screen.queryByText(entry.messages.states.notFoundBody)).toBeNull();
-    expect(screen.queryByRole('link', { name: entry.messages.states.backToList })).toBeNull();
-    const home = screen.getByRole('link', { name: entry.messages.states.backHome });
-    expect(home).toBe(screen.getByTestId('err-not-found-home'));
-    expect(home).toHaveAttribute('href', entry.locale === 'vi' ? '/vi' : '/');
-    expect(screen.queryByRole('link', { name: 'engram' })).toBeNull();
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading).toHaveTextContent(`${viStates.notFoundTitle} · ${enStates.notFoundTitle}`);
+    const headingEn = heading.querySelector('span[lang="en"]');
+    expect(headingEn).toHaveTextContent(enStates.notFoundTitle);
+    // M-1 / R2-M1: page-level body, no item-specific sentence and no way into /app for an anonymous visitor.
+    const body = screen.getByTestId('err-not-found-body');
+    expect(screen.getByText(viStates.pageNotFoundBody)).toBeInTheDocument();
+    expect(screen.getByText(viStates.pageNotFoundBody)).not.toHaveAttribute('lang');
+    expect(screen.getByText(enStates.pageNotFoundBody)).toHaveAttribute('lang', 'en');
+    expect(body).toContainElement(screen.getByText(enStates.pageNotFoundBody));
+    expect(screen.queryByText(viStates.notFoundBody)).toBeNull();
+    expect(screen.queryByText(enStates.notFoundBody)).toBeNull();
+    expect(screen.queryByRole('link', { name: /engram/i })).toBeNull();
+    // One action, one fixed href (no pathname branching), bilingual label with an lang="en" part.
+    const links = screen.getAllByRole('link');
+    expect(links).toHaveLength(1);
+    const home = screen.getByTestId('err-not-found-home');
+    expect(home).toBe(links[0]);
+    expect(home).toHaveTextContent(`${viStates.backHome} · ${enStates.backHome}`);
+    expect(home.querySelector('span[lang="en"]')).toHaveTextContent(enStates.backHome);
+    expect(home).toHaveAttribute('href', '/');
     expect(document.querySelector('main#main-content')).not.toBeNull();
-    expect(document.documentElement.lang).toBe(entry.locale);
+    expect(document.documentElement.lang).toBe('vi');
   });
 });
 

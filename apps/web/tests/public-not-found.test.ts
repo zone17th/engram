@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { localeFromPathname } from '../components/states/public-not-found';
 import { htmlRelativePathToRoutes, NOT_FOUND_ROUTE_KEY } from '../scripts/postbuild-csp-manifest.mjs';
 
 const WEB = resolve(__dirname, '..');
@@ -31,13 +30,16 @@ describe('public 404 stays static (W-1)', () => {
     expect(htmlRelativePathToRoutes('_not-found.html')).toEqual([NOT_FOUND_ROUTE_KEY]);
   });
 
-  it('locale is read from the URL: /vi and /vi/... are Vietnamese, everything else English', () => {
-    expect(localeFromPathname('/vi')).toBe('vi');
-    expect(localeFromPathname('/vi/zzz')).toBe('vi');
-    expect(localeFromPathname('/vi/foo.php')).toBe('vi');
-    expect(localeFromPathname('/video')).toBe('en');
-    expect(localeFromPathname('/zzz')).toBe('en');
-    expect(localeFromPathname('/foo.php')).toBe('en');
-    expect(localeFromPathname(null)).toBe('en');
+  it('public-not-found is a static server component: no client locale swap (R6-H1, advisor-dec-P06-050)', () => {
+    const src = read('components/states/public-not-found.tsx').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(src).not.toMatch(/['"]use client['"]/);
+    expect(src).not.toMatch(/useSyncExternalStore|useEffect|useState|window\.|document\.|usePathname|localeFromPathname|location/);
+  });
+
+  it('global-not-found builds both locales from messages/{vi,en}.json at build time', () => {
+    const src = read('app/global-not-found.tsx');
+    expect(src).toMatch(/from '@\/messages\/en\.json'/);
+    expect(src).toMatch(/from '@\/messages\/vi\.json'/);
+    expect(src).toMatch(/<html lang="vi"/);
   });
 });
