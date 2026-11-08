@@ -238,6 +238,19 @@ function isOmniboxSearchQueryKey(queryKey: readonly unknown[]): boolean {
   return typeof qVal === 'string' && qVal.length > 0;
 }
 
+/**
+ * F-33: the long privacy hint is shown in full on the first Omnibox of a page session. After that it is replaced by
+ * a small 'i' button that expands the three short privacy lines on demand. Module state (not storage) so a reload
+ * is a fresh session and the first-time wording is never lost to a stale flag.
+ */
+let privacyHintShown = false;
+
+/** Window event that fills the home Omnibox with `detail.value` (F-34 example buttons). */
+export const OMNIBOX_FILL_EVENT = 'engram:omnibox-fill';
+export function __resetOmniboxPrivacyHintForTests(): void {
+  privacyHintShown = false;
+}
+
 export function Omnibox({
   compact = false,
   className,
@@ -265,6 +278,8 @@ export function Omnibox({
   const popId = `${baseId}-pop`;
   const listboxId = `${baseId}-listbox`;
   const hintId = `${baseId}-hint`;
+  const [hintCollapsed] = useState(() => privacyHintShown);
+  const [hintOpen, setHintOpen] = useState(false);
   const liveId = `${baseId}-live`;
   const guardAlertId = `${baseId}-guard-alert`;
   const lockClearedNoticeId = `${baseId}-lock-cleared-notice`;
@@ -1328,6 +1343,20 @@ export function Omnibox({
       window.removeEventListener('resize', handleResize);
     };
   }, [closeListbox, compact, syncTextareaHeight]);
+
+  // F-34: the empty-home example buttons ask the (non-compact) Omnibox to take their text. Same single write path as
+  // every programmatic draft change (setDraft), then focus, so the user can edit and press Enter.
+  useEffect(() => {
+    if (compact) return;
+    const onFill = (event: Event) => {
+      const value = (event as CustomEvent<{ value?: unknown }>).detail?.value;
+      if (typeof value !== 'string') return;
+      setDraft(value);
+      textareaRef.current?.focus();
+    };
+    window.addEventListener(OMNIBOX_FILL_EVENT, onFill);
+    return () => window.removeEventListener(OMNIBOX_FILL_EVENT, onFill);
+  }, [compact, setDraft]);
 
   // Dropdown model derived from the merge snapshot (plan 2.8): visual order === keyboard order === `navKeys`.
   const mergeState = mergeStateRef.current;
@@ -2507,6 +2536,10 @@ export function Omnibox({
   const showTagHint =
     parsed.mode === 'tag-filter' && (hasNonEmptyInput || tabCannotFill) && guardKind === null;
   const showHint = !isAddLike && (showSearchHint || showTagHint);
+  useEffect(() => {
+    if (showHint) privacyHintShown = true;
+  }, [showHint]);
+  const hintVisible = showHint && (!hintCollapsed || hintOpen);
   const isSearchInvalid = parsed.mode === 'search' && hasNonEmptyInput && !parsed.searchable;
 
   const hasGrammarErr = parsed.mode === 'add-invalid';
@@ -2610,6 +2643,7 @@ export function Omnibox({
             data-testid="omnibox-semantic-toggle"
             aria-pressed={semanticSuggest}
             aria-label={tSearchToggle('semanticAriaLabel')}
+            title={tSearchToggle('similarMeaningTooltip')}
             disabled={semanticTogglePending}
             // RV-T17-2-FE1-5: WebKit does not focus a clicked <button>; without this the textarea blurs with a null
             // relatedTarget, `handleRootBlur` closes the listbox and the re-issue finds no snapshot.
@@ -2622,7 +2656,15 @@ export function Omnibox({
             <span aria-hidden="true">≈</span>
           </button>
         ) : null}
-        <Kbd className={compact ? 'hidden lg:inline' : undefined}>Ctrl K</Kbd>
+        {/* F-35: a keyboard shortcut keycap is noise on touch screens. */}
+        <Kbd
+          className={cn(
+            compact ? 'hidden lg:inline' : 'hidden sm:inline',
+            '[@media(pointer:coarse)]:!hidden',
+          )}
+        >
+          Ctrl K
+        </Kbd>
       </label>
 
       <div
@@ -2691,14 +2733,16 @@ export function Omnibox({
 
         <div
           id={hintId}
-          hidden={!showHint}
+          hidden={!hintVisible}
           data-testid="omnibox-hint"
           className={cn(
             'omni-hint-line text-[12px] leading-[1.45] text-muted',
-            !showHint && 'hidden',
+            !hintVisible && 'hidden',
           )}
         >
-          {tabCannotFill
+          {hintCollapsed && hintOpen
+            ? [tSearchHelp('privacyHint1'), tSearchHelp('privacyHint2'), tSearchHelp('privacyHint3')].join(' ')
+            : tabCannotFill
             ? tSearchTab('cannotFill')
             : helpTextKey === 'content.omnibox.tagHint'
               ? tOmni('tagHint')
@@ -2712,6 +2756,22 @@ export function Omnibox({
                       mono: (chunks) => <span className="mono">{chunks}</span>,
                     })}
         </div>
+
+        {showHint && hintCollapsed ? (
+          <button
+            type="button"
+            data-testid="omnibox-hint-info"
+            aria-expanded={hintOpen}
+            aria-controls={hintId}
+            aria-label={tSearchHelp('privacyHint1')}
+            title={tSearchHelp('privacyHint1')}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => setHintOpen((open) => !open)}
+            className="omni-hint-info mono"
+          >
+            i
+          </button>
+        ) : null}
 
         <div
           id={liveId}

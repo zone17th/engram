@@ -520,7 +520,8 @@ export function SuggestList({
         </div>
       ) : null}
 
-      {nearPending ? (
+      {/* F-23: with no row to append to, "Searching by meaning…" has nothing to resolve into; hide it on the no-match view. */}
+      {nearPending && !showEmpty ? (
         <div className="sugg-status-line" data-omni-status="near-pending" data-testid="omnibox-status-near-pending">
           <span>{t('state.nearPending')}</span>
         </div>

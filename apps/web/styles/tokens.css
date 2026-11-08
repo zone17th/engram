@@ -1253,7 +1253,17 @@ section[data-view] .t-label { overflow-wrap: anywhere; }
   }
 }
 
+/* F-33: collapsed privacy hint trigger. */
+.omni-hint-info {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; border-radius: var(--r-pill);
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+  font-size: 12px; font-weight: 700; cursor: pointer; align-self: flex-start;
+}
+.omni-hint-info:hover { border-color: var(--border-strong); color: var(--body); }
+
 @media (pointer: coarse) {
+  .omni-hint-info { width: 44px; height: 44px; }
   .sugg-row,
   .omni-sem-btn {
     min-height: 44px;

@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { useTranslations } from 'next-intl';
 import { AppHeader } from '@/components/app-shell/app-header';
-import { EmptyState } from '@/components/app-shell/empty-state';
+import { EmptyExamples, EmptyState } from '@/components/app-shell/empty-state';
 import { Omnibox } from '@/components/app-shell/omnibox';
 import { Rail } from '@/components/app-shell/rail';
 import { RecentItems } from '@/components/app-shell/recent-items';
@@ -34,20 +34,11 @@ function HomeEmptyVaultState() {
       <p className="t-body mx-auto mb-5 max-w-[480px] text-muted">{tEmpty('body')}</p>
       <div className="flex max-w-full flex-col items-center gap-2">
         <p className="t-caption m-0 text-muted">{tEmpty('examplesLabel')}</p>
-        <ul
-          data-testid="home-empty-examples"
-          className="m-0 flex max-w-full list-none flex-wrap justify-center gap-2 p-0"
-        >
-          <li className="mono max-w-full break-words rounded-md border border-line bg-surface px-2.5 py-1 text-[12px] text-body [overflow-wrap:anywhere]">
-            {tEmpty('example1')}
-          </li>
-          <li className="mono max-w-full break-words rounded-md border border-line bg-surface px-2.5 py-1 text-[12px] text-body [overflow-wrap:anywhere]">
-            {tEmpty('example2')}
-          </li>
-          <li className="mono max-w-full break-words rounded-md border border-line bg-surface px-2.5 py-1 text-[12px] text-body [overflow-wrap:anywhere]">
-            {tEmpty('example3')}
-          </li>
-        </ul>
+        <EmptyExamples
+          testId="home-empty-examples"
+          fillHint={tEmpty('fillHint')}
+          examples={[tEmpty('example1'), tEmpty('example2'), tEmpty('example3')]}
+        />
       </div>
     </div>
   );

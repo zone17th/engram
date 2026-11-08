@@ -6,7 +6,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { NextIntlClientProvider } from 'next-intl';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Omnibox } from '@/components/app-shell/omnibox';
+import { Omnibox, __resetOmniboxPrivacyHintForTests } from '@/components/app-shell/omnibox';
 import { UndoToastProvider } from '@/components/ui/undo-toast';
 import { assertVaultSecretElementAttributes } from '@/features/entries/secret-input-props';
 import { assertNoPlaintextAttrs } from '@/features/entries/test-utils/assert-no-plaintext-attrs';
@@ -373,6 +373,7 @@ async function typeNativeStringYielding(
 describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and lock reset', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    __resetOmniboxPrivacyHintForTests();
     mockRouterPush.mockClear();
     mockRouterReplace.mockClear();
     registeredResetFns.clear();
@@ -1286,6 +1287,7 @@ describe('Omnibox — P04-T18a search, tag filter, ARIA, secret attributes, and 
 describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, save plan, retry, Undo, and lifecycle', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    __resetOmniboxPrivacyHintForTests();
     mockRouterPush.mockClear();
     mockRouterReplace.mockClear();
     registeredResetFns.clear();
@@ -3636,6 +3638,7 @@ describe('Omnibox — P04-T18b quick-add preview, lookup on Enter, U9 picker, sa
 describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill + pin, # mode, ≈ toggle, 429, and native-input follow-ups', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    __resetOmniboxPrivacyHintForTests();
     mockRouterPush.mockClear();
     mockRouterReplace.mockClear();
     registeredResetFns.clear();
@@ -4981,5 +4984,53 @@ describe('Omnibox — P05-T17 PR 17-2a grouped dropdown, Enter /search, Tab fill
       expect(document.getElementById('omni-pop')).toBeNull();
       expect(observers).toHaveLength(0);
     });
+  });
+});
+
+describe('Omnibox — P06 F-23/F-33/F-35 ux-audit polish', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    __resetOmniboxPrivacyHintForTests();
+    mockVaultState = 'unlocked';
+  });
+
+  it('F-33: the first Omnibox shows the full privacy hint; later ones show a small i that expands the three lines on demand', async () => {
+    const first = renderOmnibox(<Omnibox />, { locale: 'en' });
+    fireEvent.change(screen.getByRole('textbox', { name: enMessages.content.omnibox.ariaLabel }), {
+      target: { value: 'wifi' },
+    });
+    expect(screen.getByTestId('omnibox-hint')).toBeVisible();
+    expect(screen.queryByTestId('omnibox-hint-info')).toBeNull();
+    first.unmount();
+
+    renderOmnibox(<Omnibox />, { locale: 'en' });
+    fireEvent.change(screen.getByRole('textbox', { name: enMessages.content.omnibox.ariaLabel }), {
+      target: { value: 'wifi' },
+    });
+    const info = screen.getByTestId('omnibox-hint-info');
+    expect(info).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('omnibox-hint')).not.toBeVisible();
+    fireEvent.click(info);
+    expect(info).toHaveAttribute('aria-expanded', 'true');
+    const open = screen.getByTestId('omnibox-hint');
+    expect(open).toBeVisible();
+    expect(open).toHaveTextContent(enMessages.search.help.privacyHint1);
+    expect(open).toHaveTextContent(enMessages.search.help.privacyHint3);
+  });
+
+  it('F-35: the Ctrl K keycap is not rendered for touch (coarse-pointer hide class) and F-23: the ≈ toggle has a tooltip', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['auth', 'me', getSessionEpoch()], {
+      user: { id: USER_A_ID },
+      settings: { semantic_suggest: false },
+      features: { semantic_available: true, semantic_external: true },
+    });
+    renderOmnibox(<Omnibox />, { locale: 'en', queryClient });
+    const kbd = screen.getByText('Ctrl K');
+    expect(kbd.className).toContain('[@media(pointer:coarse)]:!hidden');
+    expect(screen.getByTestId('omnibox-semantic-toggle')).toHaveAttribute(
+      'title',
+      enMessages.search.toggle.similarMeaningTooltip,
+    );
   });
 });

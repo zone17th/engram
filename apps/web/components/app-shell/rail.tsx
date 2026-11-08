@@ -56,7 +56,7 @@ export function Rail({
       tabIndex={-1}
       aria-label={tRail('ariaLabel')}
       data-testid="rail-tags"
-      className="flex min-w-0 flex-col gap-3"
+      className="flex min-w-0 flex-col gap-3 max-lg:order-2"
     >
       <div className="flex items-baseline justify-between gap-2">
         <p className="t-label m-0 text-muted">{tRail('heading')}</p>

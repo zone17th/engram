@@ -186,6 +186,24 @@ describe('AppPage (/app — Task 19)', () => {
     expect(examples[2]?.textContent).toBe(viMessages.content.home.empty.example3);
   });
 
+  // F-34: the examples are buttons that fill the Omnibox; nothing is saved until Enter.
+  it('flag on + empty vault: clicking an example button fills the omnibox input', async () => {
+    vi.stubEnv('NEXT_PUBLIC_CONTENT_ENABLED', 'true');
+    vi.spyOn(contentApi, 'tagsList').mockResolvedValue({ items: [], next_cursor: null });
+    vi.spyOn(contentApi, 'itemsList').mockResolvedValue({ items: [], next_cursor: null });
+
+    renderHomePage();
+
+    const list = await screen.findByTestId('home-empty-examples');
+    const buttons = within(list).getAllByRole('button');
+    expect(buttons).toHaveLength(3);
+    expect(buttons[0]).toHaveAttribute('title', viMessages.content.home.empty.fillHint);
+    fireEvent.click(buttons[1]!);
+    const input = document.querySelector('[data-omnibox-input]') as HTMLTextAreaElement;
+    expect(input.value).toBe(viMessages.content.home.empty.example2);
+    expect(input).toHaveFocus();
+  });
+
   it('filters recent items by tag ID in URL (?tag=<id>) and clears the filter', async () => {
     vi.stubEnv('NEXT_PUBLIC_CONTENT_ENABLED', 'true');
     vi.spyOn(contentApi, 'tagsList').mockResolvedValue({
