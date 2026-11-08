@@ -279,6 +279,9 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 	defer stop()
 
 	reg, metrics := obs.NewRegistry()
+	if err := RegisterNoticeMailMetrics(reg); err != nil {
+		return fmt.Errorf("register notice mail metrics: %w", err)
+	}
 	var calibOverride embedid.CalibrationLookup
 	var beforeStartHooks []func(ctx context.Context, pool *pgxpool.Pool)
 	var afterStartHooks []func(ctx context.Context, pool *pgxpool.Pool)
