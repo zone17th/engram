@@ -10,8 +10,7 @@ import { useSession } from '@/features/auth/session-provider';
 import type { ReauthAction } from '@/lib/api/auth';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 
-function actionLabel(action: ReauthAction | null, t: (key: string) => string): string {
-  if (!action) return t('reauth.pending');
+function actionLabel(action: ReauthAction, t: (key: string) => string): string {
   return t(`reauth.actions.${action.replace(/\./g, '_')}`);
 }
 
@@ -43,7 +42,8 @@ export function ReauthForm() {
 
   if (!me) return null;
 
-  const label = actionLabel(action, t);
+  // F-14: name the real action once; with no pending action there is nothing to name, so no repeated placeholder line.
+  const label = action ? actionLabel(action, t) : null;
 
   return (
     <section>
@@ -51,7 +51,11 @@ export function ReauthForm() {
       <p className="t-body-lg mb-7 text-muted">{t('reauth.subtitle')}</p>
 
       <div className="card p-6 mb-4">
-        <p className="t-label mb-3 text-muted">{t('reauth.pending')} · {label}</p>
+        {label ? (
+          <p className="t-label mb-3 text-muted" data-testid="reauth-pending-action">
+            {t('reauth.pending')} · {t('reauth.pendingAction', { action: label })}
+          </p>
+        ) : null}
 
         {reauth.capabilities.hasPassword && (
           <>

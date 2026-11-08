@@ -3,6 +3,8 @@ import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProblemError, type ProblemDetails } from '@engram/shared-types';
 import { LoginForm } from '@/features/auth/forms/login-form';
+import { ForgotPasswordForm } from '@/features/auth/forms/forgot-password-form';
+import { ReauthForm } from '@/features/auth/forms/reauth-form';
 import { SignupForm } from '@/features/auth/forms/signup-form';
 import { TurnstileWidget } from '@/features/auth/turnstile-widget';
 import en from '../messages/en.json';
@@ -272,5 +274,61 @@ describe('TurnstileWidget configuration', () => {
     expect(screen.getByTestId('turnstile-widget')).toHaveAttribute('data-configured', 'false');
     expect(turnstileMocks.render).not.toHaveBeenCalled();
     expect(document.querySelector('script[data-engram-turnstile]')).not.toBeInTheDocument();
+  });
+});
+
+describe('ux-audit P06 auth findings (F-12, F-13, F-14)', () => {
+  it('F-13: forgot-password with mail off offers a real GitHub Issues contact link', () => {
+    renderIntl(<ForgotPasswordForm />);
+    const link = screen.getByRole('link', { name: en.auth.forgot.contactIssues });
+    expect(link).toHaveAttribute('href', en.auth.forgot.contactHref);
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link.getAttribute('rel')).toContain('noopener');
+  });
+
+  it('F-13: signup warns that email password reset is unavailable only when mail is off', () => {
+    const { unmount } = renderIntl(<SignupForm />);
+    expect(screen.getByTestId('signup-mail-reset-unavailable')).toHaveTextContent(
+      en.auth.signup.mailResetUnavailable,
+    );
+    unmount();
+    mocks.session.config = {
+      oauth_providers: [],
+      email_verification_required: false,
+      captcha_site_key: null,
+      mail_delivery_available: true,
+    };
+    renderIntl(<SignupForm />);
+    expect(screen.queryByTestId('signup-mail-reset-unavailable')).toBeNull();
+  });
+
+  it('F-12: signup puts the compact explainer after the form so the first field follows the title', () => {
+    renderIntl(<SignupForm />);
+    const form = screen.getByLabelText('Email').closest('form') as HTMLFormElement;
+    const compact = screen.getByTestId('auth-explainer-compact');
+    expect(form.compareDocumentPosition(compact) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('F-14: reauth names the pending action once, and shows no placeholder line without one', () => {
+    const reauthBase = {
+      pendingAction: null as string | null,
+      capabilities: { hasPassword: true, passwordEnrollmentAvailable: false, oauthReauthProviders: [] },
+      begin: vi.fn(),
+      cancel: vi.fn(),
+      submitPassword: vi.fn(),
+      submitting: false,
+      error: null,
+    };
+    Object.assign(mocks.session, { me: { user: { id: 'u' } }, reauth: { ...reauthBase } });
+    const { unmount } = renderIntl(<ReauthForm />);
+    expect(screen.queryByTestId('reauth-pending-action')).toBeNull();
+    expect(screen.queryByText(en.auth.reauth.pending, { exact: false })).toBeNull();
+    unmount();
+
+    Object.assign(mocks.session, { reauth: { ...reauthBase, pendingAction: 'account.delete' } });
+    renderIntl(<ReauthForm />);
+    const line = screen.getByTestId('reauth-pending-action');
+    expect(line).toHaveTextContent(`${en.auth.reauth.pending} · ${en.auth.reauth.actions.account_delete}`);
+    expect(line.textContent?.split(en.auth.reauth.pending)).toHaveLength(2);
   });
 });

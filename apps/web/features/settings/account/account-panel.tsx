@@ -44,7 +44,7 @@ export function AccountPanel({
 }) {
   const t = useTranslations('settings');
   const uiLocale: Locale = useLocale() === 'vi' ? 'vi' : 'en';
-  const { me, refetchMe } = useSession();
+  const { me, config, refetchMe } = useSession();
   const { setTheme } = useTheme();
   const router = useRouter();
   const [patchError, setPatchError] = useState<string | null>(null);
@@ -55,6 +55,13 @@ export function AccountPanel({
   const linked = new Set(me.identities.map((i) => i.provider));
   const oauthProviders: OauthProvider[] = me.features.oauth_providers;
   const canUnlink = me.identities.length > 1;
+  // F-13: with no mail delivery the address can never be verified, so a permanent 'Not verified' badge is noise.
+  const mailOff = config?.mail_delivery_available === false;
+  const showUnverified = !me.user.email_verified && !mailOff;
+  // F-17: only providers this server offers (or that are already linked) get a pill; otherwise say why there is none.
+  const visibleProviders = (['google', 'github'] as const).filter(
+    (provider) => linked.has(provider) || oauthProviders.includes(provider),
+  );
 
   const patchLocale = async (locale: Locale) => {
     setPatchError(null);
@@ -103,7 +110,7 @@ export function AccountPanel({
           <div className="min-w-0 max-w-full">
             <div className="break-all text-[15px] font-semibold text-body">{me.user.email}</div>
             <div className="text-[13px] text-muted">
-              {me.user.email_verified ? t('account.verified') : t('account.unverified')} ·{' '}
+              {me.user.email_verified ? `${t('account.verified')} · ` : showUnverified ? `${t('account.unverified')} · ` : ''}
               {t('account.joined', { date: formatJoined(me.user.created_at, uiLocale) })}
             </div>
           </div>
@@ -132,12 +139,17 @@ export function AccountPanel({
           <div className="min-w-0 flex-1 basis-[240px]">
             <div className="mb-1 text-[15px] font-semibold">{t('account.identitiesTitle')}</div>
             <div className="mb-2 flex flex-wrap gap-2">
-              {(['google', 'github'] as const).map((provider) => (
+              {visibleProviders.map((provider) => (
                 <span key={provider} className={`chip ${linked.has(provider) ? '' : 'border-dashed text-muted'}`}>
                   {providerLabel(provider)} · {linked.has(provider) ? t('account.linked') : t('account.notLinked')}
                 </span>
               ))}
             </div>
+            {visibleProviders.length === 0 && (
+              <p className="m-0 text-[13px] text-muted" data-testid="account-oauth-unavailable">
+                {t('account.oauthUnavailable')}
+              </p>
+            )}
           </div>
           <div className="ml-auto flex flex-col gap-2">
             {oauthProviders

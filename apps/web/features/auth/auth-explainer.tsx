@@ -2,11 +2,11 @@
 
 import { useTranslations } from 'next-intl';
 
-export function AuthExplainerCompact() {
+export function AuthExplainerCompact({ className = 'mb-6' }: { className?: string } = {}) {
   const t = useTranslations('auth.explainer');
   return (
     <div
-      className="mb-6 rounded-lg border border-line bg-surface p-4 md:hidden"
+      className={`${className} rounded-lg border border-line bg-surface p-4 md:hidden`}
       data-testid="auth-explainer-compact"
     >
       <p className="m-0 mb-1.5 text-[13px] font-semibold text-ink">{t('compactTitle')}</p>

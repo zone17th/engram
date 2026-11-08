@@ -132,8 +132,6 @@ export function SignupForm() {
 
   return (
     <section id="auth-signup">
-      <AuthExplainerCompact />
-
       <div className="grid items-start gap-8 md:grid-cols-[minmax(0,1fr)_340px] lg:grid-cols-[minmax(0,480px)_minmax(0,1fr)]">
         <div className="min-w-0">
           <h1 className="t-title-lg mb-2">{t('signup.title')}</h1>
@@ -221,6 +219,12 @@ export function SignupForm() {
                 <strong>{t('signup.passphraseNoteStrong')}</strong> {t('signup.passphraseNoteBody')}
               </p>
             </div>
+
+            {config?.mail_delivery_available === false && (
+              <p className="mb-4 text-[13px] text-body" data-testid="signup-mail-reset-unavailable">
+                {t('signup.mailResetUnavailable')}
+              </p>
+            )}
 
             <div className="mb-5">
               <label
@@ -330,6 +334,8 @@ export function SignupForm() {
           <div className="rounded-md bg-surface p-4">
             <p className="m-0 text-[13px] text-body">{t('signup.privacyNote')}</p>
           </div>
+          {/* F-12: at 390px the first field must come right after the tab + title, so the explainer sits under the form. */}
+          <AuthExplainerCompact className="mt-4" />
         </div>
 
         <AuthExplainerAside mode="signup" />

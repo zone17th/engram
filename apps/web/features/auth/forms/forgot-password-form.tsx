@@ -230,6 +230,17 @@ export function ForgotPasswordForm() {
             </Link>
             {t('forgot.mailUnavailableHelpSuffix')}
           </p>
+          <p className="m-0 mb-4 text-[13px] text-body">
+            <a
+              href={t('forgot.contactHref')}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex min-h-11 items-center font-semibold text-link underline"
+              data-testid="forgot-contact-issues"
+            >
+              {t('forgot.contactIssues')}
+            </a>
+          </p>
           {hasOauthProviders && (
             <p className="m-0 mb-4 text-[13px] text-muted">{t('forgot.mailUnavailableOauthHint')}</p>
           )}

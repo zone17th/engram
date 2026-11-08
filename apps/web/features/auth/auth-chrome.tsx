@@ -40,13 +40,13 @@ export function AuthChrome({ children }: { children: React.ReactNode }) {
         id="main-content"
         className={
           isWideLayout
-            ? 'mx-auto max-w-[960px] px-5 pb-24 pt-10'
+            ? 'mx-auto max-w-[960px] px-5 pb-24 pt-6 md:pt-10'
             : 'mx-auto max-w-[560px] px-5 pb-24 pt-10'
         }
       >
         {showSwitch && (
           <Segmented
-            className="mb-7 flex-wrap"
+            className="mb-5 flex-wrap md:mb-7"
             ariaLabel={`${t('nav.login')} / ${t('nav.signup')}`}
             value={pathname === '/app/auth/signup' ? 'signup' : 'login'}
             onChange={(next) => router.push(next === 'signup' ? '/app/auth/signup' : '/app/auth/login')}
