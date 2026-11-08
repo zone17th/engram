@@ -1,19 +1,22 @@
+import { getLocale, getTranslations } from 'next-intl/server';
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 
 /**
- * not-found là server component: không dùng EmptyState (EmptyState nhận onAction
- * nên phải là client), và không dùng <Button> (Task 12 không có `asChild`, lồng
- * <a> trong <button> là HTML sai). Dùng thẳng class `btn` của tokens.css.
+ * U18 `#err-not-found` for the public site (F2: unknown `/vi/<x>` used to fall through to the unbranded Next 404).
+ * Server component: copy comes from `states.notFound*` in the request locale, so `/vi/<x>` is Vietnamese and `/<x>`
+ * English. Uses the `btn` class on a link (no `<button>` wrapper, no client component).
  */
-export default function NotFound() {
+export default async function NotFound() {
+  const locale = await getLocale();
+  const t = await getTranslations({ locale, namespace: 'states' });
   return (
-    <main className="mx-auto max-w-container px-5 py-16">
-      <Card className="flex flex-col items-start gap-3 p-8">
-        <h1 className="t-title-md m-0">Không có trang này</h1>
-        <p className="t-body m-0 text-muted">Đường dẫn bạn mở không tồn tại hoặc đã đổi.</p>
-        <Link href="/" className="btn btn-secondary no-underline">
-          Về trang chủ
+    <main id="main-content" className="mx-auto max-w-container px-5 py-16">
+      <Card className="flex flex-col items-start gap-3 p-8" data-testid="err-not-found">
+        <h1 className="t-title-md m-0">{t('notFoundTitle')}</h1>
+        <p className="t-body m-0 text-muted">{t('notFoundBody')}</p>
+        <Link href="/app" className="btn btn-secondary no-underline">
+          {t('backToList')}
         </Link>
       </Card>
     </main>

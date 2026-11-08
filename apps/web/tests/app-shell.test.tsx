@@ -98,7 +98,7 @@ describe('AppHeader', () => {
     expect(theme.compareDocumentPosition(signOut) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  // FE-R1-03 (advisor-dec-P06-011 (4)): header help  goes to the locale-aware /docs.
+  // FE-R1-03 (advisor-dec-P06-011 (4)): header help (?) goes to the locale-aware /docs.
   it('nút ? tới /vi/docs (vi) và /docs (en), tên truy cập nav.help, vùng chạm >= 44px (F-05)', () => {
     const vi = renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);
     const viHelp = screen.getByTestId('header-help-link');
@@ -708,8 +708,8 @@ describe('AppError', () => {
         <AppError error={new Error('boom')} reset={reset} />
       </NextIntlClientProvider>,
     );
-    expect(screen.getByRole('heading', { name: enMessages.states.errorTitle })).toBeInTheDocument();
-    expect(screen.getByText(enMessages.states.errorBody)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: enMessages.states.server500Title })).toBeInTheDocument();
+    expect(screen.getByText(enMessages.states.server500Body)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: enMessages.states.retry }));
     expect(reset).toHaveBeenCalledTimes(1);
     unmount();
@@ -719,8 +719,8 @@ describe('AppError', () => {
         <AppError error={new Error('boom')} reset={reset} />
       </NextIntlClientProvider>,
     );
-    expect(screen.getByRole('heading', { name: viMessages.states.errorTitle })).toBeInTheDocument();
-    expect(screen.getByText(viMessages.states.errorBody)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: viMessages.states.server500Title })).toBeInTheDocument();
+    expect(screen.getByText(viMessages.states.server500Body)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: viMessages.states.retry })).toBeInTheDocument();
   });
 });
