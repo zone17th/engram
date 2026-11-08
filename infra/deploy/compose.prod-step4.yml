@@ -1,0 +1,18 @@
+# PROD-STEP-4 overlay (P06 Task 22, ops-prod; advisor-dec-P06-058). Requires its own Advisor GO, and Task 10 scratch
+# rehearsal PASS first (C19). Layered after compose.prod-2prep.yml on the live pre-P06 stack:
+#   ... -f .data/deploy/compose.prod.yml -f .data/deploy/compose.prod-2prep.yml -f .data/deploy/compose.prod-step4.yml up -d db
+# Switches only the DB container to the PITR image (same data volume, same pgvector pin + gnupg/gzip + archive
+# script + PUBLIC key only) with archive_mode=on. Host files must exist BEFORE `up` (else Docker creates directories):
+#   ~/backups/engram/pitr/wal                               dir, owner 999:999 (container postgres), 0700
+#   ~/engram-ops/pitr/secrets/engram_replication.password   file, owner 999:999, 0600
+#   ~/engram-ops/pitr/secrets/engram_replication.pgpass     file, owner 999:999, 0600
+# The same values are carried by infra/deploy/compose.prod.yml ([4] tags), which replaces this overlay at 8b.
+
+services:
+  db:
+    image: ${POSTGRES_PITR_IMAGE:?POSTGRES_PITR_IMAGE missing}
+    command: ['postgres', '-c', 'config_file=/etc/postgresql/postgresql-pitr.conf']
+    volumes:
+      - /home/ubuntu/backups/engram/pitr/wal:/var/lib/postgresql/wal-archive
+      - /home/ubuntu/engram-ops/pitr/secrets/engram_replication.password:/run/secrets/engram_replication.password:ro
+      - /home/ubuntu/engram-ops/pitr/secrets/engram_replication.pgpass:/run/secrets/engram_replication.pgpass:ro
