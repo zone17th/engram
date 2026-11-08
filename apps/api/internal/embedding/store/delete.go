@@ -144,3 +144,30 @@ func DeleteUserInGeneration(
 	}
 	return nil
 }
+
+// DeleteUserAllGenerations deletes every item and tag vector of userID across
+// EVERY generation whose tables still exist (state <> 'dropped'), regardless of
+// provider (account deletion, plan P06 mục 2.9 bước 3b).
+//
+// Locking contract: callers MUST hold generation.LockGenerationSetShared(ctx,
+// tx) across the registry read and all DELETEs, plus the app_user row lock.
+// DeleteUserAllGenerations does not acquire locks itself.
+func DeleteUserAllGenerations(
+	ctx context.Context,
+	tx gen.DBTX,
+	userID uuid.UUID,
+) error {
+	if tx == nil {
+		return ErrNilDB
+	}
+	gens, err := generation.ExistingGenerations(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, g := range gens {
+		if err := DeleteUserInGeneration(ctx, tx, g, userID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
