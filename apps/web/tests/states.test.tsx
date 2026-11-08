@@ -212,7 +212,10 @@ describe.each(LOCALES)('U18 #err-server-500 / #err-not-found ($locale)', (entry)
   it('app not-found is translated and links back to the list', () => {
     render(wrap(entry, <AppNotFound />));
     expect(screen.getByRole('heading', { name: entry.messages.states.notFoundTitle })).toBeInTheDocument();
-    expect(screen.getByText(entry.messages.states.notFoundBody)).toBeInTheDocument();
+    // R4-M1: URL misses get the page-level sentence, never the item one ("deleted / not your account").
+    expect(screen.getByText(entry.messages.states.pageNotFoundBody)).toBeInTheDocument();
+    expect(screen.queryByText(entry.messages.states.notFoundBody)).toBeNull();
+    expect(screen.getByText(entry.locale === 'vi' ? 'Trang này không tồn tại hoặc đã được chuyển đi.' : 'This page does not exist or has moved.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: entry.messages.states.backToList })).toHaveAttribute('href', '/app');
   });
 
