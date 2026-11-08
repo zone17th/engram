@@ -514,7 +514,7 @@ func assertHTTPVerifyEmailViaAPI(t *testing.T, client *http.Client, baseURL stri
 			}
 		}
 	}
-	doJSON := func(method, path, csrf, body string) (*http.Response, []byte) {
+	doJSON := func(method, path, csrf, body string) (int, []byte) {
 		var rdr io.Reader
 		if body != "" {
 			rdr = strings.NewReader(body)
@@ -540,27 +540,25 @@ func assertHTTPVerifyEmailViaAPI(t *testing.T, client *http.Client, baseURL stri
 		raw, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		saveCookies(resp)
-		return resp, raw
+		return resp.StatusCode, raw
 	}
-	csrfResp, csrfRaw := doJSON(http.MethodGet, "/api/v1/auth/csrf", "", "")
-	var csrfDoc struct {
-		CSRFToken string `json:"csrf_token"`
+	csrfStatus, csrfRaw := doJSON(http.MethodGet, "/api/v1/auth/csrf", "", "")
+	initCSRF := cookies["__Host-sabk_csrf"]
+	if csrfStatus != http.StatusNoContent || initCSRF == nil || initCSRF.Value == "" {
+		t.Fatalf("GET /api/v1/auth/csrf: status=%d body=%s cookie=%v", csrfStatus, csrfRaw, initCSRF)
 	}
-	if csrfResp.StatusCode != http.StatusOK || json.Unmarshal(csrfRaw, &csrfDoc) != nil || csrfDoc.CSRFToken == "" {
-		t.Fatalf("GET /api/v1/auth/csrf: status=%d body=%s", csrfResp.StatusCode, csrfRaw)
-	}
-	signupResp, signupRaw := doJSON(http.MethodPost, "/api/v1/auth/signup", csrfDoc.CSRFToken,
+	signupStatus, signupRaw := doJSON(http.MethodPost, "/api/v1/auth/signup", initCSRF.Value,
 		`{"email":"binary-prod@example.org","password":"correcthorsebatterystaple"}`)
-	if signupResp.StatusCode != http.StatusCreated {
-		t.Fatalf("POST /api/v1/auth/signup: status=%d body=%s", signupResp.StatusCode, signupRaw)
+	if signupStatus != http.StatusCreated {
+		t.Fatalf("POST /api/v1/auth/signup: status=%d body=%s", signupStatus, signupRaw)
 	}
 	csrfCookie := cookies["__Host-sabk_csrf"]
 	if csrfCookie == nil {
 		t.Fatal("missing rotated __Host-sabk_csrf cookie after signup")
 	}
-	verifyResp, verifyRaw := doJSON(http.MethodPost, "/api/v1/auth/verify-email/send", csrfCookie.Value, `{}`)
-	if verifyResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("POST /api/v1/auth/verify-email/send: status=%d body=%s", verifyResp.StatusCode, verifyRaw)
+	verifyStatus, verifyRaw := doJSON(http.MethodPost, "/api/v1/auth/verify-email/send", csrfCookie.Value, `{}`)
+	if verifyStatus != http.StatusAccepted {
+		t.Fatalf("POST /api/v1/auth/verify-email/send: status=%d body=%s", verifyStatus, verifyRaw)
 	}
 }
 
@@ -574,7 +572,7 @@ func TestProductionStackComposeSmoke(t *testing.T) {
 	if os.Getenv("OPS_CONFIG_COMPOSE_STACK_SMOKE") != "1" {
 		t.Skip("skipping Compose stack production smoke (set OPS_CONFIG_COMPOSE_STACK_SMOKE=1 on cloud-runner)")
 	}
-	repoRoot, err := filepath.Abs("../..")
+	repoRoot, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)
 	}
