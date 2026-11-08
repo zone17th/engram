@@ -272,6 +272,9 @@ export function ItemDetailPage({
   const importJsonBtnRef = useRef<HTMLButtonElement | null>(null);
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
   const pendingFocusIdRef = useRef<string | null>(null);
+  // A11Y-UNDO-FOCUS-FLICKER: while an Undo restore is in flight the deleted card is not mounted yet. The toast would
+  // send focus to '+ Text' for one frame before the restored card takes it; this ref lets returnFocusTo stand down.
+  const undoRestoringEntryIdRef = useRef<string | null>(null);
 
   const tryFocusCardDom = useCallback((card: HTMLElement) => {
     const focusable = card.querySelector<HTMLElement>(
@@ -705,11 +708,19 @@ export function ItemDetailPage({
           message: tEntry('deletedToast'),
           actionLabel: tItem('undoAction'),
           returnFocusTo: () =>
-            cardElementsRef.current.get(entry.id) ?? addTextBtnRef.current,
+            cardElementsRef.current.get(entry.id) ??
+            (undoRestoringEntryIdRef.current === entry.id ? null : addTextBtnRef.current),
           onUndo: async () => {
-            const restored = await entryRestore(entry.id, {
-              idempotencyKey: createIdempotencyKey(),
-            });
+            undoRestoringEntryIdRef.current = entry.id;
+            let restored: Awaited<ReturnType<typeof entryRestore>>;
+            try {
+              restored = await entryRestore(entry.id, {
+                idempotencyKey: createIdempotencyKey(),
+              });
+            } catch (restoreErr) {
+              undoRestoringEntryIdRef.current = null;
+              throw restoreErr;
+            }
 
             // Re-insert restored entry at its restored position, shifting live rows with position >= restored.position by +1 (advisor-dec-160)
             const cur = orderedEntriesRef.current.filter((e) => e.id !== restored.id);
@@ -747,6 +758,7 @@ export function ItemDetailPage({
 
             announce(tEntry('restoredNotice'));
             focusEntryCard(restored.id);
+            undoRestoringEntryIdRef.current = null;
           },
         });
       } catch (err) {

@@ -469,8 +469,11 @@ export function UndoToastProvider({
         isFocusedInsideRef.current ||
         Boolean(stackRef.current && activeEl && stackRef.current.contains(activeEl));
 
-      removeToastInternal(target.id, 'undo', focusInStack);
+      // A11Y-UNDO-FOCUS-FLICKER: run the undo handler first. Its synchronous prefix can mark a restore as in
+      // flight, so `returnFocusTo` (resolved while the toast is removed) does not park focus on a fallback element
+      // that the restored content immediately takes focus back from.
       invokeUndoSafely(target);
+      removeToastInternal(target.id, 'undo', focusInStack);
     },
     [removeToastInternal, invokeUndoSafely],
   );
@@ -539,8 +542,8 @@ export function UndoToastProvider({
         isFocusedInsideRef.current ||
         Boolean(stackRef.current && activeEl && stackRef.current.contains(activeEl));
 
-      removeToastInternal(newest.id, 'undo', focusInStack);
       invokeUndoSafely(newest);
+      removeToastInternal(newest.id, 'undo', focusInStack);
     };
 
     window.addEventListener('keydown', onKeyDown);

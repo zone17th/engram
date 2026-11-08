@@ -2679,6 +2679,54 @@ describe('P04-T15 Item page U11-U12 (text), real data, sequential PATCH, reorder
     });
   });
 
+  it('A11Y-UNDO-FOCUS-FLICKER: pressing Undo with focus inside the toast never parks focus on "+ Text" before the restored card takes it', async () => {
+    const h = await setupItemPageHarness({
+      initialPlaintexts: [
+        { id: ENTRY_ID_1, text: 'First card', position: 0 },
+        { id: ENTRY_ID_2, text: 'Second card', position: 1 },
+      ],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId(`entry-card-${ENTRY_ID_2}`)).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId(`entry-menu-trigger-${ENTRY_ID_2}`));
+    fireEvent.click(screen.getByTestId(`entry-menu-delete-${ENTRY_ID_2}`));
+    await waitFor(() => {
+      expect(screen.queryByTestId(`entry-card-${ENTRY_ID_2}`)).toBeNull();
+    });
+
+    const undoBtn = await screen.findByRole('button', { name: /Hoàn tác/i });
+    const { promise: restoreGate, resolve: releaseRestore } = createDeferred();
+    const { promise: restoreEntered, resolve: notifyRestoreEntered } = createDeferred();
+    h.server.overrideRoute(async (url, init) => {
+      if (url.endsWith(`/entries/${ENTRY_ID_2}/restore`) && init?.method === 'POST') {
+        notifyRestoreEntered();
+        await restoreGate;
+      }
+      return null;
+    });
+    const focused: Element[] = [];
+    const onFocusIn = (event: Event) => {
+      if (event.target instanceof Element) focused.push(event.target);
+    };
+    document.addEventListener('focusin', onFocusIn);
+    try {
+      undoBtn.focus();
+      fireEvent.click(undoBtn);
+      await restoreEntered;
+      // The toast is gone while the restore is still pending: focus must not have been sent to "+ Text".
+      expect(focused.some((el) => el.getAttribute('data-testid') === 'btn-add-text')).toBe(false);
+      releaseRestore();
+      await waitFor(() => {
+        const card2 = screen.getByTestId(`entry-card-${ENTRY_ID_2}`);
+        expect(card2.contains(document.activeElement)).toBe(true);
+      });
+      expect(focused.some((el) => el.getAttribute('data-testid') === 'btn-add-text')).toBe(false);
+    } finally {
+      document.removeEventListener('focusin', onFocusIn);
+    }
+  });
+
   it('passes assert-no-plaintext-attrs while unlocked, after lock, and after a failed save; locking while editing clears textarea, draft, and caches, and shows draftClearedOnLock after unlock', async () => {
     const SENTINEL_BODY = 'SENTINEL-BODY-PLAIN-99182';
     const SENTINEL_DRAFT = 'SENTINEL-UNSAVED-DRAFT-77412';
