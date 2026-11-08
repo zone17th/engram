@@ -1905,3 +1905,20 @@ progress::-webkit-progress-bar { background: var(--surface-alt); border-radius: 
 progress::-webkit-progress-value { background: var(--accent); border-radius: var(--r-pill); }
 progress::-moz-progress-bar { background: var(--accent); border-radius: var(--r-pill); }
 h1 [lang="en"], h2 [lang="en"], h3 [lang="en"] { letter-spacing: normal; }
+
+/* FU-T26-390-OVERFLOW + FU-ENTRYUX-N2/N4 (advisor-dec-342/376): at phone width (fine OR coarse pointer) a long value,
+   a long key or an open value editor must wrap inside its cell instead of widening the row over the remove button.
+   Placed last so it wins over the same-specificity min-width rules above. */
+@media (max-width: 639px) {
+  .json-table td { min-width: 0; overflow-wrap: anywhere; }
+  .json-table thead ~ tbody > tr > td:not(.k):not(.json-col-act):not([colspan]) { min-width: 0; }
+  .json-table .k { width: auto; min-width: 96px; max-width: 45%; white-space: normal; overflow-wrap: anywhere; }
+  .json-table td > .json-cell-btn,
+  .json-table .json-cell-readonly {
+    max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left;
+  }
+  .json-cell-edit-wrap { min-width: 0; width: 100%; }
+  .json-cell-edit-wrap .json-cell-input,
+  .json-table-toolbar .json-cell-input { max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere; }
+  textarea.json-cell-input { min-height: 88px; resize: vertical; }
+}

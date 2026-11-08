@@ -175,6 +175,19 @@ describe('component rules (advisor-dec-129, P04 UIA-11)', () => {
   });
 });
 
+describe('phone-width JSON table wrapping (FU-T26-390-OVERFLOW, advisor-dec-342)', () => {
+  it('wraps long values/keys inside their cell at <=639px and is the last json-table block so it wins', () => {
+    const block = webCss.slice(webCss.indexOf('FU-T26-390-OVERFLOW + FU-ENTRYUX-N2/N4'));
+    expect(block).toMatch(/@media \(max-width: 639px\)/);
+    expect(block).toMatch(/\.json-table td \{[^}]*overflow-wrap:\s*anywhere/);
+    expect(block).toMatch(/td:not\(\.k\):not\(\.json-col-act\):not\(\[colspan\]\)\s*\{[^}]*min-width:\s*0/);
+    expect(block).toMatch(/\.json-table \.k \{[^}]*white-space:\s*normal/);
+    expect(block).toMatch(/textarea\.json-cell-input\s*\{[^}]*min-height:\s*88px/);
+    // nothing json-table related is declared after the block
+    expect(block.slice(block.indexOf('@media')).includes('.json-page-bar')).toBe(false);
+  });
+});
+
 describe('token thương hiệu', () => {
   const root = readVars(webCss, ':root');
   it.each([
