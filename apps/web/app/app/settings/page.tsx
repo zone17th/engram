@@ -12,6 +12,7 @@ import {
 } from '@/features/settings/account/account-dialogs';
 import { SecuritySection } from '@/features/settings/security/sessions-panel';
 import { SemanticCard } from '@/features/settings/search/semantic-card';
+import { DangerZoneSection, DataSection } from '@/features/settings/data';
 import { useSession } from '@/features/auth/session-provider';
 import { useOptionalVault } from '@/features/vault/vault-provider';
 
@@ -38,7 +39,7 @@ export default function SettingsPage() {
   return (
     <>
       <AppHeader vault={{ state: vaultState }} settingsActive showLogout />
-      <main className="mx-auto grid min-w-0 max-w-container items-start gap-12 px-5 pb-28 pt-10 lg:grid-cols-[200px_minmax(0,1fr)]">
+      <main id="main-content" className="mx-auto grid min-w-0 max-w-container items-start gap-12 px-5 pb-28 pt-10 lg:grid-cols-[200px_minmax(0,1fr)]">
         <nav aria-label={t('page.navLabel')} className="sticky top-[92px] hidden flex-col gap-0.5 lg:flex">
           {sections.map((section, index) => (
             <a
@@ -72,15 +73,8 @@ export default function SettingsPage() {
             <SemanticCard />
           </section>
 
-          <section id="dulieu" aria-labelledby="data-heading">
-            <h2 id="data-heading" className="t-title-md mb-5 text-ink">
-              {t('page.dataHeading')}
-            </h2>
-            <div className="card p-5">
-              <div className="text-[15px] font-semibold text-body">{t('page.dataTitle')}</div>
-              <p className="t-body mt-1 m-0 text-muted">{t('page.dataBody')}</p>
-            </div>
-          </section>
+          <DataSection />
+          <DangerZoneSection />
         </div>
       </main>
 
