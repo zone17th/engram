@@ -30,6 +30,11 @@ Rounds (filled from the reports; every `*_EXIT` marker read in the raw logs):
 | cloud-test-1 | 0f78e2b | retention 21/21 + C12 all 0; lint 127 = runner lacked shellcheck (fixed in later specs) |
 | cloud-test-3 | 22fcc0e | LINT/EXPIRE (incl. c8 real 999:0700 run)/OFFHOST/MONITOR/STEPLIB (incl. real PITR build + nginx -t 1.27.5) all 0; C12 boot nosmtp 1 = api lacked the cleanup gauge (dec-061) |
 | cloud-test-4 | 5c12dfb | OPSPROD_GAUGE_EXIT=0; C12 all 0: internal metrics 200 with gauge, proxied 404, monitor no telemetry/deps/container/http finding |
+| cloud-test-5 | f11c443 (r3 APPROVE) | full lane spec: LINT, EXPIRE (29 PASS incl. real 999:0700 + symlink-escape), OFFHOST, MONITOR (argv/env/xtrace canary), STEPLIB (29 PASS incl. real PITR build + nginx -t), GAUGE, C12 all 0 |
+| cloud-test-full-f11c443 | f11c443 | `full` group 18/18 markers 0 (GOFMT, GO_UNIT, GO_VET, GOLANGCI_LINT, GOVULNCHECK, GO_BUILD, SQLC_DIFF, OPENAPI_NODIFF, COMPOSE_CONFIG, COMPOSE_MIGRATE, WEB_LINT/TYPECHECK/TEST/BUILD, GO_INTEGRATION, CONTENT_PERF, E2E_INFRA, E2E_BROWSER) |
+
+After f11c443 only Markdown changed (runbook text for r3 LOW R3-01 — the step library block is unchanged — and this
+shard).
 
 Boot limits (stated, not hidden): db runs on the plain pgvector pin in the boot round (PITR image is built and checked
 separately by the step-library `real` mode and by Task 9/10); with `SMTP_HOST` set, boot + `mail_delivery_available:
