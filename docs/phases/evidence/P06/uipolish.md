@@ -12,9 +12,18 @@ the targeted vitest files below were run locally from `apps/web` (`pnpm exec vit
 | 5. follow-ups | `FU-T26-390-OVERFLOW` (CSS), `FU-T22-429-STICKY` (CSS), `A11Y-UNDO-FOCUS-FLICKER`; `A11Y-SAVING-LIVE` was already announced via `onAnnounce('saving')` | `tokens.parity`, `item-page` |
 | 6. `dialog.tsx` | `returnFocusRef`, `initialFocusRef`, `dismissible` | `tests/dialog.test.tsx` |
 
-Not done / partial: `FU-ENTRYUX-N1` (saved add-field select styling), `N3` (edit header wrap at 390), `N5` (triple
-over-cap message) are not individually changed; `N2`/`N4` are covered by the phone-width JSON table CSS. F-05 targets
-that belong to `docsprivacy` (`LocaleSwitch`, landing) and Settings tab-steps / "Mark read" are untouched.
+Follow-ups `FU-ENTRYUX-N1`, `N3`, `N5` (branch `phase06/uipolish-n135`, r4); `N2`/`N4` are covered by the phone-width JSON table CSS above.
+Real 390 px measurement and light/dark screenshots belong to tester_visual; jsdom asserts classes and CSS text only.
+
+| Follow-up | Change | Tests |
+|---|---|---|
+| `FU-ENTRYUX-N1` saved add-field select styling | `json-tree-grid.tsx`: type select gets `kv-type-chip json-add-field-type` + `data-kv-type` (colour family via `addFieldChipKind`), form gets `json-add-field-form`; `tokens.css`: chip-width select, phone grid (key / value full rows, type | Add | Cancel on one row) | `json-entry-card.test.tsx` (add-field case), `tokens.parity.test.ts` |
+| `FU-ENTRYUX-N3` edit header wrap at 390 | `json-entry-card.tsx`: byte counter is `max-sm:hidden` in the header and repeated in the Save/Cancel footer bar (`sm:hidden`, testid `entry-byte-counter-footer-<id>`); drag handle `max-[420px]:hidden` in edit state; Copy stays in the header and in the `⋯` menu | `json-entry-card.test.tsx` |
+| `FU-ENTRYUX-N5` triple over-cap message | `import-dialog.tsx`: the over-cap status line under the textarea is empty (alert box + red source counter keep the limit); `importStatusOverCap` key left unused (messages are not this lane's) | `import-dialog.test.tsx` |
+
+Targeted vitest (from `apps/web`, exit 0): `npx vitest run tests/tokens.parity.test.ts features/json-table/json-entry-card.test.tsx features/json-table/import-dialog.test.tsx` (94 pass); `npx vitest run tests/json-table.test.tsx features/json-table/json-cell-draft-retention.test.tsx` (11 pass); `npx eslint` on the 6 changed ts/tsx files (0 errors).
+
+Still not individually changed: F-05 targets that belong to `docsprivacy` (`LocaleSwitch`, landing) and Settings tab-steps / "Mark read".
 
 Out-of-row files (reason): `app/app/error.tsx`, `app/app/not-found.tsx`, `app/(marketing)/[locale]/{not-found.tsx,[...rest]/page.tsx}`
 (F2 / U18 `#err-server-500` / `#err-not-found`, contract-assigned); `components/ui/undo-toast.tsx` (call order only, cause of
