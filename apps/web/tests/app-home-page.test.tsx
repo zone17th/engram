@@ -198,6 +198,8 @@ describe('AppPage (/app — Task 19)', () => {
     const buttons = within(list).getAllByRole('button');
     expect(buttons).toHaveLength(3);
     expect(buttons[0]).toHaveAttribute('title', viMessages.content.home.empty.fillHint);
+    // L-5: the same hint is also exposed through aria-describedby
+    expect(buttons[0]).toHaveAccessibleDescription(viMessages.content.home.empty.fillHint);
     fireEvent.click(buttons[1]!);
     const input = document.querySelector('[data-omnibox-input]') as HTMLTextAreaElement;
     expect(input.value).toBe(viMessages.content.home.empty.example2);
