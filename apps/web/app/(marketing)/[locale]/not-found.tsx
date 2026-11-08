@@ -10,16 +10,18 @@ import { Card } from '@/components/ui/card';
 export default async function NotFound() {
   const locale = await getLocale();
   const t = await getTranslations({ locale, namespace: 'states' });
-  // M-1: visitors of the public site are not signed in and have no "list"; the item copy ("deleted or does not
-  // belong to your account") and /app are wrong here. Title only (generic) + the site home in the same locale.
-  // TODO(contract): states.pageNotFoundBody / states.backHome would let this say more in plain words.
+  // M-1 / R2-M1: visitors of the public site are not signed in and have no "list"; the item copy ("deleted or does not
+  // belong to your account") and /app are wrong here. Page-level body (states.pageNotFoundBody) + the site home in the same locale.
   const homeHref = locale === 'vi' ? '/vi' : '/';
   return (
     <main id="main-content" className="mx-auto max-w-container px-5 py-16">
       <Card className="flex flex-col items-start gap-3 p-8" data-testid="err-not-found">
         <h1 className="t-title-md m-0">{t('notFoundTitle')}</h1>
+        <p className="m-0 text-body" data-testid="err-not-found-body">
+          {t('pageNotFoundBody')}
+        </p>
         <Link href={homeHref} className="btn btn-secondary no-underline" data-testid="err-not-found-home">
-          engram
+          {t('backHome')}
         </Link>
       </Card>
     </main>

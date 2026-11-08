@@ -220,10 +220,15 @@ describe.each(LOCALES)('U18 #err-server-500 / #err-not-found ($locale)', (entry)
     mockLocale = entry.locale;
     render(await MarketingNotFound());
     expect(screen.getByRole('heading', { name: entry.messages.states.notFoundTitle })).toBeInTheDocument();
-    // M-1: no item-specific sentence and no way into /app for an anonymous visitor; the only action is the site home.
+    // M-1 / R2-M1: page-level body, no item-specific sentence and no way into /app for an anonymous visitor; the only
+    // action is the site home, named in plain words (not the literal brand).
+    expect(screen.getByText(entry.messages.states.pageNotFoundBody)).toBeInTheDocument();
     expect(screen.queryByText(entry.messages.states.notFoundBody)).toBeNull();
     expect(screen.queryByRole('link', { name: entry.messages.states.backToList })).toBeNull();
-    expect(screen.getByTestId('err-not-found-home')).toHaveAttribute('href', entry.locale === 'vi' ? '/vi' : '/');
+    const home = screen.getByRole('link', { name: entry.messages.states.backHome });
+    expect(home).toBe(screen.getByTestId('err-not-found-home'));
+    expect(home).toHaveAttribute('href', entry.locale === 'vi' ? '/vi' : '/');
+    expect(screen.queryByRole('link', { name: 'engram' })).toBeNull();
     expect(document.querySelector('main#main-content')).not.toBeNull();
   });
 });
