@@ -53,21 +53,25 @@ run_unit() {
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$WORK/docker.argv"
 if [ "\$1 \$2 \$3 \$4" = "exec global_nginx nginx -t" ] && [ -e "$WORK/nginx-t-fails" ]; then exit 1; fi
+if [ "\$1 \$2 \$3" = "exec engram-db-1 psql" ]; then cat "$WORK/fake-role" 2>/dev/null; exit 0; fi
 exit 0
 EOF
+  # Behaves like systemctl: is-enabled/is-active print a word and exit non-zero unless enabled/active; a unit that
+  # has no file and no state prints nothing (systemd's "not found" goes to stderr).
   cat >"$BIN/systemctl" <<EOF
 #!/usr/bin/env bash
-# state per unit in $WORK/sysd/<unit>.{en,act}
 [ "\$1" = --user ] && shift
-cmd="\$1"; u="\${2:-}"
+cmd="\$1"; u="\${2:-}"; st="$WORK/sysd/\$u"; uf="$HOME/.config/systemd/user/\$u"
 printf '%s %s\n' "\$cmd" "\$u" >>"$WORK/systemctl.log"
 case "\$cmd" in
-  is-enabled) s="\$(cat "$WORK/sysd/\$u.en" 2>/dev/null || echo disabled)"; echo "\$s"; [ "\$s" = enabled ] ;;
-  is-active) s="\$(cat "$WORK/sysd/\$u.act" 2>/dev/null || echo inactive)"; echo "\$s"; [ "\$s" = active ] ;;
-  enable) echo enabled >"$WORK/sysd/\$u.en" ;;
-  disable) echo disabled >"$WORK/sysd/\$u.en" ;;
-  start | restart) echo active >"$WORK/sysd/\$u.act" ;;
-  stop) echo inactive >"$WORK/sysd/\$u.act" ;;
+  is-enabled)
+    if [ -f "\$st.en" ]; then s="\$(cat "\$st.en")"; elif [ -e "\$uf" ]; then s=disabled; else echo "Failed to get unit file state for \$u" >&2; exit 1; fi
+    echo "\$s"; [ "\$s" = enabled ] ;;
+  is-active) s="\$(cat "\$st.act" 2>/dev/null || echo inactive)"; echo "\$s"; [ "\$s" = active ] ;;
+  enable) echo enabled >"\$st.en" ;;
+  disable) echo disabled >"\$st.en" ;;
+  start | restart) echo active >"\$st.act" ;;
+  stop) echo inactive >"\$st.act" ;;
   daemon-reload) : ;;
 esac
 EOF
@@ -108,6 +112,51 @@ EOF
   check "units: first-install timer disabled BEFORE its file was removed" \
     '[ "$(grep -n "^disable engram-backup-expire.timer" "$WORK/systemctl.log" | cut -d: -f1)" -lt "$(grep -n "^daemon-reload" "$WORK/systemctl.log" | cut -d: -f1)" ]'
 
+  # units (R2-02): disabled-but-active and disabled-inactive pre-existing timers round-trip exactly
+  printf '[Timer]\nOnCalendar=daily\n' >"$d/engram-pitr-base.timer"
+  printf '[Timer]\nOnCalendar=weekly\n' >"$d/engram-monitor.service"
+  echo disabled >"$WORK/sysd/engram-pitr-base.timer.en"; echo active >"$WORK/sysd/engram-pitr-base.timer.act"
+  echo disabled >"$WORK/sysd/engram-monitor.service.en"; echo inactive >"$WORK/sysd/engram-monitor.service.act"
+  TS=20261108T130000Z bak_units engram-pitr-base.timer engram-monitor.service
+  check "units: state file holds exactly one 'enabled active' word pair per unit" \
+    '[ "$(cat "$STATE_DIR/engram-pitr-base.timer.state-20261108T130000Z")" = "disabled active" ] && [ "$(cat "$STATE_DIR/engram-monitor.service.state-20261108T130000Z")" = "disabled inactive" ]'
+  TS=20261108T130000Z install_reviewed infra/backup/pitr/engram-pitr-base.timer "$d/engram-pitr-base.timer" 644
+  systemctl --user enable engram-pitr-base.timer; systemctl --user stop engram-pitr-base.timer
+  systemctl --user enable engram-monitor.service; systemctl --user start engram-monitor.service
+  TS=20261108T130000Z restore_units engram-pitr-base.timer engram-monitor.service
+  check "units: disabled-active timer restored disabled AND active with its prior file" \
+    '[ "$(cat "$WORK/sysd/engram-pitr-base.timer.en")" = disabled ] && [ "$(cat "$WORK/sysd/engram-pitr-base.timer.act")" = active ] && [ "$(cat "$d/engram-pitr-base.timer")" = "$(printf "[Timer]\nOnCalendar=daily")" ]'
+  check "units: disabled-inactive unit restored disabled and inactive" \
+    '[ "$(cat "$WORK/sysd/engram-monitor.service.en")" = disabled ] && [ "$(cat "$WORK/sysd/engram-monitor.service.act")" = inactive ]'
+
+  # compose overlay list (R2-05): order 2-PREP -> 4, and a 2-PREP reinstall keeps STEP-4
+  local dd="$PROD/.data/deploy"
+  : >"$dd/compose.prod-2prep.yml"
+  compose_files_refresh
+  check "compose: after 2-PREP the list is base + prod + 2prep" \
+    '[ "$(cat "$dd/compose-files.txt")" = "-f infra/docker-compose.yml -f .data/deploy/compose.prod.yml -f .data/deploy/compose.prod-2prep.yml" ]'
+  : >"$dd/compose.prod-step4.yml"
+  compose_files_refresh
+  compose_files_refresh # 2-PREP reinstall
+  check "compose: after STEP-4 and a 2-PREP reinstall, STEP-4 stays last; cmd file matches" \
+    '[ "$(cat "$dd/compose-files.txt")" = "-f infra/docker-compose.yml -f .data/deploy/compose.prod.yml -f .data/deploy/compose.prod-2prep.yml -f .data/deploy/compose.prod-step4.yml" ] && grep -q -- "--env-file .env.production $(cat "$dd/compose-files.txt")$" "$dd/compose-cmd.txt"'
+
+  # STEP-4 precheck (R2-05/R2-06): first install only
+  rm -f "$dd/compose.prod-step4.yml" "$dd/compose.prod-2prep.yml"
+  check "step4_precheck: refuses without 2-PREP" '! step4_precheck 2>/dev/null'
+  : >"$dd/compose.prod-2prep.yml"
+  : >"$WORK/fake-role"
+  check "step4_precheck: passes on a clean first install" 'step4_precheck'
+  echo 1 >"$WORK/fake-role"
+  check "step4_precheck: refuses when role engram_replication exists" '! step4_precheck 2>/dev/null'
+  : >"$WORK/fake-role"
+  mkdir -p "$HOME/engram-ops/pitr/secrets"; : >"$HOME/engram-ops/pitr/secrets/engram_replication.pgpass"
+  check "step4_precheck: refuses when replication secrets exist" '! step4_precheck 2>/dev/null'
+  rm -f "$HOME/engram-ops/pitr/secrets/engram_replication.pgpass"
+  : >"$dd/compose.prod-step4.yml"
+  check "step4_precheck: refuses when the STEP-4 overlay is already installed" '! step4_precheck 2>/dev/null'
+  rm -f "$dd/compose.prod-step4.yml"
+
   # nginx, run from the production checkout dir (relative paths must not matter)
   export NGINX_CONF="$HOME/global-infra/nginx/conf.d/engram.conf"
   mkdir -p "$(dirname "$NGINX_CONF")"
@@ -133,6 +182,15 @@ EOF
   rm -f "$WORK/nginx-t-fails"
   check "nginx: failed nginx -t -> non-zero, live file restored, no reload issued" \
     '[ "$rc" -ne 0 ] && [ "$(cat "$NGINX_CONF")" = "$orig" ] && ! grep -q "nginx -s reload" "$WORK/docker.argv"'
+  # R2-04: the reviewed source cannot be read (bad SHA) -> live file byte/mode identical, no docker call at all.
+  for m in staged final; do
+    : >"$WORK/docker.argv"
+    rc=0
+    # operator shell defaults: no pipefail
+    (set +o pipefail; SHA=0000000000000000000000000000000000000000; cd "$PROD" && step7_apply "$m" 2>/dev/null) || rc=$?
+    check "nginx: failed source read ($m) -> non-zero, live file byte+mode identical, no nginx call" \
+      '[ "$rc" -ne 0 ] && [ "$(cat "$NGINX_CONF")" = "$orig" ] && [ "$(mode_of "$NGINX_CONF")" = 644 ] && [ ! -s "$WORK/docker.argv" ] && ! ls "$NGINX_CONF".src-* "$NGINX_CONF".new-* >/dev/null 2>&1'
+  done
 
   # build argv
   : >"$WORK/docker.argv"

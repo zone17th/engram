@@ -62,13 +62,19 @@ install_reviewed() {
   mkdir -p -- "$(dirname -- "$2")" && show "$1" >"$2.new-$TS" && chmod "$3" "$2.new-$TS" && mv -f -- "$2.new-$TS" "$2"
 }
 # bak_units <unit>...: unit files + enabled/active state; restore_units puts both back and daemon-reloads.
+# State words are the first line systemctl prints (it exits non-zero for disabled/inactive: that is not "absent").
+unit_state() { # unit_state is-enabled|is-active <unit> -> one word
+  local s
+  s="$(systemctl --user "$1" "$2" 2>/dev/null)" || true
+  s="${s%%$'\n'*}"
+  printf '%s\n' "${s:-absent}"
+}
 bak_units() {
   local u d="$HOME/.config/systemd/user"
   mkdir -p "$STATE_DIR"
   for u in "$@"; do
     bak_files "$d/$u" || return 1
-    printf '%s %s\n' "$(systemctl --user is-enabled "$u" 2>/dev/null || echo absent)" \
-      "$(systemctl --user is-active "$u" 2>/dev/null || echo inactive)" >"$STATE_DIR/$u.state-$TS"
+    printf '%s %s\n' "$(unit_state is-enabled "$u")" "$(unit_state is-active "$u")" >"$STATE_DIR/$u.state-$TS"
   done
 }
 restore_units() {
@@ -87,9 +93,34 @@ restore_units() {
   done
 }
 
+# Overlay list: base + compose.prod.yml + every pre-8b overlay present, in the supported order 2-PREP -> 4.
+# Reinstalling 2-PREP after STEP-4 keeps the STEP-4 overlay (R2-05).
+compose_files_refresh() {
+  local d="$PROD/.data/deploy" list="-f infra/docker-compose.yml -f .data/deploy/compose.prod.yml"
+  [ -f "$d/compose.prod-2prep.yml" ] && list="$list -f .data/deploy/compose.prod-2prep.yml"
+  [ -f "$d/compose.prod-step4.yml" ] && list="$list -f .data/deploy/compose.prod-step4.yml"
+  printf '%s\n' "$list" >"$d/compose-files.txt" &&
+    printf 'docker compose -p engram --env-file infra/image-pins.env --env-file .env.production %s\n' "$list" >"$d/compose-cmd.txt"
+}
+
+# PROD-STEP-4 is a FIRST install only (R2-05/R2-06): 2-PREP must already be applied, and no earlier replication
+# install may exist (overlay, secret files or role) — its rollback drops the role, which is exact only then.
+# Updating an existing PITR install needs its own reviewed procedure.
+step4_precheck() {
+  local d="$PROD/.data/deploy" s="$HOME/engram-ops/pitr/secrets" role
+  [ -f "$d/compose.prod-2prep.yml" ] || { echo "step4_precheck: apply PROD-STEP-2-PREP first" >&2; return 1; }
+  [ ! -e "$d/compose.prod-step4.yml" ] || { echo "step4_precheck: STEP-4 overlay already installed" >&2; return 1; }
+  [ ! -e "$s/engram_replication.password" ] && [ ! -e "$s/engram_replication.pgpass" ] ||
+    { echo "step4_precheck: replication secrets already exist" >&2; return 1; }
+  role="$(docker exec engram-db-1 psql -X -U engram -Atc "select 1 from pg_roles where rolname = 'engram_replication'")" ||
+    { echo "step4_precheck: cannot query pg_roles" >&2; return 1; }
+  [ -z "$role" ] || { echo "step4_precheck: role engram_replication already exists" >&2; return 1; }
+}
+
 # PROD-STEP-4: build engram-db-pitr from the reviewed SHA exactly like Dockerfile.db documents; prints the tag.
 step4_build() {
-  local w pg pitr
+  local - w pg pitr
+  set -o pipefail
   w="$(mktemp -d)" || return 1
   git -C "$DEV" archive "$SHA" infra/backup/pitr infra/backup/interim/engram-backup-pub.asc infra/image-pins.env |
     tar -x -C "$w" || return 1
@@ -102,17 +133,27 @@ step4_build() {
   printf '%s\n' "$pitr"
 }
 
-# PROD-STEP-7: nginx. Every change: backup -> write -> `nginx -t` in the container -> reload in the container;
-# a failed `nginx -t` puts the backup back before returning (live config never left broken).
+# PROD-STEP-7: nginx. Reviewed source is read to a temp file and checked (non-empty, both engram server blocks)
+# BEFORE the live file is touched (R2-04); then swap -> `nginx -t` in the container -> reload in the container.
+# A failed `nginx -t` puts the backup back (no reload of the candidate ever happens).
 nginx_test_reload() { docker exec "$NGINX_CONTAINER" nginx -t && docker exec "$NGINX_CONTAINER" nginx -s reload; }
 step7_apply() { # step7_apply staged|final
-  local tmp="$NGINX_CONF.new-$TS"
-  [ -e "$NGINX_CONF.bak-$TS" ] || bak_files "$NGINX_CONF" || return 1
-  if [ "$1" = staged ]; then
-    show infra/nginx/engram.conf | sed 's/max-age=31536000; includeSubDomains/max-age=300/' >"$tmp" || return 1
-  else
-    show infra/nginx/engram.conf >"$tmp" || return 1
+  local - src="$NGINX_CONF.src-$TS" tmp="$NGINX_CONF.new-$TS"
+  set -o pipefail
+  case "$1" in staged | final) ;; *) echo "step7_apply: staged|final" >&2; return 1 ;; esac
+  rm -f -- "$src" "$tmp"
+  if ! show infra/nginx/engram.conf >"$src" || [ "$(grep -c 'server_name engram.zone17.click;' "$src")" -ne 2 ]; then
+    echo "step7_apply: cannot read the reviewed infra/nginx/engram.conf at $SHA; live file untouched" >&2
+    rm -f -- "$src"
+    return 1
   fi
+  if [ "$1" = staged ]; then
+    sed 's/max-age=31536000; includeSubDomains/max-age=300/' "$src" >"$tmp" && grep -q 'max-age=300' "$tmp" || { rm -f -- "$src" "$tmp"; return 1; }
+  else
+    mv -f -- "$src" "$tmp" || return 1
+  fi
+  rm -f -- "$src"
+  [ -e "$NGINX_CONF.bak-$TS" ] || bak_files "$NGINX_CONF" || { rm -f -- "$tmp"; return 1; }
   chmod --reference="$NGINX_CONF.bak-$TS" "$tmp" 2>/dev/null || true
   mv -f -- "$tmp" "$NGINX_CONF" || return 1
   if ! nginx_test_reload; then
@@ -148,8 +189,10 @@ print("db_image="+d["db"]["image"])'; }
 ```
 
 Order (Task 21 GO graph): `PROD-STEP-1` (done) → 2-PREP · 3 · 4 (after Task 10 scratch PASS) · 6-INSTALL · 7 ·
-RETENTION, each its own GO, in any order among themselves (RETENTION's WAL sweep and the monitor's WAL listing use an
-isolated `docker run` of the POSTGRES_IMAGE pin, so they work before STEP-4, after it and after its rollback)
+RETENTION, each its own GO. **Supported order constraint: 2-PREP before 4** (`step4_precheck` refuses otherwise;
+a 2-PREP reinstall keeps an applied STEP-4 overlay via `compose_files_refresh`). 3, 6-INSTALL, 7 and RETENTION are
+independent of each other and of 2-PREP/4 (RETENTION's WAL sweep and the monitor's WAL listing use an isolated
+`docker run` of the POSTGRES_IMAGE pin, so they work before STEP-4, after it and after its rollback)
 → **only then** 8b (release) → 8c → 8d → 21c (incl. STEP-5).
 
 Compose file layout (advisor-dec-P06-058):
@@ -176,10 +219,7 @@ Owner input: SMTP credentials are optional here (empty `SMTP_HOST` = mail delive
    git -C "$DEV" show 4cbffff:infra/deploy/compose.prod.yml > .data/deploy/compose.prod.yml   # live + logging only
    install_reviewed infra/deploy/compose.prod-2prep.yml .data/deploy/compose.prod-2prep.yml 600
    chmod 600 .data/deploy/compose.prod.yml
-   echo '-f infra/docker-compose.yml -f .data/deploy/compose.prod.yml -f .data/deploy/compose.prod-2prep.yml' \
-     > .data/deploy/compose-files.txt
-   echo "docker compose -p engram --env-file infra/image-pins.env --env-file .env.production $(cat .data/deploy/compose-files.txt)" \
-     > .data/deploy/compose-cmd.txt
+   compose_files_refresh          # base + compose.prod.yml + 2-PREP (+ STEP-4 if already applied)
    ```
    `4cbffff` differs from the live file only by comments + `logging: *engram-logging` (read-only diff 2026-11-08).
 3. Secret (one value for api AND worker, C03; ≥ 32 B after base64 decode; never printed):
@@ -247,9 +287,10 @@ Precondition: Task 10 `run-pitr-rehearsal.sh --scratch` PASS on cloud (dec-P06-0
 `PROD-STEP-4`. Procedure is exactly the one rehearsed (`docs/runbooks/backup-restore-pitr.md` §1, Task 9).
 Restart of `db` ≈ 2–3 s; api/worker reconnect.
 
-1. Backup + pre-dump:
+1. Precondition + backup + pre-dump (STEP-4 is a first install: 2-PREP applied, no prior replication install):
    ```sh
    cd "$PROD"
+   step4_precheck && echo precheck-ok   # anything but precheck-ok = stop here and ask the Advisor
    systemctl --user start engram-backup.service && cat ~/backups/engram/nightly/last.json   # fresh ok:true
    bak_files .data/deploy/compose-files.txt .data/deploy/compose-cmd.txt .data/deploy/compose.prod-step4.yml .env.production
    bak_files ~/engram-ops/backup/pitr/engram-pitr-base.sh
@@ -277,10 +318,7 @@ Restart of `db` ≈ 2–3 s; api/worker reconnect.
 4. Overlay + restart db:
    ```sh
    install_reviewed infra/deploy/compose.prod-step4.yml .data/deploy/compose.prod-step4.yml 600
-   echo '-f infra/docker-compose.yml -f .data/deploy/compose.prod.yml -f .data/deploy/compose.prod-2prep.yml -f .data/deploy/compose.prod-step4.yml' \
-     > .data/deploy/compose-files.txt
-   echo "docker compose -p engram --env-file infra/image-pins.env --env-file .env.production $(cat .data/deploy/compose-files.txt)" \
-     > .data/deploy/compose-cmd.txt
+   compose_files_refresh          # adds .data/deploy/compose.prod-step4.yml after the 2-PREP overlay
    cfgcheck | tail -1                     # db_image=engram-db-pitr:...
    DC up -d db && docker exec engram-db-1 psql -U engram -Atc "show archive_mode; show wal_keep_size"   # on / 2GB
    ```
@@ -304,7 +342,9 @@ Restart of `db` ≈ 2–3 s; api/worker reconnect.
    # If RETENTION is installed: its next sweep lists the WAL dir through the isolated run (no change needed):
    systemctl --user start engram-backup-expire.service 2>/dev/null; cat ~/backups/engram/expire/last-sweep.json 2>/dev/null
    ```
-7. Rollback: `bash <(show infra/backup/pitr/engram-pitr-hba.sh) rollback` (drops role, removes the HBA line);
+7. Rollback: `bash <(show infra/backup/pitr/engram-pitr-hba.sh) rollback` (drops role, removes the HBA line — exact
+   prior state, because `step4_precheck` guaranteed no role/rule/secret existed before); remove the step's secret files
+   (`sudo rm -f ~/engram-ops/pitr/secrets/engram_replication.{password,pgpass}`);
    `restore_units engram-pitr-base.service engram-pitr-base.timer; restore_files ~/engram-ops/backup/pitr/engram-pitr-base.sh`;
    `restore_files .data/deploy/compose-files.txt .data/deploy/compose-cmd.txt .data/deploy/compose.prod-step4.yml .env.production`;
    `DC up -d db` (back to the plain pin, archive off). The encrypted archive files stay (999:999 0700) and keep being
@@ -338,6 +378,7 @@ WAL dir through an isolated read-only `docker run`, and scrapes metrics on the a
    install_reviewed infra/ops/engram-monitor.service ~/.config/systemd/user/engram-monitor.service 644
    install_reviewed infra/ops/engram-monitor.timer ~/.config/systemd/user/engram-monitor.timer 644
    PG=$(grep ^POSTGRES_IMAGE= "$PROD/infra/image-pins.env" | cut -d= -f2-)
+   set +x                                             # never trace a secret
    ( umask 077; read -rsp 'ALERT_WEBHOOK_URL: ' U; echo; \
      printf 'ALERT_WEBHOOK_URL=%s\nMONITOR_WAL_IMAGE=%s\n' "$U" "$PG" > $M/monitor.env; unset U )   # mode 0600
    grep -c '^ALERT_WEBHOOK_URL=.' $M/monitor.env   # 1
@@ -345,7 +386,7 @@ WAL dir through an isolated read-only `docker run`, and scrapes metrics on the a
    Do **not** set `MONITOR_API_BASE_URL`: the monitor resolves the api container address itself (internal metrics).
 3. Test alert, then enable:
    ```sh
-   ( set -a; . $M/monitor.env; set +a; TEST_ALERT=1 $M/engram-monitor.sh ); echo rc=$?
+   ( set +x -a; . $M/monitor.env; set +a; TEST_ALERT=1 $M/engram-monitor.sh ); echo rc=$?   # monitor un-exports the URL before any child
    python3 -c 'import json;print(json.load(open("'$M'/status.json"))["summary"])' | tr ';' '\n' | grep -E 'telemetry|deps' || echo internal-metrics-ok
    systemctl --user daemon-reload && systemctl --user enable --now engram-monitor.timer
    ```
@@ -475,9 +516,8 @@ reported `ok:false`), cloud-tested by `infra/backup/expire/test-expire.sh`. Unti
    (expired backup data is not restored: that is the contract).
 7. Evidence: `ops-prod.md` §RETENTION.
 
-## Plan wording note (for the Advisor)
+## Missed-sweep bound (advisor-dec-P06-062)
 
-Task 22 evidence says "missed sweep → next run deletes before 7d23h"; with the Task 9 threshold 7d22h and an hourly
-timer, one missed run allows up to (but never reaching) 8d: `test-expire.sh` c3 deletes at 7d23h30m and the 30-day
-simulation's worst case is 7d23h50m < 8d. The 8-day public bound holds; the literal "7d23h" phrase does not, and the
-threshold is unchanged pending an Advisor decision (review r1 note).
+With the Task 9 threshold 7d22h and an hourly timer: no missed run → deleted before 7d23h; one missed run → strictly
+less than 8d (`test-expire.sh` c3 deletes at 7d23h30m; the 30-day simulation's worst case is 7d23h50m). Threshold
+unchanged at 7d22h.

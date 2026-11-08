@@ -29,6 +29,11 @@
 # DEDUP_SECONDS, POSTs JSON to ALERT_WEBHOOK_URL when findings exist (or
 # TEST_ALERT=1). Exit: 0 ran (alerts delivered or none), 1 internal/persistence
 # or webhook failure, 2 findings but ALERT_WEBHOOK_URL empty.
+# The webhook URL is a bearer secret (R2-01): no xtrace from here on (even under `bash -x`), and it is moved into
+# a non-exported shell variable before any child process starts, so no child environ/argv/trace ever holds it.
+{ set +x; } 2>/dev/null
+webhook_url="${ALERT_WEBHOOK_URL:-}"
+unset ALERT_WEBHOOK_URL
 set -euo pipefail
 umask 077
 
@@ -52,7 +57,6 @@ TLS_HOST="${MONITOR_TLS_HOST:-engram.zone17.click}"
 TLS_PORT="${MONITOR_TLS_PORT:-443}"
 NGINX_CONTAINER="${MONITOR_NGINX_CONTAINER:-global_nginx}"
 DISK_PATH="${MONITOR_DISK_PATH:-/}"
-ALERT_WEBHOOK_URL="${ALERT_WEBHOOK_URL:-}"
 
 MAX_BACKUP_AGE=93600            # 26h
 MAX_OFFHOST_AGE=93600           # 26h
@@ -402,7 +406,7 @@ if [ "$status" != "ok" ]; then
     fi
   fi
   if [ "$send_alert" -eq 1 ]; then
-    if [ -z "$ALERT_WEBHOOK_URL" ]; then
+    if [ -z "$webhook_url" ]; then
       printf '%s [blocked] ALERT_WEBHOOK_URL is empty; alert not delivered\n' "$NOW_ISO" >>"$ALERT_LOG" || true
       exit 2
     fi
@@ -412,7 +416,7 @@ if [ "$status" != "ok" ]; then
     # builtin, so it never appears in any process argv); the body goes through a 0600 temp file.
     payload_file="$(mktemp)" || die "mktemp failed"
     printf '%s' "$payload" >"$payload_file" || die "cannot write payload"
-    url_cfg="${ALERT_WEBHOOK_URL//\\/\\\\}"
+    url_cfg="${webhook_url//\\/\\\\}"
     url_cfg="${url_cfg//\"/\\\"}"
     webhook_rc=0
     printf 'url = "%s"\n' "$url_cfg" |

@@ -14,7 +14,10 @@
 #   7  30-day hourly simulation (daily nightly + base, WAL every 10 min, failed backups, missed
 #      sweeps): no file ever reaches 8d; from day 7 a base aged >= 6d with contiguous WAL after it
 #   8  (OPSPROD_EXPIRE_REAL_DOCKER=1, cloud) real docker run on a 999:999 0700 WAL dir with the pinned
-#      POSTGRES_IMAGE: host user cannot read it, the sweep still deletes by name, 0700/owner unchanged
+#      POSTGRES_IMAGE: host user cannot read it, the sweep still deletes by name, 0700/owner unchanged; a
+#      symlinked pitr/wal with the real image leaves the outside sentinel untouched
+#   9  (R2-03) symlinked pitr/wal or pitr/ -> no docker run, outside sentinel untouched, ok:false
+#  10  WAL child exiting 0 without its COUNTS line -> ok:false
 # check() evals single-quoted conditions at call time; keep/drop are read through ${!t}.
 # shellcheck disable=SC2016,SC2034,SC2317
 set -uo pipefail
@@ -183,6 +186,42 @@ else
   printf 'SKIP c6 unreadable WAL dir (running as root)\n'
 fi
 
+# 9. R2-03: a symlinked pitr/wal or pitr/ must never become the writable bind source (shim resolves -v like Docker).
+cat >"$WORK/bin/docker" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$WORK/docker9.argv"
+src=""
+while [ "\$#" -gt 0 ] && [ "\$1" != "-s" ]; do
+  [ "\$1" = -v ] && src="\$(realpath "\${2%%:*}")"
+  shift
+done
+shift 2
+args=("\$@")
+for i in "\${!args[@]}"; do [ "\${args[\$i]}" = /wal-archive ] && args[\$i]="\$src"; done
+exec bash -s -- "\${args[@]}"
+EOF
+chmod +x "$WORK/bin/docker"
+for variant in wal pitr; do
+  R="$(newroot "c9$variant")"
+  OUT="$WORK/outside9$variant"
+  sentinel="$OUT/wal/$(ts_of $((NOW - 9 * D)))--000000010000000000000077.gz.gpg"
+  mk "$sentinel"
+  if [ "$variant" = wal ]; then
+    rm -rf "$R/pitr/wal" && ln -s "$OUT/wal" "$R/pitr/wal"
+  else
+    rm -rf "$R/pitr" && ln -s "$OUT" "$R/pitr"
+  fi
+  : >"$WORK/docker9.argv"
+  PATH="$WORK/bin:$PATH" run_sweep "$R" "$NOW" pg-pin@sha256:test
+  check "c9 symlinked $variant: outside sentinel untouched, no docker run, ok:false + exit 1" \
+    '[ -e "$sentinel" ] && [ ! -s "$WORK/docker9.argv" ] && [ "$SWEEP_RC" -eq 1 ] && grep -q "wal sweep refused" "$R/expire/expire.log"'
+done
+# 10. A WAL child that exits 0 without its COUNTS line is a failed sweep, not a clean one.
+R="$(newroot c10)"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n' >"$WORK/bin/docker"
+PATH="$WORK/bin:$PATH" run_sweep "$R" "$NOW" pg-pin@sha256:test
+check "c10 silent WAL child (exit 0, no COUNTS) -> ok:false + exit 1" '[ "$SWEEP_RC" -eq 1 ] && grep -q "\"ok\":false" "$R/expire/last-sweep.json"'
+
 # 8. Real isolated docker run on a production-shaped WAL dir (cloud only: pulls the pinned image).
 if [ "${OPSPROD_EXPIRE_REAL_DOCKER:-0}" = "1" ]; then
   IMG="$(grep '^POSTGRES_IMAGE=' "$HERE/../../image-pins.env" | cut -d= -f2-)"
@@ -202,6 +241,13 @@ if [ "${OPSPROD_EXPIRE_REAL_DOCKER:-0}" = "1" ]; then
     '[ "$SWEEP_RC" -eq 0 ] && marker_ok "$R" && ! grep -q "$wold" <<<"$listing" && grep -q "$wnew" <<<"$listing"'
   check "c8 WAL dir still 999:999 0700" 'grep -qx "999:999 700" <<<"$listing"'
   docker run --rm --network none --user 0:0 --entrypoint sh -v "$R:/r" "$IMG" -c 'rm -rf /r/pitr' >/dev/null
+  R="$(newroot c8link)"
+  sentinel="$WORK/outside8/$(ts_of $((NOW - 9 * D)))--000000010000000000000078.gz.gpg"
+  mk "$sentinel"
+  rm -rf "$R/pitr/wal" && ln -s "$WORK/outside8" "$R/pitr/wal"
+  run_sweep "$R" "$NOW" "$IMG"
+  check "c8 real image + symlinked pitr/wal: outside sentinel untouched, ok:false" \
+    '[ -e "$sentinel" ] && [ "$SWEEP_RC" -eq 1 ] && grep -q "wal sweep refused" "$R/expire/expire.log"'
 else
   printf 'SKIP c8 real docker WAL sweep (set OPSPROD_EXPIRE_REAL_DOCKER=1; cloud spec does)\n'
 fi

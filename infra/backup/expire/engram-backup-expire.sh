@@ -165,14 +165,22 @@ prune=""
 [ -n "$WAL_IMAGE" ] && prune="$WAL_DIR"
 sweep "$ROOT" "$NOW" "$prune" >>"$out"
 
-if [ -n "$WAL_IMAGE" ] && [ -d "$WAL_DIR" ]; then
-  # Same script, same clock, as the archive owner, with nothing but the WAL dir mounted.
-  wal_rc=0
-  docker run --rm -i --network none --user "$WAL_UID" --entrypoint bash \
-    -v "$WAL_DIR:/wal-archive" "$WAL_IMAGE" -s -- --sweep-only /wal-archive "$NOW" \
-    <"${BASH_SOURCE[0]}" >>"$out" 2>&1 || wal_rc=$?
-  if [ "$wal_rc" -ne 0 ] || ! grep -q '^COUNTS ' <(tail -n 1 "$out"); then
-    printf 'ERROR wal sweep (docker run %s) exit %s\n' "$WAL_IMAGE" "$wal_rc" >>"$out"
+if [ -n "$WAL_IMAGE" ] && { [ -e "$WAL_DIR" ] || [ -L "$WAL_DIR" ] || [ -L "$ROOT/pitr" ]; }; then
+  # The bind source must be the real directory ROOT/pitr/wal: a symlinked pitr/ or wal/ would hand a writable mount
+  # of some other host directory to the sweep (R2-03). ROOT itself is already canonical (pwd -P).
+  wal_real="$(realpath -e -- "$WAL_DIR" 2>/dev/null || true)"
+  if [ -L "$ROOT/pitr" ] || [ -L "$WAL_DIR" ] || [ ! -d "$WAL_DIR" ] || [ "$wal_real" != "$ROOT/pitr/wal" ]; then
+    printf 'ERROR wal sweep refused: %s is not a real directory under %s (symlink or escape)\n' "$WAL_DIR" "$ROOT" >>"$out"
+  else
+    # Same script, same clock, as the archive owner, with nothing but the WAL dir mounted.
+    wal_rc=0
+    before="$(grep -c '^COUNTS ' "$out" || true)"
+    docker run --rm -i --network none --user "$WAL_UID" --entrypoint bash \
+      -v "$wal_real:/wal-archive" "$WAL_IMAGE" -s -- --sweep-only /wal-archive "$NOW" \
+      <"${BASH_SOURCE[0]}" >>"$out" 2>&1 || wal_rc=$?
+    if [ "$wal_rc" -ne 0 ] || [ "$(grep -c '^COUNTS ' "$out" || true)" -ne $((before + 1)) ]; then
+      printf 'ERROR wal sweep (docker run %s) exit %s\n' "$WAL_IMAGE" "$wal_rc" >>"$out"
+    fi
   fi
 fi
 

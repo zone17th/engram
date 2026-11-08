@@ -57,6 +57,7 @@ for cmd in gpg psql; do
 done
 cat >"$FAKE_BIN/docker" <<'EOF'
 #!/usr/bin/env bash
+env >>"${FAKE_CHILD_ENV_LOG:-/dev/null}"
 case "$1" in
   inspect)
     for a in "$@"; do last="$a"; done
@@ -86,6 +87,7 @@ REAL_CURL="$(command -v curl)"
 cat >"$FAKE_BIN/curl" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$WORK/curl-argv.log"
+env >>"$WORK/child-env.log"
 exec "$REAL_CURL" "\$@"
 EOF
 chmod +x "$FAKE_BIN/curl"
@@ -313,6 +315,26 @@ run_case "$WORK/c22b" ALERT_WEBHOOK_URL="$SRV/hook?token=$CANARY" TEST_ALERT=1
 assert_alert_contains "webhook_canary_test_alert" "test_alert: synthetic alert probe"
 grep -q "$CANARY" "$WORK/curl-argv.log" && fail "webhook_canary_test_alert_argv" "webhook URL found in curl argv"
 echo "PASS [webhook_canary_test_alert_argv]: URL absent from argv"
+
+# 22c. R2-01: the URL is also absent from every child's environment and from an xtrace of the whole monitor run.
+make_clean_fixture "$WORK/c22c"
+printf '{"ts":"%s","ok":true}\n' "$(ts_fmt $((NOW - 7200)))" >"$WORK/c22c/backups/expire/last-sweep.json"
+: >"$WORK/curl-argv.log"
+: >"$WORK/child-env.log"
+: >"$WEBHOOK_LOG"
+LAST_RC=0
+env PATH="$BASE_PATH" MONITOR_NOW_EPOCH="$NOW" MONITOR_STATE_DIR="$WORK/c22c/state" MONITOR_BACKUP_ROOT="$WORK/c22c/backups" \
+  MONITOR_API_BASE_URL="$SRV/ok" MONITOR_SKIP_HTTP=1 MONITOR_FAKE_DISK_PCT=40 \
+  MONITOR_FAKE_TLS_ENDDATE="Jan 29 00:00:00 2027 GMT" FAKE_DOCKER_LOGS_FILE="$WORK/c22c/nginx.log" \
+  MONITOR_FAKE_ARCHIVER_ROW="3|$((NOW - 120))|0" FAKE_CHILD_ENV_LOG="$WORK/child-env.log" \
+  ALERT_WEBHOOK_URL="$SRV/hook?token=$CANARY" \
+  bash -x "$MONITOR" 2>"$WORK/c22c/trace.log" || LAST_RC=$?
+assert_alert_contains "webhook_canary_xtrace_delivery" "retention_sweep: stale"
+[ -s "$WORK/child-env.log" ] || fail "webhook_canary_env" "no child environment captured"
+grep -q "$CANARY" "$WORK/child-env.log" && fail "webhook_canary_env" "webhook URL in a child process environment"
+grep -q "$CANARY" "$WORK/c22c/trace.log" && fail "webhook_canary_xtrace" "webhook URL in the bash -x trace"
+grep -q "$CANARY" "$WORK/curl-argv.log" && fail "webhook_canary_xtrace_argv" "webhook URL in curl argv"
+echo "PASS [webhook_canary_env_xtrace]: delivered; URL absent from child env (curl + docker), xtrace and argv"
 
 # 23. Cross-lane 1 (dec-P06-059): WAL dir 999:999 0700 is listed through an isolated docker run, never by the host.
 wal_fixture() { # wal_fixture <dir>: host WAL dir unreadable, container view holds the real names
