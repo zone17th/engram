@@ -8,6 +8,8 @@ import {
 const withNextIntl = createNextIntlPlugin('./i18n/request.ts');
 
 const nextConfig: NextConfig = {
+  // W-1: `app/global-not-found.tsx` is the static branded 404 for every unmatched URL (hash-CSP covered).
+  experimental: { globalNotFound: true },
   reactStrictMode: true,
   poweredByHeader: false,
   // Keep the raw origin available when NextURL normalizes loopback addresses.

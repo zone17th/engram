@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AppError from '../app/app/error';
 import AppNotFound from '../app/app/not-found';
-import MarketingNotFound from '../app/(marketing)/[locale]/not-found';
+import GlobalNotFound from '../app/global-not-found';
 import { OfflineBanner } from '../components/app-shell/offline-banner';
 import { RouteGuard } from '../features/auth/route-guard';
 import { LockedBanner } from '../features/items/locked-banner';
@@ -25,26 +25,19 @@ let mockPathname = '/app';
 let mockSession: Record<string, unknown> = {};
 let mockVault: { state: string } | null = null;
 let mockSemantic: Record<string, unknown> = {};
-let mockLocale = 'en';
 
 vi.mock('next/navigation', () => ({
   usePathname: () => mockPathname,
   useRouter: () => ({ replace: mockReplace, push: vi.fn() }),
   useSearchParams: () => new URLSearchParams(),
 }));
+// next/font/local only exists inside the Next compiler; the 404 shell just needs the class string.
+vi.mock('@/app/fonts', () => ({ fontVariables: '' }));
 vi.mock('@/features/auth/session-provider', () => ({ useSession: () => mockSession }));
 vi.mock('@/features/vault/vault-provider', () => ({ useOptionalVault: () => mockVault }));
 vi.mock('@/features/omnibox/suggest/use-semantic-suggest-setting', () => ({
   useSemanticSuggestSetting: () => mockSemantic,
 }));
-vi.mock('next-intl/server', async () => {
-  const { createTranslator } = await import('next-intl');
-  return {
-    getLocale: async () => mockLocale,
-    getTranslations: async ({ locale, namespace }: { locale: 'en' | 'vi'; namespace: string }) =>
-      createTranslator({ locale, messages: locale === 'vi' ? viMessages : enMessages, namespace } as never),
-  };
-});
 
 function wrap(entry: Entry, ui: ReactNode) {
   return (
@@ -219,9 +212,10 @@ describe.each(LOCALES)('U18 #err-server-500 / #err-not-found ($locale)', (entry)
     expect(screen.getByRole('link', { name: entry.messages.states.backToList })).toHaveAttribute('href', '/app');
   });
 
-  it('F2: public-site not-found (/vi/<x>, /<x>) is branded and uses the request locale', async () => {
-    mockLocale = entry.locale;
-    render(await MarketingNotFound());
+  it('F2/W-1: public-site not-found (/vi/<x>, /<x>) is branded; locale comes from the URL on the client', () => {
+    // The shell is static (prerendered once), so the server markup is English and the client switches by pathname.
+    window.history.replaceState(null, '', entry.locale === 'vi' ? '/vi/zzz-nothing' : '/zzz-nothing');
+    render(<GlobalNotFound />);
     expect(screen.getByRole('heading', { name: entry.messages.states.notFoundTitle })).toBeInTheDocument();
     // M-1 / R2-M1: page-level body, no item-specific sentence and no way into /app for an anonymous visitor; the only
     // action is the site home, named in plain words (not the literal brand).
@@ -233,6 +227,7 @@ describe.each(LOCALES)('U18 #err-server-500 / #err-not-found ($locale)', (entry)
     expect(home).toHaveAttribute('href', entry.locale === 'vi' ? '/vi' : '/');
     expect(screen.queryByRole('link', { name: 'engram' })).toBeNull();
     expect(document.querySelector('main#main-content')).not.toBeNull();
+    expect(document.documentElement.lang).toBe(entry.locale);
   });
 });
 
