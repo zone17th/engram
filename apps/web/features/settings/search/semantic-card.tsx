@@ -24,12 +24,15 @@
  * - No re-embed button, no index stats, no model name.
  */
 
-import { useTranslations } from 'next-intl';
+import Link from 'next/link';
+import { useLocale, useTranslations } from 'next-intl';
 import { useId } from 'react';
 import { useSemanticSuggestSetting } from '@/features/omnibox/suggest/use-semantic-suggest-setting';
 
 export function SemanticCard() {
   const t = useTranslations('settings.search');
+  const locale = useLocale();
+  const privacyHref = locale === 'vi' ? '/vi/docs#rieng-tu' : '/docs#rieng-tu';
   const baseId = useId();
   const titleId = `${baseId}-title`;
   const serverOffNoteId = `${baseId}-server-off`;
@@ -138,6 +141,16 @@ export function SemanticCard() {
           {t('semanticServerOff')}
         </p>
       ) : null}
+
+      <p className="m-0 mt-3 text-[13px]">
+        <Link
+          href={privacyHref}
+          className="text-link inline-flex min-h-11 items-center"
+          data-testid="settings-semantic-privacy-link"
+        >
+          {t('privacyLink')}
+        </Link>
+      </p>
 
       <p
         id={statusId}

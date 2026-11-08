@@ -119,6 +119,19 @@ describe('features/settings/search/semantic-card (U16 #timkiem)', () => {
     vi.unstubAllGlobals();
   });
 
+  it('links to the privacy section of the docs in the active locale (FE-R1-03)', () => {
+    for (const [locale, href] of [
+      ['en', '/docs#rieng-tu'],
+      ['vi', '/vi/docs#rieng-tu'],
+    ] as const) {
+      const { messages, unmount } = renderSemanticCard({ initialMe: makeMe(), locale });
+      const link = screen.getByTestId('settings-semantic-privacy-link');
+      expect(link).toHaveAttribute('href', href);
+      expect(link).toHaveTextContent(messages.settings.search.privacyLink);
+      unmount();
+    }
+  });
+
   it('409 semantic_unavailable reverts switch, no toast', async () => {
     const initialMe = makeMe({
       semantic_suggest: false,
