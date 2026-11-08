@@ -23,7 +23,9 @@ const mocks = vi.hoisted(() => {
     searchParams: '',
     theme: 'light' as 'system' | 'light' | 'dark',
     authPasswordForgot: vi.fn<(body: PasswordForgotRequest) => Promise<void>>(),
+    patchSettings: vi.fn<(body: { locale?: 'en' | 'vi'; theme?: 'system' | 'light' | 'dark' }) => Promise<unknown>>(),
     bootstrapCsrf: vi.fn<() => Promise<void>>(),
+    refetchMe: vi.fn<() => Promise<void>>(),
     session: {
       status: 'signed_out' as
         | 'loading'
@@ -32,6 +34,7 @@ const mocks = vi.hoisted(() => {
         | 'authenticated_with_vault'
         | 'unavailable',
       me: null as {
+        id?: string;
         settings: {
           locale: 'en' | 'vi';
           theme: 'system' | 'light' | 'dark';
@@ -46,6 +49,7 @@ const mocks = vi.hoisted(() => {
       configLoading: false,
       configError: false,
       bootstrapComplete: true,
+      refetchMe: () => mocks.refetchMe(),
     },
   };
 });
@@ -81,6 +85,7 @@ vi.mock('@/lib/api/auth', async (importOriginal) => {
   return {
     ...actual,
     authPasswordForgot: mocks.authPasswordForgot,
+    patchSettings: mocks.patchSettings,
     bootstrapCsrf: mocks.bootstrapCsrf,
   };
 });
@@ -139,7 +144,9 @@ beforeEach(() => {
   mocks.session.configError = false;
   mocks.session.bootstrapComplete = true;
   mocks.authPasswordForgot.mockResolvedValue(undefined);
+  mocks.patchSettings.mockResolvedValue(undefined);
   mocks.bootstrapCsrf.mockResolvedValue(undefined);
+  mocks.refetchMe.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -190,9 +197,10 @@ describe('LocaleSwitch (FU15-LOCALE-SWITCH)', () => {
 
     expect(toLandingLocaleHref('/terms', 'vi')).toBe('/vi/terms');
     expect(toLandingLocaleHref('/vi/privacy', 'en')).toBe('/privacy');
+    expect(toLandingLocaleHref('/docs', 'vi')).toBe('/vi/docs');
+    expect(toLandingLocaleHref('/vi/docs#khoi-phuc', 'en')).toBe('/docs#khoi-phuc');
     expect(toLandingLocaleHref('/en/privacy?src=nav#contact', 'vi')).toBe('/vi/privacy?src=nav#contact');
     expect(toLandingLocaleHref('/vi/privacy?src=nav#contact', 'en')).toBe('/privacy?src=nav#contact');
-    fetchSpy.mockRestore();
   });
 
   it('active locale is checked', async () => {
@@ -207,15 +215,14 @@ describe('LocaleSwitch (FU15-LOCALE-SWITCH)', () => {
     expect(enItem).toHaveAttribute('data-state', 'on');
     expect(enItem).toHaveAttribute('lang', 'en');
     expect(enItem).toHaveTextContent('EN');
-    expect(enItem).toHaveClass('touch-target');
+    expect(enItem).toHaveClass('touch-target', 'min-h-11', 'min-w-11');
 
     expect(viItem).not.toHaveAttribute('aria-pressed');
     expect(viItem).toHaveAttribute('aria-checked', 'false');
     expect(viItem).toHaveAttribute('data-state', 'off');
     expect(viItem).toHaveAttribute('lang', 'vi');
     expect(viItem).toHaveTextContent('VI');
-    expect(viItem).toHaveClass('touch-target');
-
+    expect(viItem).toHaveClass('touch-target', 'min-h-11', 'min-w-11');
     // RV-T25-FE1-9: roving focus moves with ArrowRight and Enter/click activates the focused item
     enItem.focus();
     expect(enItem).toHaveFocus();
@@ -415,5 +422,55 @@ describe('LocaleSwitch (FU15-LOCALE-SWITCH)', () => {
       captcha_token: undefined,
       locale: 'vi',
     });
+  });
+
+  it('syncs locale switch to user.locale via patchSettings when an active session switches locale (F-02)', async () => {
+    mocks.pathname = '/app/auth/reauth';
+    mocks.session.status = 'authenticated_with_vault';
+    mocks.session.me = {
+      id: 'user-1',
+      settings: {
+        locale: 'en',
+        theme: 'light',
+      },
+    };
+
+    const { rerender } = render(
+      <NextIntlClientProvider locale="en" messages={en}>
+        <ThemeProvider initialTheme="light" initialLocale="en">
+          <ReauthMessagesProvider auth={en.auth}>
+            <LocaleThemeSync />
+            <AuthChrome>
+              <div>reauth content</div>
+            </AuthChrome>
+          </ReauthMessagesProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    expect(readCookie(LOCALE_COOKIE)).toBe('en');
+    expect(mocks.patchSettings).not.toHaveBeenCalled();
+
+    const group = screen.getByRole('radiogroup', { name: 'Language' });
+    fireEvent.click(within(group).getByRole('radio', { name: 'Vietnamese (VI)' }));
+    expect(readCookie(LOCALE_COOKIE)).toBe('vi');
+
+    rerender(
+      <NextIntlClientProvider locale="vi" messages={viMessages}>
+        <ThemeProvider initialTheme="light" initialLocale="vi">
+          <ReauthMessagesProvider auth={viMessages.auth}>
+            <LocaleThemeSync />
+            <AuthChrome>
+              <div>reauth content</div>
+            </AuthChrome>
+          </ReauthMessagesProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mocks.patchSettings).toHaveBeenCalledWith({ locale: 'vi' });
+    });
+    expect(mocks.refetchMe).toHaveBeenCalled();
   });
 });

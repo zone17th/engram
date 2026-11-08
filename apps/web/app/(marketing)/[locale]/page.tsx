@@ -23,6 +23,7 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
     <>
       <SiteHeader />
 
+      <main id="main-content">
       {/* hero — theo mockups/landing.html: tiêu đề hai dòng cùng màu ink, rồi panel demo (UIA-5) */}
       <section className="max-w-container mx-auto px-5 pb-6 pt-16 md:pt-24">
         <div className="max-w-[1000px]">
@@ -133,6 +134,7 @@ export default async function LandingPage({ params }: { params: Promise<{ locale
           </Link>
         </div>
       </section>
+      </main>
 
       <SiteFooter />
     </>
