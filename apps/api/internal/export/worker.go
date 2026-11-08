@@ -137,10 +137,6 @@ var errAttemptSuperseded = errors.New("export: attempt superseded or cancelled")
 // unknown; the renamed artifact must be preserved until resolution (r1 R1-13).
 var errAmbiguousCommit = errors.New("export: ambiguous finalize commit")
 
-// errSpoolLimit aborts an artifact that exceeds EXPORT_MAX_SPOOL_BYTES; it is
-// terminal for the attempt because a retry cannot shrink the vault (r1 R1-19).
-var errSpoolLimit = errors.New("export: artifact exceeds EXPORT_MAX_SPOOL_BYTES")
-
 // WorkerDeps configures the export_encrypted River worker.
 type WorkerDeps struct {
 	Pool       *pgxpool.Pool
@@ -148,12 +144,12 @@ type WorkerDeps struct {
 	Notify     *notification.Store
 	StorageDir string
 	Secret     config.Secret
-	// MaxSpoolBytes bounds one artifact's ciphertext bytes (r1 R1-19); <=0 uncapped.
-	MaxSpoolBytes int64
-	Clock         clock.Clock
-	Logger        *slog.Logger
-	LeaseDur      time.Duration
-	ReadyTTL      time.Duration
+	// EXPORT_MAX_SPOOL_BYTES (cfg.ExportMaxSpoolBytes) is advisory and inert:
+	// no export outcome depends on it (advisor-dec-P06-039).
+	Clock    clock.Clock
+	Logger   *slog.Logger
+	LeaseDur time.Duration
+	ReadyTTL time.Duration
 	// BeforeFinalizeHook is called in tests after the file is sealed/renamed and
 	// before Finalize CAS opens its transaction (TestExportFinalizeCASKeepsAtomic).
 	BeforeFinalizeHook func(ctx context.Context, jobID, attemptID uuid.UUID)
@@ -164,19 +160,28 @@ type WorkerDeps struct {
 // ExportWorker implements river.Worker[ExportEncryptedArgs] (plan mục 2.3, 2.4, 2.7).
 type ExportWorker struct {
 	river.WorkerDefaults[ExportEncryptedArgs]
-	pool          *pgxpool.Pool
-	q             *gen.Queries
-	audit         *audit.Store
-	notify        *notification.Store
-	storageDir    string
-	secret        config.Secret
-	maxSpoolBytes int64
-	clk           clock.Clock
-	logger        *slog.Logger
-	leaseDur      time.Duration
-	readyTTL      time.Duration
-	beforeFin     func(ctx context.Context, jobID, attemptID uuid.UUID)
-	afterBatch    func(ctx context.Context, jobID, attemptID uuid.UUID)
+	pool       *pgxpool.Pool
+	q          *gen.Queries
+	audit      *audit.Store
+	notify     *notification.Store
+	storageDir string
+	secret     config.Secret
+	clk        clock.Clock
+	logger     *slog.Logger
+	leaseDur   time.Duration
+	readyTTL   time.Duration
+	beforeFin  func(ctx context.Context, jobID, attemptID uuid.UUID)
+	afterBatch func(ctx context.Context, jobID, attemptID uuid.UUID)
+
+	// In-package test seams (nil in production; review r2 fault/barrier proofs):
+	// finalizeLocked runs inside finalizeCAS after all three locks are held;
+	// commitFinalize replaces tx.Commit; resolveFault, when it returns an
+	// error, makes resolvePublication report "unresolved"; syncDirFn
+	// replaces the post-rename directory fsync.
+	finalizeLocked func(ctx context.Context, tx pgx.Tx)
+	commitFinalize func(ctx context.Context, tx pgx.Tx) error
+	resolveFault   func() error
+	syncDirFn      func(dir string) error
 }
 
 // NewExportWorker constructs an ExportWorker.
@@ -198,19 +203,18 @@ func NewExportWorker(d WorkerDeps) *ExportWorker {
 		aud = audit.NewStore(d.Pool)
 	}
 	return &ExportWorker{
-		pool:          d.Pool,
-		q:             gen.New(d.Pool),
-		audit:         aud,
-		notify:        d.Notify,
-		storageDir:    d.StorageDir,
-		secret:        d.Secret,
-		maxSpoolBytes: d.MaxSpoolBytes,
-		clk:           clk,
-		logger:        d.Logger,
-		leaseDur:      lease,
-		readyTTL:      ttl,
-		beforeFin:     d.BeforeFinalizeHook,
-		afterBatch:    d.AfterBatchHook,
+		pool:       d.Pool,
+		q:          gen.New(d.Pool),
+		audit:      aud,
+		notify:     d.Notify,
+		storageDir: d.StorageDir,
+		secret:     d.Secret,
+		clk:        clk,
+		logger:     d.Logger,
+		leaseDur:   lease,
+		readyTTL:   ttl,
+		beforeFin:  d.BeforeFinalizeHook,
+		afterBatch: d.AfterBatchHook,
 	}
 }
 
@@ -275,12 +279,13 @@ func (w *ExportWorker) Work(ctx context.Context, rjob *river.Job[ExportEncrypted
 			return river.JobCancel(runErr)
 		}
 		if errors.Is(runErr, ErrVaultAbsent) {
-			w.markAttemptFailed(ctx, jobID, userID, attemptID, "vault_absent")
-			return river.JobCancel(runErr)
-		}
-		if errors.Is(runErr, errSpoolLimit) {
-			// The artifact can only grow on retry; fail terminally (r1 R1-19).
-			w.markAttemptFailed(ctx, jobID, userID, attemptID, "spool_limit")
+			bkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			if err := w.markAttemptFailed(bkCtx, jobID, userID, attemptID, "vault_absent"); err != nil {
+				// Terminal bookkeeping did not land: retry so the row is not
+				// left running until the worker-lost sweep.
+				return errors.Join(runErr, err)
+			}
 			return river.JobCancel(runErr)
 		}
 		return w.failOrRetry(ctx, rjob, jobID, userID, attemptID, "internal_error", runErr)
@@ -321,6 +326,11 @@ func (w *ExportWorker) Work(ctx context.Context, rjob *river.Job[ExportEncrypted
 func (w *ExportWorker) resolvePublication(jobID, userID, attemptID uuid.UUID) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 15*time.Second)
 	defer cancel()
+	if w.resolveFault != nil {
+		if err := w.resolveFault(); err != nil {
+			return false, err
+		}
+	}
 	row, err := w.q.GetExportJobForOwner(ctx, gen.GetExportJobForOwnerParams{
 		ID:     jobID,
 		UserID: userID,
@@ -373,20 +383,24 @@ func (w *ExportWorker) failOrRetry(ctx context.Context, rjob *river.Job[ExportEn
 	bkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if rjob.Attempt >= maxAttempts {
-		w.markAttemptFailed(bkCtx, jobID, userID, attemptID, code)
-		return cause
+		return errors.Join(cause, w.markAttemptFailed(bkCtx, jobID, userID, attemptID, code))
 	}
-	_, _ = w.q.ReleaseExportLease(bkCtx, gen.ReleaseExportLeaseParams{
+	if _, err := w.q.ReleaseExportLease(bkCtx, gen.ReleaseExportLeaseParams{
 		ID:        jobID,
 		AttemptID: &attemptID,
-	})
+	}); err != nil {
+		return errors.Join(cause, fmt.Errorf("export: release lease: %w", err))
+	}
 	return cause
 }
 
-func (w *ExportWorker) markAttemptFailed(ctx context.Context, jobID, userID, attemptID uuid.UUID, code string) {
+// markAttemptFailed CAS-fails this attempt and records the failure audit in
+// one transaction. A superseded attempt (CAS matched 0 rows) is not an error;
+// DB/audit/commit failures are returned so callers surface them (r2 R1-15).
+func (w *ExportWorker) markAttemptFailed(ctx context.Context, jobID, userID, attemptID uuid.UUID, code string) error {
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
-		return
+		return fmt.Errorf("export: mark failed begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := w.q.WithTx(tx)
@@ -395,20 +409,28 @@ func (w *ExportWorker) markAttemptFailed(ctx context.Context, jobID, userID, att
 		ID:        jobID,
 		AttemptID: &attemptID,
 	})
-	if err != nil || n == 0 {
-		return
+	if err != nil {
+		return fmt.Errorf("export: mark failed: %w", err)
+	}
+	if n == 0 {
+		return nil
 	}
 	if w.audit != nil {
 		uid := userID
-		_ = w.audit.Record(ctx, tx, secevent.Record{
+		if err := w.audit.Record(ctx, tx, secevent.Record{
 			UserID: &uid,
 			Event:  secevent.EventExportEncrypted,
 			Result: secevent.ResultFailure,
 			Actor:  "system",
 			Meta:   secevent.Meta{},
-		})
+		}); err != nil {
+			return fmt.Errorf("export: failure audit: %w", err)
+		}
 	}
-	_ = tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("export: mark failed commit: %w", err)
+	}
+	return nil
 }
 
 func (w *ExportWorker) unlinkAttemptFiles(jobID, attemptID uuid.UUID) {
@@ -482,19 +504,19 @@ func (w *ExportWorker) writeSnapshotFile(ctx context.Context, jobID, userID, att
 	if _, err := fw.WriteString(",\n\"tags\": [\n"); err != nil {
 		return gen.Vault{}, 0, err
 	}
-	if err := w.streamTags(ctx, rq, fw, jobID, attemptID, userID, totalWork, &processed); err != nil {
+	if err := w.streamTags(ctx, rrTx, fw, jobID, attemptID, userID, totalWork, &processed); err != nil {
 		return gen.Vault{}, 0, err
 	}
 	if _, err := fw.WriteString("],\n\"items\": [\n"); err != nil {
 		return gen.Vault{}, 0, err
 	}
-	if err := w.streamItems(ctx, rq, fw, jobID, attemptID, userID, totalWork, &processed); err != nil {
+	if err := w.streamItems(ctx, rrTx, fw, jobID, attemptID, userID, totalWork, &processed); err != nil {
 		return gen.Vault{}, 0, err
 	}
 	if _, err := fw.WriteString("],\n\"item_tags\": [\n"); err != nil {
 		return gen.Vault{}, 0, err
 	}
-	if err := w.streamItemTags(ctx, rq, fw, jobID, attemptID, userID, totalWork, &processed); err != nil {
+	if err := w.streamItemTags(ctx, rrTx, fw, jobID, attemptID, userID, totalWork, &processed); err != nil {
 		return gen.Vault{}, 0, err
 	}
 	if _, err := fw.WriteString("],\n\"entries\": [\n"); err != nil {
@@ -509,9 +531,6 @@ func (w *ExportWorker) writeSnapshotFile(ctx context.Context, jobID, userID, att
 	if err := fw.Close(); err != nil {
 		return gen.Vault{}, 0, err
 	}
-	if w.maxSpoolBytes > 0 && fw.Written() > w.maxSpoolBytes {
-		return gen.Vault{}, 0, errSpoolLimit
-	}
 	if err := f.Sync(); err != nil {
 		return gen.Vault{}, 0, err
 	}
@@ -522,7 +541,11 @@ func (w *ExportWorker) writeSnapshotFile(ctx context.Context, jobID, userID, att
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		return gen.Vault{}, 0, err
 	}
-	if err := syncDir(w.storageDir); err != nil {
+	sync := syncDir
+	if w.syncDirFn != nil {
+		sync = w.syncDirFn
+	}
+	if err := sync(w.storageDir); err != nil {
 		return gen.Vault{}, 0, fmt.Errorf("export: sync dir after rename: %w", err)
 	}
 	return vaultRow, fw.Written(), nil
@@ -643,43 +666,74 @@ func writeJSONLine(fw *FrameWriter, first *bool, v any) error {
 	return err
 }
 
-func (w *ExportWorker) streamTags(ctx context.Context, rq *gen.Queries, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
-	afterTS := pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
-	var afterID uuid.UUID
+// The snapshot streams below mirror ExportTagsBatch / ExportItemsBatch /
+// ExportItemTagsBatch / ExportEntriesBatch (apps/api/internal/db/queries/
+// export.sql) 1:1 and are issued through pgx.Tx.Query so each keyset page
+// streams row by row through the portal instead of materializing a slice
+// (plan §2.7.1; review r1 R1-02, r2). Keep them in sync with export.sql.
+const (
+	exportTagsStreamSQL = `SELECT id, display, normalized, item_count, last_used_at, created_at, deleted_at
+FROM tag
+WHERE user_id = $1
+  AND (created_at, id) > ($2::timestamptz, $3::uuid)
+ORDER BY created_at ASC, id ASC
+LIMIT $4`
+	exportItemsStreamSQL = `SELECT id, name, name_normalized, hint, entry_count, version, last_used_at,
+  created_at, updated_at, deleted_at, delete_batch
+FROM item
+WHERE user_id = $1
+  AND (created_at, id) > ($2::timestamptz, $3::uuid)
+ORDER BY created_at ASC, id ASC
+LIMIT $4`
+	exportItemTagsStreamSQL = `SELECT it.item_id, it.tag_id, it.created_at
+FROM item_tag it
+JOIN item i ON i.id = it.item_id
+WHERE i.user_id = $1
+  AND (it.item_id, it.tag_id) > ($2::uuid, $3::uuid)
+ORDER BY it.item_id ASC, it.tag_id ASC
+LIMIT $4`
+	exportEntriesStreamSQL = `SELECT id, item_id, type, position, version, plaintext_len_bucket, envelope,
+  ciphertext, created_at, updated_at, deleted_at, deleted_via, delete_batch
+FROM entry
+WHERE user_id = $1
+  AND (item_id, position, id) > ($2::uuid, $3::int, $4::uuid)
+ORDER BY item_id ASC, position ASC, id ASC
+LIMIT $5`
+)
+
+// streamKeyset pages one snapshot section: each page is a streamed pgx.Rows
+// whose rows are handed to emit one at a time (emit writes the JSON line and
+// advances the keyset captured by args). Progress/lease is checked per page.
+func (w *ExportWorker) streamKeyset(ctx context.Context, tx pgx.Tx, fw *FrameWriter, query string, limit int32,
+	args func() []any, emit func(rows pgx.Rows, first *bool) error,
+	jobID, attemptID uuid.UUID, total int32, processed *int32,
+) error {
 	first := true
 	for {
-		rows, err := rq.ExportTagsBatch(ctx, gen.ExportTagsBatchParams{
-			UserID:         userID,
-			AfterCreatedAt: afterTS,
-			AfterID:        afterID,
-			BatchLimit:     metaBatchLimit,
-		})
+		rows, err := tx.Query(ctx, query, append(args(), limit)...)
 		if err != nil {
 			return err
 		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, r := range rows {
-			if err := writeJSONLine(fw, &first, SabkTag{
-				ID:         r.ID,
-				Display:    r.Display,
-				Normalized: r.Normalized,
-				ItemCount:  r.ItemCount,
-				LastUsedAt: r.LastUsedAt.Time.UTC().Format(time.RFC3339),
-				CreatedAt:  r.CreatedAt.Time.UTC().Format(time.RFC3339),
-				DeletedAt:  fmtTimePtr(r.DeletedAt),
-			}); err != nil {
+		n := int32(0)
+		for rows.Next() {
+			if err := emit(rows, &first); err != nil {
+				rows.Close()
 				return err
 			}
-			afterTS = r.CreatedAt
-			afterID = r.ID
 			*processed++
+			n++
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if n == 0 {
+			break
 		}
 		if err := w.checkAndProgress(ctx, jobID, attemptID, total, *processed); err != nil {
 			return err
 		}
-		if int32(len(rows)) < metaBatchLimit {
+		if n < limit {
 			break
 		}
 	}
@@ -690,25 +744,42 @@ func (w *ExportWorker) streamTags(ctx context.Context, rq *gen.Queries, fw *Fram
 	return nil
 }
 
-func (w *ExportWorker) streamItems(ctx context.Context, rq *gen.Queries, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
+func (w *ExportWorker) streamTags(ctx context.Context, tx pgx.Tx, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
 	afterTS := pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
 	var afterID uuid.UUID
-	first := true
-	for {
-		rows, err := rq.ExportItemsBatch(ctx, gen.ExportItemsBatchParams{
-			UserID:         userID,
-			AfterCreatedAt: afterTS,
-			AfterID:        afterID,
-			BatchLimit:     metaBatchLimit,
-		})
-		if err != nil {
-			return err
-		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, r := range rows {
-			if err := writeJSONLine(fw, &first, SabkItem{
+	return w.streamKeyset(ctx, tx, fw, exportTagsStreamSQL, metaBatchLimit,
+		func() []any { return []any{userID, afterTS, afterID} },
+		func(rows pgx.Rows, first *bool) error {
+			var r gen.ExportTagsBatchRow
+			if err := rows.Scan(&r.ID, &r.Display, &r.Normalized, &r.ItemCount, &r.LastUsedAt, &r.CreatedAt, &r.DeletedAt); err != nil {
+				return err
+			}
+			afterTS, afterID = r.CreatedAt, r.ID
+			return writeJSONLine(fw, first, SabkTag{
+				ID:         r.ID,
+				Display:    r.Display,
+				Normalized: r.Normalized,
+				ItemCount:  r.ItemCount,
+				LastUsedAt: r.LastUsedAt.Time.UTC().Format(time.RFC3339),
+				CreatedAt:  r.CreatedAt.Time.UTC().Format(time.RFC3339),
+				DeletedAt:  fmtTimePtr(r.DeletedAt),
+			})
+		}, jobID, attemptID, total, processed)
+}
+
+func (w *ExportWorker) streamItems(ctx context.Context, tx pgx.Tx, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
+	afterTS := pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
+	var afterID uuid.UUID
+	return w.streamKeyset(ctx, tx, fw, exportItemsStreamSQL, metaBatchLimit,
+		func() []any { return []any{userID, afterTS, afterID} },
+		func(rows pgx.Rows, first *bool) error {
+			var r gen.ExportItemsBatchRow
+			if err := rows.Scan(&r.ID, &r.Name, &r.NameNormalized, &r.Hint, &r.EntryCount, &r.Version, &r.LastUsedAt,
+				&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt, &r.DeleteBatch); err != nil {
+				return err
+			}
+			afterTS, afterID = r.CreatedAt, r.ID
+			return writeJSONLine(fw, first, SabkItem{
 				ID:             r.ID,
 				Name:           r.Name,
 				NameNormalized: r.NameNormalized,
@@ -720,112 +791,41 @@ func (w *ExportWorker) streamItems(ctx context.Context, rq *gen.Queries, fw *Fra
 				UpdatedAt:      r.UpdatedAt.Time.UTC().Format(time.RFC3339),
 				DeletedAt:      fmtTimePtr(r.DeletedAt),
 				DeleteBatch:    r.DeleteBatch,
-			}); err != nil {
-				return err
-			}
-			afterTS = r.CreatedAt
-			afterID = r.ID
-			*processed++
-		}
-		if err := w.checkAndProgress(ctx, jobID, attemptID, total, *processed); err != nil {
-			return err
-		}
-		if int32(len(rows)) < metaBatchLimit {
-			break
-		}
-	}
-	if !first {
-		_, err := fw.WriteString("\n")
-		return err
-	}
-	return nil
+			})
+		}, jobID, attemptID, total, processed)
 }
 
-func (w *ExportWorker) streamItemTags(ctx context.Context, rq *gen.Queries, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
+func (w *ExportWorker) streamItemTags(ctx context.Context, tx pgx.Tx, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
 	var afterItem, afterTag uuid.UUID
-	first := true
-	for {
-		rows, err := rq.ExportItemTagsBatch(ctx, gen.ExportItemTagsBatchParams{
-			UserID:      userID,
-			AfterItemID: afterItem,
-			AfterTagID:  afterTag,
-			BatchLimit:  metaBatchLimit,
-		})
-		if err != nil {
-			return err
-		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, r := range rows {
-			if err := writeJSONLine(fw, &first, SabkItemTag{
+	return w.streamKeyset(ctx, tx, fw, exportItemTagsStreamSQL, metaBatchLimit,
+		func() []any { return []any{userID, afterItem, afterTag} },
+		func(rows pgx.Rows, first *bool) error {
+			var r gen.ItemTag
+			if err := rows.Scan(&r.ItemID, &r.TagID, &r.CreatedAt); err != nil {
+				return err
+			}
+			afterItem, afterTag = r.ItemID, r.TagID
+			return writeJSONLine(fw, first, SabkItemTag{
 				ItemID:    r.ItemID,
 				TagID:     r.TagID,
 				CreatedAt: r.CreatedAt.Time.UTC().Format(time.RFC3339),
-			}); err != nil {
-				return err
-			}
-			afterItem = r.ItemID
-			afterTag = r.TagID
-			*processed++
-		}
-		if err := w.checkAndProgress(ctx, jobID, attemptID, total, *processed); err != nil {
-			return err
-		}
-		if int32(len(rows)) < metaBatchLimit {
-			break
-		}
-	}
-	if !first {
-		_, err := fw.WriteString("\n")
-		return err
-	}
-	return nil
+			})
+		}, jobID, attemptID, total, processed)
 }
 
-// exportEntriesStreamSQL mirrors ExportEntriesBatch (apps/api/internal/db/queries/
-// export.sql) 1:1; it is issued through pgx.Tx.Query so rows stream through the
-// portal instead of materializing a whole 16-row batch of ciphertexts at once
-// (review r1 R1-02). Keep in sync with the generated query.
-const exportEntriesStreamSQL = `SELECT id, item_id, type, position, version, plaintext_len_bucket, envelope,
-  ciphertext, created_at, updated_at, deleted_at, deleted_via, delete_batch
-FROM entry
-WHERE user_id = $1
-  AND (item_id, position, id) > ($2::uuid, $3::int, $4::uuid)
-ORDER BY item_id ASC, position ASC, id ASC
-LIMIT $5`
-
-func (w *ExportWorker) streamEntries(ctx context.Context, rrTx pgx.Tx, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
+func (w *ExportWorker) streamEntries(ctx context.Context, tx pgx.Tx, fw *FrameWriter, jobID, attemptID, userID uuid.UUID, total int32, processed *int32) error {
 	var afterItem, afterID uuid.UUID
 	afterPos := int32(-1)
-	first := true
-	for {
-		rows, err := rrTx.Query(ctx, exportEntriesStreamSQL, userID, afterItem, afterPos, afterID, entryBatchLimit)
-		if err != nil {
-			return err
-		}
-		n := int32(0)
-		for rows.Next() {
+	return w.streamKeyset(ctx, tx, fw, exportEntriesStreamSQL, entryBatchLimit,
+		func() []any { return []any{userID, afterItem, afterPos, afterID} },
+		func(rows pgx.Rows, first *bool) error {
 			var r gen.ExportEntriesBatchRow
-			if err := rows.Scan(
-				&r.ID,
-				&r.ItemID,
-				&r.Type,
-				&r.Position,
-				&r.Version,
-				&r.PlaintextLenBucket,
-				&r.Envelope,
-				&r.Ciphertext,
-				&r.CreatedAt,
-				&r.UpdatedAt,
-				&r.DeletedAt,
-				&r.DeletedVia,
-				&r.DeleteBatch,
-			); err != nil {
-				rows.Close()
+			if err := rows.Scan(&r.ID, &r.ItemID, &r.Type, &r.Position, &r.Version, &r.PlaintextLenBucket, &r.Envelope,
+				&r.Ciphertext, &r.CreatedAt, &r.UpdatedAt, &r.DeletedAt, &r.DeletedVia, &r.DeleteBatch); err != nil {
 				return err
 			}
-			if err := writeJSONLine(fw, &first, SabkEntry{
+			afterItem, afterPos, afterID = r.ItemID, r.Position, r.ID
+			return writeJSONLine(fw, first, SabkEntry{
 				ID:                 r.ID,
 				ItemID:             r.ItemID,
 				Type:               r.Type,
@@ -839,39 +839,8 @@ func (w *ExportWorker) streamEntries(ctx context.Context, rrTx pgx.Tx, fw *Frame
 				DeletedAt:          fmtTimePtr(r.DeletedAt),
 				DeletedVia:         r.DeletedVia,
 				DeleteBatch:        r.DeleteBatch,
-			}); err != nil {
-				rows.Close()
-				return err
-			}
-			afterItem = r.ItemID
-			afterPos = r.Position
-			afterID = r.ID
-			*processed++
-			n++
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		if n == 0 {
-			break
-		}
-		if w.maxSpoolBytes > 0 && fw.Written() > w.maxSpoolBytes {
-			return errSpoolLimit
-		}
-		if err := w.checkAndProgress(ctx, jobID, attemptID, total, *processed); err != nil {
-			return err
-		}
-		if n < entryBatchLimit {
-			break
-		}
-	}
-	if !first {
-		_, err := fw.WriteString("\n")
-		return err
-	}
-	return nil
+			})
+		}, jobID, attemptID, total, processed)
 }
 
 // finalizeCAS implements plan mục 2.4 Finalize CAS: locks app_user FOR SHARE ->
@@ -911,6 +880,9 @@ func (w *ExportWorker) finalizeCAS(ctx context.Context, jobID, userID, attemptID
 	}
 	if cur.Status != StatusRunning || cur.AttemptID == nil || *cur.AttemptID != attemptID {
 		return false, nil
+	}
+	if w.finalizeLocked != nil {
+		w.finalizeLocked(ctx, tx)
 	}
 
 	if _, err := q.FinalizeExportReady(ctx, gen.FinalizeExportReadyParams{
@@ -994,7 +966,11 @@ func (w *ExportWorker) finalizeCAS(ctx context.Context, jobID, userID, attemptID
 			}
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	commit := func(ctx context.Context, tx pgx.Tx) error { return tx.Commit(ctx) }
+	if w.commitFinalize != nil {
+		commit = w.commitFinalize
+	}
+	if err := commit(ctx, tx); err != nil {
 		// A commit transport/context error leaves the outcome ambiguous:
 		// PostgreSQL may have committed 'ready'. The caller must NOT unlink
 		// finalPath; it resolves the row state under a fresh context (r1 R1-13).

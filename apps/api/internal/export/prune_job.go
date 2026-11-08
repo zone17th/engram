@@ -103,12 +103,11 @@ func (ExportPruneArgs) Kind() string { return ExportPruneKind }
 //     older than 90d.
 type PruneWorker struct {
 	river.WorkerDefaults[ExportPruneArgs]
-	pool          *pgxpool.Pool
-	q             *gen.Queries
-	storageDir    string
-	clk           clock.Clock
-	logger        *slog.Logger
-	failedCleanup map[uuid.UUID]struct{} // in-memory backoff set, cleared on success
+	pool       *pgxpool.Pool
+	q          *gen.Queries
+	storageDir string
+	clk        clock.Clock
+	logger     *slog.Logger
 }
 
 // NewPruneWorker constructs an export_prune worker.
@@ -311,53 +310,45 @@ func (w *PruneWorker) markOneWorkerLost(ctx context.Context, s gen.ListStaleRunn
 	return tx.Commit(ctx)
 }
 
+// runPendingCleanups visits every pending export_file_cleanup row once per
+// sweep by keyset-paging (created_at, id). A failing row stays pending (no
+// done_at) and is retried on the next sweep; nothing is remembered across
+// sweeps, so a repaired obligation settles on the following run (r2 R2-01),
+// and a fully failing oldest page cannot hide later rows (r2 R2-02). All
+// failures of this sweep are returned joined.
 func (w *PruneWorker) runPendingCleanups(ctx context.Context) error {
-	limit := cleanupBatchSize
-	var errs []error
-	for round := 0; round < 3; round++ {
-		rows, err := w.q.ListPendingCleanup(ctx, int32(limit))
+	var (
+		errs    []error
+		afterAt = pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
+		afterID uuid.UUID
+	)
+	for {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+		rows, err := w.q.ListPendingCleanupAfter(ctx, gen.ListPendingCleanupAfterParams{
+			AfterCreatedAt: afterAt,
+			AfterID:        afterID,
+			BatchLimit:     cleanupBatchSize,
+		})
 		if err != nil {
 			return errors.Join(append(errs, err)...)
 		}
-		if len(rows) == 0 {
-			return errors.Join(errs...)
-		}
-		var failed map[uuid.UUID]struct{}
-		if w.failedCleanup != nil {
-			failed = w.failedCleanup
-		}
-		progress := false
 		for _, r := range rows {
-			if _, bad := failed[r.ID]; bad {
-				continue
-			}
 			if err := unlinkSafeFile(w.storageDir, r.FileName); err != nil {
 				errs = append(errs, fmt.Errorf("cleanup %s: %w", r.ID, err))
-				if failed == nil {
-					failed = make(map[uuid.UUID]struct{})
-				}
-				failed[r.ID] = struct{}{}
 				continue
 			}
 			if _, err := w.q.CompleteCleanup(ctx, r.ID); err != nil {
 				errs = append(errs, fmt.Errorf("complete cleanup %s: %w", r.ID, err))
-				if failed == nil {
-					failed = make(map[uuid.UUID]struct{})
-				}
-				failed[r.ID] = struct{}{}
-				continue
 			}
-			progress = true
 		}
-		w.failedCleanup = failed
-		if !progress || len(rows) < limit {
+		if len(rows) < cleanupBatchSize {
 			return errors.Join(errs...)
 		}
-		// Whole batch was already-failed/just-failed rows: grow the window so a
-		// permanently failing oldest page cannot starve later obligations.
-		limit += cleanupBatchSize
+		last := rows[len(rows)-1]
+		afterAt, afterID = last.CreatedAt, last.ID
 	}
-	return errors.Join(errs...)
 }
 
 func (w *PruneWorker) sweepOrphanFiles(ctx context.Context) error {

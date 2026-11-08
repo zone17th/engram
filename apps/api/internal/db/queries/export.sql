@@ -243,6 +243,15 @@ WHERE status IN ('failed', 'cancelled', 'expired')
 SELECT * FROM export_file_cleanup
 WHERE id = sqlc.arg('id');
 
+-- name: ListPendingCleanupAfter :many
+-- Keyset page over pending cleanup obligations so one prune sweep visits every
+-- pending row even when an older page fails entirely (r2 R2-02).
+SELECT * FROM export_file_cleanup
+WHERE done_at IS NULL
+  AND (created_at, id) > (sqlc.arg('after_created_at')::timestamptz, sqlc.arg('after_id')::uuid)
+ORDER BY created_at ASC, id ASC
+LIMIT sqlc.arg('batch_limit');
+
 -- name: ExportSnapshotCounts :one
 SELECT
   (SELECT count(*) FROM tag t WHERE t.user_id = sqlc.arg('user_id'))::int AS tags,

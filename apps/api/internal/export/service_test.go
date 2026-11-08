@@ -56,10 +56,9 @@ func setupExportTestDB(t *testing.T) (*pgxpool.Pool, *config.Config, *Service, *
 		t.Fatalf("NewService: %v", err)
 	}
 	w := NewExportWorker(WorkerDeps{
-		Pool:          pool,
-		StorageDir:    cfg.ExportStorageDir,
-		Secret:        cfg.ExportAtRestSecret,
-		MaxSpoolBytes: cfg.ExportMaxSpoolBytes,
+		Pool:       pool,
+		StorageDir: cfg.ExportStorageDir,
+		Secret:     cfg.ExportAtRestSecret,
 	})
 	return pool, cfg, svc, w
 }
@@ -400,7 +399,7 @@ func TestExportFinalizeCASKeepsAtomic(t *testing.T) {
 func TestExportPeakMemory(t *testing.T) {
 	pool, cfg, svc, w := setupExportTestDB(t)
 	ctx := context.Background()
-	userID, itemID, _, _, _ := seedUserAndVault(t, pool)
+	userID, itemID, activeID, deletedID, _ := seedUserAndVault(t, pool)
 
 	const totalSynth = 2000
 	const ctSize = 256 * 1024
@@ -409,12 +408,15 @@ func TestExportPeakMemory(t *testing.T) {
 
 	// Bulk-insert 2 000 synthetic 256 KiB entries using CopyFrom in batches so setup stays fast.
 	const batch = 200
+	synthIDs := make([]uuid.UUID, 0, totalSynth)
 	for base := 0; base < totalSynth; base += batch {
 		rows := make([][]any, 0, batch)
 		for i := range batch {
 			pos := int32(10 + base + i)
+			id := uuid.New()
+			synthIDs = append(synthIDs, id)
 			rows = append(rows, []any{
-				uuid.New(), userID, itemID, "text", pos, envRaw, ct, int32(ctSize), int32(1),
+				id, userID, itemID, "text", pos, envRaw, ct, int32(ctSize), int32(1),
 			})
 		}
 		if _, err := pool.CopyFrom(
@@ -489,8 +491,10 @@ func TestExportPeakMemory(t *testing.T) {
 	}
 
 	// R1-06: multi-batch completeness — stream-decode the produced file and
-	// assert all 2 002 seeded entries (2 000 synthetic + active + soft-deleted)
-	// appear exactly once, matching the manifest count.
+	// assert the entries section is exactly the seeded IDs in the worker's
+	// documented (item_id, position, id) order — active pos 0, soft-deleted
+	// pos 1, then the 2 000 synthetic rows by position — and that the
+	// manifest's snapshot.counts.entries equals the decoded count.
 	var attemptID uuid.UUID
 	if err := pool.QueryRow(ctx, `SELECT attempt_id FROM export_job WHERE id = $1`, job.ID).Scan(&attemptID); err != nil {
 		t.Fatalf("fetch attempt_id: %v", err)
@@ -506,31 +510,53 @@ func TestExportPeakMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrameReader: %v", err)
 	}
-	ids := collectEntryIDs(t, json.NewDecoder(fr))
-	if len(ids) != totalSynth+2 {
-		t.Fatalf("entries decoded = %d, want %d", len(ids), totalSynth+2)
+	got, manifestEntries := collectEntryIDs(t, json.NewDecoder(fr))
+	want := append([]uuid.UUID{activeID, deletedID}, synthIDs...)
+	if len(got) != len(want) {
+		t.Fatalf("entries decoded = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("entry[%d] = %s, want %s (order/identity mismatch)", i, got[i], want[i])
+		}
+	}
+	if manifestEntries != len(got) {
+		t.Fatalf("manifest snapshot.counts.entries = %d, decoded %d", manifestEntries, len(got))
 	}
 	if _, err := io.Copy(io.Discard, fr); err != nil {
 		t.Fatalf("final-frame verification: %v", err)
 	}
 }
 
-// collectEntryIDs walks the decoded .sabk.json stream and returns the distinct
-// set of entry IDs (memory-bounded: only the ~36-byte ID per row is kept).
-func collectEntryIDs(t *testing.T, dec *json.Decoder) map[uuid.UUID]struct{} {
+// collectEntryIDs walks the decoded .sabk.json stream and returns the entry
+// IDs in file order (memory-bounded: only the ID per row is kept) plus the
+// manifest's snapshot.counts.entries.
+func collectEntryIDs(t *testing.T, dec *json.Decoder) ([]uuid.UUID, int) {
 	t.Helper()
+	ctx := context.Background()
 	tok, err := dec.Token()
 	if err != nil || tok != json.Delim('{') {
 		t.Fatalf("sabk root: %v tok=%v", err, tok)
 	}
-	ids := make(map[uuid.UUID]struct{})
+	var ids []uuid.UUID
+	manifest := -1
 	for dec.More() {
 		kTok, err := dec.Token()
 		if err != nil {
 			t.Fatalf("key token: %v", err)
 		}
-		if key, _ := kTok.(string); key != SectionEntries {
-			if err := skipJSONValue(dec); err != nil {
+		key, _ := kTok.(string)
+		switch key {
+		case "snapshot":
+			var s SabkSnapshot
+			if err := dec.Decode(&s); err != nil {
+				t.Fatalf("snapshot decode: %v", err)
+			}
+			manifest = int(s.Counts.Entries)
+			continue
+		case SectionEntries:
+		default:
+			if err := skipJSONValue(ctx, dec); err != nil {
 				t.Fatalf("skip %v: %v", key, err)
 			}
 			continue
@@ -546,16 +572,16 @@ func collectEntryIDs(t *testing.T, dec *json.Decoder) map[uuid.UUID]struct{} {
 			if err := dec.Decode(&e); err != nil {
 				t.Fatalf("entry decode: %v", err)
 			}
-			if _, dup := ids[e.ID]; dup {
-				t.Fatalf("duplicate entry id %s", e.ID)
-			}
-			ids[e.ID] = struct{}{}
+			ids = append(ids, e.ID)
 		}
 		if _, err := dec.Token(); err != nil {
 			t.Fatalf("entries close: %v", err)
 		}
 	}
-	return ids
+	if manifest < 0 {
+		t.Fatal("manifest snapshot section missing")
+	}
+	return ids, manifest
 }
 
 // Lease / retry / rescue tests (plan C04).

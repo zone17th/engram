@@ -51,8 +51,6 @@ type EmbeddingDeps struct {
 type ExportDeps struct {
 	StorageDir string
 	Secret     config.Secret
-	// MaxSpoolBytes bounds one export artifact (r1 R1-19); <=0 disables the cap.
-	MaxSpoolBytes int64
 }
 
 // Deps gom các phụ thuộc mở rộng của NewWithMail (metrics, embedding, export).
@@ -116,13 +114,12 @@ func NewWithMail(
 	if err := river.AddWorkerSafely(workers, entry.NewContentPurgeWorker(pool, nil)); err != nil {
 		return nil, fmt.Errorf("đăng ký content purge: %w", err)
 	}
-	exportDir, exportSecret, spoolCap := resolveExportDeps(deps.Export)
+	exportDir, exportSecret := resolveExportDeps(deps.Export)
 	if err := river.AddWorkerSafely(workers, export.NewExportWorker(export.WorkerDeps{
-		Pool:          pool,
-		StorageDir:    exportDir,
-		Secret:        exportSecret,
-		MaxSpoolBytes: spoolCap,
-		Logger:        logger,
+		Pool:       pool,
+		StorageDir: exportDir,
+		Secret:     exportSecret,
+		Logger:     logger,
 	})); err != nil {
 		return nil, fmt.Errorf("đăng ký export_encrypted: %w", err)
 	}
@@ -260,14 +257,12 @@ func NewWithMail(
 	return client, nil
 }
 
-func resolveExportDeps(ed *ExportDeps) (string, config.Secret, int64) {
+func resolveExportDeps(ed *ExportDeps) (string, config.Secret) {
 	var dir string
 	var sec config.Secret
-	var capBytes int64
 	if ed != nil {
 		dir = ed.StorageDir
 		sec = ed.Secret
-		capBytes = ed.MaxSpoolBytes
 	}
 	if dir == "" {
 		dir = os.TempDir() + "/engram-exports"
@@ -275,7 +270,7 @@ func resolveExportDeps(ed *ExportDeps) (string, config.Secret, int64) {
 	if sec.IsEmpty() {
 		sec = config.NewSecretBytes([]byte(config.DevExportAtRestSecret))
 	}
-	return dir, sec, capBytes
+	return dir, sec
 }
 
 // Run chạy worker cho tới khi nhận SIGINT/SIGTERM rồi dừng gọn.
@@ -320,9 +315,8 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts ...R
 	workerDeps := Deps{
 		Metrics: metrics,
 		Export: &ExportDeps{
-			StorageDir:    cfg.ExportStorageDir,
-			Secret:        cfg.ExportAtRestSecret,
-			MaxSpoolBytes: cfg.ExportMaxSpoolBytes,
+			StorageDir: cfg.ExportStorageDir,
+			Secret:     cfg.ExportAtRestSecret,
 		},
 	}
 	if cfg.SearchSemanticEnabled && cfg.EmbeddingProvider != "" && cfg.EmbeddingProvider != embedding.ProviderNoop {

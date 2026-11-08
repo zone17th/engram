@@ -988,6 +988,51 @@ func (q *Queries) ListLiveExportAttempts(ctx context.Context) ([]ListLiveExportA
 	return items, nil
 }
 
+const listPendingCleanupAfter = `-- name: ListPendingCleanupAfter :many
+SELECT id, file_name, job_id, attempt_id, reason, created_at, done_at, attempts FROM export_file_cleanup
+WHERE done_at IS NULL
+  AND (created_at, id) > ($1::timestamptz, $2::uuid)
+ORDER BY created_at ASC, id ASC
+LIMIT $3
+`
+
+type ListPendingCleanupAfterParams struct {
+	AfterCreatedAt pgtype.Timestamptz
+	AfterID        uuid.UUID
+	BatchLimit     int32
+}
+
+// Keyset page over pending cleanup obligations so one prune sweep visits every
+// pending row even when an older page fails entirely (r2 R2-02).
+func (q *Queries) ListPendingCleanupAfter(ctx context.Context, arg ListPendingCleanupAfterParams) ([]ExportFileCleanup, error) {
+	rows, err := q.db.Query(ctx, listPendingCleanupAfter, arg.AfterCreatedAt, arg.AfterID, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ExportFileCleanup
+	for rows.Next() {
+		var i ExportFileCleanup
+		if err := rows.Scan(
+			&i.ID,
+			&i.FileName,
+			&i.JobID,
+			&i.AttemptID,
+			&i.Reason,
+			&i.CreatedAt,
+			&i.DoneAt,
+			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleQueuedExports = `-- name: ListStaleQueuedExports :many
 SELECT id, created_at
 FROM export_job

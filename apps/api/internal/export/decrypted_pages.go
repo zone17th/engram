@@ -292,9 +292,9 @@ func inspectSabkForFirstPage(ctx context.Context, f *os.File, sec []byte, jobID,
 				if err := ctx.Err(); err != nil {
 					return 0, 0, "", err
 				}
-				deleted, err := entryIsDeleted(dec)
+				deleted, err := entryIsDeleted(ctx, dec)
 				if err != nil {
-					return 0, 0, "", ErrAtRestCorrupt
+					return 0, 0, "", scanErr(ctx)
 				}
 				if !deleted {
 					totalEntries++
@@ -304,8 +304,8 @@ func inspectSabkForFirstPage(ctx context.Context, f *os.File, sec []byte, jobID,
 				return 0, 0, "", ErrAtRestCorrupt
 			}
 		default:
-			if err := skipJSONValue(dec); err != nil {
-				return 0, 0, "", ErrAtRestCorrupt
+			if err := skipJSONValue(ctx, dec); err != nil {
+				return 0, 0, "", scanErr(ctx)
 			}
 		}
 	}
@@ -323,7 +323,7 @@ func inspectSabkForFirstPage(ctx context.Context, f *os.File, sec []byte, jobID,
 // non-null value, decoding each member value only when it is deleted_at and
 // token-skipping everything else so large ciphertexts never materialize
 // (review r1 R1-01).
-func entryIsDeleted(dec *json.Decoder) (bool, error) {
+func entryIsDeleted(ctx context.Context, dec *json.Decoder) (bool, error) {
 	tok, err := dec.Token()
 	if err != nil || tok != json.Delim('{') {
 		return false, errors.New("entry not object")
@@ -342,7 +342,7 @@ func entryIsDeleted(dec *json.Decoder) (bool, error) {
 			deleted = !bytes.Equal(bytes.TrimSpace(v), []byte("null"))
 			continue
 		}
-		if err := skipJSONValue(dec); err != nil {
+		if err := skipJSONValue(ctx, dec); err != nil {
 			return false, err
 		}
 	}
@@ -656,8 +656,8 @@ func (s *Service) scanDecryptedPageByToken(ctx context.Context, f *os.File, sec 
 		}
 		secIdx, isSection := sectionIndex(key)
 		if !isSection || secIdx < startIdx || nextCursor != nil {
-			if err := skipJSONValue(dec); err != nil {
-				return DecryptedPage{}, ErrAtRestCorrupt
+			if err := skipJSONValue(ctx, dec); err != nil {
+				return DecryptedPage{}, scanErr(ctx)
 			}
 			continue
 		}
@@ -720,8 +720,8 @@ func (s *Service) scanDecryptedPageByToken(ctx context.Context, f *os.File, sec 
 			ord++
 		}
 		for dec.More() {
-			if err := skipJSONValue(dec); err != nil {
-				return DecryptedPage{}, ErrAtRestCorrupt
+			if err := skipJSONValue(ctx, dec); err != nil {
+				return DecryptedPage{}, scanErr(ctx)
 			}
 		}
 		if _, err := dec.Token(); err != nil {
@@ -758,8 +758,9 @@ func buildDecryptedPage(jobID uuid.UUID, snapKey *string, totalEntries int, sect
 // skipJSONValue consumes exactly one complete JSON value (object, array or
 // scalar) using only Decoder.Token(), never materializing it. It bounds
 // live memory to the decoder's stack depth rather than the section's size
-// (review r1 R1-01).
-func skipJSONValue(dec *json.Decoder) error {
+// (review r1 R1-01) and checks ctx per member so cancellation interrupts a
+// very large skipped section (review r2).
+func skipJSONValue(ctx context.Context, dec *json.Decoder) error {
 	tok, err := dec.Token()
 	if err != nil {
 		return err
@@ -767,16 +768,22 @@ func skipJSONValue(dec *json.Decoder) error {
 	switch tok {
 	case json.Delim('{'):
 		for dec.More() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if _, err := dec.Token(); err != nil {
 				return err
 			}
-			if err := skipJSONValue(dec); err != nil {
+			if err := skipJSONValue(ctx, dec); err != nil {
 				return err
 			}
 		}
 	case json.Delim('['):
 		for dec.More() {
-			if err := skipJSONValue(dec); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := skipJSONValue(ctx, dec); err != nil {
 				return err
 			}
 		}
@@ -787,4 +794,13 @@ func skipJSONValue(dec *json.Decoder) error {
 		return err
 	}
 	return nil
+}
+
+// scanErr maps a decode failure to ErrAtRestCorrupt unless the request was
+// cancelled, in which case the context error is returned unchanged.
+func scanErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return ErrAtRestCorrupt
 }

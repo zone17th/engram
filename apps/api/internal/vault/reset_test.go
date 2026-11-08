@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
@@ -336,5 +337,175 @@ func TestResetCancelsExportJobsAndRecordsCleanup(t *testing.T) {
 	}
 	if cleanupCount != 2 {
 		t.Fatalf("cleanup rows after Reset = %d, want 2 (.tmp and .sabk.enc)", cleanupCount)
+	}
+}
+
+// TestResetVsAccountDeletionBarrier is the dec-039 reset-vs-account-deletion
+// proof in both acquisition orders. Reset takes app_user FOR NO KEY UPDATE ->
+// vault FOR UPDATE; deletion (accountdelbe §2.9) takes app_user FOR UPDATE ->
+// vault FOR UPDATE -> DELETE. The second transaction is proven blocked by the
+// first via pg_blocking_pids before release; neither side sees 40P01/55P03;
+// and no ready (downloadable) export survives.
+func TestResetVsAccountDeletionBarrier(t *testing.T) {
+	for _, resetFirst := range []bool{true, false} {
+		name := "DeleteFirstThenReset"
+		if resetFirst {
+			name = "ResetFirstThenDelete"
+		}
+		t.Run(name, func(t *testing.T) {
+			dsn := dbtest.StartPostgres(t)
+			dbtest.MigrateUp(t, dsn)
+			pool := dbtest.Pool(t, dsn)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			t.Setenv("DATABASE_URL", dsn)
+			t.Setenv("APP_ORIGIN", "http://localhost:3000")
+			t.Setenv("APP_ENV", "development")
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, obsMetrics := obs.NewRegistry()
+			svc, err := vault.NewService(cfg, pool, clock.System{}, audit.NewStore(pool), notification.NewStore(pool, nil),
+				nil, vault.MetricsFromObs(obsMetrics), nil, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := gen.New(pool)
+			user, err := q.InsertUser(ctx, gen.InsertUserParams{Email: "reset-delete@example.com", Locale: "en"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := authctx.Principal{UserID: user.ID, SessionID: uuid.New()}
+			created, err := svc.Create(ctx, p, makeValidCreateInput(t, 0x52))
+			if err != nil {
+				t.Fatal(err)
+			}
+			att := uuid.New()
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO export_job (user_id, kind, status, attempt_id, file_name, size_bytes, completed_at, expires_at)
+				SELECT $1, 'encrypted', 'ready', $2::uuid, gen_random_uuid()::text || '.' || $2::uuid::text || '.sabk.enc', 1, now(), now() + interval '1 day'`,
+				user.ID, att); err != nil {
+				t.Fatal(err)
+			}
+			reset := func(ctx context.Context) error {
+				return svc.Reset(ctx, p, vault.ResetInput{
+					IfMatch: httpx.VaultIfMatch{VaultKeyID: created.VaultKeyID, Version: 1},
+					IP:      "127.0.0.1", UA: "barrier",
+				})
+			}
+			deleteTx := func(ctx context.Context, tx pgx.Tx) error {
+				for _, sql := range []string{
+					`SELECT 1 FROM app_user WHERE id = $1 FOR UPDATE`,
+					`SELECT 1 FROM vault WHERE user_id = $1 FOR UPDATE`,
+					`DELETE FROM app_user WHERE id = $1`,
+				} {
+					if _, err := tx.Exec(ctx, sql, user.ID); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+
+			var resetErr, delErr error
+			if resetFirst {
+				held, release := make(chan int32, 1), make(chan struct{})
+				svc.SetResetHook(func(ctx context.Context, tx pgx.Tx, _ uuid.UUID) error {
+					var pid int32
+					if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+						return err
+					}
+					held <- pid
+					<-release
+					return nil
+				})
+				resetDone := make(chan error, 1)
+				go func() { resetDone <- reset(ctx) }()
+				pid := <-held
+				delDone := make(chan error, 1)
+				go func() {
+					tx, err := pool.Begin(ctx)
+					if err != nil {
+						delDone <- err
+						return
+					}
+					defer func() { _ = tx.Rollback(ctx) }()
+					if err := deleteTx(ctx, tx); err != nil {
+						delDone <- err
+						return
+					}
+					delDone <- tx.Commit(ctx)
+				}()
+				awaitBlockedByPID(t, ctx, pool, pid)
+				close(release)
+				resetErr, delErr = <-resetDone, <-delDone
+				if resetErr != nil {
+					t.Fatalf("Reset (first): %v", resetErr)
+				}
+				if delErr != nil {
+					t.Fatalf("delete after reset: %v", delErr)
+				}
+			} else {
+				tx, err := pool.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = tx.Rollback(ctx) }()
+				if err := deleteTx(ctx, tx); err != nil {
+					t.Fatal(err)
+				}
+				var pid int32
+				if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+					t.Fatal(err)
+				}
+				resetDone := make(chan error, 1)
+				go func() { resetDone <- reset(ctx) }()
+				awaitBlockedByPID(t, ctx, pool, pid)
+				if err := tx.Commit(ctx); err != nil {
+					t.Fatalf("delete (first): %v", err)
+				}
+				resetErr = <-resetDone
+				if resetErr == nil {
+					t.Fatal("Reset after committed account deletion succeeded")
+				}
+			}
+			for side, err := range map[string]error{"reset": resetErr, "delete": delErr} {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "55P03") {
+					t.Fatalf("%s: lock failure %s: %v", side, pgErr.Code, err)
+				}
+			}
+			var exports int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM export_job WHERE user_id = $1 AND status = 'ready'`,
+				user.ID).Scan(&exports); err != nil {
+				t.Fatal(err)
+			}
+			if exports != 0 {
+				t.Fatalf("ready exports after reset/delete = %d", exports)
+			}
+		})
+	}
+}
+
+// awaitBlockedByPID waits until some backend lists holder in pg_blocking_pids.
+func awaitBlockedByPID(t *testing.T, ctx context.Context, pool interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, holder int32,
+) {
+	t.Helper()
+	for {
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND pid <> $1 AND $1 = ANY(pg_blocking_pids(pid))`, holder).Scan(&n); err != nil {
+			t.Fatalf("pg_blocking_pids: %v", err)
+		}
+		if n > 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("no backend became blocked by pid %d", holder)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }

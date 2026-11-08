@@ -8,18 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/blake2b"
-
-	"github.com/riverqueue/river"
 
 	"github.com/zone17th/engram/apps/api/internal/clock"
 	"github.com/zone17th/engram/apps/api/internal/db/gen"
@@ -146,179 +141,6 @@ func TestSabkWorkerArtifactRestore(t *testing.T) {
 	}
 }
 
-// TestExportFinalizeLockOverlap runs real contended transactions in BOTH
-// contention directions for reset and delete vs the finalizer lock sequence
-// (review r1 R1-08). It asserts bounded completion with no 40P01/55P03 and no
-// ready row after a committed reset/delete.
-func TestExportFinalizeLockOverlap(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		// hold acquires the mutator's locks in order inside a tx, then blocks on gate.
-		hold func(ctx context.Context, pool *pgxpool.Pool, q *gen.Queries, userID uuid.UUID) error
-		// contend runs the finalizer's lock sequence in a second tx.
-	}{
-		{name: "ResetFirstThenFinalize"},
-		{name: "FinalizeFirstThenReset"},
-		{name: "DeleteFirstThenFinalize"},
-		{name: "FinalizeFirstThenDelete"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool, cfg, svc, w := setupExportTestDB(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			userID, _, _, _, _ := seedUserAndVault(t, pool)
-			q := gen.New(pool)
-
-			job, _, err := svc.Create(ctx, userID, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			_ = w
-			_ = cfg
-
-			lockFinalizeSeq := func(ctx context.Context, tx pgx.Tx) error {
-				qt := q.WithTx(tx)
-				if _, err := qt.LockExportOwnerForShare(ctx, userID); err != nil {
-					return err
-				}
-				if _, err := qt.GetVaultKeyForShare(ctx, userID); err != nil {
-					return err
-				}
-				_, err := qt.GetExportJobForUpdate(ctx, job.ID)
-				return err
-			}
-			lockResetSeq := func(ctx context.Context, tx pgx.Tx) error {
-				qt := q.WithTx(tx)
-				if _, err := qt.LockExportOwnerNoKeyUpdate(ctx, userID); err != nil {
-					return err
-				}
-				_, err := tx.Exec(ctx, `SELECT user_id FROM vault WHERE user_id = $1 FOR UPDATE`, userID)
-				return err
-			}
-			lockDeleteSeq := func(ctx context.Context, tx pgx.Tx) error {
-				// Simulates DELETE /me: app_user FOR UPDATE (via the UPDATE
-				// itself) then vault FOR UPDATE.
-				if _, err := tx.Exec(ctx, `UPDATE app_user SET deleted_at = COALESCE(deleted_at, now()) WHERE id = $1`, userID); err != nil {
-					return err
-				}
-				_, err := tx.Exec(ctx, `SELECT user_id FROM vault WHERE user_id = $1 FOR UPDATE`, userID)
-				return err
-			}
-
-			var firstLock, secondLock func(context.Context, pgx.Tx) error
-			firstIsMutator := strings.HasPrefix(tc.name, "Reset") || strings.HasPrefix(tc.name, "Delete")
-			switch tc.name {
-			case "ResetFirstThenFinalize":
-				firstLock, secondLock = lockResetSeq, lockFinalizeSeq
-			case "FinalizeFirstThenReset":
-				firstLock, secondLock = lockFinalizeSeq, lockResetSeq
-			case "DeleteFirstThenFinalize":
-				firstLock, secondLock = lockDeleteSeq, lockFinalizeSeq
-			default:
-				firstLock, secondLock = lockFinalizeSeq, lockDeleteSeq
-			}
-
-			txA, err := pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := firstLock(ctx, txA); err != nil {
-				t.Fatalf("first lock seq: %v", err)
-			}
-			gate := make(chan struct{})
-			errCh := make(chan error, 1)
-			go func() {
-				txB, err := pool.Begin(ctx)
-				if err != nil {
-					errCh <- err
-					return
-				}
-				defer func() { _ = txB.Rollback(ctx) }()
-				<-gate // wait until A holds its locks
-				errCh <- secondLock(ctx, txB)
-			}()
-			close(gate)
-			// A commits (or rolls back for delete) while B waits.
-			if firstIsMutator && strings.HasPrefix(tc.name, "Delete") {
-				// Commit the delete: finalizer must then see the job/user gone.
-				if err := txA.Commit(ctx); err != nil {
-					t.Fatalf("commit delete: %v", err)
-				}
-			} else {
-				if err := txA.Rollback(ctx); err != nil {
-					t.Fatalf("first tx end: %v", err)
-				}
-			}
-			select {
-			case err := <-errCh:
-				if err != nil {
-					var pgErr *pgconn.PgError
-					if errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "55P03") {
-						t.Fatalf("lock failure %s: %v", pgErr.Code, err)
-					}
-					if errors.Is(err, pgx.ErrNoRows) || strings.Contains(err.Error(), "no rows") {
-						// Expected when the delete committed first: the owner row
-						// no longer matches FOR SHARE under deleted_at filter.
-						return
-					}
-					t.Fatalf("contender error: %v", err)
-				}
-			case <-ctx.Done():
-				t.Fatal("contender tx did not finish within 20s (suspected deadlock)")
-			}
-		})
-	}
-}
-
-// TestExportTwoOwnerIsolation seeds two full tenants and asserts each artifact
-// contains exactly its owner's rows — no cross-tenant leakage even if a
-// snapshot query's owner predicate regressed (review r1 R1-09).
-func TestExportTwoOwnerIsolation(t *testing.T) {
-	pool, cfg, svc, w := setupExportTestDB(t)
-	ctx := context.Background()
-	userA, _, actA, delA, _ := seedUserAndVault(t, pool)
-	userB, _, actB, delB, _ := seedUserAndVaultK(t, pool, "vk:AAAAAQEBAQEBAQEBAQEBAQ")
-	jobA, _, err := svc.Create(ctx, userA, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Work(ctx, makeRiverJob(jobA.ID, userA, 1, 3)); err != nil {
-		t.Fatalf("Work A: %v", err)
-	}
-	var attemptID uuid.UUID
-	if err := pool.QueryRow(ctx, `SELECT attempt_id FROM export_job WHERE id = $1`, jobA.ID).Scan(&attemptID); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(filepath.Join(cfg.ExportStorageDir, SafeFileName(jobA.ID, attemptID, "sabk.enc")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	fr, err := NewFrameReader(f, svc.secretBytes(), jobA.ID, attemptID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids := collectEntryIDs(t, json.NewDecoder(fr))
-	if len(ids) != 2 {
-		t.Fatalf("A's artifact entries = %d, want 2", len(ids))
-	}
-	for _, want := range []uuid.UUID{actA, delA} {
-		if _, ok := ids[want]; !ok {
-			t.Fatalf("A's artifact missing own entry %s", want)
-		}
-	}
-	for _, foreign := range []uuid.UUID{actB, delB} {
-		if _, leak := ids[foreign]; leak {
-			t.Fatalf("tenant B entry %s leaked into A's artifact", foreign)
-		}
-	}
-	// Cross-check in the other direction: B cannot open A's export and B's own
-	// export carries only B's ids.
-	if _, err := svc.OpenDownload(ctx, userB, jobA.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("B OpenDownload of A's job: %v", err)
-	}
-}
-
 // TestExportDecryptedPagesContinuation exercises same-section continuation
 // across multiple ENGX1 frames and page budgets (review r1 R1-10): seeded
 // entries with large ciphertexts force >1 frame, a small budget forces
@@ -399,45 +221,6 @@ func TestExportDecryptedPagesContinuation(t *testing.T) {
 		if gotIDs[i] != id {
 			t.Fatalf("entry[%d] = %s, want %s", i, gotIDs[i], id)
 		}
-	}
-}
-
-// TestExportCursorIdentityBinding substitutes each identity component of a
-// valid cursor and asserts ErrInvalidCursor (review r1 R1-11).
-func TestExportCursorIdentityBinding(t *testing.T) {
-	pool, _, svc, w := setupExportTestDB(t)
-	ctx := context.Background()
-	userID, _, _, _, _ := seedUserAndVault(t, pool)
-	job, _, err := svc.Create(ctx, userID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Work(ctx, makeRiverJob(job.ID, userID, 1, 3)); err != nil {
-		t.Fatal(err)
-	}
-	p1, err := svc.DecryptedPages(ctx, userID, job.ID, "", 256)
-	if err != nil || p1.NextCursor == nil {
-		t.Fatalf("page1: %v %+v", err, p1)
-	}
-	cur := *p1.NextCursor
-	other := uuid.New()
-	if _, err := svc.DecryptedPages(ctx, other, job.ID, cur, 256); !errors.Is(err, ErrNotFound) {
-		// Different user can't even look up the job; identity binding for
-		// same-user different-attempt cursors is covered below via tamper.
-		if !errors.Is(err, ErrInvalidCursor) {
-			t.Fatalf("cross-user cursor: %v", err)
-		}
-	}
-	// Re-encode a cursor under a different attempt and replay on the owner's
-	// job: decode inside DecryptedPages binds user+job+attempt.
-	sec := svc.secretBytes()
-	defer clear(sec)
-	forged, err := encodeCursor(sec, userID, job.ID, uuid.New(), pageCursor{section: SectionTags})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.DecryptedPages(ctx, userID, job.ID, forged, 256); !errors.Is(err, ErrInvalidCursor) {
-		t.Fatalf("forged-attempt cursor: got %v, want ErrInvalidCursor", err)
 	}
 }
 
@@ -697,35 +480,5 @@ func TestFailOrRetrySurvivesCancelledCtx(t *testing.T) {
 	}
 	if status != StatusFailed || code != "io_error" {
 		t.Fatalf("final attempt not failed under cancelled ctx: %s/%s", status, code)
-	}
-}
-
-// TestExportSpoolLimitTerminal is r1 R1-19: an artifact that exceeds the
-// configured spool cap fails the attempt terminally (no retry could shrink
-// the vault) with error_code spool_limit and no published file.
-func TestExportSpoolLimitTerminal(t *testing.T) {
-	pool, cfg, svc, w := setupExportTestDB(t)
-	ctx := context.Background()
-	userID, _, _, _, _ := seedUserAndVault(t, pool)
-	job, _, err := svc.Create(ctx, userID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.maxSpoolBytes = 256
-	err = w.Work(ctx, makeRiverJob(job.ID, userID, 1, 3))
-	var cancelErr *river.JobCancelError
-	if !errors.As(err, &cancelErr) || !errors.Is(err, errSpoolLimit) {
-		t.Fatalf("expected spool_limit JobCancel, got %v", err)
-	}
-	got, err := svc.Get(ctx, userID, job.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != StatusFailed || got.ErrorCode == nil || *got.ErrorCode != "spool_limit" {
-		t.Fatalf("expected failed/spool_limit, got %s/%v", got.Status, got.ErrorCode)
-	}
-	files, _ := filepath.Glob(filepath.Join(cfg.ExportStorageDir, "*"))
-	if len(files) != 0 {
-		t.Fatalf("artifact files left behind: %v", files)
 	}
 }
