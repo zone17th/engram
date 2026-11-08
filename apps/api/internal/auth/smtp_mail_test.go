@@ -293,6 +293,23 @@ func TestSMTPMailerTLS(t *testing.T) {
 		}
 	})
 
+	t.Run("implicit_tls_caller_deadline_is_race_free_and_transient", func(t *testing.T) {
+		f := &fakeSMTP{tlsCfg: srvTLS, implicit: true, stall: true}
+		port := startFakeSMTP(t, f)
+		var logs bytes.Buffer
+		m := newTestSMTPMailer(t, port, auth.SMTPTLSImplicit, roots, &logs)
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		err := m.Send(ctx, "alice@example.org", "signup", "x")
+		if err == nil || auth.IsPermanentMailError(err) {
+			t.Fatalf("stalled implicit TLS server: err=%v, want transient", err)
+		}
+		if time.Since(start) > 2*time.Second {
+			t.Fatal("caller deadline not honoured")
+		}
+	})
+
 	t.Run("header_injection_rejected", func(t *testing.T) {
 		f := &fakeSMTP{tlsCfg: srvTLS}
 		port := startFakeSMTP(t, f)

@@ -257,6 +257,9 @@ func StartMetricsListener(
 		return nil, fmt.Errorf("worker metrics listener: bind failed: %w", err)
 	}
 
+	if reg, ok := gatherer.(prometheus.Registerer); ok {
+		_ = RegisterNoticeMailMetrics(reg)
+	}
 	l := &MetricsListener{ln: ln, logger: logger, gatherer: gatherer, done: make(chan struct{})}
 	mux := http.NewServeMux()
 	// Không dùng pattern "GET /metrics": ServeMux cho pattern GET khớp cả HEAD.
@@ -300,6 +303,9 @@ func StartMetricsListener(
 func (l *MetricsListener) SetGatherer(g prometheus.Gatherer) {
 	if l == nil {
 		return
+	}
+	if reg, ok := g.(prometheus.Registerer); ok {
+		_ = RegisterNoticeMailMetrics(reg)
 	}
 	l.mu.Lock()
 	l.gatherer = g

@@ -12,8 +12,10 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,7 +27,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
@@ -298,18 +299,33 @@ func TestNoticeMailTransientRetries(t *testing.T) {
 		t.Fatalf("dial failure: Work = %v, want retryable error", err)
 	}
 
-	reg := prometheus.NewRegistry()
-	if err := worker.RegisterNoticeMailMetrics(reg); err != nil {
+	lctx, lcancel := context.WithCancel(ctx)
+	defer lcancel()
+	listener, err := worker.StartMetricsListener(lctx, "127.0.0.1:0", nil, silentLogger())
+	if err != nil {
 		t.Fatal(err)
 	}
-	beforePerm := metricVal(t, "smtp_permanent")
+	defer func() { lcancel(); _ = listener.Wait() }()
+	reg := prometheus.NewRegistry()
+	listener.SetGatherer(reg)
+
+	beforePerm := gatheredMetricVal(t, reg, "smtp_permanent")
 	permanent := &plainSMTPSink{rcptReply: "550 5.1.1 no such user"}
 	err = worker.NewSecurityNoticeWorker(pool, plainSMTPMailer(t, permanent.start(t)), silentLogger()).Work(ctx, noticeJob(id))
 	if !isJobCancel(err) {
 		t.Fatalf("5xx: Work = %v, want river.JobCancel", err)
 	}
-	if got := metricVal(t, "smtp_permanent") - beforePerm; got != 1 {
-		t.Fatalf("smtp_permanent metric delta = %v, want 1", got)
+	if got := gatheredMetricVal(t, reg, "smtp_permanent") - beforePerm; got != 1 {
+		t.Fatalf("gathered smtp_permanent metric delta = %v, want 1", got)
+	}
+	resp, err := http.Get("http://" + listener.Addr() + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `engram_notice_mail_outcomes_total{outcome="smtp_permanent"}`) {
+		t.Fatalf("GET /metrics status=%d body=%s", resp.StatusCode, body)
 	}
 }
 
@@ -351,7 +367,12 @@ func TestWorkerSecurityNoticeSMTP(t *testing.T) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- worker.Run(runCtx, cfg, silentLogger()) }()
+	regCh := make(chan *prometheus.Registry, 1)
+	go func() {
+		done <- worker.Run(runCtx, cfg, silentLogger(), worker.RunOptions{
+			OnRegistry: func(r *prometheus.Registry) { regCh <- r },
+		})
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -382,15 +403,30 @@ func TestWorkerSecurityNoticeSMTP(t *testing.T) {
 	if len(msgs) != 1 || !strings.Contains(msgs[0], "To: "+email) {
 		t.Fatalf("SMTP sink messages = %q, want one notice to %s", msgs, email)
 	}
+	runtimeReg := <-regCh
+	_ = gatheredMetricVal(t, runtimeReg, "smtp_permanent")
 }
 
-func metricVal(t *testing.T, outcome string) float64 {
+func gatheredMetricVal(t *testing.T, g prometheus.Gatherer, outcome string) float64 {
 	t.Helper()
-	var m dto.Metric
-	if err := worker.NoticeMailOutcomes.WithLabelValues(outcome).Write(&m); err != nil {
-		t.Fatal(err)
+	families, err := g.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
 	}
-	return m.GetCounter().GetValue()
+	for _, f := range families {
+		if f.GetName() != "engram_notice_mail_outcomes_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "outcome" && lp.GetValue() == outcome {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	t.Fatalf("engram_notice_mail_outcomes_total{outcome=%q} absent from gathered registry", outcome)
+	return 0
 }
 
 func writeTestCA(t *testing.T) (string, *tls.Config) {

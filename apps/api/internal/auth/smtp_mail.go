@@ -165,19 +165,22 @@ func (m *SMTPMailer) send(ctx context.Context, recipient, purpose, link string) 
 
 	addr := net.JoinHostPort(m.host, strconv.Itoa(m.port))
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	rawConn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return &SMTPError{Stage: "dial"}
 	}
 	// Abort blocking I/O when ctx ends before the deadline (caller cancel).
-	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	// Always use the immutable rawConn so wrapping conn for implicit TLS never
+	// races with the AfterFunc callback (R1-01).
+	stop := context.AfterFunc(ctx, func() { _ = rawConn.SetDeadline(time.Unix(1, 0)) })
 	defer stop()
-	defer func() { _ = conn.Close() }()
-	if err := conn.SetDeadline(deadline); err != nil {
+	defer func() { _ = rawConn.Close() }()
+	if err := rawConn.SetDeadline(deadline); err != nil {
 		return &SMTPError{Stage: "dial"}
 	}
+	conn := rawConn
 	if m.tlsMode == SMTPTLSImplicit {
-		tc := tls.Client(conn, m.tlsConfig)
+		tc := tls.Client(rawConn, m.tlsConfig)
 		if err := tc.HandshakeContext(ctx); err != nil {
 			return &SMTPError{Stage: "tls", Permanent: isCertError(err)}
 		}

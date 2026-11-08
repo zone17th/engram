@@ -96,6 +96,14 @@ func RegisterNoticeMailMetrics(reg prometheus.Registerer) error {
 	if reg == nil {
 		return nil
 	}
+	for _, outcome := range []string{
+		noticeOutcomeMissing,
+		noticeOutcomeNoMailer,
+		noticeOutcomePermanent,
+		noticeOutcomeRetry,
+	} {
+		NoticeMailOutcomes.WithLabelValues(outcome)
+	}
 	if err := reg.Register(NoticeMailOutcomes); err != nil {
 		var already prometheus.AlreadyRegisteredError
 		if errors.As(err, &already) {

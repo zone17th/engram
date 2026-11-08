@@ -145,6 +145,7 @@ jobs:
       # WebAuthn RP ID = host of APP_ORIGIN; Chrome rejects an IP address, so this job uses a hostname (advisor-dec-050).
       BASE_URL: http://localhost:3000
       APP_ORIGIN: http://localhost:3000
+      AUTH_MAIL_CAPTURE_AS_DELIVERY: 'true'
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
