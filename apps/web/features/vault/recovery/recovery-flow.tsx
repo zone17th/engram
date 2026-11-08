@@ -1781,6 +1781,7 @@ export function VaultRecoveryFlow() {
     <>
       <AppHeader vault={{ state: isRegenStep ? 'open' : 'locked' }} showLogout />
       <main
+        id="main-content"
         className="mx-auto max-w-[640px] px-5 pt-10 pb-24"
         data-testid="vault-recovery-page"
       >

@@ -344,6 +344,7 @@ export function VaultUnlockFlow() {
     <>
       <AppHeader vault={{ state: 'locked' }} showLogout />
       <main
+        id="main-content"
         className="mx-auto max-w-[560px] px-5 pt-10 pb-24"
         data-testid="vault-unlock-page"
       >

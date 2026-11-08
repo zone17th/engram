@@ -98,6 +98,42 @@ describe('AppHeader', () => {
     expect(theme.compareDocumentPosition(signOut) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  // FE-R1-03 (advisor-dec-P06-011 (4)): header help  goes to the locale-aware /docs.
+  it('nút ? tới /vi/docs (vi) và /docs (en), tên truy cập nav.help, vùng chạm >= 44px (F-05)', () => {
+    const vi = renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);
+    const viHelp = screen.getByTestId('header-help-link');
+    expect(viHelp).toHaveAttribute('href', '/vi/docs');
+    expect(viHelp).toHaveAccessibleName(viMessages.nav.help);
+    expect(viHelp).toHaveClass('min-h-11', 'min-w-11');
+    vi.unmount();
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ThemeProvider>
+          <AppHeader vault={{ state: 'locked' }} />
+        </ThemeProvider>
+      </NextIntlClientProvider>,
+    );
+    const enHelp = screen.getByTestId('header-help-link');
+    expect(enHelp).toHaveAttribute('href', '/docs');
+    expect(enHelp).toHaveAccessibleName(enMessages.nav.help);
+  });
+
+  it('F-05: logo, theme toggle và Settings có class min-h-11 (>= 44px) và nút khoá mobile 44px', () => {
+    renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);
+    expect(screen.getByRole('link', { name: viMessages.app.header.logoLabel })).toHaveClass('min-h-11', 'min-w-11');
+    expect(screen.getByRole('button', { name: 'Đổi giao diện sáng/tối' })).toHaveClass('min-h-11', 'min-w-11');
+    expect(screen.getByRole('link', { name: 'Cài đặt' })).toHaveClass('min-h-11');
+    expect(screen.getByTestId('vault-unlock-button-mobile')).toHaveClass('h-11', 'w-11');
+  });
+
+  // F-06: first Tab stop is the skip link; the target id lives on each page's <main>.
+  it('F-06: skip link là phần tử đầu tiên, trỏ tới #main-content', () => {
+    const { container } = renderWithTheme(<AppHeader vault={{ state: 'locked' }} />);
+    const skip = screen.getByRole('link', { name: viMessages.nav.skipToContent });
+    expect(skip).toHaveAttribute('href', '#main-content');
+    expect(container.querySelector('a')).toBe(skip);
+  });
+
   it('showLogout={false} chỉ để render ngoài SessionProvider', () => {
     renderWithTheme(<AppHeader vault={{ state: 'locked' }} showLogout={false} />);
     expect(screen.queryByRole('button', { name: 'Đăng xuất' })).not.toBeInTheDocument();

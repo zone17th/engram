@@ -1,6 +1,7 @@
 'use client';
 
 import { Omnibox } from '@/components/app-shell/omnibox';
+import { SkipLink } from '@/components/app-shell/skip-link';
 import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { Logo } from '@/components/landing/logo';
 import { useVaultPillLabel, VaultPill, type VaultPillState, vaultModeToPillState } from '@/components/ui/vault-pill';
@@ -10,7 +11,7 @@ import { unlockOrNavigate, useOptionalRouterPush } from '@/features/vault/unlock
 import { useOptionalVault } from '@/features/vault/vault-provider';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useEffect, useRef } from 'react';
 /**
  * Header dính, nền mờ, cao 68px — chép từ mockups/index.html.
@@ -37,6 +38,9 @@ export function AppHeader({
 }) {
   const tHeader = useTranslations('app.header');
   const tVault = useTranslations('vault.state');
+  const tNav = useTranslations('nav');
+  const locale = useLocale();
+  const docsHref = locale === 'vi' ? '/vi/docs' : '/docs';
   const vaultCtx = useOptionalVault();
   const pathname = usePathname() ?? '/app';
   const routerPush = useOptionalRouterPush();
@@ -93,9 +97,11 @@ export function AppHeader({
         : tVault('locked');
 
   return (
+    <>
+    <SkipLink />
     <header className="sticky top-0 z-30 h-[68px] border-b border-line bg-surface/80 backdrop-blur">
       <div className="mx-auto flex h-full min-w-0 max-w-container items-center gap-2 px-5 sm:gap-4">
-        <Link href="/app" className="touch-target min-w-0 shrink-0 no-underline" aria-label={tHeader('logoLabel')}>
+        <Link href="/app" className="touch-target inline-flex min-h-11 min-w-11 shrink-0 items-center no-underline" aria-label={tHeader('logoLabel')}>
           <Logo wordmarkClassName="hidden min-[480px]:inline" />
         </Link>
         {showSearch ? <Omnibox compact className="hidden min-w-0 max-w-[420px] md:block" /> : null}
@@ -140,7 +146,7 @@ export function AppHeader({
               type="button"
               data-testid="vault-lock-button-mobile"
               onClick={handleLockClick}
-              className="touch-target grid h-[38px] w-[38px] cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden [@media(pointer:coarse)]:h-[44px] [@media(pointer:coarse)]:w-[44px]"
+              className="touch-target grid h-11 w-11 cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden"
               aria-label={tHeader('openAndLockNow')}
               title={tHeader('openAndLockNow')}
             >
@@ -152,7 +158,7 @@ export function AppHeader({
               data-testid="vault-unlock-button-mobile"
               onClick={() => void handleUnlockClick('mobile')}
               disabled={vaultCtx?.inFlight}
-              className="touch-target grid h-[38px] w-[38px] cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden [@media(pointer:coarse)]:h-[44px] [@media(pointer:coarse)]:w-[44px]"
+              className="touch-target grid h-11 w-11 cursor-pointer place-items-center rounded-pill border-0 bg-surfaceAlt text-[16px] sm:hidden"
               aria-label={tHeader('lockedAndUnlock')}
               title={tHeader('lockedAndUnlock')}
             >
@@ -160,7 +166,7 @@ export function AppHeader({
             </button>
           ) : (
             <span
-              className="grid h-[38px] w-[38px] place-items-center rounded-pill bg-surfaceAlt text-[16px] sm:hidden [@media(pointer:coarse)]:h-[44px] [@media(pointer:coarse)]:w-[44px]"
+              className="grid h-11 w-11 place-items-center rounded-pill bg-surfaceAlt text-[16px] sm:hidden"
               aria-label={mobilePillLabel}
               title={mobilePillLabel}
             >
@@ -169,15 +175,25 @@ export function AppHeader({
           )}
           <Link
             href={settingsActive ? '/app' : '/app/settings'}
-            className="btn btn-tertiary touch-target no-underline !text-body"
+            className="btn btn-tertiary touch-target min-h-11 no-underline !text-body"
             aria-current={settingsActive ? 'page' : undefined}
           >
             {settingsActive ? tHeader('settingsDone') : tHeader('settings')}
+          </Link>
+          <Link
+            href={docsHref}
+            className="btn btn-tertiary btn-icon touch-target min-h-11 min-w-11 !px-0 no-underline !text-body"
+            aria-label={tNav('help')}
+            title={tNav('help')}
+            data-testid="header-help-link"
+          >
+            ?
           </Link>
           <ThemeToggle />
           {showLogout ? <AppShellLogoutButton size="md" /> : null}
         </div>
       </div>
     </header>
+    </>
   );
 }

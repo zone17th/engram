@@ -162,7 +162,7 @@ function HomeContent({ isContentEnabled }: { readonly isContentEnabled: boolean 
 
   if (!isContentEnabled) {
     return (
-      <main className="mx-auto max-w-container px-5 py-8">
+      <main id="main-content" className="mx-auto max-w-container px-5 py-8">
         <div data-testid="home-flag-off-empty">
           <EmptyState title={tFlagOff('title')} body={tFlagOff('body')} />
         </div>
@@ -188,7 +188,7 @@ function HomeContent({ isContentEnabled }: { readonly isContentEnabled: boolean 
   const showFullPageError = itemsQuery.isError && !itemsQuery.data && errorCode !== null;
 
   return (
-    <main className="mx-auto grid max-w-container gap-8 px-5 py-8 lg:grid-cols-[236px_minmax(0,1fr)]">
+    <main id="main-content" className="mx-auto grid max-w-container gap-8 px-5 py-8 lg:grid-cols-[236px_minmax(0,1fr)]">
       <Rail
         selectedTagId={selectedTagId}
         onSelectTag={handleSelectTag}

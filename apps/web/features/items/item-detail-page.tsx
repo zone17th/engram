@@ -882,7 +882,7 @@ export function ItemDetailPage({
       <AppHeader showSearch />
       <LockedBanner />
 
-      <main className="mx-auto max-w-container px-5 pb-28 pt-8">
+      <main id="main-content" className="mx-auto max-w-container px-5 pb-28 pt-8">
         {/* Live region for saving / saved / error / reorder announcements */}
         <div
           role="status"

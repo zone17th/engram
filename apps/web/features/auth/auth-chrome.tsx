@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 import { ThemeToggle } from '@/components/app-shell/theme-toggle';
 import { LocaleSwitch } from '@/components/locale-switch';
 import { Logo } from '@/components/landing/logo';
+import { SkipLink } from '@/components/app-shell/skip-link';
 import { Segmented } from '@/components/ui/segmented';
 
 export function AuthChrome({ children }: { children: React.ReactNode }) {
@@ -18,14 +19,15 @@ export function AuthChrome({ children }: { children: React.ReactNode }) {
 
   return (
     <>
+      <SkipLink />
       <header className="mx-auto flex max-w-container items-center gap-4 px-5 pt-6">
         {isResetRoute ? (
           /* eslint-disable-next-line @next/next/no-html-link-for-pages -- ADR 0006 §6.2 requires hard navigation on /app/auth/reset-password */
-          <a href="/" className="flex items-center gap-2.5 text-ink no-underline" aria-label="engram">
+          <a href="/" className="inline-flex min-h-11 min-w-11 items-center gap-2.5 text-ink no-underline" aria-label="engram">
             <Logo />
           </a>
         ) : (
-          <Link href="/" className="flex items-center gap-2.5 text-ink no-underline" aria-label="engram">
+          <Link href="/" className="inline-flex min-h-11 min-w-11 items-center gap-2.5 text-ink no-underline" aria-label="engram">
             <Logo />
           </Link>
         )}
@@ -35,6 +37,7 @@ export function AuthChrome({ children }: { children: React.ReactNode }) {
         </div>
       </header>
       <main
+        id="main-content"
         className={
           isWideLayout
             ? 'mx-auto max-w-[960px] px-5 pb-24 pt-10'

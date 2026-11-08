@@ -52,7 +52,7 @@ export function Segmented({
         <ToggleGroup.Item
           key={option.value}
           value={option.value}
-          className="touch-target font-semibold text-[13px]"
+          className="touch-target font-semibold text-[13px] max-sm:min-h-11 max-sm:min-w-11"
           aria-label={option.label}
         >
           {option.label}
