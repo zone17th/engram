@@ -93,13 +93,14 @@ func TestDeleteAccount_SecurityGates(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 	body := `{"confirm_email":"  del.me@EXAMPLE.com "}`
+	validGrant := h.grant("account.delete", "correcthorse")
 
 	// 1. Origin gate: missing or cross-origin is rejected with 403 csrf_invalid.
-	code, raw := h.deleteMe(body, delOpts{csrf: true, origin: "-", grant: h.grant("account.delete", "correcthorse"), idemKey: "idem-accdel-noorigin01"})
+	code, raw := h.deleteMe(body, delOpts{csrf: true, origin: "-", grant: validGrant, idemKey: "idem-accdel-noorigin01"})
 	if code != http.StatusForbidden || problemCode(t, raw) != "csrf_invalid" {
 		t.Fatalf("missing Origin = %d %s, want 403 csrf_invalid", code, raw)
 	}
-	code, raw = h.deleteMe(body, delOpts{csrf: true, origin: "https://evil.example", grant: h.grant("account.delete", "correcthorse"), idemKey: "idem-accdel-badorigin1"})
+	code, raw = h.deleteMe(body, delOpts{csrf: true, origin: "https://evil.example", grant: validGrant, idemKey: "idem-accdel-badorigin1"})
 	if code != http.StatusForbidden || problemCode(t, raw) != "csrf_invalid" {
 		t.Fatalf("cross Origin = %d %s, want 403 csrf_invalid", code, raw)
 	}
@@ -107,7 +108,7 @@ func TestDeleteAccount_SecurityGates(t *testing.T) {
 	// 2. Session gate: absent session and revoked session both return 401.
 	noSessJar := jar{}
 	h.csrfJar(noSessJar)
-	code, raw = h.deleteMe(body, delOpts{csrf: true, useJar: noSessJar, grant: h.grant("account.delete", "correcthorse"), idemKey: "idem-accdel-nosession1"})
+	code, raw = h.deleteMe(body, delOpts{csrf: true, useJar: noSessJar, grant: validGrant, idemKey: "idem-accdel-nosession1"})
 	if code != http.StatusUnauthorized || problemCode(t, raw) != "unauthenticated" {
 		t.Fatalf("absent session = %d %s, want 401 unauthenticated", code, raw)
 	}
@@ -126,29 +127,29 @@ func TestDeleteAccount_SecurityGates(t *testing.T) {
 	_ = logoutResp.Body.Close()
 	revokedJar[authhttp.CookieSession] = savedSession
 	h.csrfJar(revokedJar)
-	code, raw = h.deleteMe(body, delOpts{csrf: true, useJar: revokedJar, grant: h.grant("account.delete", "correcthorse"), idemKey: "idem-accdel-revoked001"})
+	code, raw = h.deleteMe(body, delOpts{csrf: true, useJar: revokedJar, grant: validGrant, idemKey: "idem-accdel-revoked001"})
 	if code != http.StatusUnauthorized || problemCode(t, raw) != "session_invalid" {
 		t.Fatalf("revoked session = %d %s, want 401 session_invalid", code, raw)
 	}
 
 	// 3. CSRF gate: missing CSRF header returns 403 csrf_invalid.
-	code, raw = h.deleteMe(body, delOpts{csrf: false, grant: h.grant("account.delete", "correcthorse"), idemKey: "idem-accdel-nocsrf-01"})
+	code, raw = h.deleteMe(body, delOpts{csrf: false, grant: validGrant, idemKey: "idem-accdel-nocsrf-01"})
 	if code != http.StatusForbidden || problemCode(t, raw) != "csrf_invalid" {
 		t.Fatalf("no CSRF = %d %s, want 403 csrf_invalid", code, raw)
 	}
 
 	// 4. Content-Type gate: non-JSON body returns 400 invalid_request.
-	code, raw = h.deleteMe(body, delOpts{csrf: true, contentType: "text/plain", grant: h.grant("account.delete", "correcthorse"), idemKey: "idem-accdel-nonjson01"})
+	code, raw = h.deleteMe(body, delOpts{csrf: true, contentType: "text/plain", grant: validGrant, idemKey: "idem-accdel-nonjson01"})
 	if code != http.StatusBadRequest || problemCode(t, raw) != "invalid_request" {
 		t.Fatalf("text/plain = %d %s, want 400 invalid_request", code, raw)
 	}
 
 	// 5. Idempotency-Key gate: missing key, too-short key, and in-progress conflict.
-	code, raw = h.deleteMe(body, delOpts{csrf: true, grant: h.grant("account.delete", "correcthorse")})
+	code, raw = h.deleteMe(body, delOpts{csrf: true, grant: validGrant})
 	if code != http.StatusBadRequest || problemCode(t, raw) != "invalid_request" {
 		t.Fatalf("missing Idempotency-Key = %d %s, want 400 invalid_request", code, raw)
 	}
-	code, raw = h.deleteMe(body, delOpts{csrf: true, grant: h.grant("account.delete", "correcthorse"), idemKey: "short"})
+	code, raw = h.deleteMe(body, delOpts{csrf: true, grant: validGrant, idemKey: "short"})
 	if code != http.StatusBadRequest || problemCode(t, raw) != "invalid_request" {
 		t.Fatalf("short Idempotency-Key = %d %s, want 400 invalid_request", code, raw)
 	}
@@ -158,7 +159,7 @@ SELECT id, 'idem-accdel-conflict01', 'DELETE', '/api/v1/me', '\x00'::bytea, 'in_
 FROM app_user WHERE email = 'del.me@example.com'`, h.clk.Now(), h.clk.Now().Add(15*time.Minute)); err != nil {
 		t.Fatalf("seed in_progress idempotency_key: %v", err)
 	}
-	code, raw = h.deleteMe(body, delOpts{csrf: true, grant: h.grant("account.delete", "correcthorse"), idemKey: "idem-accdel-conflict01"})
+	code, raw = h.deleteMe(body, delOpts{csrf: true, grant: validGrant, idemKey: "idem-accdel-conflict01"})
 	if code != http.StatusConflict || problemCode(t, raw) != "idempotency_conflict" {
 		t.Fatalf("conflicting Idempotency-Key = %d %s, want 409 idempotency_conflict", code, raw)
 	}
@@ -216,6 +217,9 @@ FROM app_user WHERE email = 'del.me@example.com'`, h.clk.Now(), h.clk.Now().Add(
 			t.Fatalf("attempt %d wrong email = %d %s, want 400 account_delete_confirm_invalid", i, code, raw)
 		}
 	}
+	// Advance 90s so the 1-minute /auth/reauth limiter resets while the
+	// 10-minute vault_sensitive limiter on DELETE /me remains at 5/5.
+	h.clk.Advance(90 * time.Second)
 	rlResp := h.deleteMeResp(body, delOpts{
 		csrf:    true,
 		grant:   h.grant("account.delete", "correcthorse"),
