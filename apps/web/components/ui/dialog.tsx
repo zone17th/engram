@@ -47,11 +47,6 @@ export function Dialog({
     openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
   }, [open]);
 
-  const handleOpenChange = (next: boolean) => {
-    if (!next && dismissible === false) return;
-    onOpenChange?.(next);
-  };
-
   const ctxValue = useMemo<DialogContextValue>(
     () => ({ returnFocusRef, initialFocusRef, dismissible, openerRef }),
     [returnFocusRef, initialFocusRef, dismissible],
@@ -59,7 +54,7 @@ export function Dialog({
 
   return (
     <DialogContext.Provider value={ctxValue}>
-      <DialogPrimitive.Root open={open} onOpenChange={handleOpenChange} {...props}>
+      <DialogPrimitive.Root open={open} onOpenChange={onOpenChange} {...props}>
         {children}
       </DialogPrimitive.Root>
     </DialogContext.Provider>
