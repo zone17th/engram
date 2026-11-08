@@ -268,7 +268,9 @@ func TestSuggestNeverLogsQuery(t *testing.T) {
 	}
 	// 7. Scrape `/api/v1/metrics` and verify `suggest_latency_seconds` was recorded and no sentinel or user ID appears.
 	metricsRec := httptest.NewRecorder()
-	router.ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil))
+	metricsReq := httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil)
+	metricsReq.RemoteAddr = "127.0.0.1:41000" // /metrics chỉ mở cho loopback/nội bộ (P06 Task 4).
+	router.ServeHTTP(metricsRec, metricsReq)
 	if metricsRec.Code != http.StatusOK {
 		t.Fatalf("/metrics status = %d", metricsRec.Code)
 	}
